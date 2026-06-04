@@ -243,18 +243,18 @@ async def check_updates():
     # Используем отдельную сессию для потокового чтения
     async with AsyncSessionLocal() as stream_db:
         try:
-            # Читаем пользователей из базы батчами (yield_per), чтобы избежать утечек OOM
-            query = select(User).execution_options(yield_per=100)
+            # Читаем только tg_user_id пользователей из базы батчами (yield_per), чтобы разгрузить память
+            query = select(User.tg_user_id).execution_options(yield_per=100)
             result = await stream_db.stream(query)
             
             async for partition in result.partitions(100):
                 tasks = []
                 for row in partition:
-                    user = row[0]
+                    tg_id = row[0]
                     # Передаем только tg_user_id. Сессия будет открыта внутри process_user под семафором
                     tasks.append(
                         process_user(
-                            user_id=user.tg_user_id,
+                            user_id=tg_id,
                             redis_client=redis,
                             base_web_url=base_web_url,
                             semaphore=semaphore,

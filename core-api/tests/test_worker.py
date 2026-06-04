@@ -25,7 +25,7 @@ def make_user(
     is_user_id: int = 42,
     is_password_b64: str = "dXNlcjpwYXNz",
     last_task_id: int = 10,
-    last_check_time: str = "2025-06-01 10:00:00",
+    last_check_time: str | None = "2025-06-01 10:00:00",
 ) -> MagicMock:
     """Создаёт мок объекта пользователя БД."""
     user = MagicMock()
@@ -40,7 +40,7 @@ def make_user(
 def make_task(
     task_id: int = 20,
     name: str = "Тестовая заявка",
-    status_name: str = "Открыта",
+    status_name: str | None = "Открыта",
     status_id: int = 1,
     executor_ids: str = "42",
 ) -> dict:
