@@ -36,7 +36,9 @@
 │   └── scheduler.py    # Фоновый мониторинг (новые задачи, комментарии)
 ├── config.py           # Загрузка конфигурации
 ├── main.py             # Точка входа (инициализация бота и APScheduler)
-└── requirements.txt    # Зависимости
+├── pyproject.toml      # Конфигурация проекта и зависимостей uv
+├── uv.lock             # Lock-файл uv
+└── requirements.txt    # Зависимости (сохранен для совместимости)
 ```
 
 ## ⚙️ Установка и запуск
@@ -55,10 +57,22 @@
    POLLING_INTERVAL=10
    ```
 
-3. **Запустите через venv**:
+3. **Установка зависимостей и запуск**:
+
+   Рекомендуется использовать [uv](https://github.com/astral-sh/uv) для управления зависимостями и запуска проекта:
    ```bash
-   python -m venv venv
-   .\venv\Scripts\activate  # Windows
+   # Синхронизация зависимостей и создание виртуального окружения (.venv)
+   uv sync
+
+   # Запуск бота
+   uv run main.py
+   ```
+
+   Или классический запуск через стандартный `venv` и `pip`:
+   ```bash
+   python -m venv .venv
+   .venv\Scripts\activate  # Windows
+   # source .venv/bin/activate  # macOS/Linux
    pip install -r requirements.txt
    python main.py
    ```
