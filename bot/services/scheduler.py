@@ -1,8 +1,8 @@
 import logging
 from datetime import datetime
 from aiogram import Bot
-from database.db import get_all_users, update_user_state
-from services.api import get_tasks, get_task_lifetime, parse_api_date
+from services.api_client import api_client
+from utils import parse_api_date
 from config import INTRAService_URL
 
 logger = logging.getLogger(__name__)
@@ -14,29 +14,34 @@ async def check_updates(bot: Bot):
     """
     base_web_url = INTRAService_URL.replace("/api/", "")
     try:
-        users = await get_all_users()
+        users = await api_client.get_all_users()
+        if not users:
+            return
+            
         for user in users:
             try:
-                tg_id = user['tg_user_id']
-                auth_b64 = user['is_password_b64']
-                is_user_id = user['is_user_id']
-                last_task_id = user['last_task_id'] or 0
-                last_check_str = user['last_check_time']
+                tg_id = user.get('tg_user_id')
+                is_user_id = user.get('is_user_id')
+                last_task_id = user.get('last_task_id') or 0
+                last_check_str = user.get('last_check_time')
                 
-                if not auth_b64 or not is_user_id:
+                if not tg_id or not is_user_id:
                     continue
 
                 current_time = datetime.now()
                 last_check_time = parse_api_date(last_check_str) if last_check_str else None
                 
                 if not last_check_time:
-                    await update_user_state(tg_id, last_check_time=current_time.strftime("%Y-%m-%d %H:%M:%S"))
+                    await api_client.update_user_state(
+                        tg_id, 
+                        last_check_time=current_time.strftime("%Y-%m-%d %H:%M:%S")
+                    )
                     continue
                 
                 api_filter_time = last_check_time.strftime("%Y-%m-%d %H:%M")
                 
                 # 1. Проверка НОВЫХ заявок
-                tasks_data = await get_tasks(auth_b64, {"CreatedMoreThan": api_filter_time})
+                tasks_data = await api_client.get_tasks(tg_id, {"CreatedMoreThan": api_filter_time})
                 
                 new_tasks = []
                 statuses_map = {}
@@ -68,10 +73,10 @@ async def check_updates(bot: Bot):
                         any_new_task = True
                 
                 if any_new_task:
-                    await update_user_state(tg_id, last_task_id=last_task_id)
+                    await api_client.update_user_state(tg_id, last_task_id=last_task_id)
 
                 # 2. Проверка КОММЕНТАРИЕВ
-                updated_tasks_data = await get_tasks(auth_b64, {
+                updated_tasks_data = await api_client.get_tasks(tg_id, {
                     "ChangedMoreThan": api_filter_time,
                     "include": "executorids,status"
                 })
@@ -92,7 +97,7 @@ async def check_updates(bot: Bot):
                     if str(is_user_id) not in executor_ids:
                         continue
                     
-                    lifetime_data = await get_task_lifetime(auth_b64, task["Id"])
+                    lifetime_data = await api_client.get_task_lifetime(tg_id, task["Id"])
                     
                     events = []
                     if isinstance(lifetime_data, list):
@@ -130,10 +135,14 @@ async def check_updates(bot: Bot):
                                         parse_mode="HTML"
                                     )
                 
-                await update_user_state(tg_id, last_check_time=current_time.strftime("%Y-%m-%d %H:%M:%S"))
+                await api_client.update_user_state(
+                    tg_id, 
+                    last_check_time=current_time.strftime("%Y-%m-%d %H:%M:%S")
+                )
                 
             except Exception as e:
-                logger.error(f"Error processing updates for user {tg_id}: {e}")
+                logger.error("Ошибка при обработке обновлений для пользователя %s: %s", tg_id, e)
         
     except Exception as e:
-        logger.exception(f"Critical error in check_updates: {e}")
+        logger.exception("Критическая ошибка в check_updates: %s", e)
+

@@ -1,7 +1,7 @@
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
-from database.db import get_user
+from services.api_client import api_client
 
 router = Router()
 
@@ -19,15 +19,12 @@ def get_main_keyboard(is_auth: bool):
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
-    user = await get_user(message.from_user.id)
-    # Авторизован, если юзер есть в базе и у него заполнен auth_b64 (user[2])
-    is_auth = False
-    if user and user[2] and user[2].strip():
-        is_auth = True
+    user = await api_client.get_user(message.from_user.id)
+    is_auth = bool(user and user.get("is_login"))
     
     if is_auth:
         text = (
-            f"👋 С возвращением! Вы авторизованы под логином <b>{user[1]}</b>.\n\n"
+            f"👋 С возвращением! Вы авторизованы под логином <b>{user.get('is_login')}</b>.\n\n"
             "Я продолжаю мониторить ваши заявки в фоновом режиме.\n"
             "Используйте кнопки меню ниже для управления."
         )

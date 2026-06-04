@@ -1,92 +1,114 @@
-# Инструкции по работе с IntraService API и архитектурой IntraBot
+# Инструкции по работе с IntraService API и архитектурой IntraBot (Микросервисная архитектура)
 
-Этот файл является обязательным руководством для любого AI-агента в данном воркспейсе. Он описывает структуру проекта, особенности интеграции с API IntraService и правила работы с кодовой базой.
+Этот файл является обязательным руководством для любого AI-агента в данном воркспейсе. Он описывает структуру проекта, особенности интеграции с API IntraService и правила работы с кодовой базой после разделения на Core API и Telegram Bot.
 
-## 1. Навигация по документации API
-- Полная техническая документация по API IntraService (версия 4.47) находится в каталоге `docs/IntraService_API/` и разбита на 77 файлов вида `IntraService_API_v4_47_ЧастьN.md`.
-- **ВСЕГДА** начинайте поиск эндпоинтов и методов с индексного файла: [IntraService_API_Index.md](file:///c:/Users/belikov.a/Desktop/%D0%90%D0%BA%D1%82%D1%8B,%20%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D1%8B/Work/%21Projects/intraservice-tg-bot/docs/IntraService_API/IntraService_API_Index.md).
-- **СХЕМЫ JSON** запросов и ответов описаны в файле [Schemas.md](file:///c:/Users/belikov.a/Desktop/%D0%90%D0%BA%D1%82%D1%8B,%20%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D1%8B/Work/%21Projects/intraservice-tg-bot/docs/Schemas.md).
+---
 
-## 2. Реализация авторизации (Auth)
-- Используется **Basic Authentication**.
-- Заголовок запроса: `Authorization: Basic <base64(login:password)>`.
-- В базе данных SQLite учетные данные сохраняются в таблице `users` в поле `is_password_b64`. 
-- Проверка учетных данных пользователя выполняется через метод `verify_credentials` в [api.py](file:///c:/Users/belikov.a/Desktop/%D0%90%D0%BA%D1%82%D1%8B,%20%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D1%8B/Work/%21Projects/intraservice-tg-bot/services/api.py) путем отправки запроса на эндпоинт `user` с параметром `getcurrentuserinfo=true`. Это позволяет также получить внутренний `user_id` сотрудника в системе IntraService для последующей фильтрации заявок.
+## 1. Обзор новой архитектуры монорепо
+
+Проект разделен на два независимых сервиса, взаимодействующих по сети:
+1. **Core API Service (`core-api/`)** — FastAPI-микросервис, выступающий шлюзом к API IntraService. Он отвечает за хранение учетных данных пользователей, сессии авторизации и непосредственно отправляет запросы в IntraService.
+2. **Telegram Bot Service (`bot/`)** — aiogram 3.x бот. Он отвечает исключительно за интерфейс взаимодействия с пользователем в Telegram и периодический опрос обновлений через планировщик.
+
+```
+intraservice-tg-bot/
+├── bot/                         # Код Telegram-бота
+│   ├── handlers/                # Хэндлеры команд (/start, /login, /mytickets)
+│   ├── services/
+│   │   ├── api_client.py        # Клиент для связи с Core API
+│   │   └── scheduler.py         # Опрос Core API для отправки уведомлений
+│   ├── utils.py                 # Общие утилиты бота
+│   ├── config.py                # Конфигурация бота
+│   └── main.py                  # Точка входа бота
+│
+├── core-api/                    # Код Core API Service
+│   ├── app/
+│   │   ├── database/
+│   │   │   └── db.py            # База данных SQLAlchemy (async SQLite)
+│   │   ├── models/
+│   │   │   └── schemas.py       # Pydantic-схемы запросов и ответов
+│   │   ├── routers/             # Эндпоинты API (auth, tasks, users)
+│   │   ├── services/
+│   │   │   └── intraservice.py  # Прямой HTTP-клиент к IntraService API
+│   │   ├── config.py            # Конфигурация Core API
+│   │   └── main.py              # Точка входа FastAPI
+│   ├── Dockerfile
+│   └── requirements.txt
+│
+├── docs/                        # Документация по проекту
+└── docker-compose.yml           # Оркестрация сервисов (bot + core-api + volume)
+```
+
+---
+
+## 2. Реализация авторизации и аутентификации
+
+### Взаимодействие Бот -> Core API
+Бот общается с Core API по протоколу HTTP REST. Для аутентификации запросов от бота используется pre-shared API-ключ, передаваемый в заголовке:
+`X-Bot-Api-Key: <секретный_ключ>`
+
+Проверка ключа на стороне Core API реализована в виде зависимости FastAPI в [deps.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/core-api/app/routers/deps.py) с использованием безопасного по времени сравнения `secrets.compare_digest` для предотвращения атак по времени (Timing Attacks).
+
+### Авторизация в IntraService
+Вся работа с Basic Auth IntraService инкапсулирована в Core API:
+- Заголовок Basic Auth (`Authorization: Basic <base64(login:password)>`) формируется в Core API на основе учетных данных пользователя, хранящихся в БД.
+- В БД Core API сохраняются `is_login` и `is_password_b64` (закодированный в base64 пароль). Бот больше не имеет доступа к учетным данным IntraService напрямую.
+
+---
 
 ## 3. Формат запросов, ответов и работы с датами
-- **Base URL:** Значение берется из переменной окружения `INTRAService_URL` (обычно заканчивается на `/api/`).
-- **Формат даты в API:** Даты могут приходить в форматах `YYYY-MM-DD HH:MM:SS`, `YYYY-MM-DDTHH:MM:SS` (с символом T), а также `DD.MM.YYYY HH:MM:SS` и `DD.MM.YYYY HH:MM`. 
-  - Используйте вспомогательную функцию `parse_api_date(date_str)` из `services/api.py` для приведения дат к объектам `datetime`.
-  - При передаче временных фильтров в API (параметры `CreatedMoreThan` или `ChangedMoreThan`) используйте формат `YYYY-MM-DD HH:MM`.
-- **ID сущностей:** Передаются и возвращаются как целые числа (`Int`).
 
-## 4. Особенности работы с методами API в проекте
-- **Получение списка задач (`/api/task`):**
-  - Поддерживает фильтрацию (параметры `ExecutorIds`, `StatusIds`, `CreatedMoreThan`, `ChangedMoreThan`, `page`, `pagesize`).
-  - При запросах автоматически добавляется параметр `include=status` для получения названий статусов.
-- **История изменений задачи (`/api/tasklifetime`):**
-  - Используется для отслеживания комментариев и переходов статусов по конкретной задаче. Принимает параметр `taskid`.
-  - Поля `Comments` и `StatusId` в событиях истории парсятся в `services/scheduler.py` для отправки точечных уведомлений пользователям.
-- **Справочник статусов (`/api/taskstatus`):**
-  - Используется для сопоставления ID статусов с их именами и определения неактивных (закрытых/финальных) заявок при помощи признаков `IsFinal` и `IsFixed`.
+- **Base URL Core API:** Значение берется из переменной окружения `CORE_API_URL` в боте (обычно `http://core-api:8000/api/v1` в Docker или `http://127.0.0.1:8000/api/v1` при локальном тестировании).
+- **Формат даты в API:** Даты могут приходить в различных форматах (ISO, UTC, локальные строки).
+  - На стороне Core API и бота используется функция `parse_api_date(date_str)` из [utils.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/bot/utils.py) или [intraservice.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/core-api/app/services/intraservice.py) для безопасного приведения строк к объектам `datetime`.
+  - При передаче временных фильтров в API (параметры `CreatedMoreThan` или `ChangedMoreThan`) используется формат `YYYY-MM-DD HH:MM`.
 
-## 5. Структура Базы Данных (SQLite)
-Таблица `users` ([db.py](file:///c:/Users/belikov.a/Desktop/%D0%90%D0%BA%D1%82%D1%8B,%20%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D1%8B/Work/%21Projects/intraservice-tg-bot/database/db.py)) содержит:
-- `tg_user_id` (INTEGER PRIMARY KEY) — ID пользователя в Telegram.
-- `is_login` (TEXT) — Логин пользователя.
-- `is_password_b64` (TEXT) — Закодированная в Base64 пара `login:password`.
-- `is_user_id` (INTEGER) — Внутренний ID пользователя в IntraService.
-- `last_task_id` (INTEGER) — ID последней отправленной в Telegram новой заявки.
-- `last_comment_id` (INTEGER) — ID последнего отправленного комментария (в текущей логике фильтрация идет по времени).
-- `last_check_time` (TEXT) — Время последней проверки в формате `YYYY-MM-DD HH:MM:SS`.
-# Инструкции по работе с IntraService API и архитектурой IntraBot
+---
 
-Этот файл является обязательным руководством для любого AI-агента в данном воркспейсе. Он описывает структуру проекта, особенности интеграции с API IntraService и правила работы с кодовой базой.
+## 4. Спецификация API (Core API Gateway)
 
-## 1. Навигация по документации API
-- Полная техническая документация по API IntraService (версия 4.47) находится в каталоге `docs/IntraService_API/` и разбита на 77 файлов вида `IntraService_API_v4_47_ЧастьN.md`.
-- **ВСЕГДА** начинайте поиск эндпоинтов и методов с индексного файла: [IntraService_API_Index.md](file:///c:/Users/belikov.a/Desktop/%D0%90%D0%BA%D1%82%D1%8B,%20%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D1%8B/Work/%21Projects/intraservice-tg-bot/docs/IntraService_API/IntraService_API_Index.md).
-- **СХЕМЫ JSON** запросов и ответов описаны в файле [Schemas.md](file:///c:/Users/belikov.a/Desktop/%D0%90%D0%BA%D1%82%D1%8B,%20%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D1%8B/Work/%21Projects/intraservice-tg-bot/docs/Schemas.md).
+Документация Swagger UI автоматически доступна по адресу `http://127.0.0.1:8000/docs`.
 
-## 2. Реализация авторизации (Auth)
-- Используется **Basic Authentication**.
-- Заголовок запроса: `Authorization: Basic <base64(login:password)>`.
-- В базе данных SQLite учетные данные сохраняются в таблице `users` в поле `is_password_b64`. 
-- Проверка учетных данных пользователя выполняется через метод `verify_credentials` в [api.py](file:///c:/Users/belikov.a/Desktop/%D0%90%D0%BA%D1%82%D1%8B,%20%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D1%8B/Work/%21Projects/intraservice-tg-bot/services/api.py) путем отправки запроса на эндпоинт `user` с параметром `getcurrentuserinfo=true`. Это позволяет также получить внутренний `user_id` сотрудника в системе IntraService для последующей фильтрации заявок.
+### Авторизация
+- `POST /api/v1/auth/login` — Принимает `tg_user_id`, `login`, `password`. Проверяет креды в IntraService и сохраняет сессию пользователя.
+- `DELETE /api/v1/auth/logout` — Удаляет сессию и креды пользователя из БД по `tg_user_id`.
 
-## 3. Формат запросов, ответов и работы с датами
-- **Base URL:** Значение берется из переменной окружения `INTRAService_URL` (обычно заканчивается на `/api/`).
-- **Формат даты в API:** Даты могут приходить в форматах `YYYY-MM-DD HH:MM:SS`, `YYYY-MM-DDTHH:MM:SS` (с символом T), а также `DD.MM.YYYY HH:MM:SS` и `DD.MM.YYYY HH:MM`. 
-  - Используйте вспомогательную функцию `parse_api_date(date_str)` из `services/api.py` для приведения дат к объектам `datetime`.
-  - При передаче временных фильтров в API (параметры `CreatedMoreThan` или `ChangedMoreThan`) используйте формат `YYYY-MM-DD HH:MM`.
-- **ID сущностей:** Передаются и возвращаются как целые числа (`Int`).
+### Задачи
+- `GET /api/v1/tasks` — Получает список задач для пользователя по `tg_user_id` (принимает любые фильтры: `statusId`, `page`, `pagesize`, `CreatedMoreThan` и т.д.).
+- `GET /api/v1/tasks/{task_id}/lifetime` — Получает историю изменений и комментарии к задаче с фильтрацией по `tg_user_id`.
+- `GET /api/v1/statuses` — Получает справочник статусов IntraService для сопоставления.
 
-## 4. Особенности работы с методами API в проекте
-- **Получение списка задач (`/api/task`):**
-  - Поддерживает фильтрацию (параметры `ExecutorIds`, `StatusIds`, `CreatedMoreThan`, `ChangedMoreThan`, `page`, `pagesize`).
-  - При запросах автоматически добавляется параметр `include=status` для получения названий статусов.
-- **История изменений задачи (`/api/tasklifetime`):**
-  - Используется для отслеживания комментариев и переходов статусов по конкретной задаче. Принимает параметр `taskid`.
-  - Поля `Comments` and `StatusId` в событиях истории парсятся в `services/scheduler.py` для отправки точечных уведомлений пользователям.
-- **Справочник статусов (`/api/taskstatus`):**
-  - Используется для сопоставления ID статусов с их именами и определения неактивных (закрытых/финальных) заявок при помощи признаков `IsFinal` и `IsFixed`.
+### Пользователи и мониторинг
+- `GET /api/v1/users` — Возвращает список всех зарегистрированных пользователей. Используется планировщиком бота для периодического опроса.
+- `GET /api/v1/users/{tg_user_id}` — Возвращает профиль конкретного пользователя (логин, ID в IntraService, состояние поллинга).
+- `PATCH /api/v1/users/{tg_user_id}/state` — Обновляет состояние опроса (`last_task_id`, `last_comment_id`, `last_check_time`).
 
-## 5. Структура Базы Данных (SQLite)
-Таблица `users` ([db.py](file:///c:/Users/belikov.a/Desktop/%D0%90%D0%BA%D1%82%D1%8B,%20%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D1%8B/Work/%21Projects/intraservice-tg-bot/database/db.py)) содержит:
-- `tg_user_id` (INTEGER PRIMARY KEY) — ID пользователя в Telegram.
-- `is_login` (TEXT) — Логин пользователя.
-- `is_password_b64` (TEXT) — Закодированная в Base64 пара `login:password`.
-- `is_user_id` (INTEGER) — Внутренний ID пользователя в IntraService.
-- `last_task_id` (INTEGER) — ID последней отправленной в Telegram новой заявки.
-- `last_comment_id` (INTEGER) — ID последнего отправленного комментария (в текущей логике фильтрация идет по времени).
-- `last_check_time` (TEXT) — Время последней проверки в формате `YYYY-MM-DD HH:MM:SS`.
+---
+
+## 5. Структура Базы Данных (SQLAlchemy / SQLite)
+
+База данных SQLite ведется исключительно на стороне Core API. Описание полей таблицы `users` ([db.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/core-api/app/database/db.py)):
+- `tg_user_id` (BigInteger, Primary Key) — ID пользователя в Telegram.
+- `is_login` (String) — Логин пользователя.
+- `is_password_b64` (String) — Закодированная в Base64 пара `login:password` для отправки Basic Auth.
+- `is_user_id` (Integer) — Внутренний ID пользователя в IntraService.
+- `last_task_id` (Integer) — ID последней обработанной задачи (для предотвращения дублирования уведомлений).
+- `last_comment_id` (Integer) — ID последнего отправленного комментария.
+- `last_check_time` (String) — Время последней фоновой проверки в формате ISO/строки.
+
+---
 
 ## 6. Рекомендации по разработке и безопасности
-1. **Асинхронность:** Все вызовы к БД (`aiosqlite`) и к API (`aiohttp`) должны выполняться асинхронно с ключевым словом `await`.
-2. **Безопасность:** Пароли в БД хранятся в Base64. В будущих версиях требуется внедрить симметричное шифрование. Сообщения с паролями от пользователя в Telegram-чате должны удаляться сразу после считывания (уже реализовано в `handlers/auth.py`).
-3. **SSL Верификация:** Переменная `SSL_VERIFY = False` в `api.py` отключает проверку сертификатов для совместимости с внутренними доменами. В продакшн-окружении её значение следует вынести в конфигурацию.
 
-## 7. Контейнеризация и работа с сетью при VPN (Docker)
-1. **База данных в контейнере:** Для сохранения базы данных при перезапуске контейнеров настроен маппинг тома `./data:/app/data` в [docker-compose.yml](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/docker-compose.yml). В [config.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/config.py) добавлена переменная `DB_PATH`, которая в контейнере выставляется в `/app/data/intrabot.db`. В [database/db.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/database/db.py) добавлено автоматическое создание родительской папки для БД.
-2. **Сбои DNS при VPN:** В файле `docker-compose.yml` явно заданы DNS-серверы `8.8.8.8` и `1.1.1.1`. Это исключает проблемы с сетевыми именами (DNS Resolution) внутри контейнера, которые возникают при включенном VPN на Windows.
-3. **Маршрутизация трафика:** Вместо использования прокси на уровне приложения рекомендуется настраивать правила маршрутизации и сплит-туннелирования на уровне самого VPN-клиента (например, направлять корпоративный домен `corporate.loc` напрямую (`direct-out`), а Telegram API - через прокси/VPN).
+1. **Асинхронность:** Все I/O операции (база данных через SQLAlchemy `AsyncSession` и вызовы к API через `aiohttp`) строго должны быть асинхронными с использованием `await`.
+2. **Безопасность учетных данных:** Вся ответственность за хранение паролей лежит на Core API. В дальнейшем планируется переход на шифрование учетных записей в SQLite (или Postgres). Все входящие сообщения с паролями в боте удаляются из истории чата сразу после считывания в [auth.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/bot/handlers/auth.py).
+3. **API Key:** Запрещено хардкодить `BOT_API_KEY` в коде. При развертывании в продакшене он должен передаваться строго через переменные окружения.
+4. **Порты при тестировании:** При локальной проверке сервисы должны слушать только на localhost (`127.0.0.1`). Слушать на `0.0.0.0` разрешается только внутри Docker-контейнеров.
+
+---
+
+## 7. Контейнеризация и Docker Compose
+
+Файл `docker-compose.yml` описывает запуск двух сервисов:
+- `core-api` собирается из `./core-api`, публикует порт `8000` наружу, монтирует том `./core-api-data` для сохранения базы данных `core_api.db`.
+- `bot` собирается из `./bot`, зависит от `core-api` (`depends_on`), обращается к Core API по внутреннему DNS-имени `http://core-api:8000/api/v1`.

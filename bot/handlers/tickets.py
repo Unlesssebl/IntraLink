@@ -2,8 +2,7 @@ from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from database.db import get_user
-from services.api import get_tasks, get_statuses
+from services.api_client import api_client
 from config import INTRAService_URL
 
 router = Router()
@@ -21,9 +20,9 @@ def get_status_emoji(status_name):
         return "🔵"
     return "⚪"
 
-async def build_tickets_page(auth_b64, user_id, page: int = 1, pagesize: int = 5):
+async def build_tickets_page(tg_user_id: int, user_id: int, page: int = 1, pagesize: int = 5):
     # 1. Получаем список всех статусов для фильтрации
-    statuses_data = await get_statuses(auth_b64)
+    statuses_data = await api_client.get_statuses(tg_user_id)
     active_status_ids = []
     if isinstance(statuses_data, list):
         for s in statuses_data:
@@ -40,8 +39,8 @@ async def build_tickets_page(auth_b64, user_id, page: int = 1, pagesize: int = 5
     if active_status_ids:
         filters["StatusIds"] = ",".join(active_status_ids)
 
-    # get_tasks уже включает include=status по умолчанию
-    tasks_data = await get_tasks(auth_b64, filters)
+    # get_tasks через Core API
+    tasks_data = await api_client.get_tasks(tg_user_id, filters)
     
     if tasks_data is None:
         return "❌ Не удалось получить список заявок.", None
@@ -95,34 +94,31 @@ async def build_tickets_page(auth_b64, user_id, page: int = 1, pagesize: int = 5
 @router.message(Command("mytickets"))
 @router.message(F.text == "📋 Мои заявки")
 async def cmd_mytickets(message: types.Message):
-    user = await get_user(message.from_user.id)
-    if not user or not user[2]:
+    user = await api_client.get_user(message.from_user.id)
+    if not user or not user.get("is_login"):
         from handlers.start_help import get_main_keyboard
         await message.answer("Вы не авторизованы.", reply_markup=get_main_keyboard(False))
         return
     
-    auth_b64 = user[2]
-    user_id = user[3]
-    
+    user_id = user.get("is_user_id")
     if not user_id:
         await message.answer("❌ Ошибка: ваш внутренний ID не найден. Пожалуйста, перезайдите через Выйти -> Авторизация")
         return
 
     msg = await message.answer("⏳ Загружаю ваши активные заявки...")
     
-    text, reply_markup = await build_tickets_page(auth_b64, user_id, page=1)
+    text, reply_markup = await build_tickets_page(message.from_user.id, user_id, page=1)
     await msg.edit_text(text, reply_markup=reply_markup, parse_mode="HTML", disable_web_page_preview=True)
 
 @router.callback_query(TicketsPagination.filter())
 async def process_tickets_pagination(callback: types.CallbackQuery, callback_data: TicketsPagination):
-    user = await get_user(callback.from_user.id)
-    if not user or not user[2] or not user[3]:
+    user = await api_client.get_user(callback.from_user.id)
+    if not user or not user.get("is_login") or not user.get("is_user_id"):
         await callback.answer("Сессия истекла или данные неполные.", show_alert=True)
         return
         
-    auth_b64 = user[2]
-    user_id = user[3]
-    text, reply_markup = await build_tickets_page(auth_b64, user_id, page=callback_data.page)
+    user_id = user.get("is_user_id")
+    text, reply_markup = await build_tickets_page(callback.from_user.id, user_id, page=callback_data.page)
     
     await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML", disable_web_page_preview=True)
     await callback.answer()

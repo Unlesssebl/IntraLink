@@ -1,12 +1,12 @@
 # Архитектура проекта IntraBot-gemini
 
-Этот документ содержит визуальные схемы, описывающие архитектуру Telegram-бота, его внутренние компоненты, уровни абстракции и потоки данных при интеграции с IntraService и SQLite.
+Этот документ содержит визуальные схемы, описывающие микросервисную архитектуру проекта, разделенного на **Core API Gateway** и **Telegram Bot**, их внутренние компоненты, уровни абстракции и потоки данных.
 
 ---
 
-## 1. Схема компонентов и уровней системы
+## 1. Схема компонентов и слоев системы
 
-Данная блок-схема иллюстрирует разделение приложения на слои (Presentation, Business Logic, Data, External) и связи между ними:
+Проект разделен на два основных сервиса, которые общаются по протоколу HTTP REST с использованием API-ключа авторизации (`X-Bot-Api-Key`):
 
 ```mermaid
 flowchart TB
@@ -22,34 +22,42 @@ flowchart TB
         User(["👤 Пользователь в Telegram"]):::userStyle
     end
 
-    subgraph Telegram_Layer ["Слой Telegram Bot API"]
+    subgraph Telegram_Layer ["Внешний слой Telegram"]
         TG_API["💬 Telegram Bot API"]:::telegramStyle
     end
 
-    subgraph App_Layer ["Telegram Bot Application (Python / aiogram)"]
+    subgraph Bot_Service ["Telegram Bot Service (Python / aiogram)"]
         direction TB
+        B_Main["🚀 main.py"]:::serviceStyle
+        B_Config["⚙️ config.py"]:::serviceStyle
         
-        subgraph Entry ["Точка входа"]
-            Main["🚀 main.py"]:::serviceStyle
-            Config["⚙️ config.py"]:::serviceStyle
+        subgraph B_Handlers ["Слой представления (Handlers)"]
+            H_Start["start_help.py<br/>(Старт / Помощь)"]:::handlerStyle
+            H_Auth["auth.py<br/>(Вход / Выход)"]:::handlerStyle
+            H_Tickets["tickets.py<br/>(Список заявок)"]:::handlerStyle
         end
 
-        subgraph Handlers ["Слой обработчиков (Presentation Layer)"]
-            direction LR
-            H_Start["start_help.py<br/>(Команды /start, /help)"]:::handlerStyle
-            H_Auth["auth.py<br/>(Авторизация /login, FSM)"]:::handlerStyle
-            H_Tickets["tickets.py<br/>(Заявки /mytickets, Пагинация)"]:::handlerStyle
-        end
-
-        subgraph Services ["Слой логики и интеграции (Business Logic)"]
-            direction TB
-            API_Client["api.py<br/>(aiohttp клиент IntraService)"]:::serviceStyle
+        subgraph B_Logic ["Слой интеграции"]
+            API_Client["api_client.py<br/>(HTTP Core API клиент)"]:::serviceStyle
             Scheduler["scheduler.py<br/>(APScheduler фоновый опрос)"]:::serviceStyle
         end
+    end
 
-        subgraph Storage ["Слой данных (Data Layer)"]
-            DB_Module["db.py<br/>(aiosqlite обертка)"]:::dbStyle
-            SQLite_DB[("sqlite intrabot.db")]:::dbStyle
+    subgraph Core_API_Service ["Core API Service (Python / FastAPI)"]
+        direction TB
+        API_Main["🚀 main.py"]:::serviceStyle
+        API_Config["⚙️ config.py"]:::serviceStyle
+        
+        subgraph API_Routers ["Роутеры API (Endpoints)"]
+            R_Auth["auth.py<br/>(/auth/login, /auth/logout)"]:::handlerStyle
+            R_Tasks["tasks.py<br/>(/tasks, /statuses)"]:::handlerStyle
+            R_Users["users.py<br/>(/users, /users/state)"]:::handlerStyle
+        end
+
+        subgraph API_Services ["Службы & База данных"]
+            IS_Client["intraservice.py<br/>(aiohttp клиент)"]:::serviceStyle
+            DB_Module["db.py<br/>(SQLAlchemy async)"]:::dbStyle
+            SQLite_DB[("sqlite core_api.db")]:::dbStyle
         end
     end
 
@@ -59,100 +67,128 @@ flowchart TB
 
     %% Связи
     User <-->|Взаимодействие| TG_API
-    TG_API <-->|Поллинг событий & отправка сообщений| Main
-    Main -->|Инициализация и запуск| Scheduler
-    Main -->|Регистрация роутеров| Handlers
+    TG_API <-->|Long Polling / Webhook| B_Main
+    B_Main -->|Регистрация роутеров| B_Handlers
+    B_Main -->|Запуск планировщика| Scheduler
     
-    H_Start -->|Проверка авторизации| DB_Module
-    H_Auth -->|Сохранение сессии| DB_Module
-    H_Auth -->|Проверка данных| API_Client
-    H_Tickets -->|Запрос сессии| DB_Module
-    H_Tickets -->|Запрос заявок| API_Client
+    H_Start & H_Auth & H_Tickets -->|Вызов методов| API_Client
+    Scheduler -->|Запрос обновлений & пользователей| API_Client
     
-    Scheduler -->|Периодический опрос по интервалу| API_Client
-    Scheduler -->|Запрос и обновление состояния| DB_Module
-    Scheduler -->|Уведомления о событиях| TG_API
+    %% Бот -> Core API
+    API_Client <-->|REST HTTP (X-Bot-Api-Key)| API_Main
     
-    API_Client <-->|REST HTTP Basic Auth| IS_API
+    API_Main -->|Маршрутизация| API_Routers
     
-    DB_Module <-->|Асинхронные SQL запросы| SQLite_DB
+    R_Auth & R_Tasks & R_Users -->|Бизнес-логика| IS_Client
+    R_Auth & R_Users -->|Работа с сессиями| DB_Module
+    
+    DB_Module <-->|SQLAlchemy Async Query| SQLite_DB
+    IS_Client <-->|REST HTTP Basic Auth| IS_API
 ```
 
 ---
 
 ## 2. Диаграмма потока данных (Data Flow)
 
-Ниже представлена диаграмма, показывающая, как данные передаются между компонентами при выполнении типичных операций:
+Ниже представлены sequence-диаграммы, показывающие, как данные передаются между сервисами при выполнении типичных операций.
 
-### А. Процесс авторизации и сохранения сессии
+### А. Процесс авторизации пользователя
+В новой архитектуре бот не хранит никаких паролей или токенов в своей локальной памяти. Все данные учетной записи отправляются и сохраняются в Core API:
+
 ```mermaid
 sequenceDiagram
     autonumber
     actor User as Пользователь
-    participant H as handlers/auth.py (FSM)
-    participant API as services/api.py
-    participant DB as database/db.py
+    participant BotH as bot/handlers/auth.py
+    participant BotC as bot/services/api_client.py
+    participant CoreM as core-api/app/main.py
+    participant CoreIS as core-api/app/services/intraservice.py
+    participant CoreDB as core-api/app/database/db.py
     participant IS as IntraService API
 
-    User->>H: /login (Ввод логина и пароля)
-    Note over H: Удаление сообщения с паролем для безопасности
-    H->>API: verify_credentials(login, password)
-    API->>IS: HTTP GET /api/user?getcurrentuserinfo=true (Basic Auth)
-    IS-->>API: Response (UserInfo: ID, Name, Email...)
-    Note over API: Кодирование login:password в Base64
-    API-->>H: Возврат (auth_b64, user_id)
-    H->>DB: add_or_update_user(tg_id, login, auth_b64, user_id)
-    DB->>DB: Сохранение / обновление записи в intrabot.db
-    DB-->>H: Подтверждение записи
-    H->>User: Сообщение: Успешная авторизация + Reply-меню
+    User->>BotH: /login (Ввод логина и пароля)
+    Note over BotH: Удаление сообщения с паролем для безопасности
+    BotH->>BotC: login(tg_user_id, login, password)
+    BotC->>CoreM: POST /api/v1/auth/login (X-Bot-Api-Key)
+    Note over CoreM: Проверка X-Bot-Api-Key в deps.verify_api_key
+    CoreM->>CoreIS: verify_credentials(login, password)
+    CoreIS->>IS: HTTP GET /api/user?getcurrentuserinfo=true (Basic Auth)
+    IS-->>CoreIS: Ответ (UserInfo с Id сотрудника)
+    Note over CoreIS: Кодирование login:password в Base64
+    CoreIS-->>CoreM: Возврат (auth_b64, user_id)
+    CoreM->>CoreDB: Сохранение сессии в SQLite (core_api.db)
+    CoreDB-->>CoreM: Подтверждение записи
+    CoreM-->>BotC: Response (status="success", is_user_id=...)
+    BotC-->>BotH: Данные ответа
+    BotH->>User: Сообщение: Авторизация прошла успешно!
 ```
 
-### Б. Фоновый опрос обновлений (Scheduler Loop)
+### Б. Фоновый опрос обновлений планировщиком (Scheduler Loop)
+Планировщик в боте периодически опрашивает Core API, который в свою очередь обращается к IntraService, используя сохраненный Base64 токен:
+
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Sch as services/scheduler.py
-    participant DB as database/db.py
-    participant API as services/api.py
+    participant Sch as bot/services/scheduler.py
+    participant BotC as bot/services/api_client.py
+    participant CoreAPI as core-api/app (FastAPI)
+    participant CoreDB as core-api/app/database/db.py
+    participant CoreIS as core-api/app/services/intraservice.py
     participant IS as IntraService API
     participant TG as Telegram API
 
     loop Каждые POLLING_INTERVAL секунд
-        Sch->>DB: get_all_users()
-        DB-->>Sch: Список активных пользователей (auth_b64, last_task_id, last_check_time)
+        Sch->>BotC: get_all_users()
+        BotC->>CoreAPI: GET /api/v1/users (X-Bot-Api-Key)
+        CoreAPI->>CoreDB: Получить список всех пользователей
+        CoreDB-->>CoreAPI: Данные пользователей (tg_user_id, last_task_id, last_check_time...)
+        CoreAPI-->>BotC: Список пользователей
+        BotC-->>Sch: Список пользователей
         
-        Note over Sch: Для каждого пользователя:
-        
-        %% 1. Новые заявки
-        Sch->>API: get_tasks(CreatedMoreThan = last_check_time)
-        API->>IS: HTTP GET /api/task (Basic Auth)
-        IS-->>API: Список созданных задач
-        API-->>Sch: Данные задач
-        Note over Sch: Фильтрация: Id > last_task_id
-        alt Есть новые задачи
-            Sch->>TG: Отправка сообщения: "Новая заявка #ID"
-        end
-
-        %% 2. Изменения в существующих задачах
-        Sch->>API: get_tasks(ChangedMoreThan = last_check_time, ExecutorIds = user_id)
-        API->>IS: HTTP GET /api/task (Basic Auth)
-        IS-->>API: Список измененных задач
-        API-->>Sch: Данные задач
-        
-        loop Для каждой измененной задачи
-            Sch->>API: get_task_lifetime(task_id)
-            API->>IS: HTTP GET /api/tasklifetime
-            IS-->>API: Список исторических событий задачи
-            API-->>Sch: Список событий
-            Note over Sch: Фильтрация событий по времени (> last_check_time)
-            alt Найден новый комментарий
-                Sch->>TG: Отправка сообщения: "💬 Новый комментарий..."
-            else Найдено изменение статуса
-                Sch->>TG: Отправка сообщения: "🔄 Статус заявки изменен..."
+        loop Для каждого пользователя
+            %% 1. Новые задачи
+            Sch->>BotC: get_tasks(tg_user_id, CreatedMoreThan)
+            BotC->>CoreAPI: GET /api/v1/tasks?tg_user_id=...&CreatedMoreThan=...
+            CoreAPI->>CoreDB: Запрос auth_b64 пользователя
+            CoreDB-->>CoreAPI: auth_b64
+            CoreAPI->>CoreIS: get_tasks(auth_b64, CreatedMoreThan)
+            CoreIS->>IS: GET /api/task (Basic Auth)
+            IS-->>CoreIS: Список созданных задач
+            CoreIS-->>CoreAPI: Задачи
+            CoreAPI-->>BotC: Задачи
+            BotC-->>Sch: Задачи
+            Note over Sch: Фильтрация: Id > last_task_id
+            alt Есть новые задачи
+                Sch->>TG: Отправка сообщения: "🆕 Новая заявка #ID"
+                Sch->>BotC: update_user_state(tg_user_id, last_task_id)
+                BotC->>CoreAPI: PATCH /api/v1/users/{id}/state (last_task_id)
+                CoreAPI->>CoreDB: Сохранение состояния в SQLite
             end
+
+            %% 2. Изменения / комментарии
+            Sch->>BotC: get_tasks(tg_user_id, ChangedMoreThan)
+            BotC->>CoreAPI: GET /api/v1/tasks?tg_user_id=...&ChangedMoreThan=...
+            CoreAPI->>CoreIS: get_tasks (с ExecutorIds)
+            CoreIS->>IS: GET /api/task
+            IS-->>CoreIS: Измененные задачи
+            CoreIS-->>Sch: Задачи
+            
+            loop Для каждой измененной задачи
+                Sch->>BotC: get_task_lifetime(tg_user_id, task_id)
+                BotC->>CoreAPI: GET /api/v1/tasks/{id}/lifetime?tg_user_id=...
+                CoreAPI->>CoreIS: get_task_lifetime(auth_b64, task_id)
+                CoreIS->>IS: GET /api/tasklifetime
+                IS-->>CoreIS: События задачи
+                CoreIS-->>Sch: События
+                Note over Sch: Фильтрация событий по времени
+                alt Есть новые комментарии/статусы
+                    Sch->>TG: Отправка сообщения: "💬 Новый комментарий / 🔄 Статус..."
+                end
+            end
+
+            Sch->>BotC: update_user_state(tg_user_id, last_check_time)
+            BotC->>CoreAPI: PATCH /api/v1/users/{id}/state (last_check_time)
+            CoreAPI->>CoreDB: Сохранить время проверки
         end
-        
-        Sch->>DB: update_user_state(tg_id, last_task_id = max, last_check_time = current_time)
-        DB-->>Sch: Сохранено
     end
 ```

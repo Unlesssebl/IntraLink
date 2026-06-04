@@ -3,7 +3,6 @@ import logging
 from aiogram import Bot, Dispatcher
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config import BOT_TOKEN, POLLING_INTERVAL
-from database.db import init_db
 from handlers import start_help, auth, tickets
 from services.scheduler import check_updates
 
@@ -13,9 +12,6 @@ async def main():
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
     )
-    
-    # 2. Init DB
-    await init_db()
     
     # 3. Init Bot & Dispatcher
     bot = Bot(token=BOT_TOKEN)

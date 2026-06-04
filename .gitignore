@@ -153,4 +153,7 @@ cython_debug/
 # Project specific
 intrabot.db
 intrabot.db-journal
-*.log
+core_api.db
+core_api.db-journal
+/core-api-data/
+*.log

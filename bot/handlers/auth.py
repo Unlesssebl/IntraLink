@@ -2,8 +2,7 @@ from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from services.api import verify_credentials
-from database.db import add_or_update_user, get_user
+from services.api_client import api_client
 
 router = Router()
 
@@ -37,17 +36,14 @@ async def process_password(message: types.Message, state: FSMContext):
     
     msg = await message.answer("⏳ Проверяю учетные данные...")
     
-    # Verify credentials
-    auth_b64, user_id = await verify_credentials(login, password)
+    # Вызываем Core API для авторизации
+    response = await api_client.login(message.from_user.id, login, password)
     
-    if auth_b64:
-        # Save to DB
-        await add_or_update_user(message.from_user.id, login, auth_b64, is_user_id=user_id)
-        
+    if response and response.get("status") == "success":
         # Импортируем клавиатуру из start_help для обновления интерфейса
         from handlers.start_help import get_main_keyboard
         
-        # Редактируем старое сообщение (без клавиатуры, так как edit_text поддерживает только Inline)
+        # Редактируем старое сообщение
         await msg.edit_text("✅ Авторизация прошла успешно! Теперь я буду мониторить ваши заявки.")
         
         # Отправляем новое сообщение с Reply-клавиатурой
@@ -57,18 +53,19 @@ async def process_password(message: types.Message, state: FSMContext):
         )
         await state.clear()
     else:
-        await msg.edit_text("❌ Ошибка авторизации. Попробуйте еще раз.")
+        await msg.edit_text("❌ Ошибка авторизации. Проверьте логин/пароль и попробуйте еще раз.")
         await state.clear()
 
 @router.message(Command("logout"))
 @router.message(F.text == "🚪 Выйти")
 async def cmd_logout(message: types.Message):
-    user = await get_user(message.from_user.id)
+    user = await api_client.get_user(message.from_user.id)
     if not user:
         await message.answer("Вы и так не авторизованы.")
         return
         
-    await add_or_update_user(message.from_user.id, "", "")
+    await api_client.logout(message.from_user.id)
+    
     from handlers.start_help import get_main_keyboard
     await message.answer(
         "Вы успешно вышли из системы. Я больше не буду присылать уведомления по вашему профилю.",
