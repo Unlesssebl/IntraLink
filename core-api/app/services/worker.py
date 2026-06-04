@@ -31,7 +31,6 @@ async def close_redis():
 async def process_user(
     user_id: int,
     redis_client: aioredis.Redis,
-    task_lifetimes_cache: dict,
     base_web_url: str,
     semaphore: asyncio.Semaphore,
     current_time_utc: datetime,
@@ -150,14 +149,7 @@ async def process_user(
                         continue
 
                     task_id = task["Id"]
-                    # Составной ключ кэша во избежание утечки данных между пользователями с разными правами
-                    cache_key = f"{task_id}_{auth_b64}"
-                    if cache_key in task_lifetimes_cache:
-                        lifetime_data = await task_lifetimes_cache[cache_key]
-                    else:
-                        fut = asyncio.create_task(get_task_lifetime(auth_b64, task_id))
-                        task_lifetimes_cache[cache_key] = fut
-                        lifetime_data = await fut
+                    lifetime_data = await get_task_lifetime(auth_b64, task_id)
 
                     events = []
                     if isinstance(lifetime_data, list):
@@ -242,9 +234,6 @@ async def check_updates():
     base_web_url = settings.INTRASERVICE_URL.replace("/api/", "")
     redis = get_redis_client()
     
-    # Кэш истории заявок (task_lifetimes) на уровне одного цикла
-    task_lifetimes_cache = {}
-    
     # Семафор для ограничения одновременных запросов в IntraService
     semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_REQUESTS)
     
@@ -267,7 +256,6 @@ async def check_updates():
                         process_user(
                             user_id=user.tg_user_id,
                             redis_client=redis,
-                            task_lifetimes_cache=task_lifetimes_cache,
                             base_web_url=base_web_url,
                             semaphore=semaphore,
                             current_time_utc=current_time_utc,
