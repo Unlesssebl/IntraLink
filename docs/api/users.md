@@ -37,7 +37,7 @@
 | `is_user_id` | Integer \| null | ID пользователя во внешней системе IntraService. |
 | `last_task_id` | Integer | ID последней обработанной задачи воркером. |
 | `last_comment_id` | Integer | ID последнего обработанного комментария. |
-| `last_check_time` | String \| null | Дата и время последней проверки обновлений (в формате `YYYY-MM-DD HH:MM:SS`). |
+| `last_check_time` | String \| null | Дата и время последней проверки обновлений в формате UTC (в формате `YYYY-MM-DD HH:MM:SS`). |
 
 **Пример JSON-ответа:**
 ```json
