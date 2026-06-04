@@ -78,6 +78,8 @@ async def _make_request(
     if _session is None or _session.closed:
         await init_session()
 
+    assert _session is not None
+
     try:
         async with _session.request(
             method=method,
