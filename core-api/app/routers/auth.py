@@ -75,7 +75,7 @@ async def logout(
     result = await db.execute(query)
     await db.commit()
     
-    if result.rowcount == 0:
+    if getattr(result, "rowcount", 0) == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Пользователь с Telegram ID {tg_user_id} не найден."

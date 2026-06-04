@@ -16,6 +16,7 @@ dependencies = [
     "pydantic-settings>=2.2.0",
     "sqlalchemy>=2.0.30",
     "asyncpg>=0.29.0",
+    "cryptography>=42.0.0",
 ]
 
 [tool.pyright]
