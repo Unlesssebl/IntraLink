@@ -22,3 +22,15 @@ dependencies = [
 [tool.pyright]
 extraPaths = ["bot", "core-api"]
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["core-api/tests"]
+pythonpath = ["core-api"]
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.22.1",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
+]
+

@@ -81,6 +81,9 @@
 │   │   │   └── worker.py      # Фоновый воркер (опрос IntraService и публикация в Redis)
 │   │   ├── config.py          # Загрузка и валидация настроек (Pydantic Settings)
 │   │   └── main.py            # Настройка FastAPI приложения и роутеров
+│   ├── tests/                 # Юнит-тесты (pytest)
+│   │   ├── conftest.py        # Настройки тестов и фикстуры
+│   │   └── test_worker.py     # Тесты фонового воркера (process_user и др.)
 │   └── requirements.txt
 │
 ├── docs/                      # Документация по API IntraService и архитектуре
@@ -173,6 +176,19 @@
    uv pip install -r requirements.txt
    uv run main.py
    ```
+
+---
+
+## 🧪 Тестирование
+
+Для запуска юнит-тестов (написанных с использованием `pytest` и `pytest-asyncio`):
+
+```bash
+# Запустить тесты с детальным выводом
+uv run pytest -v
+```
+
+Конфигурация тестов автоматически изолирует зависимости (базу данных, Redis и API-вызовы в IntraService).
 
 ---
 
