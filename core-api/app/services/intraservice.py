@@ -60,7 +60,7 @@ async def _make_request(
     endpoint: str,
     method: str = "GET",
     auth_b64: Optional[str] = None,
-    auth: Optional[aiohttp.BasicAuth] = None,
+    auth_header: Optional[str] = None,
     params: Optional[Dict[str, Any]] = None,
     json_data: Optional[Dict[str, Any]] = None
 ) -> Optional[Any]:
@@ -73,6 +73,8 @@ async def _make_request(
     if auth_b64:
         decrypted_auth = decrypt_token(auth_b64)
         headers["Authorization"] = f"Basic {decrypted_auth}"
+    elif auth_header:
+        headers["Authorization"] = auth_header
 
     # Ленивая инициализация, если сессия еще не создана
     if _session is None or _session.closed:
@@ -85,7 +87,6 @@ async def _make_request(
             method=method,
             url=url,
             headers=headers,
-            auth=auth,
             params=params,
             json=json_data,
             timeout=aiohttp.ClientTimeout(total=30)
@@ -105,12 +106,12 @@ async def verify_credentials(login: str, password: str) -> Tuple[Optional[str], 
     Проверяет учетные данные пользователя в IntraService.
     Возвращает (auth_b64, user_id) при успехе, иначе (None, None).
     """
-    auth = aiohttp.BasicAuth(login, password)
+    auth_header = aiohttp.encode_basic_auth(login, password)  # type: ignore
     
     response_data = await _make_request(
         endpoint="user",
         method="GET",
-        auth=auth,
+        auth_header=auth_header,
         params={"getcurrentuserinfo": "true"}
     )
     

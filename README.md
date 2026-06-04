@@ -83,6 +83,8 @@
 │   │   └── main.py            # Настройка FastAPI приложения и роутеров
 │   ├── tests/                 # Юнит-тесты (pytest)
 │   │   ├── conftest.py        # Настройки тестов и фикстуры
+│   │   ├── test_crypto.py     # Тесты шифрования/дешифрования токенов
+│   │   ├── test_intraservice.py # Тесты интеграционного клиента IntraService
 │   │   └── test_worker.py     # Тесты фонового воркера (process_user и др.)
 │   └── requirements.txt
 │
