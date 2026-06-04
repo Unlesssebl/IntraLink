@@ -154,4 +154,3 @@ cython_debug/
 intrabot.db
 intrabot.db-journal
 *.log
-/docs
