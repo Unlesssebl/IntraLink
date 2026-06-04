@@ -16,6 +16,7 @@ async def start_redis_listener(bot: Bot):
     """
     logger.info("Запуск фонового слушателя Redis Pub/Sub для канала 'intraservice_events'...")
     while True:
+        redis = None
         try:
             # Инициализация подключения к Redis
             redis = aioredis.from_url(REDIS_URL, decode_responses=True)
@@ -68,5 +69,5 @@ async def start_redis_listener(bot: Bot):
             logger.exception("Сетевая ошибка или сбой подключения к Redis. Повторное подключение через 5 секунд... Ошибка: %s", e)
             await asyncio.sleep(5)
         finally:
-            if 'redis' in locals():
+            if redis is not None:
                 await redis.close() # Гарантированное закрытие соединения
