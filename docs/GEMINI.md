@@ -53,7 +53,7 @@ intraservice-tg-bot/
 ### Авторизация в IntraService
 Вся работа с Basic Auth IntraService инкапсулирована в Core API:
 - Заголовок Basic Auth (`Authorization: Basic <base64(login:password)>`) формируется в Core API на основе учетных данных пользователя, хранящихся в БД.
-- В БД Core API сохраняются `is_login` и `is_password_b64` (зашифрованный токен, содержащий закодированный в base64 пароль). Бот больше не имеет доступа к учетным данным IntraService напрямую.
+- В БД Core API сохраняются `is_login` и `is_password_b64` (зашифрованный токен, содержащий закодированную в base64 пару `login:password`). Бот больше не имеет доступа к учетным данным IntraService напрямую.
 
 ---
 
@@ -118,3 +118,22 @@ intraservice-tg-bot/
 - `postgres` запускает официальный образ `postgres:16-alpine`, хранит данные в именованном томе `postgres_data` и пробрасывает порт `5432`.
 - `core-api` собирается из `./core-api`, зависит от `postgres` (`depends_on`), обращается к базе по строке подключения `postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice`.
 - `bot` собирается из `./bot`, зависит от `core-api` (`depends_on`), обращается к Core API по внутреннему DNS-имени `http://core-api:8000/api/v1`.
+
+---
+
+## 8. Тестирование (Юнит-тесты)
+
+В проекте реализовано полное покрытие ключевых модулей Core API юнит-тестами с использованием фреймворков `pytest` и `pytest-asyncio`. 
+
+Тесты располагаются в директории `core-api/tests/`:
+1. [test_worker.py](file:///f:/Work/Projects/IntraLink/core-api/tests/test_worker.py) — покрывает логику периодического фонового воркера (`process_user`, обработку новых заявок, комментариев, статусов, управление планировщиком APScheduler и клиентом Redis).
+2. [test_intraservice.py](file:///f:/Work/Projects/IntraLink/core-api/tests/test_intraservice.py) — тестирует интеграционный HTTP-клиент IntraService API (парсинг дат в различных форматах, управление `ClientSession` в `aiohttp`, обработку ошибок 401/500, сетевые сбои, авторизацию и эндпоинты `/task`, `/tasklifetime`).
+3. [test_crypto.py](file:///f:/Work/Projects/IntraLink/core-api/tests/test_crypto.py) — проверяет безопасность токенов (шифрование и дешифрование с использованием Fernet, симметричность, поведение при отсутствии ключа шифрования `ENCRYPTION_KEY` и корректность обработки ошибок/незашифрованных токенов).
+
+### Запуск тестов:
+Для запуска тестов используйте виртуальное окружение и команду:
+```bash
+python -m pytest tests/ -v
+```
+
+Все сетевые вызовы (`aiohttp`), база данных (`SQLAlchemy`) и Redis при тестировании изолированы с помощью моков (`unittest.mock.AsyncMock`/`MagicMock`) и фикстур в `conftest.py`, что гарантирует скорость и независимость тестов от реального окружения.
