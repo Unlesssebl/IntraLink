@@ -1,6 +1,6 @@
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
 import redis.asyncio as aioredis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -53,7 +53,8 @@ async def check_updates():
                     if not tg_id or not is_user_id or not auth_b64:
                         continue
 
-                    current_time = datetime.now()
+                    # TODO: Убедитесь, что временной сдвиг (например, +3 часа для MSK/UTC+3) соответствует настройкам сервера IntraService.
+                    current_time = (datetime.now(timezone.utc) + timedelta(hours=3)).replace(tzinfo=None)
                     last_check_time = parse_api_date(last_check_str) if last_check_str else None
 
                     if not last_check_time:
