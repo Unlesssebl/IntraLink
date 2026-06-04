@@ -48,7 +48,7 @@ intraservice-tg-bot/
 Бот общается с Core API по протоколу HTTP REST. Для аутентификации запросов от бота используется pre-shared API-ключ, передаваемый в заголовке:
 `X-Bot-Api-Key: <секретный_ключ>`
 
-Проверка ключа на стороне Core API реализована в виде зависимости FastAPI в [deps.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/core-api/app/routers/deps.py) с использованием безопасного по времени сравнения `secrets.compare_digest` для предотвращения атак по времени (Timing Attacks).
+Проверка ключа на стороне Core API реализована в виде зависимости FastAPI в [deps.py](file:///f:/Work/Projects/IntraLink/core-api/app/routers/deps.py) с использованием безопасного по времени сравнения `secrets.compare_digest` для предотвращения атак по времени (Timing Attacks).
 
 ### Авторизация в IntraService
 Вся работа с Basic Auth IntraService инкапсулирована в Core API:
@@ -61,8 +61,10 @@ intraservice-tg-bot/
 
 - **Base URL Core API:** Значение берется из переменной окружения `CORE_API_URL` в боте (обычно `http://core-api:8000/api/v1` в Docker или `http://127.0.0.1:8000/api/v1` при локальном тестировании).
 - **Формат даты в API:** Даты могут приходить в различных форматах (ISO, UTC, локальные строки).
-  - На стороне Core API и бота используется функция `parse_api_date(date_str)` из [utils.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/bot/utils.py) или [intraservice.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/core-api/app/services/intraservice.py) для безопасного приведения строк к объектам `datetime`.
+  - На стороне Core API и бота используется функция `parse_api_date(date_str)` из [utils.py](file:///f:/Work/Projects/IntraLink/bot/utils.py) или [intraservice.py](file:///f:/Work/Projects/IntraLink/core-api/app/services/intraservice.py) для безопасного приведения строк к объектам `datetime`.
   - При передаче временных фильтров в API (параметры `CreatedMoreThan` или `ChangedMoreThan`) используется формат `YYYY-MM-DD HH:MM`.
+- **Часовые пояса при фоновом опросе (Worker):**
+  - Время последней проверки `last_check_time` приводится к часовому поясу сервера IntraService. В [worker.py](file:///f:/Work/Projects/IntraLink/core-api/app/services/worker.py) текущее время сдвигается на +3 часа (соответствует MSK / UTC+3): `(datetime.now(timezone.utc) + timedelta(hours=3)).replace(tzinfo=None)`. При развертывании в других регионах необходимо настроить данный сдвиг.
 
 ---
 
@@ -87,7 +89,7 @@ intraservice-tg-bot/
 
 ## 5. Структура Базы Данных (SQLAlchemy / PostgreSQL)
 
-База данных PostgreSQL ведется на стороне Core API. Описание полей таблицы `users` ([db.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/core-api/app/database/db.py)):
+База данных PostgreSQL ведется на стороне Core API. Описание полей таблицы `users` ([db.py](file:///f:/Work/Projects/IntraLink/core-api/app/database/db.py)):
 - `tg_user_id` (BigInteger, Primary Key) — ID пользователя в Telegram.
 - `is_login` (String) — Логин пользователя.
 - `is_password_b64` (String) — Зашифрованная с помощью Fernet (`ENCRYPTION_KEY`) строка, содержащая закодированную в Base64 пару `login:password` для отправки Basic Auth.
@@ -101,9 +103,10 @@ intraservice-tg-bot/
 ## 6. Рекомендации по разработке и безопасности
 
 1. **Асинхронность:** Все I/O операции (база данных через SQLAlchemy `AsyncSession` и вызовы к API через `aiohttp`) строго должны быть асинхронными с использованием `await`.
-2. **Безопасность учетных данных:** Вся ответственность за хранение паролей лежит на Core API. Все входящие сообщения с паролями в боте удаляются из истории чата сразу после считывания в [auth.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/bot/handlers/auth.py).
+2. **Безопасность учетных данных:** Вся ответственность за хранение паролей лежит на Core API. Все входящие сообщения с паролями в боте удаляются из истории чата сразу после считывания в [auth.py](file:///f:/Work/Projects/IntraLink/bot/handlers/auth.py).
 3. **API Key:** Запрещено хардкодить `BOT_API_KEY` в коде. При развертывании в продакшене он должен передаваться строго через переменные окружения.
 4. **Порты при тестировании:** При локальной проверке сервисы должны слушать только на localhost (`127.0.0.1`). Слушать на `0.0.0.0` разрешается только внутри Docker-контейнеров.
+5. **Управление соединениями Redis:** При работе с Redis Pub/Sub (например, в фоновом слушателе [redis_listener.py](file:///f:/Work/Projects/IntraLink/bot/services/redis_listener.py)) необходимо гарантировать закрытие ресурсов для избежания утечек соединений. Рекомендуется использовать контекстные менеджеры для Pub/Sub соединений (`async with redis.pubsub() as pubsub:`) и явный вызов `await redis.close()` в блоке `finally`.
 
 ---
 
