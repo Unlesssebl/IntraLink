@@ -7,7 +7,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-def parse_api_date(date_str: str) -> Optional[datetime]:
+def parse_api_date(date_str: Optional[str]) -> Optional[datetime]:
     """
     Парсит дату из API IntraService. 
     Поддерживает форматы: YYYY-MM-DD HH:MM:SS, YYYY-MM-DDTHH:MM:SS, DD.MM.YYYY HH:MM:SS

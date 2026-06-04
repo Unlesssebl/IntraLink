@@ -12,6 +12,13 @@ services:
     ports:
       - "5432:5432"
 
+  redis:
+    image: redis:7-alpine
+    container_name: intraservice_redis
+    restart: always
+    ports:
+      - "6379:6379"
+
   core-api:
     build:
       context: ./core-api
@@ -24,8 +31,10 @@ services:
       - ./core-api/.env
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - postgres
+      - redis
 
   bot:
     build:
@@ -37,8 +46,10 @@ services:
       - ./bot/.env
     environment:
       - CORE_API_URL=http://core-api:8000/api/v1
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - core-api
+      - redis
 
 volumes:
   postgres_data:

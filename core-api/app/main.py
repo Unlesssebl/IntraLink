@@ -22,9 +22,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.exception("Ошибка при инициализации базы данных: %s", e)
     
+    # Запуск фонового воркера опроса и публикации событий
+    from app.services.worker import start_worker, stop_worker
+    try:
+        await start_worker()
+    except Exception as e:
+        logger.exception("Ошибка при запуске фонового воркера: %s", e)
+    
     yield
     # Действия при остановке приложения
     logger.info("Остановка приложения Core API...")
+    try:
+        await stop_worker()
+    except Exception as e:
+        logger.exception("Ошибка при остановке фонового воркера: %s", e)
 
 app = FastAPI(
     title="IntraService Core API Gateway",

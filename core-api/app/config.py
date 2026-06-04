@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = Field("postgresql+asyncpg://postgres:postgres@localhost:5432/intraservice", description="Строка подключения к базе данных")
     BOT_API_KEY: str = Field(None, description="Предоставленный API-ключ для авторизации бота")
     SSL_VERIFY: bool = Field(False, description="Проверка SSL-сертификатов при запросах к IntraService")
+    REDIS_URL: str = Field("redis://localhost:6379/0", description="URL-адрес для подключения к Redis")
+    POLLING_INTERVAL: int = Field(60, description="Интервал периодического опроса в секундах")
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,4 +1,5 @@
 aiogram>=3.0.0
 aiohttp
 python-dotenv
-apscheduler
+redis>=5.0.0
+
