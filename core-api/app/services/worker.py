@@ -29,8 +29,7 @@ async def close_redis():
         redis_client = None
 
 async def process_user(
-    user: User,
-    db: AsyncSessionLocal,
+    user_id: int,
     redis_client: aioredis.Redis,
     task_lifetimes_cache: dict,
     base_web_url: str,
@@ -39,184 +38,201 @@ async def process_user(
     intraservice_tz: ZoneInfo
 ):
     """
-    Обрабатывает обновления для одного пользователя в рамках отдельной сессии БД.
+    Обрабатывает обновления для одного пользователя под семафором и в рамках отдельной сессии БД.
     """
     async with semaphore:
-        try:
-            # Получаем свежий экземпляр пользователя, привязанный к текущей сессии
-            db_user = await db.get(User, user.tg_user_id)
-            if not db_user:
-                return
+        async with AsyncSessionLocal() as db:
+            try:
+                # Получаем свежий экземпляр пользователя, привязанный к текущей сессии
+                db_user = await db.get(User, user_id)
+                if not db_user:
+                    return
 
-            tg_id = db_user.tg_user_id
-            is_user_id = db_user.is_user_id
-            last_task_id = db_user.last_task_id or 0
-            last_check_str = db_user.last_check_time
-            auth_b64 = db_user.is_password_b64
+                tg_id = db_user.tg_user_id
+                is_user_id = db_user.is_user_id
+                last_task_id = db_user.last_task_id or 0
+                last_check_str = db_user.last_check_time
+                auth_b64 = db_user.is_password_b64
 
-            if not tg_id or not is_user_id or not auth_b64:
-                return
+                if not tg_id or not is_user_id or not auth_b64:
+                    return
 
-            # Время в БД сохраняется в UTC. Преобразуем его в локальное время системы IntraService.
-            last_check_time_utc = parse_api_date(last_check_str)
-            if last_check_time_utc:
-                if last_check_time_utc.tzinfo is None:
-                    last_check_time_utc = last_check_time_utc.replace(tzinfo=timezone.utc)
-            else:
-                db_user.last_check_time = current_time_utc.strftime("%Y-%m-%d %H:%M:%S")
-                await db.commit()
-                return
-
-            last_check_time_local = last_check_time_utc.astimezone(intraservice_tz)
-            api_filter_time = last_check_time_local.strftime("%Y-%m-%d %H:%M")
-
-            pending_notifications = []
-
-            # 1. Проверка НОВЫХ заявок
-            tasks_data = await get_tasks(auth_b64, {"CreatedMoreThan": api_filter_time})
-
-            new_tasks = []
-            statuses_map = {}
-            if isinstance(tasks_data, dict):
-                new_tasks = tasks_data.get("Tasks", [])
-                for s in tasks_data.get("Statuses", []):
-                    statuses_map[s.get("Id")] = s.get("Name")
-            elif isinstance(tasks_data, list):
-                new_tasks = tasks_data
-
-            any_new_task = False
-            for task in new_tasks:
-                if task["Id"] > last_task_id:
-                    status_name = task.get("StatusName")
-                    if not status_name and task.get("StatusId") in statuses_map:
-                        status_name = statuses_map[task.get("StatusId")]
-
-                    status_name = status_name or "N/A"
-
-                    message_text = (
-                        f"🆕 <b>Новая заявка #{task['Id']}</b>\n"
-                        f"📝 Тема: {task['Name']}\n"
-                        f"📊 Статус: {status_name}\n"
-                        f"🔗 <a href='{base_web_url}/Task/View/{task['Id']}'>Открыть в браузере</a>"
-                    )
-
-                    payload = {
-                        "event_type": "new_task",
-                        "tg_user_id": tg_id,
-                        "task_id": task["Id"],
-                        "task_name": task["Name"],
-                        "message": message_text
-                    }
-
-                    pending_notifications.append(payload)
-                    last_task_id = max(last_task_id, task["Id"])
-                    any_new_task = True
-
-            if any_new_task:
-                db_user.last_task_id = last_task_id
-
-            # 2. Проверка КОММЕНТАРИЕВ и изменений статуса
-            updated_tasks_data = await get_tasks(auth_b64, {
-                "ChangedMoreThan": api_filter_time,
-                "include": "executorids,status"
-            })
-
-            updated_tasks = []
-            updated_statuses_map = {}
-            if isinstance(updated_tasks_data, dict):
-                updated_tasks = updated_tasks_data.get("Tasks", [])
-                for s in updated_tasks_data.get("Statuses", []):
-                    updated_statuses_map[s.get("Id")] = s.get("Name")
-            elif isinstance(updated_tasks_data, list):
-                updated_tasks = updated_tasks_data
-
-            for task in updated_tasks:
-                executor_ids_str = str(task.get("ExecutorIds") or "")
-                executor_ids = [eid.strip() for eid in executor_ids_str.split(",") if eid.strip()]
-
-                if str(is_user_id) not in executor_ids:
-                    continue
-
-                task_id = task["Id"]
-                # Кэшируем корутину получения истории изменений задачи во избежание N+1 запросов
-                if task_id in task_lifetimes_cache:
-                    lifetime_data = await task_lifetimes_cache[task_id]
+                # Время в БД сохраняется в UTC. Преобразуем его в локальное время системы IntraService.
+                last_check_time_utc = parse_api_date(last_check_str)
+                if last_check_time_utc:
+                    if last_check_time_utc.tzinfo is None:
+                        last_check_time_utc = last_check_time_utc.replace(tzinfo=timezone.utc)
                 else:
-                    fut = asyncio.create_task(get_task_lifetime(auth_b64, task_id))
-                    task_lifetimes_cache[task_id] = fut
-                    lifetime_data = await fut
+                    db_user.last_check_time = current_time_utc.strftime("%Y-%m-%d %H:%M:%S")
+                    await db.commit()
+                    return
 
-                events = []
-                if isinstance(lifetime_data, list):
-                    events = lifetime_data
-                elif isinstance(lifetime_data, dict) and "TaskLifetimes" in lifetime_data:
-                    events = lifetime_data["TaskLifetimes"]
+                last_check_time_local = last_check_time_utc.astimezone(intraservice_tz)
+                api_filter_time = last_check_time_local.strftime("%Y-%m-%d %H:%M")
 
-                if events:
-                    for event in events:
-                        if not isinstance(event, dict):
-                            continue
+                pending_notifications = []
 
-                        raw_date = event.get("Date")
-                        naive_event_date = parse_api_date(raw_date)
+                # 1. Проверка НОВЫХ заявок
+                tasks_data = await get_tasks(auth_b64, {"CreatedMoreThan": api_filter_time})
+                if tasks_data is None:
+                    logger.error(
+                        "Не удалось получить новые заявки для пользователя %s из-за ошибки API. Пропуск итерации.",
+                        tg_id
+                    )
+                    return
 
-                        if naive_event_date:
-                            # Полагаем, что время события отдается в локальном времени IntraService
-                            event_date_local = naive_event_date.replace(tzinfo=intraservice_tz)
+                new_tasks = []
+                statuses_map = {}
+                if isinstance(tasks_data, dict):
+                    new_tasks = tasks_data.get("Tasks", [])
+                    for s in tasks_data.get("Statuses", []):
+                        statuses_map[s.get("Id")] = s.get("Name")
+                elif isinstance(tasks_data, list):
+                    new_tasks = tasks_data
 
-                            if event_date_local > last_check_time_local:
-                                if event.get("Comments"):
-                                    message_text = (
-                                        f"💬 <b>Новый комментарий в заявке #{task['Id']}</b> от <i>{event.get('Editor', 'Unknown')}</i>:\n"
-                                        f"{event['Comments']}\n"
-                                        f"🔗 <a href='{base_web_url}/Task/View/{task['Id']}'>Открыть в браузере</a>"
-                                    )
+                any_new_task = False
+                for task in new_tasks:
+                    if task["Id"] > last_task_id:
+                        status_name = task.get("StatusName")
+                        if not status_name and task.get("StatusId") in statuses_map:
+                            status_name = statuses_map[task.get("StatusId")]
 
-                                    payload = {
-                                        "event_type": "new_comment",
-                                        "tg_user_id": tg_id,
-                                        "task_id": task["Id"],
-                                        "task_name": task["Name"],
-                                        "message": message_text
-                                    }
-                                    pending_notifications.append(payload)
+                        status_name = status_name or "N/A"
 
-                                elif event.get("StatusId"):
-                                    status_name = task.get("StatusName")
-                                    if not status_name and task.get("StatusId") in updated_statuses_map:
-                                        status_name = updated_statuses_map[task.get("StatusId")]
+                        message_text = (
+                            f"🆕 <b>Новая заявка #{task['Id']}</b>\n"
+                            f"📝 Тема: {task['Name']}\n"
+                            f"📊 Статус: {status_name}\n"
+                            f"🔗 <a href='{base_web_url}/Task/View/{task['Id']}'>Открыть в браузере</a>"
+                        )
 
-                                    status_name = status_name or "N/A"
+                        payload = {
+                            "event_type": "new_task",
+                            "tg_user_id": tg_id,
+                            "task_id": task["Id"],
+                            "task_name": task["Name"],
+                            "message": message_text
+                        }
 
-                                    message_text = (
-                                        f"🔄 <b>Статус заявки #{task['Id']} изменен</b> на: {status_name}\n"
-                                        f"🔗 <a href='{base_web_url}/Task/View/{task['Id']}'>Открыть в браузере</a>"
-                                    )
+                        pending_notifications.append(payload)
+                        last_task_id = max(last_task_id, task["Id"])
+                        any_new_task = True
 
-                                    payload = {
-                                        "event_type": "status_change",
-                                        "tg_user_id": tg_id,
-                                        "task_id": task["Id"],
-                                        "task_name": task["Name"],
-                                        "message": message_text
-                                    }
-                                    pending_notifications.append(payload)
+                if any_new_task:
+                    db_user.last_task_id = last_task_id
 
-            # Обновляем время последней проверки на текущее UTC
-            db_user.last_check_time = current_time_utc.strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Фиксируем состояние в БД
-            await db.commit()
+                # 2. Проверка КОММЕНТАРИЕВ и изменений статуса
+                updated_tasks_data = await get_tasks(auth_b64, {
+                    "ChangedMoreThan": api_filter_time,
+                    "include": "executorids,status"
+                })
+                if updated_tasks_data is None:
+                    logger.error(
+                        "Не удалось получить обновленные заявки для пользователя %s из-за ошибки API. Пропуск итерации.",
+                        tg_id
+                    )
+                    return
 
-            # Только если коммит прошел успешно, отправляем сообщения в Redis
-            for payload in pending_notifications:
-                await redis_client.publish("intraservice_events", json.dumps(payload))
+                updated_tasks = []
+                updated_statuses_map = {}
+                if isinstance(updated_tasks_data, dict):
+                    updated_tasks = updated_tasks_data.get("Tasks", [])
+                    for s in updated_tasks_data.get("Statuses", []):
+                        updated_statuses_map[s.get("Id")] = s.get("Name")
+                elif isinstance(updated_tasks_data, list):
+                    updated_tasks = updated_tasks_data
 
-        except Exception as e:
-            logger.error("Ошибка при обработке обновлений для пользователя %s: %s", user.tg_user_id, e)
-            await db.rollback()
-        finally:
-            await db.close()
+                for task in updated_tasks:
+                    executor_ids_str = str(task.get("ExecutorIds") or "")
+                    executor_ids = [eid.strip() for eid in executor_ids_str.split(",") if eid.strip()]
+
+                    if str(is_user_id) not in executor_ids:
+                        continue
+
+                    task_id = task["Id"]
+                    # Составной ключ кэша во избежание утечки данных между пользователями с разными правами
+                    cache_key = f"{task_id}_{auth_b64}"
+                    if cache_key in task_lifetimes_cache:
+                        lifetime_data = await task_lifetimes_cache[cache_key]
+                    else:
+                        fut = asyncio.create_task(get_task_lifetime(auth_b64, task_id))
+                        task_lifetimes_cache[cache_key] = fut
+                        lifetime_data = await fut
+
+                    events = []
+                    if isinstance(lifetime_data, list):
+                        events = lifetime_data
+                    elif isinstance(lifetime_data, dict) and "TaskLifetimes" in lifetime_data:
+                        events = lifetime_data["TaskLifetimes"]
+
+                    if events:
+                        for event in events:
+                            if not isinstance(event, dict):
+                                continue
+
+                            raw_date = event.get("Date")
+                            naive_event_date = parse_api_date(raw_date)
+
+                            if naive_event_date:
+                                event_date_local = naive_event_date.replace(tzinfo=intraservice_tz)
+
+                                if event_date_local > last_check_time_local:
+                                    if event.get("Comments"):
+                                        message_text = (
+                                            f"💬 <b>Новый комментарий в заявке #{task['Id']}</b> от <i>{event.get('Editor', 'Unknown')}</i>:\n"
+                                            f"{event['Comments']}\n"
+                                            f"🔗 <a href='{base_web_url}/Task/View/{task['Id']}'>Открыть в браузере</a>"
+                                        )
+
+                                        payload = {
+                                            "event_type": "new_comment",
+                                            "tg_user_id": tg_id,
+                                            "task_id": task["Id"],
+                                            "task_name": task["Name"],
+                                            "message": message_text
+                                        }
+                                        pending_notifications.append(payload)
+
+                                    elif event.get("StatusId"):
+                                        status_name = task.get("StatusName")
+                                        if not status_name and task.get("StatusId") in updated_statuses_map:
+                                            status_name = updated_statuses_map[task.get("StatusId")]
+
+                                        status_name = status_name or "N/A"
+
+                                        message_text = (
+                                            f"🔄 <b>Статус заявки #{task['Id']} изменен</b> на: {status_name}\n"
+                                            f"🔗 <a href='{base_web_url}/Task/View/{task['Id']}'>Открыть в браузере</a>"
+                                        )
+
+                                        payload = {
+                                            "event_type": "status_change",
+                                            "tg_user_id": tg_id,
+                                            "task_id": task["Id"],
+                                            "task_name": task["Name"],
+                                            "message": message_text
+                                        }
+                                        pending_notifications.append(payload)
+
+                # Обновляем время последней проверки на текущее UTC
+                db_user.last_check_time = current_time_utc.strftime("%Y-%m-%d %H:%M:%S")
+                
+                # Фиксируем состояние в БД
+                await db.commit()
+
+                # Только если коммит прошел успешно, отправляем сообщения в Redis
+                for payload in pending_notifications:
+                    try:
+                        await redis_client.publish("intraservice_events", json.dumps(payload))
+                    except Exception as pub_err:
+                        logger.error(
+                            "Не удалось опубликовать уведомление в Redis для пользователя %s, событие %s, заявка %s: %s. Payload: %s",
+                            tg_id, payload.get("event_type"), payload.get("task_id"), pub_err, json.dumps(payload)
+                        )
+
+            except Exception as e:
+                logger.error("Ошибка при обработке обновлений для пользователя %s: %s", user_id, e)
+                await db.rollback()
 
 async def check_updates():
     """
@@ -246,12 +262,10 @@ async def check_updates():
                 tasks = []
                 for row in partition:
                     user = row[0]
-                    # Каждому process_user передается собственная сессия
-                    user_db = AsyncSessionLocal()
+                    # Передаем только tg_user_id. Сессия будет открыта внутри process_user под семафором
                     tasks.append(
                         process_user(
-                            user=user,
-                            db=user_db,
+                            user_id=user.tg_user_id,
                             redis_client=redis,
                             task_lifetimes_cache=task_lifetimes_cache,
                             base_web_url=base_web_url,
