@@ -34,6 +34,28 @@ def parse_api_date(date_str: Optional[str]) -> Optional[datetime]:
     logger.warning("Не удалось спарсить дату: %s", date_str)
     return None
 
+_session: Optional[aiohttp.ClientSession] = None
+
+async def init_session() -> None:
+    """
+    Инициализирует глобальную сессию aiohttp.ClientSession.
+    """
+    global _session
+    if _session is None or _session.closed:
+        # TODO(security): Проверить SSL_VERIFY в соответствии с правилами безопасной разработки.
+        # Внутренние домены могут требовать отключения проверки SSL в тестовой среде.
+        connector = aiohttp.TCPConnector(ssl=settings.SSL_VERIFY)
+        _session = aiohttp.ClientSession(connector=connector)
+
+async def close_session() -> None:
+    """
+    Закрывает глобальную сессию aiohttp.ClientSession.
+    """
+    global _session
+    if _session is not None and not _session.closed:
+        await _session.close()
+        _session = None
+
 async def _make_request(
     endpoint: str,
     method: str = "GET",
@@ -52,26 +74,26 @@ async def _make_request(
         decrypted_auth = decrypt_token(auth_b64)
         headers["Authorization"] = f"Basic {decrypted_auth}"
 
-    # TODO(security): Проверить SSL_VERIFY в соответствии с правилами безопасной разработки.
-    # Внутренние домены могут требовать отключения проверки SSL в тестовой среде.
-    connector = aiohttp.TCPConnector(ssl=settings.SSL_VERIFY)
+    # Ленивая инициализация, если сессия еще не создана
+    if _session is None or _session.closed:
+        await init_session()
+
     try:
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.request(
-                method=method,
-                url=url,
-                headers=headers,
-                auth=auth,
-                params=params,
-                json=json_data,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                if response.status == 200:
-                    return await response.json()
-                else:
-                    text = await response.text()
-                    logger.error("Ошибка API [%d] для %s: %s", response.status, endpoint, text)
-                    return None
+        async with _session.request(
+            method=method,
+            url=url,
+            headers=headers,
+            auth=auth,
+            params=params,
+            json=json_data,
+            timeout=aiohttp.ClientTimeout(total=30)
+        ) as response:
+            if response.status == 200:
+                return await response.json()
+            else:
+                text = await response.text()
+                logger.error("Ошибка API [%d] для %s: %s", response.status, endpoint, text)
+                return None
     except Exception as e:
         logger.exception("Сетевая ошибка при запросе к API %s: %s", endpoint, e)
         return None

@@ -12,6 +12,16 @@ class CoreAPIClient:
             "Content-Type": "application/json",
             "X-Bot-Api-Key": api_key
         }
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     async def _make_request(
         self,
@@ -24,8 +34,8 @@ class CoreAPIClient:
         
         # TODO(security): Проверить SSL_VERIFY, если требуется. Используем системные настройки по умолчанию.
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.request(
+            session = await self.get_session()
+            async with session.request(
                     method=method,
                     url=url,
                     headers=self.headers,
