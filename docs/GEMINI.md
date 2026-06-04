@@ -24,7 +24,7 @@ intraservice-tg-bot/
 ├── core-api/                    # Код Core API Service
 │   ├── app/
 │   │   ├── database/
-│   │   │   └── db.py            # База данных SQLAlchemy (async SQLite)
+│   │   │   └── db.py            # База данных SQLAlchemy (async PostgreSQL)
 │   │   ├── models/
 │   │   │   └── schemas.py       # Pydantic-схемы запросов и ответов
 │   │   ├── routers/             # Эндпоинты API (auth, tasks, users)
@@ -36,7 +36,7 @@ intraservice-tg-bot/
 │   └── requirements.txt
 │
 ├── docs/                        # Документация по проекту
-└── docker-compose.yml           # Оркестрация сервисов (bot + core-api + volume)
+└── docker-compose.yml           # Оркестрация сервисов (bot + core-api + postgres + volume)
 ```
 
 ---
@@ -85,9 +85,9 @@ intraservice-tg-bot/
 
 ---
 
-## 5. Структура Базы Данных (SQLAlchemy / SQLite)
+## 5. Структура Базы Данных (SQLAlchemy / PostgreSQL)
 
-База данных SQLite ведется исключительно на стороне Core API. Описание полей таблицы `users` ([db.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/core-api/app/database/db.py)):
+База данных PostgreSQL ведется на стороне Core API. Описание полей таблицы `users` ([db.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/core-api/app/database/db.py)):
 - `tg_user_id` (BigInteger, Primary Key) — ID пользователя в Telegram.
 - `is_login` (String) — Логин пользователя.
 - `is_password_b64` (String) — Закодированная в Base64 пара `login:password` для отправки Basic Auth.
@@ -101,7 +101,7 @@ intraservice-tg-bot/
 ## 6. Рекомендации по разработке и безопасности
 
 1. **Асинхронность:** Все I/O операции (база данных через SQLAlchemy `AsyncSession` и вызовы к API через `aiohttp`) строго должны быть асинхронными с использованием `await`.
-2. **Безопасность учетных данных:** Вся ответственность за хранение паролей лежит на Core API. В дальнейшем планируется переход на шифрование учетных записей в SQLite (или Postgres). Все входящие сообщения с паролями в боте удаляются из истории чата сразу после считывания в [auth.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/bot/handlers/auth.py).
+2. **Безопасность учетных данных:** Вся ответственность за хранение паролей лежит на Core API. Все входящие сообщения с паролями в боте удаляются из истории чата сразу после считывания в [auth.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/bot/handlers/auth.py).
 3. **API Key:** Запрещено хардкодить `BOT_API_KEY` в коде. При развертывании в продакшене он должен передаваться строго через переменные окружения.
 4. **Порты при тестировании:** При локальной проверке сервисы должны слушать только на localhost (`127.0.0.1`). Слушать на `0.0.0.0` разрешается только внутри Docker-контейнеров.
 
@@ -109,6 +109,7 @@ intraservice-tg-bot/
 
 ## 7. Контейнеризация и Docker Compose
 
-Файл `docker-compose.yml` описывает запуск двух сервисов:
-- `core-api` собирается из `./core-api`, публикует порт `8000` наружу, монтирует том `./core-api-data` для сохранения базы данных `core_api.db`.
+Файл `docker-compose.yml` описывает запуск трех сервисов:
+- `postgres` запускает официальный образ `postgres:16-alpine`, хранит данные в именованном томе `postgres_data` и пробрасывает порт `5432`.
+- `core-api` собирается из `./core-api`, зависит от `postgres` (`depends_on`), обращается к базе по строке подключения `postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice`.
 - `bot` собирается из `./bot`, зависит от `core-api` (`depends_on`), обращается к Core API по внутреннему DNS-имени `http://core-api:8000/api/v1`.

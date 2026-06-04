@@ -1,4 +1,17 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: intraservice_postgres
+    restart: always
+    environment:
+      - POSTGRES_DB=intraservice
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
   core-api:
     build:
       context: ./core-api
@@ -10,9 +23,9 @@ services:
     env_file:
       - ./core-api/.env
     environment:
-      - DATABASE_URL=sqlite+aiosqlite:///./data/core_api.db
-    volumes:
-      - ./core-api-data:/app/data
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
+    depends_on:
+      - postgres
 
   bot:
     build:
@@ -26,4 +39,8 @@ services:
       - CORE_API_URL=http://core-api:8000/api/v1
     depends_on:
       - core-api
+
+volumes:
+  postgres_data:
+
 

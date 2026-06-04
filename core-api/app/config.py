@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):
     INTRASERVICE_URL: str = Field(..., description="URL-адрес API IntraService")
-    DATABASE_URL: str = Field("sqlite+aiosqlite:///./core_api.db", description="Строка подключения к базе данных")
+    DATABASE_URL: str = Field("postgresql+asyncpg://postgres:postgres@localhost:5432/intraservice", description="Строка подключения к базе данных")
     BOT_API_KEY: str = Field(None, description="Предоставленный API-ключ для авторизации бота")
     SSL_VERIFY: bool = Field(False, description="Проверка SSL-сертификатов при запросах к IntraService")
 

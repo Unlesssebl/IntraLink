@@ -57,8 +57,11 @@ flowchart TB
         subgraph API_Services ["Службы & База данных"]
             IS_Client["intraservice.py<br/>(aiohttp клиент)"]:::serviceStyle
             DB_Module["db.py<br/>(SQLAlchemy async)"]:::dbStyle
-            SQLite_DB[("sqlite core_api.db")]:::dbStyle
         end
+    end
+
+    subgraph DB_Layer ["Слой данных"]
+        Postgres_DB[("database PostgreSQL")]:::dbStyle
     end
 
     subgraph External_Systems ["Внешние системы"]
@@ -82,7 +85,7 @@ flowchart TB
     R_Auth & R_Tasks & R_Users -->|Бизнес-логика| IS_Client
     R_Auth & R_Users -->|Работа с сессиями| DB_Module
     
-    DB_Module <-->|SQLAlchemy Async Query| SQLite_DB
+    DB_Module <-->|SQLAlchemy Async Connection| Postgres_DB
     IS_Client <-->|REST HTTP Basic Auth| IS_API
 ```
 
@@ -116,7 +119,7 @@ sequenceDiagram
     IS-->>CoreIS: Ответ (UserInfo с Id сотрудника)
     Note over CoreIS: Кодирование login:password в Base64
     CoreIS-->>CoreM: Возврат (auth_b64, user_id)
-    CoreM->>CoreDB: Сохранение сессии в SQLite (core_api.db)
+    CoreM->>CoreDB: Сохранение сессии в PostgreSQL
     CoreDB-->>CoreM: Подтверждение записи
     CoreM-->>BotC: Response (status="success", is_user_id=...)
     BotC-->>BotH: Данные ответа
@@ -162,7 +165,7 @@ sequenceDiagram
                 Sch->>TG: Отправка сообщения: "🆕 Новая заявка #ID"
                 Sch->>BotC: update_user_state(tg_user_id, last_task_id)
                 BotC->>CoreAPI: PATCH /api/v1/users/{id}/state (last_task_id)
-                CoreAPI->>CoreDB: Сохранение состояния в SQLite
+                CoreAPI->>CoreDB: Сохранение состояния в PostgreSQL
             end
 
             %% 2. Изменения / комментарии
@@ -188,7 +191,7 @@ sequenceDiagram
 
             Sch->>BotC: update_user_state(tg_user_id, last_check_time)
             BotC->>CoreAPI: PATCH /api/v1/users/{id}/state (last_check_time)
-            CoreAPI->>CoreDB: Сохранить время проверки
+            CoreAPI->>CoreDB: Сохранить время проверки в PostgreSQL
         end
     end
 ```

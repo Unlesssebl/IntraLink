@@ -7,15 +7,13 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from app.config import settings
 
 # Настройка асинхронного движка SQLAlchemy
-# Для SQLite нам нужно отключить проверку в том же потоке
-connect_args = {}
+engine_kwargs = {"echo": False}
 if settings.DATABASE_URL.startswith("sqlite"):
-    connect_args["check_same_thread"] = False
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    connect_args=connect_args,
-    echo=False
+    **engine_kwargs
 )
 
 AsyncSessionLocal = async_sessionmaker(
