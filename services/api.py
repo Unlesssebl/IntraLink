@@ -2,7 +2,7 @@ from datetime import datetime
 import aiohttp
 import base64
 import logging
-from config import INTRAService_URL
+from config import INTRAService_URL, INTRAService_PROXY
 
 # Disable SSL verification for internal domains if needed
 SSL_VERIFY = False
@@ -46,17 +46,23 @@ async def _make_request(endpoint, method="GET", auth_b64=None, auth=None, params
         headers["Authorization"] = f"Basic {auth_b64}"
 
     connector = aiohttp.TCPConnector(ssl=SSL_VERIFY)
+    
+    request_kwargs = {
+        "method": method,
+        "url": url,
+        "headers": headers,
+        "auth": auth,
+        "params": params,
+        "json": json_data,
+        "timeout": aiohttp.ClientTimeout(total=30)
+    }
+    
+    if INTRAService_PROXY:
+        request_kwargs["proxy"] = INTRAService_PROXY
+
     try:
         async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.request(
-                method=method,
-                url=url,
-                headers=headers,
-                auth=auth,
-                params=params,
-                json=json_data,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
+            async with session.request(**request_kwargs) as response:
                 if response.status == 200:
                     return await response.json()
                 else:

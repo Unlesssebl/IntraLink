@@ -2,7 +2,7 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from config import BOT_TOKEN, POLLING_INTERVAL
+from config import BOT_TOKEN, POLLING_INTERVAL, TELEGRAM_PROXY
 from database.db import init_db
 from handlers import start_help, auth, tickets
 from services.scheduler import check_updates
@@ -18,7 +18,13 @@ async def main():
     await init_db()
     
     # 3. Init Bot & Dispatcher
-    bot = Bot(token=BOT_TOKEN)
+    session = None
+    if TELEGRAM_PROXY:
+        from aiogram.client.session.aiohttp import AiohttpSession
+        session = AiohttpSession(proxy=TELEGRAM_PROXY)
+        logging.info("Bot is using proxy: %s", TELEGRAM_PROXY)
+        
+    bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
     
     # 4. Include routers

@@ -1,0 +1,19 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: intraservice_tg_bot
+    restart: always
+    env_file:
+      - .env
+    environment:
+      # Указываем путь к базе данных внутри контейнера в примонтированной папке
+      - DB_PATH=/app/data/intrabot.db
+    dns:
+      # Используем публичные DNS для обхода возможных проблем с резолвом имен через VPN хоста
+      - 8.8.8.8
+      - 1.1.1.1
+    volumes:
+      # Монтируем локальную директорию data для сохранения базы данных
+      - ./data:/app/data

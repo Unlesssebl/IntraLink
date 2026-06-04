@@ -45,3 +45,10 @@
 2. **Безопасность:** Пароли в БД хранятся в Base64. В будущих версиях требуется внедрить симметричное шифрование. Сообщения с паролями от пользователя в Telegram-чате должны удаляться сразу после считывания (уже реализовано в `handlers/auth.py`).
 3. **SSL Верификация:** Переменная `SSL_VERIFY = False` в `api.py` отключает проверку сертификатов для совместимости с внутренними доменами. В продакшн-окружении её значение следует вынести в конфигурацию.
 
+## 7. Контейнеризация и обход VPN (Docker)
+1. **База данных в контейнере:** Для сохранения базы данных при перезапуске контейнеров настроен маппинг тома `./data:/app/data` в [docker-compose.yml](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/docker-compose.yml). В [config.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/config.py) добавлена переменная `DB_PATH`, которая в контейнере выставляется в `/app/data/intrabot.db`. В [database/db.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/database/db.py) добавлено автоматическое создание родительской папки для БД.
+2. **Сбои DNS при VPN:** В файле `docker-compose.yml` явно заданы DNS-серверы `8.8.8.8` и `1.1.1.1`. Это исключает проблемы с сетевыми именами (DNS Resolution) внутри контейнера, которые возникают при включенном VPN на Windows.
+3. **Проксирование для обхода VPN:**
+   - Для запросов к Telegram API добавлена поддержка прокси `TELEGRAM_PROXY` через `AiohttpSession` в [main.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/main.py).
+   - Для запросов к API IntraService добавлена поддержка прокси `INTRAService_PROXY` в `_make_request` в [api.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/services/api.py).
+   - Использование `host.docker.internal` в качестве хоста прокси позволяет контейнеру использовать прокси-сервер, запущенный на хост-машине Windows.

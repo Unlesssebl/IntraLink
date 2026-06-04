@@ -1,9 +1,12 @@
 import aiosqlite
 import os
-
-DB_PATH = "intrabot.db"
+from config import DB_PATH
 
 async def init_db():
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir, exist_ok=True)
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
