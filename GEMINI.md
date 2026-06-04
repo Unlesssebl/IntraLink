@@ -86,7 +86,7 @@ python main.py
 ---
 
 ## TODOs & Future Improvements
-- [ ] **Security**: Implement encryption for stored passwords in the SQLite database.
+- [x] **Security**: Implement encryption for stored passwords in the database.
 - [ ] **Scalability**: Replace `asyncio.create_task` polling with a more robust task queue (e.g., Celery or APScheduler) for many users.
 - [ ] **Logging**: Implement structured logging and error reporting (e.g., Sentry).
 - [ ] **Attachments**: Add support for viewing/uploading files to tickets.

@@ -4,6 +4,7 @@ import base64
 import logging
 from typing import Optional, Dict, Any, List, Tuple
 from app.config import settings
+from app.services.crypto import decrypt_token
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,8 @@ async def _make_request(
     
     headers = {"Content-Type": "application/json"}
     if auth_b64:
-        headers["Authorization"] = f"Basic {auth_b64}"
+        decrypted_auth = decrypt_token(auth_b64)
+        headers["Authorization"] = f"Basic {decrypted_auth}"
 
     # TODO(security): Проверить SSL_VERIFY в соответствии с правилами безопасной разработки.
     # Внутренние домены могут требовать отключения проверки SSL в тестовой среде.

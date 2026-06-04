@@ -52,7 +52,7 @@ intraservice-tg-bot/
 ### Авторизация в IntraService
 Вся работа с Basic Auth IntraService инкапсулирована в Core API:
 - Заголовок Basic Auth (`Authorization: Basic <base64(login:password)>`) формируется в Core API на основе учетных данных пользователя, хранящихся в БД.
-- В БД Core API сохраняются `is_login` и `is_password_b64` (закодированный в base64 пароль). Бот больше не имеет доступа к учетным данным IntraService напрямую.
+- В БД Core API сохраняются `is_login` и `is_password_b64` (зашифрованный токен, содержащий закодированный в base64 пароль). Бот больше не имеет доступа к учетным данным IntraService напрямую.
 
 ---
 
@@ -90,7 +90,7 @@ intraservice-tg-bot/
 База данных PostgreSQL ведется на стороне Core API. Описание полей таблицы `users` ([db.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/core-api/app/database/db.py)):
 - `tg_user_id` (BigInteger, Primary Key) — ID пользователя в Telegram.
 - `is_login` (String) — Логин пользователя.
-- `is_password_b64` (String) — Закодированная в Base64 пара `login:password` для отправки Basic Auth.
+- `is_password_b64` (String) — Зашифрованная с помощью Fernet (`ENCRYPTION_KEY`) строка, содержащая закодированную в Base64 пару `login:password` для отправки Basic Auth.
 - `is_user_id` (Integer) — Внутренний ID пользователя в IntraService.
 - `last_task_id` (Integer) — ID последней обработанной задачи (для предотвращения дублирования уведомлений).
 - `last_comment_id` (Integer) — ID последнего отправленного комментария.
