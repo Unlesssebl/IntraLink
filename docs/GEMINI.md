@@ -6,17 +6,17 @@
 
 ## 1. Обзор новой архитектуры монорепо
 
-Проект разделен на два независимых сервиса, взаимодействующих по сети:
-1. **Core API Service (`core-api/`)** — FastAPI-микросервис, выступающий шлюзом к API IntraService. Он отвечает за хранение учетных данных пользователей, сессии авторизации и непосредственно отправляет запросы в IntraService.
-2. **Telegram Bot Service (`bot/`)** — aiogram 3.x бот. Он отвечает исключительно за интерфейс взаимодействия с пользователем в Telegram и периодический опрос обновлений через планировщик.
+Проект разделен на два независимых сервиса, взаимодействующих через REST API и шину сообщений Redis Pub/Sub:
+1. **Core API Service (`core-api/`)** — FastAPI-микросервис, выступающий шлюзом к API IntraService. Он отвечает за хранение учетных данных пользователей, сессии авторизации, фоновый опрос IntraService API через встроенный **Worker** (`APScheduler`) и публикацию событий в Redis.
+2. **Telegram Bot Service (`bot/`)** — aiogram 3.x бот. Он отвечает за интерфейс взаимодействия с пользователем в Telegram, а также слушает события из Redis Pub/Sub через асинхронный **Redis Listener** и отправляет уведомления пользователям.
 
 ```
 intraservice-tg-bot/
 ├── bot/                         # Код Telegram-бота
 │   ├── handlers/                # Хэндлеры команд (/start, /login, /mytickets)
 │   ├── services/
-│   │   ├── api_client.py        # Клиент для связи с Core API
-│   │   └── scheduler.py         # Опрос Core API для отправки уведомлений
+│   │   ├── api_client.py        # REST-клиент для связи с Core API
+│   │   └── redis_listener.py    # Подписка на Redis Pub/Sub для отправки уведомлений
 │   ├── utils.py                 # Общие утилиты бота
 │   ├── config.py                # Конфигурация бота
 │   └── main.py                  # Точка входа бота
@@ -29,14 +29,15 @@ intraservice-tg-bot/
 │   │   │   └── schemas.py       # Pydantic-схемы запросов и ответов
 │   │   ├── routers/             # Эндпоинты API (auth, tasks, users)
 │   │   ├── services/
-│   │   │   └── intraservice.py  # Прямой HTTP-клиент к IntraService API
+│   │   │   ├── intraservice.py  # Прямой HTTP-клиент к IntraService API
+│   │   │   └── worker.py        # Фоновый воркер (APScheduler + Redis Publisher)
 │   │   ├── config.py            # Конфигурация Core API
 │   │   └── main.py              # Точка входа FastAPI
 │   ├── Dockerfile
 │   └── requirements.txt
 │
 ├── docs/                        # Документация по проекту
-└── docker-compose.yml           # Оркестрация сервисов (bot + core-api + postgres + volume)
+└── docker-compose.yml           # Оркестрация сервисов (bot + core-api + postgres + redis)
 ```
 
 ---
@@ -79,9 +80,8 @@ intraservice-tg-bot/
 - `GET /api/v1/statuses` — Получает справочник статусов IntraService для сопоставления.
 
 ### Пользователи и мониторинг
-- `GET /api/v1/users` — Возвращает список всех зарегистрированных пользователей. Используется планировщиком бота для периодического опроса.
 - `GET /api/v1/users/{tg_user_id}` — Возвращает профиль конкретного пользователя (логин, ID в IntraService, состояние поллинга).
-- `PATCH /api/v1/users/{tg_user_id}/state` — Обновляет состояние опроса (`last_task_id`, `last_comment_id`, `last_check_time`).
+
 
 ---
 
