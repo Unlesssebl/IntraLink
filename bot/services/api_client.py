@@ -67,7 +67,7 @@ class CoreAPIClient:
             params={"tg_user_id": tg_user_id}
         )
 
-    async def get_tasks(self, tg_user_id: int, filters: Optional[Dict[str, Any]] = None) -> Optional[List[Dict[str, Any]]]:
+    async def get_tasks(self, tg_user_id: int, filters: Optional[Dict[str, Any]] = None) -> Optional[Any]:
         """
         Получает список задач для пользователя по tg_user_id.
         """

@@ -9,8 +9,6 @@ BOT_API_KEY = os.getenv("BOT_API_KEY", "test_api_key_12345")
 INTRAService_URL = os.getenv("INTRAService_URL", "https://servicedesk.corporate.loc/api/")
 POLLING_INTERVAL = int(os.getenv("POLLING_INTERVAL", 10))
 
-# Путь к БД для FSM/состояний (хотя aiosqlite убирается, SQLite может оставаться для локального FSM или мы перейдем на MemoryStorage)
-DB_PATH = os.getenv("DB_PATH", "intrabot.db")
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")

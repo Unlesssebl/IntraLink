@@ -11,7 +11,7 @@ router = APIRouter(
     dependencies=[Depends(verify_api_key)]
 )
 
-@router.get("/tasks", response_model=List[Dict[str, Any]], status_code=status.HTTP_200_OK)
+@router.get("/tasks", response_model=Any, status_code=status.HTTP_200_OK)
 async def get_tasks(
     request: Request,
     user: User = Depends(get_user_by_tg_id)

@@ -95,7 +95,7 @@ async def verify_credentials(login: str, password: str) -> Tuple[Optional[str], 
         return auth_b64, user_id
     return None, None
 
-async def get_tasks(auth_b64: str, filters: Optional[Dict[str, Any]] = None) -> Optional[List[Dict[str, Any]]]:
+async def get_tasks(auth_b64: str, filters: Optional[Dict[str, Any]] = None) -> Optional[Any]:
     """
     Получает список задач из IntraService.
     """

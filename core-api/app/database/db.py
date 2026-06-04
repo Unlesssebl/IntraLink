@@ -7,13 +7,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from app.config import settings
 
 # Настройка асинхронного движка SQLAlchemy
-engine_kwargs = {"echo": False}
-if settings.DATABASE_URL.startswith("sqlite"):
-    engine_kwargs["connect_args"] = {"check_same_thread": False}
-
 engine = create_async_engine(
     settings.DATABASE_URL,
-    **engine_kwargs
+    echo=False
 )
 
 AsyncSessionLocal = async_sessionmaker(
