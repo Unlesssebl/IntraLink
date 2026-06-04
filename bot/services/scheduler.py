@@ -1,11 +1,29 @@
 import logging
 from datetime import datetime
 from aiogram import Bot
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 from services.api_client import api_client
 from utils import parse_api_date
 from config import INTRAService_URL
 
 logger = logging.getLogger(__name__)
+
+class UserDeactivated(Exception):
+    pass
+
+async def send_notification(bot: Bot, tg_id: int, text: str, parse_mode: str = "HTML"):
+    try:
+        await bot.send_message(tg_id, text, parse_mode=parse_mode)
+    except TelegramForbiddenError:
+        logger.warning("Бот заблокирован пользователем %s. Разлогиниваем.", tg_id)
+        await api_client.logout(tg_id)
+        raise UserDeactivated()
+    except TelegramBadRequest as e:
+        if "chat not found" in str(e).lower():
+            logger.warning("Чат с пользователем %s не найден. Разлогиниваем.", tg_id)
+            await api_client.logout(tg_id)
+            raise UserDeactivated()
+        raise
 
 async def check_updates(bot: Bot):
     """
@@ -61,7 +79,8 @@ async def check_updates(bot: Bot):
                         
                         status_name = status_name or "N/A"
                         
-                        await bot.send_message(
+                        await send_notification(
+                            bot,
                             tg_id, 
                             f"🆕 <b>Новая заявка #{task['Id']}</b>\n"
                             f"📝 Тема: {task['Name']}\n"
@@ -115,7 +134,8 @@ async def check_updates(bot: Bot):
                             
                             if event_date and event_date > last_check_time:
                                 if event.get("Comments"):
-                                    await bot.send_message(
+                                    await send_notification(
+                                        bot,
                                         tg_id, 
                                         f"💬 <b>Новый комментарий в заявке #{task['Id']}</b> от <i>{event.get('Editor', 'Unknown')}</i>:\n{event['Comments']}\n"
                                         f"🔗 <a href='{base_web_url}/Task/View/{task['Id']}'>Открыть в браузере</a>",
@@ -128,7 +148,8 @@ async def check_updates(bot: Bot):
                                     
                                     status_name = status_name or "N/A"
                                     
-                                    await bot.send_message(
+                                    await send_notification(
+                                        bot,
                                         tg_id, 
                                         f"🔄 <b>Статус заявки #{task['Id']} изменен</b> на: {status_name}\n"
                                         f"🔗 <a href='{base_web_url}/Task/View/{task['Id']}'>Открыть в браузере</a>",
@@ -140,6 +161,8 @@ async def check_updates(bot: Bot):
                     last_check_time=current_time.strftime("%Y-%m-%d %H:%M:%S")
                 )
                 
+            except UserDeactivated:
+                continue
             except Exception as e:
                 logger.error("Ошибка при обработке обновлений для пользователя %s: %s", tg_id, e)
         
