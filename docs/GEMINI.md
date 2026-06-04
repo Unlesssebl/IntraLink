@@ -64,7 +64,7 @@ intraservice-tg-bot/
   - На стороне Core API и бота используется функция `parse_api_date(date_str)` из [utils.py](file:///f:/Work/Projects/IntraLink/bot/utils.py) или [intraservice.py](file:///f:/Work/Projects/IntraLink/core-api/app/services/intraservice.py) для безопасного приведения строк к объектам `datetime`.
   - При передаче временных фильтров в API (параметры `CreatedMoreThan` или `ChangedMoreThan`) используется формат `YYYY-MM-DD HH:MM`.
 - **Часовые пояса при фоновом опросе (Worker):**
-  - Время последней проверки `last_check_time` приводится к часовому поясу сервера IntraService. В [worker.py](file:///f:/Work/Projects/IntraLink/core-api/app/services/worker.py) текущее время сдвигается на +3 часа (соответствует MSK / UTC+3): `(datetime.now(timezone.utc) + timedelta(hours=3)).replace(tzinfo=None)`. При развертывании в других регионах необходимо настроить данный сдвиг.
+  - Время последней проверки `last_check_time` сохраняется в базе данных в формате UTC. Перед выполнением запросов к API IntraService (параметры `CreatedMoreThan` и `ChangedMoreThan`), это время конвертируется в локальный часовой пояс системы IntraService на основе переменной настроек `settings.INTRASERVICE_TZ` (по умолчанию `"Europe/Moscow"`) с использованием библиотеки `zoneinfo`. Аналогично, даты изменений событий из истории заявок (`event_date`) также локализуются в часовой пояс системы IntraService перед сравнением.
 
 ---
 
