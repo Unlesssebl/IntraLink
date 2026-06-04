@@ -7,10 +7,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 INTRAService_URL = os.getenv("INTRAService_URL")
 POLLING_INTERVAL = int(os.getenv("POLLING_INTERVAL", 10))
 
-# Путь к БД и настройки прокси
+# Путь к БД
 DB_PATH = os.getenv("DB_PATH", "intrabot.db")
-TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY")
-INTRAService_PROXY = os.getenv("INTRAService_PROXY")
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")
