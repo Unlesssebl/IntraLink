@@ -42,8 +42,8 @@ X-Bot-Api-Key: your-super-secret-bot-api-key
 
 ## Разделы документации
 
-1. 🔐 [Аутентификация](file:///f:/Work/Projects/IntraLink/docs/api/auth.md) — вход (`/login`) и выход (`/logout`).
-2. 👤 [Пользователи](file:///f:/Work/Projects/IntraLink/docs/api/users.md) — получение состояния пользователя.
-3. 📋 [Задачи и статусы](file:///f:/Work/Projects/IntraLink/docs/api/tasks.md) — список задач, история изменений и справочники.
-4. 🛠️ [Системные эндпоинты](file:///f:/Work/Projects/IntraLink/docs/api/system.md) — проверка статуса сервиса `/health`.
-5. 📦 [Сущности IntraService](file:///f:/Work/Projects/IntraLink/docs/api/intraservice_entities.md) — описание моделей данных внешней системы.
+1. 🔐 [Аутентификация](auth.md) — вход (`/login`) и выход (`/logout`).
+2. 👤 [Пользователи](users.md) — получение состояния пользователя.
+3. 📋 [Задачи и статусы](tasks.md) — список задач, история изменений и справочники.
+4. 🛠️ [Системные эндпоинты](system.md) — проверка статуса сервиса `/health`.
+5. 📦 [Сущности IntraService](intraservice_entities.md) — описание моделей данных внешней системы.

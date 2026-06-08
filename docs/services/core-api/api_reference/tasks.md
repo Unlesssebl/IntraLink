@@ -28,7 +28,7 @@
 ### Ответ
 
 - **Код состояния:** `200 OK`
-- **Тело ответа (JSON):** Зависит от структуры ответа внешнего API IntraService (см. [intraservice_entities.md](file:///f:/Work/Projects/IntraLink/docs/api/intraservice_entities.md)).
+- **Тело ответа (JSON):** Зависит от структуры ответа внешнего API IntraService (см. [intraservice_entities.md](intraservice_entities.md)).
 
 - **Код ошибки `404 Not Found`**: Сессия пользователя с указанным Telegram ID не найдена.
 - **Код ошибки `502 Bad Gateway`**: Внешний сервис IntraService вернул ошибку при запросе.
@@ -61,7 +61,7 @@
 ### Ответ
 
 - **Код состояния:** `200 OK`
-- **Тело ответа (JSON):** Список событий жизненного цикла (см. [intraservice_entities.md](file:///f:/Work/Projects/IntraLink/docs/api/intraservice_entities.md)).
+- **Тело ответа (JSON):** Список событий жизненного цикла (см. [intraservice_entities.md](intraservice_entities.md)).
 
 - **Код ошибки `404 Not Found`**: Сессия пользователя с указанным Telegram ID не найдена.
 - **Код ошибки `502 Bad Gateway`**: Не удалось получить историю для задачи из внешнего сервиса.
