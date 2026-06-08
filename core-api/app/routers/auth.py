@@ -6,6 +6,7 @@ from app.database.db import get_db, User
 from app.models.schemas import LoginRequest, LoginResponse
 from app.services.intraservice import verify_credentials
 from app.routers.deps import verify_api_key
+from app.services.crypto import encrypt_token
 
 router = APIRouter(
     prefix="/auth",
@@ -31,6 +32,8 @@ async def login(
             detail="Неверное имя пользователя или пароль в IntraService."
         )
         
+    encrypted_auth_b64 = encrypt_token(auth_b64)
+        
     # 2. Ищем пользователя в локальной БД
     query = select(User).where(User.tg_user_id == payload.tg_user_id)
     result = await db.execute(query)
@@ -39,14 +42,14 @@ async def login(
     if db_user:
         # Обновляем существующего пользователя
         db_user.is_login = payload.login
-        db_user.is_password_b64 = auth_b64
+        db_user.is_password_b64 = encrypted_auth_b64
         db_user.is_user_id = user_id
     else:
         # Создаем нового пользователя
         db_user = User(
             tg_user_id=payload.tg_user_id,
             is_login=payload.login,
-            is_password_b64=auth_b64,
+            is_password_b64=encrypted_auth_b64,
             is_user_id=user_id
         )
         db.add(db_user)
@@ -72,7 +75,7 @@ async def logout(
     result = await db.execute(query)
     await db.commit()
     
-    if result.rowcount == 0:
+    if getattr(result, "rowcount", 0) == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Пользователь с Telegram ID {tg_user_id} не найден."

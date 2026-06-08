@@ -9,4 +9,28 @@ dependencies = [
     "aiohttp>=3.13.5",
     "apscheduler>=3.11.2",
     "python-dotenv>=1.2.2",
+    "redis>=5.0.0",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.2.0",
+    "sqlalchemy>=2.0.30",
+    "asyncpg>=0.29.0",
+    "cryptography>=42.0.0",
 ]
+
+[tool.pyright]
+extraPaths = ["bot", "core-api"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["core-api/tests"]
+pythonpath = ["core-api"]
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.22.1",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
+]
+

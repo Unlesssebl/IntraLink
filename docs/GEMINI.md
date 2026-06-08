@@ -6,17 +6,17 @@
 
 ## 1. Обзор новой архитектуры монорепо
 
-Проект разделен на два независимых сервиса, взаимодействующих по сети:
-1. **Core API Service (`core-api/`)** — FastAPI-микросервис, выступающий шлюзом к API IntraService. Он отвечает за хранение учетных данных пользователей, сессии авторизации и непосредственно отправляет запросы в IntraService.
-2. **Telegram Bot Service (`bot/`)** — aiogram 3.x бот. Он отвечает исключительно за интерфейс взаимодействия с пользователем в Telegram и периодический опрос обновлений через планировщик.
+Проект разделен на два независимых сервиса, взаимодействующих через REST API и шину сообщений Redis Pub/Sub:
+1. **Core API Service (`core-api/`)** — FastAPI-микросервис, выступающий шлюзом к API IntraService. Он отвечает за хранение учетных данных пользователей, сессии авторизации, фоновый опрос IntraService API через встроенный **Worker** (`APScheduler`) и публикацию событий в Redis.
+2. **Telegram Bot Service (`bot/`)** — aiogram 3.x бот. Он отвечает за интерфейс взаимодействия с пользователем в Telegram, а также слушает события из Redis Pub/Sub через асинхронный **Redis Listener** и отправляет уведомления пользователям.
 
 ```
 intraservice-tg-bot/
 ├── bot/                         # Код Telegram-бота
 │   ├── handlers/                # Хэндлеры команд (/start, /login, /mytickets)
 │   ├── services/
-│   │   ├── api_client.py        # Клиент для связи с Core API
-│   │   └── scheduler.py         # Опрос Core API для отправки уведомлений
+│   │   ├── api_client.py        # REST-клиент для связи с Core API
+│   │   └── redis_listener.py    # Подписка на Redis Pub/Sub для отправки уведомлений
 │   ├── utils.py                 # Общие утилиты бота
 │   ├── config.py                # Конфигурация бота
 │   └── main.py                  # Точка входа бота
@@ -29,14 +29,15 @@ intraservice-tg-bot/
 │   │   │   └── schemas.py       # Pydantic-схемы запросов и ответов
 │   │   ├── routers/             # Эндпоинты API (auth, tasks, users)
 │   │   ├── services/
-│   │   │   └── intraservice.py  # Прямой HTTP-клиент к IntraService API
+│   │   │   ├── intraservice.py  # Прямой HTTP-клиент к IntraService API
+│   │   │   └── worker.py        # Фоновый воркер (APScheduler + Redis Publisher)
 │   │   ├── config.py            # Конфигурация Core API
 │   │   └── main.py              # Точка входа FastAPI
 │   ├── Dockerfile
 │   └── requirements.txt
 │
 ├── docs/                        # Документация по проекту
-└── docker-compose.yml           # Оркестрация сервисов (bot + core-api + postgres + volume)
+└── docker-compose.yml           # Оркестрация сервисов (bot + core-api + postgres + redis)
 ```
 
 ---
@@ -47,12 +48,12 @@ intraservice-tg-bot/
 Бот общается с Core API по протоколу HTTP REST. Для аутентификации запросов от бота используется pre-shared API-ключ, передаваемый в заголовке:
 `X-Bot-Api-Key: <секретный_ключ>`
 
-Проверка ключа на стороне Core API реализована в виде зависимости FastAPI в [deps.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/core-api/app/routers/deps.py) с использованием безопасного по времени сравнения `secrets.compare_digest` для предотвращения атак по времени (Timing Attacks).
+Проверка ключа на стороне Core API реализована в виде зависимости FastAPI в [deps.py](file:///f:/Work/Projects/IntraLink/core-api/app/routers/deps.py) с использованием безопасного по времени сравнения `secrets.compare_digest` для предотвращения атак по времени (Timing Attacks).
 
 ### Авторизация в IntraService
 Вся работа с Basic Auth IntraService инкапсулирована в Core API:
 - Заголовок Basic Auth (`Authorization: Basic <base64(login:password)>`) формируется в Core API на основе учетных данных пользователя, хранящихся в БД.
-- В БД Core API сохраняются `is_login` и `is_password_b64` (закодированный в base64 пароль). Бот больше не имеет доступа к учетным данным IntraService напрямую.
+- В БД Core API сохраняются `is_login` и `is_password_b64` (зашифрованный токен, содержащий закодированную в base64 пару `login:password`). Бот больше не имеет доступа к учетным данным IntraService напрямую.
 
 ---
 
@@ -60,8 +61,10 @@ intraservice-tg-bot/
 
 - **Base URL Core API:** Значение берется из переменной окружения `CORE_API_URL` в боте (обычно `http://core-api:8000/api/v1` в Docker или `http://127.0.0.1:8000/api/v1` при локальном тестировании).
 - **Формат даты в API:** Даты могут приходить в различных форматах (ISO, UTC, локальные строки).
-  - На стороне Core API и бота используется функция `parse_api_date(date_str)` из [utils.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/bot/utils.py) или [intraservice.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/core-api/app/services/intraservice.py) для безопасного приведения строк к объектам `datetime`.
+  - На стороне Core API и бота используется функция `parse_api_date(date_str)` из [utils.py](file:///f:/Work/Projects/IntraLink/bot/utils.py) или [intraservice.py](file:///f:/Work/Projects/IntraLink/core-api/app/services/intraservice.py) для безопасного приведения строк к объектам `datetime`.
   - При передаче временных фильтров в API (параметры `CreatedMoreThan` или `ChangedMoreThan`) используется формат `YYYY-MM-DD HH:MM`.
+- **Часовые пояса при фоновом опросе (Worker):**
+  - Время последней проверки `last_check_time` сохраняется в базе данных в формате UTC. Перед выполнением запросов к API IntraService (параметры `CreatedMoreThan` и `ChangedMoreThan`), это время конвертируется в локальный часовой пояс системы IntraService на основе переменной настроек `settings.INTRASERVICE_TZ` (по умолчанию `"Europe/Moscow"`) с использованием библиотеки `zoneinfo`. Аналогично, даты изменений событий из истории заявок (`event_date`) также локализуются в часовой пояс системы IntraService перед сравнением.
 
 ---
 
@@ -79,18 +82,17 @@ intraservice-tg-bot/
 - `GET /api/v1/statuses` — Получает справочник статусов IntraService для сопоставления.
 
 ### Пользователи и мониторинг
-- `GET /api/v1/users` — Возвращает список всех зарегистрированных пользователей. Используется планировщиком бота для периодического опроса.
 - `GET /api/v1/users/{tg_user_id}` — Возвращает профиль конкретного пользователя (логин, ID в IntraService, состояние поллинга).
-- `PATCH /api/v1/users/{tg_user_id}/state` — Обновляет состояние опроса (`last_task_id`, `last_comment_id`, `last_check_time`).
+
 
 ---
 
 ## 5. Структура Базы Данных (SQLAlchemy / PostgreSQL)
 
-База данных PostgreSQL ведется на стороне Core API. Описание полей таблицы `users` ([db.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/core-api/app/database/db.py)):
+База данных PostgreSQL ведется на стороне Core API. Описание полей таблицы `users` ([db.py](file:///f:/Work/Projects/IntraLink/core-api/app/database/db.py)):
 - `tg_user_id` (BigInteger, Primary Key) — ID пользователя в Telegram.
 - `is_login` (String) — Логин пользователя.
-- `is_password_b64` (String) — Закодированная в Base64 пара `login:password` для отправки Basic Auth.
+- `is_password_b64` (String) — Зашифрованная с помощью Fernet (`ENCRYPTION_KEY`) строка, содержащая закодированную в Base64 пару `login:password` для отправки Basic Auth.
 - `is_user_id` (Integer) — Внутренний ID пользователя в IntraService.
 - `last_task_id` (Integer) — ID последней обработанной задачи (для предотвращения дублирования уведомлений).
 - `last_comment_id` (Integer) — ID последнего отправленного комментария.
@@ -101,9 +103,12 @@ intraservice-tg-bot/
 ## 6. Рекомендации по разработке и безопасности
 
 1. **Асинхронность:** Все I/O операции (база данных через SQLAlchemy `AsyncSession` и вызовы к API через `aiohttp`) строго должны быть асинхронными с использованием `await`.
-2. **Безопасность учетных данных:** Вся ответственность за хранение паролей лежит на Core API. Все входящие сообщения с паролями в боте удаляются из истории чата сразу после считывания в [auth.py](file:///c:/Users/belikov.a/Desktop/Акты, документы/Work/!Projects/intraservice-tg-bot/bot/handlers/auth.py).
+2. **Безопасность учетных данных:** Вся ответственность за хранение паролей лежит на Core API. Все входящие сообщения с паролями в боте удаляются из истории чата сразу после считывания в [auth.py](file:///f:/Work/Projects/IntraLink/bot/handlers/auth.py).
 3. **API Key:** Запрещено хардкодить `BOT_API_KEY` в коде. При развертывании в продакшене он должен передаваться строго через переменные окружения.
 4. **Порты при тестировании:** При локальной проверке сервисы должны слушать только на localhost (`127.0.0.1`). Слушать на `0.0.0.0` разрешается только внутри Docker-контейнеров.
+5. **Управление соединениями Redis:** При работе с Redis Pub/Sub (например, в фоновом слушателе [redis_listener.py](file:///f:/Work/Projects/IntraLink/bot/services/redis_listener.py)) необходимо гарантировать закрытие ресурсов для избежания утечек соединений. Рекомендуется использовать контекстные менеджеры для Pub/Sub соединений (`async with redis.pubsub() as pubsub:`) и явный вызов `await redis.close()` в блоке `finally`.
+6. **Управление HTTP-сессиями aiohttp:** Для избежания утечек дескрипторов и повторного установления TCP-соединений при каждом запросе, необходимо использовать долгоживущие сессии `aiohttp.ClientSession` (привязанные к жизненному циклу приложения). Инициализация должна выполняться при старте сервиса (в FastAPI `lifespan` или лениво при первом вызове), а закрытие сессии (`await session.close()`) — гарантированно при остановке приложения (в `finally` блоках или при закрытии FastAPI `lifespan` / завершении поллинга бота).
+7. **Изоляция данных между пользователями (Архитектура Worker):** В `worker.py` (фоновый опрос) намеренно отсутствует общий кэш истории заявок (task lifetimes) между пользователями. Каждый запрос к API IntraService строго привязан к уникальному токену пользователя (`auth_b64`), что предотвращает утечку данных (так как разные пользователи могут иметь разные права доступа к комментариям и заявкам). Попытки добавить глобальный кэш без учета `auth_b64` приведут к уязвимости, а кэш с учетом `auth_b64` будет неэффективен (мертвый код), так как в рамках одного цикла каждая заявка для конкретного пользователя встречается только один раз.
 
 ---
 
@@ -113,3 +118,22 @@ intraservice-tg-bot/
 - `postgres` запускает официальный образ `postgres:16-alpine`, хранит данные в именованном томе `postgres_data` и пробрасывает порт `5432`.
 - `core-api` собирается из `./core-api`, зависит от `postgres` (`depends_on`), обращается к базе по строке подключения `postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice`.
 - `bot` собирается из `./bot`, зависит от `core-api` (`depends_on`), обращается к Core API по внутреннему DNS-имени `http://core-api:8000/api/v1`.
+
+---
+
+## 8. Тестирование (Юнит-тесты)
+
+В проекте реализовано полное покрытие ключевых модулей Core API юнит-тестами с использованием фреймворков `pytest` и `pytest-asyncio`. 
+
+Тесты располагаются в директории `core-api/tests/`:
+1. [test_worker.py](file:///f:/Work/Projects/IntraLink/core-api/tests/test_worker.py) — покрывает логику периодического фонового воркера (`process_user`, обработку новых заявок, комментариев, статусов, управление планировщиком APScheduler и клиентом Redis).
+2. [test_intraservice.py](file:///f:/Work/Projects/IntraLink/core-api/tests/test_intraservice.py) — тестирует интеграционный HTTP-клиент IntraService API (парсинг дат в различных форматах, управление `ClientSession` в `aiohttp`, обработку ошибок 401/500, сетевые сбои, авторизацию и эндпоинты `/task`, `/tasklifetime`).
+3. [test_crypto.py](file:///f:/Work/Projects/IntraLink/core-api/tests/test_crypto.py) — проверяет безопасность токенов (шифрование и дешифрование с использованием Fernet, симметричность, поведение при отсутствии ключа шифрования `ENCRYPTION_KEY` и корректность обработки ошибок/незашифрованных токенов).
+
+### Запуск тестов:
+Для запуска тестов используйте виртуальное окружение и команду:
+```bash
+python -m pytest tests/ -v
+```
+
+Все сетевые вызовы (`aiohttp`), база данных (`SQLAlchemy`) и Redis при тестировании изолированы с помощью моков (`unittest.mock.AsyncMock`/`MagicMock`) и фикстур в `conftest.py`, что гарантирует скорость и независимость тестов от реального окружения.

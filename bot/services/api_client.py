@@ -12,6 +12,16 @@ class CoreAPIClient:
             "Content-Type": "application/json",
             "X-Bot-Api-Key": api_key
         }
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     async def _make_request(
         self,
@@ -24,8 +34,8 @@ class CoreAPIClient:
         
         # TODO(security): Проверить SSL_VERIFY, если требуется. Используем системные настройки по умолчанию.
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.request(
+            session = await self.get_session()
+            async with session.request(
                     method=method,
                     url=url,
                     headers=self.headers,
@@ -80,16 +90,6 @@ class CoreAPIClient:
             params=params
         )
 
-    async def get_task_lifetime(self, tg_user_id: int, task_id: int) -> Optional[List[Dict[str, Any]]]:
-        """
-        Получает историю изменения задачи.
-        """
-        return await self._make_request(
-            endpoint=f"tasks/{task_id}/lifetime",
-            method="GET",
-            params={"tg_user_id": tg_user_id}
-        )
-
     async def get_statuses(self, tg_user_id: int) -> Optional[List[Dict[str, Any]]]:
         """
         Получает список возможных статусов.
@@ -107,39 +107,6 @@ class CoreAPIClient:
         return await self._make_request(
             endpoint=f"users/{tg_user_id}",
             method="GET"
-        )
-
-    async def get_all_users(self) -> Optional[List[Dict[str, Any]]]:
-        """
-        Получает список всех пользователей (для планировщика).
-        """
-        return await self._make_request(
-            endpoint="users",
-            method="GET"
-        )
-
-    async def update_user_state(
-        self,
-        tg_user_id: int,
-        last_task_id: Optional[int] = None,
-        last_comment_id: Optional[int] = None,
-        last_check_time: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Обновляет состояние поллинга пользователя.
-        """
-        payload = {}
-        if last_task_id is not None:
-            payload["last_task_id"] = last_task_id
-        if last_comment_id is not None:
-            payload["last_comment_id"] = last_comment_id
-        if last_check_time is not None:
-            payload["last_check_time"] = last_check_time
-
-        return await self._make_request(
-            endpoint=f"users/{tg_user_id}/state",
-            method="PATCH",
-            json_data=payload
         )
 
     async def make_post_request(self, endpoint: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:

@@ -4,10 +4,11 @@ import base64
 import logging
 from typing import Optional, Dict, Any, List, Tuple
 from app.config import settings
+from app.services.crypto import decrypt_token
 
 logger = logging.getLogger(__name__)
 
-def parse_api_date(date_str: str) -> Optional[datetime]:
+def parse_api_date(date_str: Optional[str]) -> Optional[datetime]:
     """
     Парсит дату из API IntraService. 
     Поддерживает форматы: YYYY-MM-DD HH:MM:SS, YYYY-MM-DDTHH:MM:SS, DD.MM.YYYY HH:MM:SS
@@ -33,11 +34,33 @@ def parse_api_date(date_str: str) -> Optional[datetime]:
     logger.warning("Не удалось спарсить дату: %s", date_str)
     return None
 
+_session: Optional[aiohttp.ClientSession] = None
+
+async def init_session() -> None:
+    """
+    Инициализирует глобальную сессию aiohttp.ClientSession.
+    """
+    global _session
+    if _session is None or _session.closed:
+        # TODO(security): Проверить SSL_VERIFY в соответствии с правилами безопасной разработки.
+        # Внутренние домены могут требовать отключения проверки SSL в тестовой среде.
+        connector = aiohttp.TCPConnector(ssl=settings.SSL_VERIFY)
+        _session = aiohttp.ClientSession(connector=connector)
+
+async def close_session() -> None:
+    """
+    Закрывает глобальную сессию aiohttp.ClientSession.
+    """
+    global _session
+    if _session is not None and not _session.closed:
+        await _session.close()
+        _session = None
+
 async def _make_request(
     endpoint: str,
     method: str = "GET",
     auth_b64: Optional[str] = None,
-    auth: Optional[aiohttp.BasicAuth] = None,
+    auth_header: Optional[str] = None,
     params: Optional[Dict[str, Any]] = None,
     json_data: Optional[Dict[str, Any]] = None
 ) -> Optional[Any]:
@@ -48,28 +71,32 @@ async def _make_request(
     
     headers = {"Content-Type": "application/json"}
     if auth_b64:
-        headers["Authorization"] = f"Basic {auth_b64}"
+        decrypted_auth = decrypt_token(auth_b64)
+        headers["Authorization"] = f"Basic {decrypted_auth}"
+    elif auth_header:
+        headers["Authorization"] = auth_header
 
-    # TODO(security): Проверить SSL_VERIFY в соответствии с правилами безопасной разработки.
-    # Внутренние домены могут требовать отключения проверки SSL в тестовой среде.
-    connector = aiohttp.TCPConnector(ssl=settings.SSL_VERIFY)
+    # Ленивая инициализация, если сессия еще не создана
+    if _session is None or _session.closed:
+        await init_session()
+
+    assert _session is not None
+
     try:
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.request(
-                method=method,
-                url=url,
-                headers=headers,
-                auth=auth,
-                params=params,
-                json=json_data,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                if response.status == 200:
-                    return await response.json()
-                else:
-                    text = await response.text()
-                    logger.error("Ошибка API [%d] для %s: %s", response.status, endpoint, text)
-                    return None
+        async with _session.request(
+            method=method,
+            url=url,
+            headers=headers,
+            params=params,
+            json=json_data,
+            timeout=aiohttp.ClientTimeout(total=30)
+        ) as response:
+            if response.status == 200:
+                return await response.json()
+            else:
+                text = await response.text()
+                logger.error("Ошибка API [%d] для %s: %s", response.status, endpoint, text)
+                return None
     except Exception as e:
         logger.exception("Сетевая ошибка при запросе к API %s: %s", endpoint, e)
         return None
@@ -79,12 +106,12 @@ async def verify_credentials(login: str, password: str) -> Tuple[Optional[str], 
     Проверяет учетные данные пользователя в IntraService.
     Возвращает (auth_b64, user_id) при успехе, иначе (None, None).
     """
-    auth = aiohttp.BasicAuth(login, password)
+    auth_header = aiohttp.encode_basic_auth(login, password)  # type: ignore
     
     response_data = await _make_request(
         endpoint="user",
         method="GET",
-        auth=auth,
+        auth_header=auth_header,
         params={"getcurrentuserinfo": "true"}
     )
     

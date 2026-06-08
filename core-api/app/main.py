@@ -22,9 +22,34 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.exception("Ошибка при инициализации базы данных: %s", e)
     
+    # Инициализация сессии IntraService API
+    from app.services.intraservice import init_session, close_session
+    logger.info("Инициализация HTTP-сессии IntraService...")
+    try:
+        await init_session()
+    except Exception as e:
+        logger.exception("Ошибка при инициализации HTTP-сессии: %s", e)
+    
+    # Запуск фонового воркера опроса и публикации событий
+    from app.services.worker import start_worker, stop_worker
+    try:
+        await start_worker()
+    except Exception as e:
+        logger.exception("Ошибка при запуске фонового воркера: %s", e)
+    
     yield
     # Действия при остановке приложения
     logger.info("Остановка приложения Core API...")
+    try:
+        await stop_worker()
+    except Exception as e:
+        logger.exception("Ошибка при остановке фонового воркера: %s", e)
+        
+    logger.info("Закрытие HTTP-сессии IntraService...")
+    try:
+        await close_session()
+    except Exception as e:
+        logger.exception("Ошибка при закрытии HTTP-сессии: %s", e)
 
 app = FastAPI(
     title="IntraService Core API Gateway",
