@@ -88,7 +88,13 @@
 │   │   └── test_worker.py     # Тесты фонового воркера (process_user и др.)
 │   └── requirements.txt
 │
-├── docs/                      # Документация по API IntraService и архитектуре
+├── docs/                      # Документация проекта
+│   ├── architecture.md        # Системная архитектура и Data Flow
+│   ├── services/              # Документация по нашим сервисам
+│   │   ├── core-api/          # Core API: справочник эндпоинтов
+│   │   └── bot/               # Telegram Bot (в разработке)
+│   └── external/              # Справочники внешних систем
+│       └── intraservice_api/  # Документация внешнего API IntraService
 ├── docker-compose.yml         # Оркестрация контейнеров (Postgres, Redis, Core API, Bot)
 ├── pyproject.toml             # Конфигурация для пакетного менеджера uv
 └── uv.lock                    # Блокировка зависимостей uv

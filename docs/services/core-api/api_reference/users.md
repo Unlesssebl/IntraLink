@@ -1,6 +1,6 @@
 # 👤 Пользователи
 
-Роутер: [users.py](file:///f:/Work/Projects/IntraLink/core-api/app/routers/users.py)
+Роутер: [users.py](../../../../core-api/app/routers/users.py)
 
 Префикс: `/api/v1/users`
 
@@ -65,4 +65,4 @@
 > [!NOTE]
 > В отличие от предыдущих архитектурных решений, эндпоинт `PATCH /users/{tg_user_id}/state` **отсутствует** в Core API. 
 > 
-> Поскольку фоновый воркер опроса событий ([worker.py](file:///f:/Work/Projects/IntraLink/core-api/app/services/worker.py)) выполняется на стороне самого Core API Gateway, обновление полей состояния (`last_task_id`, `last_comment_id`, `last_check_time`) происходит автоматически внутри базы данных через ORM (SQLAlchemy) при каждом цикле опроса. Внешним клиентам (например, Telegram-боту) не требуется вызывать методы для обновления состояния.
+> Поскольку фоновый воркер опроса событий ([worker.py](../../../../core-api/app/services/worker.py)) выполняется на стороне самого Core API Gateway, обновление полей состояния (`last_task_id`, `last_comment_id`, `last_check_time`) происходит автоматически внутри базы данных через ORM (SQLAlchemy) при каждом цикле опроса. Внешним клиентам (например, Telegram-боту) не требуется вызывать методы для обновления состояния.

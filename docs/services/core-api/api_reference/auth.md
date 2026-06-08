@@ -1,6 +1,6 @@
 # 🔐 Аутентификация
 
-Роутер: [auth.py](file:///f:/Work/Projects/IntraLink/core-api/app/routers/auth.py)
+Роутер: [auth.py](../../../../core-api/app/routers/auth.py)
 
 Префикс: `/api/v1/auth`
 

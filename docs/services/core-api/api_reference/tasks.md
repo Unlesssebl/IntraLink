@@ -1,6 +1,6 @@
 # 📋 Задачи и статусы
 
-Роутер: [tasks.py](file:///f:/Work/Projects/IntraLink/core-api/app/routers/tasks.py)
+Роутер: [tasks.py](../../../../core-api/app/routers/tasks.py)
 
 Все эндпоинты требуют передачи заголовка `X-Bot-Api-Key`. 
 Для авторизации во внешнем сервисе IntraService под капотом используется сессия пользователя, чей `tg_user_id` передан в качестве query-параметра.

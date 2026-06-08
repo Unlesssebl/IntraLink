@@ -1,6 +1,6 @@
 # 🛠️ Системные эндпоинты
 
-Файл: [main.py](file:///f:/Work/Projects/IntraLink/core-api/app/main.py)
+Файл: [main.py](../../../../core-api/app/main.py)
 
 ---
 
