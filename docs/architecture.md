@@ -1,0 +1,273 @@
+# Архитектура проекта IntraLink (intraservice-tg-bot)
+
+Данный документ описывает архитектуру системы, её ключевые компоненты, потоки данных и принципы взаимодействия между сервисами.
+
+---
+
+## 🏗️ 1. Общий обзор системы
+
+Проект построен по **микросервисной асинхронной архитектуре** и состоит из двух основных сервисов, разделяющих слой интерфейса пользователя и слой бизнес-логики/интеграции:
+
+| Сервис | Технологии | Роль |
+|---|---|---|
+| **Core API** | FastAPI, SQLAlchemy 2.0, APScheduler | Шлюз к IntraService API, управление БД, фоновый мониторинг |
+| **Telegram Bot** | aiogram 3.x, aiohttp | Пользовательский интерфейс, доставка уведомлений |
+
+Для асинхронной связи между сервисами используются два канала:
+- **HTTP REST** с заголовком `X-Bot-Api-Key` — для синхронных запросов от Бота к Core API.
+- **Redis Pub/Sub** — для асинхронной доставки событий мониторинга от Core API к Боту.
+
+### 1.1. Схема компонентов и слоёв системы
+
+```mermaid
+flowchart TB
+    %% Определение стилей
+    classDef userStyle fill:#2d3748,stroke:#4a5568,stroke-width:2px,color:#fff;
+    classDef telegramStyle fill:#3182ce,stroke:#2b6cb0,stroke-width:2px,color:#fff;
+    classDef handlerStyle fill:#dd6b20,stroke:#c05621,stroke-width:2px,color:#fff;
+    classDef serviceStyle fill:#319795,stroke:#2c7a7b,stroke-width:2px,color:#fff;
+    classDef dbStyle fill:#805ad5,stroke:#6b46c1,stroke-width:2px,color:#fff;
+    classDef externalStyle fill:#e53e3e,stroke:#9b2c2c,stroke-width:2px,color:#fff;
+    classDef redisStyle fill:#c53030,stroke:#9b2c2c,stroke-width:2px,color:#fff;
+
+    subgraph Clients ["Пользовательский интерфейс"]
+        User(["👤 Пользователь в Telegram"]):::userStyle
+    end
+
+    subgraph Telegram_Layer ["Внешний слой Telegram"]
+        TG_API["💬 Telegram Bot API"]:::telegramStyle
+    end
+
+    subgraph Bot_Service ["Telegram Bot Service (Python / aiogram)"]
+        direction TB
+        B_Main["🚀 main.py"]:::serviceStyle
+        B_Config["⚙️ config.py"]:::serviceStyle
+        
+        subgraph B_Handlers ["Слой представления (Handlers)"]
+            H_Start["start_help.py<br/>(Старт / Помощь)"]:::handlerStyle
+            H_Auth["auth.py<br/>(Вход / Выход)"]:::handlerStyle
+            H_Tickets["tickets.py<br/>(Список заявок)"]:::handlerStyle
+        end
+
+        subgraph B_Logic ["Слой интеграции"]
+            API_Client["api_client.py<br/>(HTTP Core API клиент)"]:::serviceStyle
+            Redis_Listener["redis_listener.py<br/>(Redis Pub/Sub Subscriber)"]:::serviceStyle
+        end
+    end
+
+    subgraph Broker_Layer ["Шина сообщений"]
+        Redis_Broker[("Redis Pub/Sub")]:::redisStyle
+    end
+
+    subgraph Core_API_Service ["Core API Service (Python / FastAPI)"]
+        direction TB
+        API_Main["🚀 main.py"]:::serviceStyle
+        API_Config["⚙️ config.py"]:::serviceStyle
+        
+        subgraph API_Routers ["Роутеры API (Endpoints)"]
+            R_Auth["auth.py<br/>(/auth/login, /auth/logout)"]:::handlerStyle
+            R_Tasks["tasks.py<br/>(/tasks, /statuses)"]:::handlerStyle
+            R_Users["users.py<br/>(/users)"]:::handlerStyle
+        end
+
+        subgraph API_Services ["Службы & База данных"]
+            IS_Client["intraservice.py<br/>(aiohttp клиент)"]:::serviceStyle
+            Worker["worker.py<br/>(APScheduler + Redis Publisher)"]:::serviceStyle
+            DB_Module["db.py<br/>(SQLAlchemy async)"]:::dbStyle
+        end
+    end
+
+    subgraph DB_Layer ["Слой данных"]
+        Postgres_DB[("database PostgreSQL")]:::dbStyle
+    end
+
+    subgraph External_Systems ["Внешние системы"]
+        IS_API["🌐 IntraService REST API"]:::externalStyle
+    end
+
+    %% Связи
+    User <-->|Взаимодействие| TG_API
+    TG_API <-->|Long Polling / Webhook| B_Main
+    B_Main -->|Регистрация роутеров| B_Handlers
+    B_Main -->|Запуск слушателя| Redis_Listener
+    
+    H_Start & H_Auth & H_Tickets -->|Вызов методов| API_Client
+    
+    %% Бот -> Core API
+    API_Client <-->|REST HTTP (X-Bot-Api-Key)| API_Main
+    
+    API_Main -->|Маршрутизация| API_Routers
+    
+    R_Auth & R_Tasks & R_Users -->|Бизнес-логика| IS_Client
+    R_Auth & R_Users -->|Работа с сессиями| DB_Module
+    
+    %% Воркер -> БД, IntraService и Redis
+    Worker -->|Чтение пользователей & стейта| DB_Module
+    Worker -->|Запрос обновлений| IS_Client
+    Worker -->|Публикация событий| Redis_Broker
+    
+    %% Redis -> Бот
+    Redis_Broker -->|Доставка событий| Redis_Listener
+    Redis_Listener -->|Отправка уведомлений| TG_API
+    
+    DB_Module <-->|SQLAlchemy Async Connection| Postgres_DB
+    IS_Client <-->|REST HTTP Basic Auth| IS_API
+```
+
+---
+
+## 📂 2. Структура компонентов и файлов
+
+### 🤖 А. Telegram-бот (`bot/`)
+
+*   **`bot/main.py`** — Точка входа. Инициализирует бота, диспетчер `Dispatcher`, подключает роутеры и запускает фоновый процесс прослушивания Redis.
+*   **`bot/config.py`** — Загрузка настроек (токен, URL-адреса, ключи) из переменных окружения.
+*   **`bot/handlers/`** — Слой представления (обработка команд пользователя):
+    *   **`auth.py`** — Логика авторизации (`/login`, `/logout`). Использует FSM для ввода учетных данных.
+    *   **`tickets.py`** — Просмотр активных заявок пользователя с поддержкой пагинации.
+    *   **`start_help.py`** — Обработка стартовых команд и отрисовка Reply-меню.
+*   **`bot/services/`** — Интеграционный слой:
+    *   **`api_client.py`** — HTTP-клиент `CoreAPIClient` для взаимодействия с Core API.
+    *   **`redis_listener.py`** — Фоновый подписчик шины сообщений Redis.
+
+### ⚡ Б. Core API (`core-api/app/`)
+
+*   **`main.py`** — Точка запуска FastAPI. Управляет жизненным циклом (lifespan): инициализирует БД, HTTP-сессию IntraService и фоновый Worker.
+*   **`config.py`** — Конфигурация на базе Pydantic Settings.
+*   **`database/db.py`** — Настройка SQLAlchemy Async. Содержит декларативную ORM-модель `User`.
+*   **`models/schemas.py`** — Схемы Pydantic для валидации входных/выходных данных API.
+*   **`routers/`** — Контроллеры (endpoints):
+    *   **`auth.py`** — `/auth/login`, `/auth/logout`.
+    *   **`tasks.py`** — `/tasks`, `/tasks/{id}/lifetime`, `/statuses`.
+    *   **`users.py`** — `/users/{tg_user_id}`.
+    *   **`deps.py`** — Зависимости FastAPI: проверка `X-Bot-Api-Key` (через `secrets.compare_digest`), получение пользователя из БД.
+*   **`services/`** — Бизнес-логика:
+    *   **`intraservice.py`** — Низкоуровневый aiohttp-клиент для REST API IntraService.
+    *   **`worker.py`** — Воркер фонового опроса (APScheduler + Redis Publisher).
+    *   **`crypto.py`** — Симметричное шифрование паролей пользователей (Fernet).
+
+---
+
+## 🔄 3. Потоки данных (Data Flow)
+
+### 3.1. Авторизация пользователя
+
+Бот не хранит пароли локально — все данные учетной записи отправляются и сохраняются только в Core API.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Пользователь
+    participant BotH as bot/handlers/auth.py
+    participant BotC as bot/services/api_client.py
+    participant CoreM as core-api/app/main.py
+    participant CoreIS as core-api/app/services/intraservice.py
+    participant CoreDB as core-api/app/database/db.py
+    participant IS as IntraService API
+
+    User->>BotH: /login (Ввод логина и пароля)
+    Note over BotH: Сообщение с паролем сразу удаляется из чата
+    BotH->>BotC: login(tg_user_id, login, password)
+    BotC->>CoreM: POST /api/v1/auth/login (X-Bot-Api-Key)
+    Note over CoreM: Проверка X-Bot-Api-Key в deps.verify_api_key
+    CoreM->>CoreIS: verify_credentials(login, password)
+    CoreIS->>IS: HTTP GET /api/user?getcurrentuserinfo=true (Basic Auth)
+    IS-->>CoreIS: Ответ (UserInfo с Id сотрудника)
+    Note over CoreIS: Кодирование login:password в Base64
+    CoreIS-->>CoreM: Возврат (auth_b64, user_id)
+    CoreM->>CoreDB: Шифрование Fernet + сохранение сессии в PostgreSQL
+    CoreDB-->>CoreM: Подтверждение записи
+    CoreM-->>BotC: Response (status="success", is_user_id=...)
+    BotC-->>BotH: Данные ответа
+    BotH->>User: Авторизация прошла успешно!
+```
+
+### 3.2. Фоновый мониторинг (Worker в Core API)
+
+APScheduler запускает цикл опроса IntraService полностью независимо от Telegram-бота. Пользователи обрабатываются батчами под контролем семафора для ограничения нагрузки.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Work as worker.py (APScheduler)
+    participant CoreDB as db.py (PostgreSQL)
+    participant CoreIS as intraservice.py
+    participant IS as IntraService API
+    participant Redis as Redis (Pub/Sub)
+
+    loop Каждые POLLING_INTERVAL секунд
+        Work->>CoreDB: Стрим пользователей батчами по 100 (только tg_user_id)
+        CoreDB-->>Work: Список ID пользователей
+        
+        loop Для каждого пользователя (параллельно под asyncio.Semaphore)
+            Note over Work: Открытие изолированной сессии БД
+            Work->>CoreDB: Запрос полных данных пользователя по ID
+            CoreDB-->>Work: User (is_password_b64, last_task_id, last_check_time)
+            
+            Work->>CoreIS: get_tasks(auth_b64, CreatedMoreThan=last_check_time)
+            CoreIS->>IS: GET /api/task (Basic Auth)
+            IS-->>CoreIS: Список новых задач
+            CoreIS-->>Work: Задачи
+            Note over Work: Фильтрация: Id > last_task_id
+            alt Есть новые задачи
+                Work->>Redis: Publish ("intraservice_events", "new_task" payload)
+                Work->>CoreDB: Обновление last_task_id
+            end
+
+            Work->>CoreIS: get_tasks(auth_b64, ChangedMoreThan=last_check_time)
+            CoreIS->>IS: GET /api/task (Basic Auth)
+            IS-->>CoreIS: Измененные задачи
+            CoreIS-->>Work: Задачи
+            
+            loop Для каждой задачи, где пользователь — исполнитель
+                Work->>CoreIS: get_task_lifetime(auth_b64, task_id)
+                CoreIS->>IS: GET /api/tasklifetime (Basic Auth)
+                IS-->>CoreIS: События задачи
+                CoreIS-->>Work: События
+                Note over Work: Фильтрация событий: дата > last_check_time
+                alt Есть новые комментарии
+                    Work->>Redis: Publish ("intraservice_events", "new_comment" payload)
+                else Изменён статус
+                    Work->>Redis: Publish ("intraservice_events", "status_change" payload)
+                end
+            end
+
+            Work->>CoreDB: Обновление last_check_time (UTC)
+        end
+    end
+```
+
+### 3.3. Доставка уведомлений пользователю (Redis Listener в Bot)
+
+Redis Listener работает как отдельный асинхронный таск внутри процесса бота и не зависит от воркера.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Redis as Redis (Pub/Sub)
+    participant Listener as redis_listener.py
+    participant TG as Telegram API
+    participant CoreAPI as Core API /auth/logout
+
+    loop При получении сообщения в канале "intraservice_events"
+        Redis->>Listener: Сообщение (JSON payload события)
+        Note over Listener: Декодирование JSON и валидация типа события
+        Listener->>TG: bot.send_message(tg_user_id, text, parse_mode="HTML")
+        alt TelegramForbiddenError / Чат не найден
+            Note over Listener: Пользователь заблокировал бота
+            Listener->>CoreAPI: DELETE /api/v1/auth/logout (X-Bot-Api-Key)
+            Note over CoreAPI: Удаление сессии из БД, остановка поллинга
+        end
+    end
+```
+
+---
+
+## 🔒 4. Безопасность системы
+
+| Меры | Детали |
+|---|---|
+| **Изоляция данных** | Бот не хранит учётные данные IntraService. При компрометации контейнера бота пароли недоступны. |
+| **Шифрование паролей** | `login:password` → Base64 → Fernet (AES-128-CBC + HMAC-SHA256) → PostgreSQL. Без `ENCRYPTION_KEY` расшифровка невозможна. |
+| **API-аутентификация** | Все запросы Бот → Core API защищены заголовком `X-Bot-Api-Key`. Сравнение через `secrets.compare_digest` исключает timing-атаки. |
+| **Удаление паролей из чата** | Сообщение с паролем удаляется из истории Telegram сразу после получения. |
