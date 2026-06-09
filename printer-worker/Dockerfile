@@ -20,4 +20,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Команда для запуска сервиса
-CMD ["python", "main.py"]
+CMD ["python", "worker_main.py"]

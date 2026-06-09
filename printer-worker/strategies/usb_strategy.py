@@ -38,7 +38,7 @@ class UsbDiscoveryStrategy(PrinterStrategy):
         # Если self.kb не передан напрямую, мы его загрузим или получим из реестра/контекста
         if not self.kb:
             # Импортируем локально во избежание круговых импортов
-            from main import get_kb
+            from worker_main import get_kb
             self.kb = get_kb()
 
         driver = self.kb.find_by_hw_id(pnp_id)

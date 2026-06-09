@@ -17,16 +17,9 @@ class SMBExecutor:
         self.password = WINRM_PASSWORD
 
     def _copy_file_sync(self, src: str, dest_host: str, dest_path: str) -> bool:
-        # Учетные данные домена или локального администратора
-        # Формат логина: domain\\user или user
-        domain = ""
-        username = self.username
-        if "\\" in self.username:
-            domain, username = self.username.split("\\", 1)
-
         try:
             # Регистрируем сессию для удаленного хоста
-            register_session(dest_host, username=username, password=self.password, domain=domain)
+            register_session(dest_host, username=self.username, password=self.password)
             
             # Назначение папки назначения (по умолчанию C$\\Windows\\Temp)
             # Формируем UNC-путь, например: \\\\pc-admin\\C$\\Windows\\Temp\\driver.inf

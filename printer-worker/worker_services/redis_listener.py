@@ -13,11 +13,22 @@ _semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 
 async def _process_event(payload: dict) -> None:
     async with _semaphore:
-        tg_user_id = payload.get("tg_user_id")
-        task_id = payload.get("task_id")
+        tg_user_id_raw = payload.get("tg_user_id")
+        task_id_raw = payload.get("task_id")
         event_type = payload.get("event_type")
 
-        logger.info("Обработка события '%s' для задачи #%d (пользователь %s)", event_type, task_id, tg_user_id)
+        try:
+            tg_user_id = int(tg_user_id_raw) if tg_user_id_raw is not None else None
+            task_id = int(task_id_raw) if task_id_raw is not None else None
+        except (ValueError, TypeError):
+            logger.error("Не удалось привести tg_user_id (%s) или task_id (%s) к int", tg_user_id_raw, task_id_raw)
+            return
+
+        if tg_user_id is None or task_id is None:
+            logger.error("Отсутствует tg_user_id или task_id в событии: %s", payload)
+            return
+
+        logger.info("Обработка события '%s' для задачи #%d (пользователь %d)", event_type, task_id, tg_user_id)
 
         try:
             # Получаем подробности задачи из Core API
@@ -53,7 +64,7 @@ async def _process_event(payload: dict) -> None:
             )
 
             # Создаем оркестратор и запускаем стейт-машину
-            from main import get_orchestrator
+            from worker_main import get_orchestrator
             orchestrator = get_orchestrator()
             await orchestrator.run(job)
 
@@ -78,7 +89,10 @@ async def start_redis_listener():
                     if message is None or message.get("type") != "message":
                         continue
                     
-                    payload_str = message["data"]
+                    payload_str = message.get("data")
+                    if not isinstance(payload_str, (str, bytes)):
+                        logger.error("Неверный формат данных сообщения из Redis: %s", type(payload_str))
+                        continue
                     try:
                         payload = json.loads(payload_str)
                     except Exception as e:

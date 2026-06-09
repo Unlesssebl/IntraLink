@@ -39,7 +39,7 @@ class OpenAIProvider(LLMProvider):
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=headers, timeout=30) as response:
+                async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as response:
                     if response.status == 200:
                         data = await response.json()
                         response_text = data["choices"][0]["message"]["content"]

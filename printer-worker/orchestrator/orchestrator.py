@@ -102,6 +102,7 @@ class PrinterOrchestrator:
                     return
 
                 # 6. Выполнение установки
+                assert job.driver_info is not None
                 await add_task_comment(
                     job.tg_user_id,
                     job.task_id,
@@ -121,6 +122,8 @@ class PrinterOrchestrator:
             if job.state == JobState.DONE:
                 logger.info("Установка принтера по задаче #%d завершена успешно!", job.task_id)
                 await update_task_status(job.tg_user_id, job.task_id, STATUS_RESOLVED)
+                assert job.driver_info is not None
+                assert job.connection_type is not None
                 await add_task_comment(
                     job.tg_user_id,
                     job.task_id,
