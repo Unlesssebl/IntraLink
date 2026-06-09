@@ -88,16 +88,16 @@
 │   │   └── test_worker.py     # Тесты фонового воркера (process_user и др.)
 │   └── requirements.txt
 │
-├── printer-worker/            # Микросервис автоустановки принтеров (WinRM + SMB)
-│   ├── executors/             # Низкоуровневые исполнители (WinRM, SMB)
+├── printer-worker/            # Микросервис автоустановки принтеров (WMI + WinRM + SMB)
+│   ├── executors/             # Низкоуровневые исполнители (WMI, WinRM, SMB)
 │   ├── knowledge_base/        # База знаний принтеров (JSON)
 │   ├── llm/                   # Модуль интеграции с LLM (Ollama, OpenAI)
 │   ├── orchestrator/          # Маршрутизатор, схемы Pydantic, стейт-машина
-│   ├── services/              # Клиент Core API, подписчик Redis
+│   ├── worker_services/       # Клиент Core API, подписчик Redis
 │   ├── strategies/            # Стратегии установки (TCP/IP, USB)
-│   ├── config.py              # Конфигурация сервиса
+│   ├── worker_config.py       # Конфигурация сервиса
 │   ├── Dockerfile             # Сборка контейнера
-│   ├── main.py                # Точка входа
+│   ├── worker_main.py         # Точка входа
 │   └── requirements.txt
 │
 ├── docs/                      # Документация проекта

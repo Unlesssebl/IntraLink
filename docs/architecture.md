@@ -62,8 +62,9 @@ flowchart TB
 
     subgraph Printer_Worker_Service ["Printer Worker Service"]
         direction TB
-        PW_Main["🚀 main.py"]:::serviceStyle
+        PW_Main["🚀 worker_main.py"]:::serviceStyle
         PW_Orchestrator["orchestrator.py<br/>(Job Lifecycle)"]:::handlerStyle
+        PW_WMI["wmi_executor.py<br/>(WinRM Bootstrap)"]:::serviceStyle
         PW_Strategies["strategies/<br/>(WinRM/SMB)"]:::dbStyle
     end
 
@@ -118,6 +119,7 @@ flowchart TB
     Redis_Broker -->|Доставка событий| Redis_Listener
     Redis_Broker -->|Задачи на установку| PW_Main
     PW_Main -->|Оркестрация| PW_Orchestrator
+    PW_Orchestrator -->|Включение WinRM (WMI)| PW_WMI
     PW_Orchestrator -->|WinRM/SMB команды| PW_Strategies
     Redis_Listener -->|Отправка уведомлений| TG_API
     
@@ -143,11 +145,13 @@ flowchart TB
 
 ### 🖨️ Б. Printer Worker (`printer-worker/`)
 
-*   **`main.py`** — Точка запуска. Инициализирует Redis-подписчика и оркестратор.
+*   **`worker_main.py`** — Точка запуска. Инициализирует Redis-подписчика и оркестратор.
 *   **`orchestrator/`** — Управляет жизненным циклом задачи (`PrintJob`).
 *   **`llm/`** — Взаимодействие с LLM (Ollama/OpenAI) для разбора неструктурированных заявок.
 *   **`strategies/`** — Реестр стратегий (Strategy Pattern) для различных типов принтеров (`TcpIpPortStrategy`, `UsbDiscoveryStrategy`).
-*   **`executors/`** — Низкоуровневые классы для работы с WinRM и SMB.
+*   **`executors/`** — Низкоуровневые классы для работы с WinRM, SMB и WMI (`wmi_executor.py` для динамического включения WinRM).
+*   **`worker_services/`** — Клиент Core API и подписчик Redis.
+*   **`worker_config.py`** — Настройки и конфигурация микросервиса.
 
 ### ⚡ В. Core API (`core-api/app/`)
 
