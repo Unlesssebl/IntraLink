@@ -88,14 +88,27 @@
 │   │   └── test_worker.py     # Тесты фонового воркера (process_user и др.)
 │   └── requirements.txt
 │
+├── printer-worker/            # Микросервис автоустановки принтеров (WinRM + SMB)
+│   ├── executors/             # Низкоуровневые исполнители (WinRM, SMB)
+│   ├── knowledge_base/        # База знаний принтеров (JSON)
+│   ├── llm/                   # Модуль интеграции с LLM (Ollama, OpenAI)
+│   ├── orchestrator/          # Маршрутизатор, схемы Pydantic, стейт-машина
+│   ├── services/              # Клиент Core API, подписчик Redis
+│   ├── strategies/            # Стратегии установки (TCP/IP, USB)
+│   ├── config.py              # Конфигурация сервиса
+│   ├── Dockerfile             # Сборка контейнера
+│   ├── main.py                # Точка входа
+│   └── requirements.txt
+│
 ├── docs/                      # Документация проекта
 │   ├── architecture.md        # Системная архитектура и Data Flow
 │   ├── services/              # Документация по нашим сервисам
 │   │   ├── core-api/          # Core API: справочник эндпоинтов
-│   │   └── bot/               # Telegram Bot (в разработке)
+│   │   ├── bot/               # Telegram Bot (в разработке)
+│   │   └── printer-worker/    # Микросервис автоустановки принтеров
 │   └── external/              # Справочники внешних систем
 │       └── intraservice_api/  # Документация внешнего API IntraService
-├── docker-compose.yml         # Оркестрация контейнеров (Postgres, Redis, Core API, Bot)
+├── docker-compose.yml         # Оркестрация контейнеров (Postgres, Redis, Core API, Bot, Printer Worker)
 ├── pyproject.toml             # Конфигурация для пакетного менеджера uv
 └── uv.lock                    # Блокировка зависимостей uv
 ```

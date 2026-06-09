@@ -55,7 +55,23 @@ services:
       - core-api
       - redis
 
+  printer-worker:
+    build:
+      context: ./printer-worker
+      dockerfile: Dockerfile
+    container_name: intraservice_printer_worker
+    restart: always
+    env_file:
+      - ./printer-worker/.env
+    environment:
+      - CORE_API_URL=http://core-api:8000/api/v1
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - core-api
+      - redis
+
 volumes:
   postgres_data:
+
 
 

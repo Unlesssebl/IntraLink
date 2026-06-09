@@ -12,10 +12,11 @@
 |---|---|---|
 | **Core API** | FastAPI, SQLAlchemy 2.0, APScheduler | Шлюз к IntraService API, управление БД, фоновый мониторинг |
 | **Telegram Bot** | aiogram 3.x, aiohttp | Пользовательский интерфейс, доставка уведомлений |
+| **Printer Worker** | Pydantic, aioredis, pywinrm | Автоматическое подключение сетевых/локальных принтеров |
 
 Для асинхронной связи между сервисами используются два канала:
 - **HTTP REST** с заголовком `X-Bot-Api-Key` — для синхронных запросов от Бота к Core API.
-- **Redis Pub/Sub** — для асинхронной доставки событий мониторинга от Core API к Боту.
+- **Redis Pub/Sub** — для асинхронной доставки событий мониторинга от Core API к Боту и для передачи задач в Printer Worker.
 
 ### 1.1. Схема компонентов и слоёв системы
 
@@ -57,6 +58,13 @@ flowchart TB
 
     subgraph Broker_Layer ["Шина сообщений"]
         Redis_Broker[("Redis Pub/Sub")]:::redisStyle
+    end
+
+    subgraph Printer_Worker_Service ["Printer Worker Service"]
+        direction TB
+        PW_Main["🚀 main.py"]:::serviceStyle
+        PW_Orchestrator["orchestrator.py<br/>(Job Lifecycle)"]:::handlerStyle
+        PW_Strategies["strategies/<br/>(WinRM/SMB)"]:::dbStyle
     end
 
     subgraph Core_API_Service ["Core API Service (Python / FastAPI)"]
@@ -106,8 +114,11 @@ flowchart TB
     Worker -->|Запрос обновлений| IS_Client
     Worker -->|Публикация событий| Redis_Broker
     
-    %% Redis -> Бот
+    %% Redis -> Бот и Printer Worker
     Redis_Broker -->|Доставка событий| Redis_Listener
+    Redis_Broker -->|Задачи на установку| PW_Main
+    PW_Main -->|Оркестрация| PW_Orchestrator
+    PW_Orchestrator -->|WinRM/SMB команды| PW_Strategies
     Redis_Listener -->|Отправка уведомлений| TG_API
     
     DB_Module <-->|SQLAlchemy Async Connection| Postgres_DB
@@ -130,7 +141,15 @@ flowchart TB
     *   **`api_client.py`** — HTTP-клиент `CoreAPIClient` для взаимодействия с Core API.
     *   **`redis_listener.py`** — Фоновый подписчик шины сообщений Redis.
 
-### ⚡ Б. Core API (`core-api/app/`)
+### 🖨️ Б. Printer Worker (`printer-worker/`)
+
+*   **`main.py`** — Точка запуска. Инициализирует Redis-подписчика и оркестратор.
+*   **`orchestrator/`** — Управляет жизненным циклом задачи (`PrintJob`).
+*   **`llm/`** — Взаимодействие с LLM (Ollama/OpenAI) для разбора неструктурированных заявок.
+*   **`strategies/`** — Реестр стратегий (Strategy Pattern) для различных типов принтеров (`TcpIpPortStrategy`, `UsbDiscoveryStrategy`).
+*   **`executors/`** — Низкоуровневые классы для работы с WinRM и SMB.
+
+### ⚡ В. Core API (`core-api/app/`)
 
 *   **`main.py`** — Точка запуска FastAPI. Управляет жизненным циклом (lifespan): инициализирует БД, HTTP-сессию IntraService и фоновый Worker.
 *   **`config.py`** — Конфигурация на базе Pydantic Settings.
