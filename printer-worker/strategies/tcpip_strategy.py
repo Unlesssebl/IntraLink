@@ -44,6 +44,9 @@ class TcpIpPortStrategy(PrinterStrategy):
         if job.state == JobState.FAILED:
             return job
 
+        assert job.target_pc is not None
+        assert job.driver_info is not None
+
         driver_name = job.driver_info.driver_name
         inf_path = job.driver_info.driver_inf_path
         filename = os.path.basename(inf_path)

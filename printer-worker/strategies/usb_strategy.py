@@ -3,10 +3,9 @@ import logging
 import asyncio
 from .base import PrinterStrategy
 from . import strategy
-from orchestrator.schemas import PrintJob, JobState, ConnectionType
+from orchestrator.schemas import PrintJob, JobState, ConnectionType, KnowledgeBase
 from executors.winrm_executor import winrm_executor
 from executors.smb_executor import smb_executor
-from knowledge_base.printers_knowledge_base import KnowledgeBase # Wait, we'll load this or pass it
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +58,9 @@ class UsbDiscoveryStrategy(PrinterStrategy):
         job = await self.probe(job)
         if job.state in (JobState.WAITING, JobState.FAILED):
             return job
+
+        assert job.target_pc is not None
+        assert job.driver_info is not None
 
         driver_name = job.driver_info.driver_name
         inf_path = job.driver_info.driver_inf_path
