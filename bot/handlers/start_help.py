@@ -9,12 +9,16 @@ def get_main_keyboard(is_auth: bool):
     builder = ReplyKeyboardBuilder()
     if is_auth:
         builder.button(text="📋 Мои заявки")
+        builder.button(text="🖨 Принтеры") # <-- НОВАЯ КНОПКА ДОБАВЛЕНА СЮДА
         builder.button(text="🚪 Выйти")
     else:
         builder.button(text="🔑 Авторизация")
     
     builder.button(text="❓ Помощь")
-    builder.adjust(2)
+    
+    # Метод adjust(2) выстроит кнопки по 2 в ряд.
+    # Для авторизованного пользователя получится аккуратная сетка 2x2.
+    builder.adjust(2) 
     return builder.as_markup(resize_keyboard=True)
 
 @router.message(Command("start"))
@@ -45,9 +49,9 @@ async def cmd_start(message: types.Message):
 async def cmd_help(message: types.Message):
     await message.answer(
         "Я помогаю отслеживать заявки в системе IntraService.\n\n"
-        "🔹 <b>Авторизация</b> — вход в систему\n"
-        "🔹 <b>Мои заявки</b> — список ваших последних задач\n"
-        "🔹 <b>Выйти</b> — отключение уведомлений и удаление сессии\n\n"
-        "Я буду автоматически уведомлять вас о новых заявках и новых комментариях в тех задачах, где вы назначены исполнителем.",
+        "<b>Доступные действия:</b>\n"
+        "• 📋 <b>Мои заявки</b> — посмотреть список активных задач\n"
+        "• 🖨 <b>Принтеры</b> — панель управления автоматической установкой принтеров\n"
+        "• 🔑 <b>Авторизация/Выйти</b> — управление вашим аккаунтом",
         parse_mode="HTML"
     )

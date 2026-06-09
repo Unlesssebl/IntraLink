@@ -21,3 +21,6 @@ def get_strategy(connection_type: ConnectionType) -> PrinterStrategy:
     if not strategy_cls:
         raise NotImplementedError(f"Стратегия для типа подключения {connection_type} не зарегистрирована")
     return strategy_cls()
+
+from . import tcpip_strategy
+from . import usb_strategy

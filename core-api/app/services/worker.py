@@ -202,7 +202,8 @@ async def process_user(
                                             "tg_user_id": tg_id,
                                             "task_id": task["Id"],
                                             "task_name": task["Name"],
-                                            "message": message_text
+                                            "message": message_text,
+                                            "status_id": int(event.get("StatusId"))
                                         }
                                         pending_notifications.append(payload)
 

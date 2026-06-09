@@ -6,7 +6,7 @@ from llm import get_provider
 
 logger = logging.getLogger(__name__)
 
-CONFIDENCE_THRESHOLD = 0.75
+CONFIDENCE_THRESHOLD = 0.65
 
 class JobRouter:
     def __init__(self, kb: KnowledgeBase):
@@ -23,8 +23,15 @@ class JobRouter:
         # 1. Попытка Fast-Track: проверка, есть ли уже предзаполненные поля
         if job.target_pc and job.model_key:
             logger.info("Fast-Track: обнаружены предзаполненные поля (ПК: %s, Модель: %s)", job.target_pc, job.model_key)
+            # Сначала точный поиск по model_key
             driver = self.kb.find_by_key(job.model_key)
+            # Если не нашли — нечёткий поиск по display_name (кастомное поле содержит название)
+            if not driver:
+                driver = self.kb.find_by_name(job.model_key)
+                if driver:
+                    logger.info("Fast-Track: нечёткий поиск нашёл модель '%s' для строки '%s'", driver.model_key, job.model_key)
             if driver:
+                job.model_key = driver.model_key  # нормализуем к model_key из БЗ
                 job.driver_info = driver
                 job.connection_type = driver.connection_type
                 # Если сетевой принтер, пробуем найти IP/DNS в тексте
@@ -34,7 +41,7 @@ class JobRouter:
                 logger.info("Fast-Track успешно пройден для задачи #%d", job.task_id)
                 return job
             else:
-                logger.warning("Модель %s не найдена в Базе Знаний. Фолбэк на Smart-Track.", job.model_key)
+                logger.warning("Модель %s не найдена в Базе Знаний ни по ключу, ни по имени. Фолбэк на Smart-Track.", job.model_key)
 
         # 2. Smart-Track: использование LLM-as-a-Function
         logger.info("Smart-Track: Запуск LLM-парсинга для задачи #%d", job.task_id)
@@ -62,8 +69,8 @@ class JobRouter:
                 job.error_message = f"Модель принтера '{result.model_key}', определенная моделью ИИ, не зарегистрирована в Базе Знаний."
                 return job
 
-            job.target_pc = result.target_pc
-            job.model_key = result.model_key
+            job.target_pc = result.target_pc or job.target_pc
+            job.model_key = result.model_key or job.model_key
             job.connection_type = result.connection_type
             job.driver_info = driver
             

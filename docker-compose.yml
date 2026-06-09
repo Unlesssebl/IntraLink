@@ -66,6 +66,9 @@ services:
     environment:
       - CORE_API_URL=http://core-api:8000/api/v1
       - REDIS_URL=redis://redis:6379/0
+      - LLM_API_URL=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - core-api
       - redis

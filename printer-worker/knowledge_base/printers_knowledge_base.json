@@ -16,7 +16,7 @@
       "model_key": "kyocera_ecosys_m2040dn",
       "display_name": "Kyocera ECOSYS M2040dn",
       "driver_name": "KX DRIVER for Universal Printing",
-      "driver_inf_path": "\\\\corp-share\\drivers\\kyocera\\OEMSETUP.INF",
+      "driver_inf_path": "\\\\truenas\\Drivers\\printer\\Kyocera\\M8124cidn\\64bit",
       "vendor": "kyocera",
       "supported_hw_ids": [
         "USBPRINT\\KYOCERAECOSYS_M2040D36B1"

@@ -16,6 +16,7 @@ class JobState(str, Enum):
     VERIFYING = "verifying"
     DONE = "done"
     WAITING = "waiting"
+    WAITING_APPROVAL = "waiting_approval"
     FAILED = "failed"
 
 class PrinterDriverInfo(BaseModel):
@@ -35,6 +36,26 @@ class KnowledgeBase(BaseModel):
             if p.model_key == key:
                 return p
         return None
+
+    def find_by_name(self, name: str) -> Optional[PrinterDriverInfo]:
+        """Нечёткий поиск по display_name: проверяет вхождение токенов.
+        Используется когда кастомное поле IntraService содержит название
+        модели, а не model_key ('Kyocera ECOSYS M2040dn KX' → kyocera_ecosys_m2040dn).
+        """
+        if not name:
+            return None
+        name_lower = name.lower()
+        best: Optional[PrinterDriverInfo] = None
+        best_score = 0
+        for p in self.printers:
+            display_lower = p.display_name.lower()
+            # Подсчёт числа совпавших слов из display_name в искомом тексте
+            tokens = [t for t in display_lower.split() if len(t) > 2]
+            matched = sum(1 for t in tokens if t in name_lower)
+            if matched > 0 and matched > best_score:
+                best_score = matched
+                best = p
+        return best
 
     def find_by_hw_id(self, hw_id: str) -> Optional[PrinterDriverInfo]:
         # Поиск совпадения по Hardware ID

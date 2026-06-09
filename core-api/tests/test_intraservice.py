@@ -516,3 +516,78 @@ class TestGetStatuses:
         endpoint = call_args[0] if call_args else call_kwargs.get("endpoint")
         assert endpoint == "taskstatus"
         assert result == [{"Id": 1, "Name": "Открыта"}]
+
+
+# ---------------------------------------------------------------------------
+# БЛОК 8: add_task_comment
+# ---------------------------------------------------------------------------
+
+class TestAddTaskComment:
+    """Тесты добавления комментария к задаче."""
+
+    @pytest.mark.asyncio
+    async def test_calls_task_endpoint_put(self):
+        """add_task_comment должен обращаться к PUT task/{task_id}."""
+        import app.services.intraservice as is_module
+
+        with patch("app.services.intraservice._make_request", new_callable=AsyncMock,
+                   return_value={"Id": 1}) as mock_req:
+            result = await is_module.add_task_comment("auth", task_id=42, comment="Тестовый коммент")
+
+        assert result is True
+        call_args, call_kwargs = mock_req.call_args
+        endpoint = call_args[0] if call_args else call_kwargs.get("endpoint")
+        method = call_kwargs.get("method")
+        json_data = call_kwargs.get("json_data")
+        assert endpoint == "task/42"
+        assert method == "PUT"
+        assert json_data == {"Comment": "Тестовый коммент"}
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_api_error(self):
+        """Если API вернул ошибку (None), add_task_comment должен вернуть False."""
+        import app.services.intraservice as is_module
+
+        with patch("app.services.intraservice._make_request", new_callable=AsyncMock,
+                   return_value=None):
+            result = await is_module.add_task_comment("auth", task_id=42, comment="Тестовый коммент")
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# БЛОК 9: update_task_status
+# ---------------------------------------------------------------------------
+
+class TestUpdateTaskStatus:
+    """Тесты изменения статуса задачи."""
+
+    @pytest.mark.asyncio
+    async def test_calls_task_endpoint_put(self):
+        """update_task_status должен обращаться к PUT task/{task_id}."""
+        import app.services.intraservice as is_module
+
+        with patch("app.services.intraservice._make_request", new_callable=AsyncMock,
+                   return_value={"Id": 1}) as mock_req:
+            result = await is_module.update_task_status("auth", task_id=42, status_id=5)
+
+        assert result is True
+        call_args, call_kwargs = mock_req.call_args
+        endpoint = call_args[0] if call_args else call_kwargs.get("endpoint")
+        method = call_kwargs.get("method")
+        json_data = call_kwargs.get("json_data")
+        assert endpoint == "task/42"
+        assert method == "PUT"
+        assert json_data == {"StatusId": 5}
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_api_error(self):
+        """Если API вернул ошибку (None), update_task_status должен вернуть False."""
+        import app.services.intraservice as is_module
+
+        with patch("app.services.intraservice._make_request", new_callable=AsyncMock,
+                   return_value=None):
+            result = await is_module.update_task_status("auth", task_id=42, status_id=5)
+
+        assert result is False
+

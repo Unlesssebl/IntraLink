@@ -19,8 +19,10 @@ def parse_api_date(date_str: Optional[str]) -> Optional[datetime]:
     date_str = date_str.replace("T", " ")
     
     formats = [
+        "%Y-%m-%d %H:%M:%S.%f",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
+        "%d.%m.%Y %H:%M:%S.%f",
         "%d.%m.%Y %H:%M:%S",
         "%d.%m.%Y %H:%M"
     ]
@@ -157,3 +159,40 @@ async def get_statuses(auth_b64: str) -> Optional[List[Dict[str, Any]]]:
         method="GET",
         auth_b64=auth_b64
     )
+
+async def get_single_task(auth_b64: str, task_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Получает детальную информацию по конкретной задаче с кастомными полями.
+    Используется printer-worker для Fast-Track маршрутизации.
+    """
+    return await _make_request(
+        endpoint=f"task/{task_id}",
+        method="GET",
+        auth_b64=auth_b64,
+        params={"include": "customfields,status"}
+    )
+
+async def add_task_comment(auth_b64: str, task_id: int, comment: str) -> bool:
+    """
+    Добавляет комментарий к задаче в IntraService.
+    """
+    res = await _make_request(
+        endpoint=f"task/{task_id}",
+        method="PUT",
+        auth_b64=auth_b64,
+        json_data={"Comment": comment}
+    )
+    return res is not None
+
+async def update_task_status(auth_b64: str, task_id: int, status_id: int) -> bool:
+    """
+    Обновляет статус задачи в IntraService.
+    """
+    res = await _make_request(
+        endpoint=f"task/{task_id}",
+        method="PUT",
+        auth_b64=auth_b64,
+        json_data={"StatusId": status_id}
+    )
+    return res is not None
+

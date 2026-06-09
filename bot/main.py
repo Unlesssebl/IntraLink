@@ -24,6 +24,9 @@ async def main():
     dp.include_router(auth.router)
     dp.include_router(tickets.router)
     
+    from handlers import printer_approvals
+    dp.include_router(printer_approvals.router)
+    
     # 4. Start Redis Pub/Sub listener
     from services.redis_listener import start_redis_listener
     redis_listener_task = asyncio.create_task(start_redis_listener(bot))

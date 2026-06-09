@@ -7,12 +7,11 @@ import worker_config as config
 from executors.wmi_executor import WMIExecutor, WmiBootstrapError
 logger = logging.getLogger(__name__)
 
-# Маппинг абстрактных состояний на статусы IntraService (заглушка ID статусов)
-# В реальной интеграции эти ID подгружаются из /statuses
-STATUS_IN_PROGRESS = 2  # В работе
-STATUS_WAITING = 3      # В ожидании / Ожидание пользователя
-STATUS_ON_HOLD = 4      # На удержании / Требуется специалист
-STATUS_RESOLVED = 5     # Решена / Закрыта
+# Маппинг абстрактных состояний на статусы IntraService под реальный стенд
+STATUS_IN_PROGRESS = 27  # В работе
+STATUS_WAITING = 35      # Требует уточнения
+STATUS_ON_HOLD = 40      # На доработку (передано специалисту)
+STATUS_RESOLVED = 29     # Выполнена
 
 class PrinterOrchestrator:
     """
@@ -24,31 +23,47 @@ class PrinterOrchestrator:
         self.router = JobRouter(kb)
 
     async def run(self, job: PrintJob) -> None:
-        logger.info("Начало выполнения задачи установки принтера для Task ID: %d", job.task_id)
-        
         try:
-            # 1. Переход в статус "В работе" в системе IntraService
-            await update_task_status(job.tg_user_id, job.task_id, STATUS_IN_PROGRESS)
-            await add_task_comment(job.tg_user_id, job.task_id, "🔧 Запущена автоматическая установка принтера...")
+            if job.state != JobState.WAITING_APPROVAL:
+                logger.info("Начало выполнения задачи установки принтера для Task ID: %d", job.task_id)
+                
+                # 1. Переход в статус "В работе" в системе IntraService
+                await update_task_status(job.tg_user_id, job.task_id, STATUS_IN_PROGRESS)
+                await add_task_comment(job.tg_user_id, job.task_id, "🔧 Запущена автоматическая установка принтера...")
 
-            # 2. Маршрутизация (Fast-Track или Smart-Track)
-            job.state = JobState.ROUTING
-            job = await self.router.route(job)
+                # 2. Маршрутизация (Fast-Track или Smart-Track)
+                job.state = JobState.ROUTING
+                job = await self.router.route(job)
 
-            if job.state == JobState.FAILED:
-                await self._handle_failure(job, "Маршрутизация не удалась")
+                if job.state == JobState.FAILED:
+                    await self.handle_failure(job, "Маршрутизация не удалась")
+                    return
+
+                # 2.5 Ожидание подтверждения (Approval Gate)
+                job.state = JobState.WAITING_APPROVAL
+                from worker_services.redis_listener import publish_approval_request, save_job_state
+                await save_job_state(job)
+                await publish_approval_request(job)
+                logger.info("Задача %d ожидает подтверждения. Пауза.", job.task_id)
                 return
+            else:
+                logger.info("Возобновление задачи установки принтера после подтверждения для Task ID: %d", job.task_id)
+                job.state = JobState.PROBING
 
             # 3. Загрузка подходящей стратегии установки
             if not job.connection_type:
-                await self._handle_failure(job, "Тип подключения принтера не определен")
+                await self.handle_failure(job, "Тип подключения принтера не определен")
                 return
             if not job.target_pc:
-                await self._handle_failure(job, "Целевой ПК не определен")
+                await self.handle_failure(job, "Целевой ПК не определен")
                 return
             if not job.driver_info:
-                await self._handle_failure(job, "Драйвер принтера не определен")
+                await self.handle_failure(job, "Драйвер принтера не определен")
                 return
+                
+            assert job.connection_type is not None
+            assert job.target_pc is not None
+            
             strategy = get_strategy(job.connection_type)
 
             # Разбор домена и пользователя
@@ -74,7 +89,7 @@ class PrinterOrchestrator:
             try:
                 await wmi_exec.enable_winrm()
             except Exception as e:
-                await self._handle_failure(job, f"Не удалось инициализировать подключение (WMI Bootstrap): {e}")
+                await self.handle_failure(job, f"Не удалось инициализировать подключение (WMI Bootstrap): {e}")
                 return
 
             try:
@@ -98,7 +113,7 @@ class PrinterOrchestrator:
                     return
 
                 if job.state == JobState.FAILED:
-                    await self._handle_failure(job, f"Сбой этапа диагностики: {job.error_message}")
+                    await self.handle_failure(job, f"Сбой этапа диагностики: {job.error_message}")
                     return
 
                 # 6. Выполнение установки
@@ -132,17 +147,19 @@ class PrinterOrchestrator:
                     f"Используемый драйвер: {job.driver_info.driver_name}"
                 )
             else:
-                await self._handle_failure(job, job.error_message or "Неизвестная ошибка во время установки")
+                await self.handle_failure(job, job.error_message or "Неизвестная ошибка во время установки")
 
         except Exception as e:
             logger.exception("Критическая ошибка оркестрации задачи #%d: %s", job.task_id, e)
             job.state = JobState.FAILED
             job.error_message = f"Внутренняя ошибка оркестратора: {e}"
-            await self._handle_failure(job, job.error_message)
+            await self.handle_failure(job, job.error_message)
 
-    async def _handle_failure(self, job: PrintJob, error_detail: str) -> None:
+    async def handle_failure(self, job: PrintJob, error_detail: str) -> None:
         logger.error("Сбой выполнения задачи #%d. Состояние: %s. Причина: %s", job.task_id, job.state.value, error_detail)
-        await update_task_status(job.tg_user_id, job.task_id, STATUS_ON_HOLD)
+        # Переводим в «Требует уточнения» (35): переход из «В работе» (27) в «На доработку» (40)
+        # запрещён бизнес-процессом «Настройка\установка», поэтому используем статус 35.
+        await update_task_status(job.tg_user_id, job.task_id, STATUS_WAITING)
         await add_task_comment(
             job.tg_user_id,
             job.task_id,

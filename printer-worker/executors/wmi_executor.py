@@ -62,8 +62,13 @@ class WMIExecutor:
             # Игнорируем вывод, нам нужно только запустить процесс активации WinRM
             result = win32Process.Create(command, 'C:\\', None)
             
-            return_code = result.get('ReturnValue', -1)
-            process_id = result.get('ProcessId', 0)
+            # В Impacket result является IWbemClassObject. Чтобы получить значения, нужно использовать getProperties()
+            props = result.getProperties()
+            return_code_prop = props.get('ReturnValue')
+            return_code = return_code_prop['value'] if isinstance(return_code_prop, dict) else (getattr(return_code_prop, 'value', -1) if return_code_prop else -1)
+            
+            process_id_prop = props.get('ProcessId')
+            process_id = process_id_prop['value'] if isinstance(process_id_prop, dict) else (getattr(process_id_prop, 'value', 0) if process_id_prop else 0)
             
             if return_code != 0:
                 logger.error(f"WMI Win32_Process.Create вернул ошибку {return_code}")

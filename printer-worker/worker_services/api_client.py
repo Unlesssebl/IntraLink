@@ -56,29 +56,15 @@ async def _make_request(
 
 async def get_task_details(tg_user_id: int, task_id: int) -> Optional[Dict[str, Any]]:
     """
-    Получает детальную информацию по конкретной задаче.
+    Получает детальную информацию по конкретной задаче включая кастомные поля.
+    Использует GET /tasks/{task_id} — специализированный эндпоинт с include=customfields.
     """
     params = {"tg_user_id": tg_user_id}
-    # Запрашиваем через endpoint /tasks
-    tasks = await _make_request(
-        endpoint="tasks",
+    return await _make_request(
+        endpoint=f"tasks/{task_id}",
         method="GET",
         params=params
     )
-    if not tasks:
-        return None
-    
-    # Ищем нужную задачу по ID
-    task_list = []
-    if isinstance(tasks, list):
-        task_list = tasks
-    elif isinstance(tasks, dict):
-        task_list = tasks.get("Tasks", [])
-        
-    for t in task_list:
-        if t.get("Id") == task_id:
-            return t
-    return None
 
 async def add_task_comment(tg_user_id: int, task_id: int, comment: str) -> bool:
     """
