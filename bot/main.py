@@ -28,9 +28,24 @@ async def main():
     from services.redis_listener import start_redis_listener
     redis_listener_task = asyncio.create_task(start_redis_listener(bot))
     
-    # 5. Start Bot Polling
+    # 5. Start Bot Polling with retry on network errors
     try:
-        await dp.start_polling(bot)
+        retries = 6
+        delay = 2
+        for attempt in range(1, retries + 1):
+            try:
+                await dp.start_polling(bot)
+                break
+            except Exception as e:
+                logging.warning(
+                    "⚠️ Сбой при запуске polling бота (попытка %d из %d): %s. Повторное подключение через %d сек...",
+                    attempt, retries, e, delay
+                )
+                if attempt == retries:
+                    logging.error("❌ Все попытки подключения бота исчерпаны. Завершение.")
+                    raise e
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
     finally:
         # Graceful shutdown
         redis_listener_task.cancel()
