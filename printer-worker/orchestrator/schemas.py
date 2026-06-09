@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 class ConnectionType(str, Enum):
     TCPIP = "tcpip"
@@ -48,9 +48,15 @@ class KnowledgeBase(BaseModel):
 class LLMParseResult(BaseModel):
     target_pc: str = Field(..., description="NetBIOS-имя или IP-адрес целевого компьютера")
     model_key: str = Field(..., description="Ключевой идентификатор модели принтера из базы знаний")
-    connection_type: ConnectionType = Field(..., description="Тип подключения: tcpip или usb")
+    connection_type: Optional[ConnectionType] = Field(None, description="Тип подключения: tcpip или usb")
     printer_address: Optional[str] = Field(None, description="IP-адрес или DNS-имя сетевого принтера (для tcpip)")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Степень уверенности парсинга от 0.0 до 1.0")
+
+    @field_validator("connection_type", mode="before")
+    def empty_str_to_none(cls, v):
+        if v == "":
+            return None
+        return v
 
 class PrintJob(BaseModel):
     task_id: int
