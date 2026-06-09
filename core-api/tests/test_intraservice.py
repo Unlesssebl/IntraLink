@@ -386,7 +386,7 @@ class TestVerifyCredentials:
             await is_module.verify_credentials("user", "pass")
 
         call_kwargs = mock_request.call_args[1]
-        assert call_kwargs.get("auth_header") == aiohttp.encode_basic_auth("user", "pass")  # type: ignore
+        assert call_kwargs.get("auth_header") == aiohttp.BasicAuth("user", "pass").encode()
         assert call_kwargs.get("auth_b64") is None
 
     @pytest.mark.asyncio

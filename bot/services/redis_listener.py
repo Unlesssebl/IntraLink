@@ -24,8 +24,9 @@ async def start_redis_listener(bot: Bot):
                 await pubsub.subscribe("intraservice_events")
                 logger.info("Успешная подписка на Redis Pub/Sub канал 'intraservice_events'.")
                 
-                async for message in pubsub.listen():
-                    if message is None or message["type"] != "message":
+                while True:
+                    message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if message is None or message.get("type") != "message":
                         continue
                     
                     payload_str = message["data"]

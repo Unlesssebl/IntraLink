@@ -106,7 +106,7 @@ async def verify_credentials(login: str, password: str) -> Tuple[Optional[str], 
     Проверяет учетные данные пользователя в IntraService.
     Возвращает (auth_b64, user_id) при успехе, иначе (None, None).
     """
-    auth_header = aiohttp.encode_basic_auth(login, password)  # type: ignore
+    auth_header = aiohttp.BasicAuth(login, password).encode()
     
     response_data = await _make_request(
         endpoint="user",
