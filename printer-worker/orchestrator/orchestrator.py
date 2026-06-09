@@ -40,6 +40,9 @@ class PrinterOrchestrator:
                 return
 
             # 3. Загрузка подходящей стратегии установки
+            if not job.connection_type:
+                await self._handle_failure(job, "Тип подключения принтера не определен")
+                return
             strategy = get_strategy(job.connection_type)
 
             # Разбор домена и пользователя
