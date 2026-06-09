@@ -3,7 +3,8 @@ from .schemas import PrintJob, JobState, KnowledgeBase
 from .router import JobRouter
 from strategies import get_strategy
 from services.api_client import add_task_comment, update_task_status
-
+import config
+from executors.wmi_executor import WMIExecutor, WmiBootstrapError
 logger = logging.getLogger(__name__)
 
 # Маппинг абстрактных состояний на статусы IntraService (заглушка ID статусов)
@@ -41,37 +42,71 @@ class PrinterOrchestrator:
             # 3. Загрузка подходящей стратегии установки
             strategy = get_strategy(job.connection_type)
 
-            # 4. Проверка готовности (WinRM Probe / USB detection)
+            # Разбор домена и пользователя
+            domain = ""
+            username = config.WINRM_USERNAME
+            if "\\" in username:
+                domain, username = username.split("\\", 1)
+
+            wmi_exec = WMIExecutor(
+                target_ip=job.target_pc,
+                username=username,
+                password=config.WINRM_PASSWORD,
+                domain=domain
+            )
+
+            # Включение WinRM
             job.state = JobState.PROBING
             await add_task_comment(
                 job.tg_user_id, 
                 job.task_id, 
-                f"🔎 Диагностика целевого хоста {job.target_pc}. Проверка подключения принтера по {job.connection_type.value.upper()}..."
+                f"🚀 Инициализация удаленного подключения к {job.target_pc} (WMI Bootstrap)..."
             )
-            job = await strategy.probe(job)
+            try:
+                await wmi_exec.enable_winrm()
+            except Exception as e:
+                await self._handle_failure(job, f"Не удалось инициализировать подключение (WMI Bootstrap): {e}")
+                return
 
-            # 5. Обработка случая, когда USB-принтер отключен (WAITING)
-            if job.state == JobState.WAITING:
-                logger.info("Задача #%d переведена в режим ожидания (USB кабель не подключен)", job.task_id)
-                await update_task_status(job.tg_user_id, job.task_id, STATUS_WAITING)
+            try:
+                # 4. Проверка готовности (WinRM Probe / USB detection)
+                await add_task_comment(
+                    job.tg_user_id, 
+                    job.task_id, 
+                    f"🔎 Диагностика целевого хоста {job.target_pc}. Проверка подключения принтера по {job.connection_type.value.upper()}..."
+                )
+                job = await strategy.probe(job)
+
+                # 5. Обработка случая, когда USB-принтер отключен (WAITING)
+                if job.state == JobState.WAITING:
+                    logger.info("Задача #%d переведена в режим ожидания (USB кабель не подключен)", job.task_id)
+                    await update_task_status(job.tg_user_id, job.task_id, STATUS_WAITING)
+                    await add_task_comment(
+                        job.tg_user_id,
+                        job.task_id,
+                        f"⏳ Внимание: {job.error_message}. Пожалуйста, подключите USB кабель принтера и включите устройство, после чего установка продолжится автоматически."
+                    )
+                    return
+
+                if job.state == JobState.FAILED:
+                    await self._handle_failure(job, f"Сбой этапа диагностики: {job.error_message}")
+                    return
+
+                # 6. Выполнение установки
                 await add_task_comment(
                     job.tg_user_id,
                     job.task_id,
-                    f"⏳ Внимание: {job.error_message}. Пожалуйста, подключите USB кабель принтера и включите устройство, после чего установка продолжится автоматически."
+                    f"📥 Установка драйвера {job.driver_info.display_name} и настройка портов на ПК {job.target_pc}..."
                 )
-                return
+                job = await strategy.execute(job)
 
-            if job.state == JobState.FAILED:
-                await self._handle_failure(job, f"Сбой этапа диагностики: {job.error_message}")
-                return
-
-            # 6. Выполнение установки
-            await add_task_comment(
-                job.tg_user_id,
-                job.task_id,
-                f"📥 Установка драйвера {job.driver_info.display_name} и настройка портов на ПК {job.target_pc}..."
-            )
-            job = await strategy.execute(job)
+            finally:
+                # Всегда отключаем WinRM после завершения установки (успешной или нет)
+                logger.info("Отключение WinRM на %s...", job.target_pc)
+                try:
+                    await wmi_exec.disable_winrm()
+                except Exception as e:
+                    logger.warning("Не удалось отключить WinRM на %s: %s", job.target_pc, e)
 
             # 7. Финализация результатов
             if job.state == JobState.DONE:
