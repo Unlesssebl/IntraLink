@@ -2,8 +2,8 @@ import logging
 from .schemas import PrintJob, JobState, KnowledgeBase
 from .router import JobRouter
 from strategies import get_strategy
-from services.api_client import add_task_comment, update_task_status
-import config
+from worker_services.api_client import add_task_comment, update_task_status
+import worker_config as config
 from executors.wmi_executor import WMIExecutor, WmiBootstrapError
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,12 @@ class PrinterOrchestrator:
             # 3. Загрузка подходящей стратегии установки
             if not job.connection_type:
                 await self._handle_failure(job, "Тип подключения принтера не определен")
+                return
+            if not job.target_pc:
+                await self._handle_failure(job, "Целевой ПК не определен")
+                return
+            if not job.driver_info:
+                await self._handle_failure(job, "Драйвер принтера не определен")
                 return
             strategy = get_strategy(job.connection_type)
 

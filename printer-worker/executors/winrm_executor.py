@@ -2,7 +2,7 @@ import logging
 import asyncio
 from typing import Tuple
 import winrm
-from config import WINRM_USERNAME, WINRM_PASSWORD, WINRM_TRANSPORT
+from worker_config import WINRM_USERNAME, WINRM_PASSWORD, WINRM_TRANSPORT
 
 logger = logging.getLogger(__name__)
 

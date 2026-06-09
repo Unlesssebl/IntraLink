@@ -1,7 +1,7 @@
 from .base import LLMProvider
 from .ollama_provider import OllamaProvider
 from .openai_provider import OpenAIProvider
-from config import LLM_PROVIDER
+from worker_config import LLM_PROVIDER
 
 _provider_instance = None
 

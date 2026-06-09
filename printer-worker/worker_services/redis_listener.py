@@ -2,9 +2,9 @@ import logging
 import json
 import asyncio
 import redis.asyncio as aioredis
-from config import REDIS_URL, MAX_CONCURRENT_JOBS
+from worker_config import REDIS_URL, MAX_CONCURRENT_JOBS
 from orchestrator.schemas import PrintJob, JobState
-from services.api_client import get_task_details
+from worker_services.api_client import get_task_details
 
 logger = logging.getLogger(__name__)
 

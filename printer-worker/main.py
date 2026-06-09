@@ -2,11 +2,11 @@ import json
 import logging
 import asyncio
 from typing import Optional
-from config import PRINTERS_KB_PATH
+from worker_config import PRINTERS_KB_PATH
 from orchestrator.schemas import KnowledgeBase
 from orchestrator.orchestrator import PrinterOrchestrator
-from services.api_client import init_session, close_session
-from services.redis_listener import start_redis_listener
+from worker_services.api_client import init_session, close_session
+from worker_services.redis_listener import start_redis_listener
 
 logging.basicConfig(
     level=logging.INFO,

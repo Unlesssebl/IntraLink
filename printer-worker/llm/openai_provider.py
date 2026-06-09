@@ -3,7 +3,7 @@ import logging
 import aiohttp
 from .base import LLMProvider
 from orchestrator.schemas import LLMParseResult
-from config import LLM_API_URL, LLM_API_KEY, LLM_MODEL_NAME
+from worker_config import LLM_API_URL, LLM_API_KEY, LLM_MODEL_NAME
 
 logger = logging.getLogger(__name__)
 

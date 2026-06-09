@@ -3,7 +3,7 @@ import logging
 import asyncio
 from typing import Tuple
 from smbclient import register_session, copyfile, mkdir
-from config import WINRM_USERNAME, WINRM_PASSWORD
+from worker_config import WINRM_USERNAME, WINRM_PASSWORD
 
 logger = logging.getLogger(__name__)
 

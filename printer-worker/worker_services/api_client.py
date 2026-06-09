@@ -1,7 +1,7 @@
 import aiohttp
 import logging
 from typing import Optional, Dict, Any, List
-from config import CORE_API_URL, BOT_API_KEY
+from worker_config import CORE_API_URL, BOT_API_KEY
 
 logger = logging.getLogger(__name__)
 
