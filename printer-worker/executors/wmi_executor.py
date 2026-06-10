@@ -96,16 +96,48 @@ class WMIExecutor:
             logger.error(f"Таймаут WMI команды ({timeout} сек) на {self.target_ip}")
             raise WmiBootstrapError(f"Таймаут WMI команды ({timeout} сек) на {self.target_ip}")
 
+    async def _wait_for_port(self, port: int, timeout: float = 15.0) -> bool:
+        """
+        Асинхронно ожидает доступности TCP-порта на целевом ПК.
+        Возвращает True, если порт стал доступен, иначе False.
+        """
+        import time
+        start_time = time.time()
+        logger.debug(f"[{self.target_ip}] Ожидание доступности порта {port}...")
+        while time.time() - start_time < timeout:
+            try:
+                # Пытаемся открыть TCP-соединение
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(self.target_ip, port),
+                    timeout=1.0
+                )
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                logger.debug(f"[{self.target_ip}] Порт {port} доступен.")
+                return True
+            except (OSError, asyncio.TimeoutError):
+                await asyncio.sleep(1.0)
+        logger.warning(f"[{self.target_ip}] Превышен таймаут ожидания порта {port}.")
+        return False
+
     async def enable_winrm(self, timeout: float = 40.0) -> None:
         """
         Запускает команду включения WinRM на удаленном хосте.
-        Эквивалент: winrm quickconfig -q
+        Эквивалент: winrm quickconfig -q с дополнительными проверками для идемпотентности.
         """
-        # Запускаем PowerShell в фоне, который сконфигурирует WinRM, настроит Basic Auth и нешифрованный трафик
-        # (Требуется для pywinrm с Basic аутентификацией, если не используется NTLM/Kerberos)
-        # Для безопасности лучше использовать Kerberos/NTLM, но pywinrm из коробки часто требует AllowUnencrypted
-        # В энтерпрайз среде лучше адаптировать этот скрипт под нужды безопасности.
+        # Запускаем PowerShell в фоне, который проверяет текущее состояние.
+        # Если WinRM уже запущен и настроен под наши требования (Basic Auth + AllowUnencrypted),
+        # мы просто завершаем работу без перезапуска службы.
         ps_script = (
+            "$service = Get-Service -Name WinRM -ErrorAction SilentlyContinue; "
+            "$basic = (Get-Item WSMan:\\localhost\\Service\\Auth\\Basic -ErrorAction SilentlyContinue).Value; "
+            "$unenc = (Get-Item WSMan:\\localhost\\Service\\AllowUnencrypted -ErrorAction SilentlyContinue).Value; "
+            "if ($service -and $service.Status -eq 'Running' -and $basic -eq 'true' -and $unenc -eq 'true') { "
+            "  exit 0; "
+            "} "
             "Enable-PSRemoting -Force; "
             "Set-Item WSMan:\\localhost\\Service\\Auth\\Basic -Value $true; "
             "Set-Item WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true; "
@@ -123,8 +155,13 @@ class WMIExecutor:
             logger.error(f"[{self.target_ip}] Таймаут выполнения операции включения WinRM")
             raise WmiBootstrapError(f"Таймаут при включении WinRM на {self.target_ip}")
         
-        # Даем службе время на запуск
-        await asyncio.sleep(5)
+        # Динамическое ожидание порта 5985 вместо слепого sleep(5)
+        port_opened = await self._wait_for_port(5985, timeout=15.0)
+        if not port_opened:
+            raise WmiBootstrapError(f"Не удалось дождаться открытия порта WinRM (5985) на {self.target_ip}")
+            
+        # Небольшая пауза на стабилизацию после открытия порта
+        await asyncio.sleep(1.0)
         logger.info(f"[{self.target_ip}] Ожидание запуска WinRM завершено.")
 
     async def disable_winrm(self, timeout: float = 30.0) -> None:

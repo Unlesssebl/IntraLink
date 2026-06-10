@@ -2,7 +2,7 @@ import asyncio
 import logging
 import sys
 import os
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
 # Добавляем пути, чтобы импорты работали
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -111,6 +111,30 @@ async def test_install():
         mock_disable_winrm.assert_called_once()
         mock_copy_smb.assert_called_once()
         assert mock_run_ps.call_count == 6
+
+async def test_wmi_executor_wait_for_port():
+    executor = WMIExecutor("127.0.0.1", "user", "pass")
+    
+    mock_writer = AsyncMock()
+    # close() в StreamWriter не является сорутиной, поэтому мокаем его как обычный MagicMock
+    mock_writer.close = MagicMock()
+    # Мокаем open_connection, чтобы он возвращал фейковый reader и writer
+    with patch("asyncio.open_connection", new_callable=AsyncMock) as mock_connect:
+        mock_connect.return_value = (AsyncMock(), mock_writer)
+        result = await executor._wait_for_port(5985, timeout=2.0)
+        assert result is True
+        mock_connect.assert_called_once_with("127.0.0.1", 5985)
+        mock_writer.close.assert_called_once()
+
+async def test_wmi_executor_wait_for_port_timeout():
+    executor = WMIExecutor("127.0.0.1", "user", "pass")
+    
+    # Мокаем open_connection на ошибку и sleep, чтобы тест не висел
+    with patch("asyncio.open_connection", side_effect=OSError) as mock_connect, \
+         patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        result = await executor._wait_for_port(5985, timeout=2.0)
+        assert result is False
+        assert mock_connect.call_count > 0
 
 if __name__ == "__main__":
     asyncio.run(test_install())

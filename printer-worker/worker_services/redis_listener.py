@@ -24,7 +24,7 @@ import time
 async def save_job_state(job: PrintJob) -> None:
     try:
         r = get_redis()
-        await r.setex(f"printer_job:{job.task_id}", 86400, job.model_dump_json())
+        await r.set(f"printer_job:{job.task_id}", job.model_dump_json(), ex=86400)
         await r.zadd("printer_jobs_list", {str(job.task_id): time.time()})
         await r.zremrangebyrank("printer_jobs_list", 0, -101)
     except Exception as e:
