@@ -26,6 +26,7 @@ def make_user(
     is_password_b64: str = "dXNlcjpwYXNz",
     last_task_id: int = 10,
     last_check_time: str | None = "2025-06-01 10:00:00",
+    is_login: str = "test_user",
 ) -> MagicMock:
     """Создаёт мок объекта пользователя БД."""
     user = MagicMock()
@@ -34,6 +35,7 @@ def make_user(
     user.is_password_b64 = is_password_b64
     user.last_task_id = last_task_id
     user.last_check_time = last_check_time
+    user.is_login = is_login
     return user
 
 

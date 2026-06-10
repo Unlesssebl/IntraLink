@@ -1517,8 +1517,8 @@
                 <td><span class="badge badge-${stateBadge(j.state)}">${esc(j.state)}</span></td>
                 <td style="white-space: nowrap;">
                     ${j.state === 'waiting_approval' ? 
-                      `<button class="btn btn-outline btn-sm" style="color:var(--green);border-color:var(--green-bg);margin-right:4px" onclick="sendJobAction(${j.task_id}, 'approve')">✅ Авто</button>` +
-                      `<button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red-bg);" onclick="sendJobAction(${j.task_id}, 'reject')">❌</button>` 
+                      `<button class="btn btn-outline btn-sm" style="color:var(--green);border-color:var(--green-bg);margin-right:4px" onclick="sendJobAction(${j.task_id}, 'approve')">Подтвердить</button>` +
+                      `<button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red-bg);" onclick="sendJobAction(${j.task_id}, 'reject')">Отклонить</button>` 
                       : ''}
                 </td>
             </tr>
@@ -1552,8 +1552,8 @@
                 <td style="white-space: nowrap;">
                     <button class="btn btn-outline btn-sm" onclick="toggleLogs(${j.task_id}, this)">Логи</button>
                     ${j.state === 'waiting_approval' ? 
-                      `<button class="btn btn-outline btn-sm" style="color:var(--green);border-color:var(--green-bg);margin-left:4px" onclick="sendJobAction(${j.task_id}, 'approve')" title="Установить">✅</button>` +
-                      `<button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red-bg);margin-left:4px" onclick="sendJobAction(${j.task_id}, 'reject')" title="Отменить">❌</button>` 
+                      `<button class="btn btn-outline btn-sm" style="color:var(--green);border-color:var(--green-bg);margin-left:4px" onclick="sendJobAction(${j.task_id}, 'approve')" title="Запустить установку с этими параметрами">Подтвердить</button>` +
+                      `<button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red-bg);margin-left:4px" onclick="sendJobAction(${j.task_id}, 'reject')" title="Отменить автоматическую установку">Отклонить</button>` 
                       : ''}
                 </td>
             </tr>

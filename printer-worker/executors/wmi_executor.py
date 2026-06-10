@@ -129,16 +129,17 @@ class WMIExecutor:
         Эквивалент: winrm quickconfig -q с дополнительными проверками для идемпотентности.
         """
         # Запускаем PowerShell в фоне, который проверяет текущее состояние.
-        # Если WinRM уже запущен и настроен под наши требования (Basic Auth + AllowUnencrypted),
-        # мы просто завершаем работу без перезапуска службы.
+        # Если WinRM уже запущен и настроен под наши требования (Basic Auth + AllowUnencrypted)
+        # И настроен хотя бы один слушатель (listener) WinRM, мы просто завершаем работу без перезапуска службы.
         ps_script = (
             "$service = Get-Service -Name WinRM -ErrorAction SilentlyContinue; "
             "$basic = (Get-Item WSMan:\\localhost\\Service\\Auth\\Basic -ErrorAction SilentlyContinue).Value; "
             "$unenc = (Get-Item WSMan:\\localhost\\Service\\AllowUnencrypted -ErrorAction SilentlyContinue).Value; "
-            "if ($service -and $service.Status -eq 'Running' -and $basic -eq 'true' -and $unenc -eq 'true') { "
+            "$listeners = Get-ChildItem WSMan:\\localhost\\Listener -ErrorAction SilentlyContinue; "
+            "if ($service -and $service.Status -eq 'Running' -and $basic -eq 'true' -and $unenc -eq 'true' -and $listeners) { "
             "  exit 0; "
             "} "
-            "Enable-PSRemoting -Force; "
+            "Enable-PSRemoting -Force -SkipNetworkProfileCheck; "
             "Set-Item WSMan:\\localhost\\Service\\Auth\\Basic -Value $true; "
             "Set-Item WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true; "
             "Restart-Service WinRM"
@@ -155,8 +156,8 @@ class WMIExecutor:
             logger.error(f"[{self.target_ip}] Таймаут выполнения операции включения WinRM")
             raise WmiBootstrapError(f"Таймаут при включении WinRM на {self.target_ip}")
         
-        # Динамическое ожидание порта 5985 вместо слепого sleep(5)
-        port_opened = await self._wait_for_port(5985, timeout=15.0)
+        # Динамическое ожидание порта 5985 вместо слепого sleep(5). Увеличено до 30 секунд для медленных ПК.
+        port_opened = await self._wait_for_port(5985, timeout=30.0)
         if not port_opened:
             raise WmiBootstrapError(f"Не удалось дождаться открытия порта WinRM (5985) на {self.target_ip}")
             

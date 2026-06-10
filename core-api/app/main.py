@@ -1,6 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, status
+from fastapi import FastAPI, status, Response
+from fastapi.responses import RedirectResponse
 
 from app.database.db import init_db
 from app.routers import auth, tasks, users, admin
@@ -64,6 +65,20 @@ app.include_router(tasks.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(admin.router)
 
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """
+    Перенаправление с корня на панель администратора.
+    """
+    return RedirectResponse(url="/admin")
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """
+    Предотвращение ошибок 404 при запросе favicon.ico браузером.
+    """
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 @app.get("/health", status_code=status.HTTP_200_OK, tags=["System"])
 async def health_check():
     """
@@ -71,3 +86,4 @@ async def health_check():
     Не требует авторизации по API Key.
     """
     return {"status": "healthy", "service": "intraservice-core-api"}
+
