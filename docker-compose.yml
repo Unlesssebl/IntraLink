@@ -29,9 +29,12 @@ services:
       - "8000:8000"
     env_file:
       - ./core-api/.env
+    volumes:
+      - ./printer-worker/knowledge_base:/app/knowledge_base:ro
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
       - REDIS_URL=redis://redis:6379/0
+      - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
       # Ключ шифрования. Сгенерируйте командой:
       # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
       - ENCRYPTION_KEY=
