@@ -28,6 +28,12 @@ MAX_CONCURRENT_JOBS: int = int(os.getenv("MAX_CONCURRENT_JOBS", "5"))
 # Время списания трудозатрат по умолчанию при успешной установке (в минутах)
 WORKLOG_MINUTES: int = int(os.getenv("WORKLOG_MINUTES", "15"))
 
+# ID аккаунта исполнителя в IntraService (ваш IS user ID).
+# Если задан — воркер будет обрабатывать только заявки, где этот пользователь назначен исполнителем.
+# Если не задан — фильтр по исполнителю не применяется (обрабатываются все принтерные заявки).
+_executor_id_raw = os.getenv("PRINTER_EXECUTOR_IS_USER_ID", "")
+PRINTER_EXECUTOR_IS_USER_ID: int | None = int(_executor_id_raw) if _executor_id_raw.strip().isdigit() else None
+
 
 # Валидация обязательных параметров
 if not BOT_API_KEY:

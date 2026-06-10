@@ -34,9 +34,21 @@ def get_approval_keyboard(task_id: int) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-async def _publish_response(task_id: int, action: str, **kwargs):
+def get_start_keyboard(task_id: int) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="🚀 Запустить установку", callback_data=f"printer_start:{task_id}")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="printer_menu_close")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+async def _publish_response(task_id: int, action: str, tg_user_id: int, **kwargs):
     redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
-    payload = {"event_type": "approval_response", "task_id": task_id, "action": action}
+    payload = {
+        "event_type": "approval_response",
+        "task_id": task_id,
+        "action": action,
+        "tg_user_id": tg_user_id
+    }
     payload.update(kwargs)
     await redis.publish("printer_actions", json.dumps(payload))
     await redis.close()
@@ -97,9 +109,9 @@ async def process_printer_task_select(callback: CallbackQuery, callback_data: Pr
     """Срабатывает при клике на заявку из списка"""
     task_id = callback_data.task_id
     await callback.message.edit_text(
-        f"📋 <b>Управление заявкой #{task_id}</b>\n\nВыберите действие для установки принтера:",
+        f"📋 <b>Управление заявкой #{task_id}</b>\n\nНажмите кнопку ниже, чтобы запустить процесс автоматической настройки конфигурации:",
         parse_mode="HTML",
-        reply_markup=get_approval_keyboard(task_id)
+        reply_markup=get_start_keyboard(task_id)
     )
     await callback.answer()
 
@@ -125,9 +137,9 @@ async def process_manual_task_id(message: Message, state: FSMContext):
     task_id = int(message.text.strip())
     
     await message.answer(
-        f"📋 <b>Ручное управление заявкой #{task_id}</b>\n\nВыберите действие:",
+        f"📋 <b>Ручное управление заявкой #{task_id}</b>\n\nНажмите кнопку ниже, чтобы запустить процесс автоматической настройки конфигурации:",
         parse_mode="HTML",
-        reply_markup=get_approval_keyboard(task_id)
+        reply_markup=get_start_keyboard(task_id)
     )
     await state.clear()
 
@@ -136,17 +148,47 @@ async def process_manual_task_id(message: Message, state: FSMContext):
 # ОБРАБОТЧИКИ НАЖАТИЙ НА КНОПКИ ДЕЙСТВИЙ
 # ==========================================
 
+@router.callback_query(F.data.startswith("printer_start:"))
+async def process_start_button(callback: CallbackQuery):
+    task_id = int(callback.data.split(":")[1])
+    
+    # Публикуем событие new_task в канал intraservice_events, чтобы воркер начал процесс.
+    # is_manual_start=True позволяет воркеру пропустить текстовый фильтр по слову «принтер»:
+    # при ручном запуске из бота поля message/task_name в payload отсутствуют.
+    redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
+    payload = {
+        "event_type": "new_task",
+        "task_id": task_id,
+        "tg_user_id": callback.from_user.id,
+        "is_manual_start": True
+    }
+    await redis.publish("intraservice_events", json.dumps(payload))
+    await redis.close()
+    
+    await callback.message.edit_text(
+        f"📋 <b>Заявка #{task_id}</b>\n\n"
+        f"⏳ Запрос на установку отправлен воркеру. "
+        f"Ожидайте автоматического подбора конфигурации и запроса подтверждения...",
+        parse_mode="HTML"
+    )
+    await callback.answer("Запуск установки...")
+
+@router.callback_query(F.data == "printer_menu_close")
+async def process_menu_close(callback: CallbackQuery):
+    await callback.message.edit_text("❌ Меню управления принтерами закрыто.")
+    await callback.answer()
+
 @router.callback_query(F.data.startswith("printer_approve:"))
 async def process_approve_button(callback: CallbackQuery):
     task_id = int(callback.data.split(":")[1])
-    await _publish_response(task_id, action="approve")
+    await _publish_response(task_id, action="approve", tg_user_id=callback.from_user.id)
     await callback.message.edit_text(f"{callback.message.text}\n\n✅ <b>Статус:</b> Отправлено на автоматическую установку.")
     await callback.answer("Заявка одобрена")
 
 @router.callback_query(F.data.startswith("printer_reject:"))
 async def process_reject_button(callback: CallbackQuery):
     task_id = int(callback.data.split(":")[1])
-    await _publish_response(task_id, action="reject")
+    await _publish_response(task_id, action="reject", tg_user_id=callback.from_user.id)
     await callback.message.edit_text(f"{callback.message.text}\n\n❌ <b>Статус:</b> Переведено в ручной режим разбора.")
     await callback.answer("Установка отменена")
 
@@ -162,7 +204,7 @@ async def process_edit_button(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("printer_ask_user:"))
 async def process_ask_user_button(callback: CallbackQuery):
     task_id = int(callback.data.split(":")[1])
-    await _publish_response(task_id, action="ask_user")
+    await _publish_response(task_id, action="ask_user", tg_user_id=callback.from_user.id)
     await callback.message.edit_text(f"{callback.message.text}\n\n💬 <b>Статус:</b> Запрошено действие у пользователя.")
     await callback.answer("Запрос отправлен")
 
@@ -208,6 +250,6 @@ async def process_connection(message: Message, state: FSMContext):
     if "model_key" in data: update_kwargs["model_key"] = data["model_key"]
     if "connection_type" in data: update_kwargs["connection_type"] = data["connection_type"]
     
-    await _publish_response(task_id, action="edit", **update_kwargs)
+    await _publish_response(task_id, action="update", tg_user_id=message.from_user.id, **update_kwargs)
     await message.answer(f"✅ Параметры для задачи #{task_id} обновлены и отправлены воркеру.")
     await state.clear()

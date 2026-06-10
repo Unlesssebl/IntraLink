@@ -150,7 +150,31 @@ async def trigger_manual_job(payload: ManualJobRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Не удалось запустить задачу: {e}"
         )
+class JobActionRequest(BaseModel):
+    action: str
 
+@router.post("/admin/api/print-jobs/{task_id}/action", dependencies=[Depends(verify_api_key)])
+async def handle_job_action(task_id: int, payload: JobActionRequest):
+    """
+    Отправляет решение пользователя (approve/reject/ask_user) в воркер.
+    """
+    try:
+        r = get_redis_client()
+        event = {
+            "event_type": "printer_approval_response",
+            "task_id": task_id,
+            "action": payload.action,
+            "tg_user_id": 0  # 0 означает запуск из веб-панели
+        }
+        await r.publish("printer_actions", json.dumps(event))
+        logger.info("Отправлено действие '%s' для задачи #%d из веб-панели", payload.action, task_id)
+        return {"status": "success", "task_id": task_id}
+    except Exception as e:
+        logger.exception("Ошибка публикации действия в Redis: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось отправить действие: {e}"
+        )
 async def log_stream_generator(job_id: int):
     """
     Генератор для SSE-стрима логов.

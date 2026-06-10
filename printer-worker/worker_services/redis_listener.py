@@ -73,6 +73,16 @@ async def _process_approval_response(payload: dict) -> None:
             job = await load_job_state(task_id)
             if not job:
                 logger.error("Job %s не найден в Redis при получении approval_response", task_id)
+                tg_user_id = payload.get("tg_user_id")
+                if tg_user_id:
+                    from orchestrator.orchestrator import STATUS_WAITING
+                    await update_task_status(tg_user_id, task_id, STATUS_WAITING)
+                    await add_task_comment(
+                        tg_user_id,
+                        task_id,
+                        "❌ Ошибка автоустановки: Внутреннее состояние задачи утеряно в Redis (например, из-за перезапуска сервиса). "
+                        "Пожалуйста, запустите установку заново."
+                    )
                 return
                 
             from worker_main import get_orchestrator
@@ -198,6 +208,21 @@ async def _process_event(payload: dict) -> None:
             if not task_data:
                 logger.error("Пустой ответ по задаче #%d", task_id)
                 return
+
+            # Фильтр по исполнителю: обрабатываем только задачи, где назначен нужный исполнитель.
+            # Управляется переменной окружения PRINTER_EXECUTOR_IS_USER_ID.
+            from worker_config import PRINTER_EXECUTOR_IS_USER_ID
+            if PRINTER_EXECUTOR_IS_USER_ID is not None:
+                executor_ids_raw = task_data.get("ExecutorIds") or ""
+                executor_ids = {
+                    int(x.strip()) for x in executor_ids_raw.split(",") if x.strip().isdigit()
+                }
+                if PRINTER_EXECUTOR_IS_USER_ID not in executor_ids:
+                    logger.debug(
+                        "Задача #%d пропущена: исполнитель %d не найден среди %s",
+                        task_id, PRINTER_EXECUTOR_IS_USER_ID, executor_ids_raw or "(пусто)"
+                    )
+                    return
 
             # Текст заявки собираем из Name + Description
             raw_text = f"{task_data.get('Name', '')} {task_data.get('Description', '')}"
@@ -389,11 +414,15 @@ async def start_redis_listener():
                             logger.debug("Событие status_change для задачи #%d пропущено: статус %s не является стартовым", payload.get("task_id"), status_id)
                             continue
                     
-                    # Проверяем, что в тексте сообщения или темы есть упоминание установки принтера
+                    # Проверяем, что в тексте сообщения или темы есть упоминание установки принтера.
+                    # Исключение: если запрос ручной из бота (is_manual_start=True), поля message/task_name
+                    # отсутствуют — пропускаем текстовый фильтр, так как нажатие кнопки уже является
+                    # явным подтверждением того, что задача про принтер.
+                    is_manual_start = payload.get("is_manual_start", False)
                     msg_content = (payload.get("message") or "").lower()
                     task_name = (payload.get("task_name") or "").lower()
                     
-                    is_printer_request = any(
+                    is_printer_request = is_manual_start or any(
                         word in msg_content or word in task_name
                         for word in ("принтер", "printer", "печать", "print", "установить принтер", "подключить принтер")
                     )

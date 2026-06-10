@@ -150,7 +150,7 @@ flowchart TB
 *   **`llm/`** — Взаимодействие с LLM (Ollama/OpenAI) для разбора неструктурированных заявок.
 *   **`strategies/`** — Реестр стратегий (Strategy Pattern) для различных типов принтеров (`TcpIpPortStrategy`, `UsbDiscoveryStrategy`).
 *   **`executors/`** — Низкоуровневые классы для работы с WinRM, SMB и WMI (`wmi_executor.py` для динамического включения WinRM).
-*   **`worker_services/`** — Клиент Core API и подписчик Redis.
+*   **`worker_services/`** — Клиент Core API и подписчик Redis. Включает механизм целевой фильтрации задач по ID исполнителя (`PRINTER_EXECUTOR_IS_USER_ID`), защищающий воркер от обработки чужих заявок.
 *   **`worker_config.py`** — Настройки и конфигурация микросервиса.
 
 ### ⚡ В. Core API (`core-api/app/`)
@@ -282,6 +282,40 @@ sequenceDiagram
             Note over CoreAPI: Удаление сессии из БД, остановка поллинга
         end
     end
+```
+
+### 3.4. Запрос на подтверждение установки (Approval Gate)
+
+Воркер не устанавливает драйверы вслепую, если не запущен напрямую из веб-панели с явными параметрами. При автоматическом подборе параметров заявка переходит в статус `WAITING_APPROVAL`. Одобрение можно дать двумя путями:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Worker as Printer Worker
+    participant Redis as Redis (Pub/Sub)
+    participant TG as Telegram Bot
+    participant AdminUI as Веб-панель (Admin UI)
+    
+    Worker->>Redis: Publish ("printer_actions", "printer_approval_request")
+    
+    par Уведомление в Telegram
+        Redis->>TG: Получение события
+        TG->>User: Отправка сообщения с кнопками [✅ Авто] [❌ Отменить]
+    and Отображение в Веб-панели
+        Redis->>AdminUI: Статус задачи обновляется на waiting_approval
+        AdminUI->>Admin: Появление кнопок подтверждения в таблице
+    end
+    
+    alt Подтверждение через Telegram
+        User->>TG: Нажатие кнопки
+        TG->>Redis: Publish ("printer_actions", "printer_approval_response")
+    else Подтверждение через Веб-панель
+        Admin->>AdminUI: Нажатие кнопки
+        AdminUI->>Redis: Publish ("printer_actions", "printer_approval_response", tg_user_id=0)
+    end
+    
+    Redis->>Worker: Получение ответа (action: "approve" или "reject")
+    Worker->>Worker: Продолжение установки или отмена заявки
 ```
 
 ---

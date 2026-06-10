@@ -17,15 +17,15 @@ async def start_redis_listener(bot: Bot):
     """
     Асинхронная функция, которая слушает события из Redis Pub/Sub и пересылает их пользователям Telegram.
     """
-    logger.info("Запуск фонового слушателя Redis Pub/Sub для канала 'intraservice_events'...")
+    logger.info("Запуск фонового слушателя Redis Pub/Sub для каналов 'intraservice_events' и 'printer_actions'...")
     while True:
         redis = None
         try:
             # Инициализация подключения к Redis
             redis = aioredis.from_url(REDIS_URL, decode_responses=True)
             async with redis.pubsub() as pubsub:
-                await pubsub.subscribe("intraservice_events")
-                logger.info("Успешная подписка на Redis Pub/Sub канал 'intraservice_events'.")
+                await pubsub.subscribe("intraservice_events", "printer_actions")
+                logger.info("Успешная подписка на Redis Pub/Sub каналы 'intraservice_events' и 'printer_actions'.")
                 
                 while True:
                     message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
@@ -38,20 +38,39 @@ async def start_redis_listener(bot: Bot):
                     try:
                         payload = json.loads(payload_str)
                         tg_user_id = payload.get("tg_user_id")
-                        text = payload.get("text")
-                        
-                        if not tg_user_id or not text:
+                        if not tg_user_id:
                             continue
-                            
-                        # ДОБАВЛЕНА ЛОГИКА ДЛЯ КНОПОК
-                        # Воркер должен присылать флаг is_printer_approval=True и task_id 
-                        # в payload события Redis
-                        is_printer_approval = payload.get("is_printer_approval", False)
-                        task_id = payload.get("task_id")
                         
+                        event_type = payload.get("event_type")
                         reply_markup = None
-                        if is_printer_approval and task_id:
-                            reply_markup = get_approval_keyboard(task_id)
+                        
+                        if event_type == "printer_approval_request":
+                            task_id = payload.get("task_id")
+                            target_pc = payload.get("target_pc") or "Не определен"
+                            model_key = payload.get("model_key") or "Не определена"
+                            connection_type = payload.get("connection_type") or "Не определен"
+                            driver_name = payload.get("driver_name") or "Не определен"
+                            
+                            text = (
+                                f"⚙️ <b>Запрос на подтверждение установки принтера</b> по заявке #{task_id}\n\n"
+                                f"🖥 <b>Компьютер:</b> <code>{target_pc}</code>\n"
+                                f"🖨 <b>Модель:</b> <code>{model_key}</code>\n"
+                                f"🔌 <b>Тип подключения:</b> <code>{connection_type}</code>\n"
+                                f"📄 <b>Драйвер:</b> <code>{driver_name}</code>\n\n"
+                                f"Пожалуйста, подтвердите установку или измените параметры."
+                            )
+                            if task_id:
+                                reply_markup = get_approval_keyboard(task_id)
+                        else:
+                            text = payload.get("text")
+                            if not text:
+                                continue
+                            
+                            is_printer_approval = payload.get("is_printer_approval", False)
+                            task_id = payload.get("task_id")
+                            
+                            if is_printer_approval and task_id:
+                                reply_markup = get_approval_keyboard(task_id)
 
                         try:
                             # Теперь мы передаем reply_markup в метод send_message

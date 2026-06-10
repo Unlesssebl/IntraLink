@@ -1210,11 +1210,12 @@
                                     <th>Модель принтера</th>
                                     <th>Подключение</th>
                                     <th>Статус</th>
+                                    <th>Действия</th>
                                 </tr>
                             </thead>
                             <tbody id="dash-jobs-body">
                                 <tr class="empty-row">
-                                    <td colspan="5">Загрузка данных...</td>
+                                    <td colspan="6">Загрузка данных...</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1503,7 +1504,7 @@
 
                 const tbody = document.getElementById('dash-jobs-body');
                 if (!jobs.length) {
-                    tbody.innerHTML = `<tr class="empty-row"><td colspan="5">Активных операций нет</td></tr>`;
+                    tbody.innerHTML = `<tr class="empty-row"><td colspan="6">Активных операций нет</td></tr>`;
                     return;
                 }
 
@@ -1514,6 +1515,12 @@
                 <td>${esc(j.model_key || '—')}</td>
                 <td><span class="badge badge-${connBadge(j.connection_type)}">${esc((j.connection_type || '—').toUpperCase())}</span></td>
                 <td><span class="badge badge-${stateBadge(j.state)}">${esc(j.state)}</span></td>
+                <td style="white-space: nowrap;">
+                    ${j.state === 'waiting_approval' ? 
+                      `<button class="btn btn-outline btn-sm" style="color:var(--green);border-color:var(--green-bg);margin-right:4px" onclick="sendJobAction(${j.task_id}, 'approve')">✅ Авто</button>` +
+                      `<button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red-bg);" onclick="sendJobAction(${j.task_id}, 'reject')">❌</button>` 
+                      : ''}
+                </td>
             </tr>
         `).join('');
             } catch (e) { if (e.message !== 'Unauthorized') console.error(e); }
@@ -1542,8 +1549,12 @@
                     <span class="badge badge-${stateBadge(j.state)}">${esc(j.state)}</span>
                     ${j.error_message ? `<div style="font-size:0.72rem;color:var(--red);margin-top:0.25rem;">${esc(j.error_message)}</div>` : ''}
                 </td>
-                <td>
+                <td style="white-space: nowrap;">
                     <button class="btn btn-outline btn-sm" onclick="toggleLogs(${j.task_id}, this)">Логи</button>
+                    ${j.state === 'waiting_approval' ? 
+                      `<button class="btn btn-outline btn-sm" style="color:var(--green);border-color:var(--green-bg);margin-left:4px" onclick="sendJobAction(${j.task_id}, 'approve')" title="Установить">✅</button>` +
+                      `<button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red-bg);margin-left:4px" onclick="sendJobAction(${j.task_id}, 'reject')" title="Отменить">❌</button>` 
+                      : ''}
                 </td>
             </tr>
             <tr id="log-row-${j.task_id}" class="log-row">
@@ -1823,6 +1834,25 @@
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;');
+        }
+
+        async function sendJobAction(taskId, action) {
+            const actionNames = { approve: 'установить', reject: 'отменить' };
+            if (!confirm(`Вы действительно хотите ${actionNames[action] || action} принтер для заявки #${taskId}?`)) return;
+            try {
+                const res = await apiFetch(`/admin/api/print-jobs/${taskId}/action`, {
+                    method: 'POST',
+                    body: JSON.stringify({action})
+                });
+                if (res.ok) {
+                    refreshCurrentScreen();
+                } else {
+                    const data = await res.json();
+                    alert('Ошибка: ' + (data.detail || 'Неизвестная ошибка'));
+                }
+            } catch (e) {
+                if (e.message !== 'Unauthorized') alert('Ошибка: ' + e.message);
+            }
         }
     </script>
 </body>
