@@ -116,6 +116,26 @@ async def test_router_parsing():
     
     print("Приоритет SNMP успешно подтвержден!")
 
+def test_llm_parse_result_null_handling():
+    from orchestrator.schemas import LLMParseResult
+    # Этот тест проверяет, что строки "null" или "none" корректно преобразуются
+    # в None / unknown и не вызывают ValidationError при валидации
+    payload = {
+        "target_pc": "null",
+        "model_key": "none",
+        "connection_type": "null",
+        "printer_address": "null",
+        "confidence": "null"
+    }
+    result = LLMParseResult.model_validate(payload)
+    assert result.target_pc == ""
+    assert result.model_key == "unknown"
+    assert result.connection_type is None
+    assert result.printer_address is None
+    assert result.confidence == 0.0
+    print("Тест валидации 'null' и 'none' пройден!")
+
 if __name__ == "__main__":
     import asyncio
     asyncio.run(test_router_parsing())
+    test_llm_parse_result_null_handling()

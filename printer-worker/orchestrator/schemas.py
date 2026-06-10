@@ -76,21 +76,43 @@ class LLMParseResult(BaseModel):
 
     @field_validator("connection_type", mode="before")
     def empty_str_to_none(cls, v):
-        if v == "":
+        if v is None:
             return None
+        if isinstance(v, str):
+            v_lower = v.strip().lower()
+            if v_lower in ("", "null", "none"):
+                return None
         return v
 
     @field_validator("target_pc", mode="before")
     def validate_target_pc(cls, v):
         if v is None:
             return ""
+        if isinstance(v, str):
+            v_lower = v.strip().lower()
+            if v_lower in ("null", "none"):
+                return ""
         return str(v)
 
     @field_validator("model_key", mode="before")
     def validate_model_key(cls, v):
         if v is None or v == "":
             return "unknown"
+        if isinstance(v, str):
+            v_lower = v.strip().lower()
+            if v_lower in ("null", "none"):
+                return "unknown"
         return str(v)
+
+    @field_validator("printer_address", mode="before")
+    def validate_printer_address(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.strip().lower()
+            if v_lower in ("", "null", "none"):
+                return None
+        return v
 
     @field_validator("confidence", mode="before")
     def validate_confidence(cls, v):
