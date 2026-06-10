@@ -10,18 +10,19 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #0b0f19;
-            --card-bg: rgba(17, 24, 39, 0.7);
-            --card-border: rgba(255, 255, 255, 0.08);
+            --bg-color: #08090d;
+            --card-bg: #111219;
+            --card-border: rgba(255, 255, 255, 0.05);
             --text-color: #f3f4f6;
-            --text-muted: #9ca3af;
-            --primary-color: #3b82f6;
-            --primary-hover: #2563eb;
+            --text-muted: #8e939e;
+            --primary-color: #4f46e5;
+            --primary-hover: #4338ca;
             --accent-green: #10b981;
-            --accent-red: #ef4444;
+            --accent-red: #f43f5e;
             --accent-yellow: #f59e0b;
-            --sidebar-width: 260px;
-            --terminal-bg: #030712;
+            --sidebar-width: 250px;
+            --terminal-bg: #030407;
+            --font-sans: 'Inter', system-ui, sans-serif;
         }
 
         * {
@@ -31,20 +32,21 @@
         }
 
         body {
-            font-family: 'Inter', sans-serif;
+            font-family: var(--font-sans);
             background-color: var(--bg-color);
             color: var(--text-color);
             min-height: 100vh;
             display: flex;
             overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
         }
 
         /* Sidebar Styling */
         aside {
             width: var(--sidebar-width);
-            background: rgba(17, 24, 39, 0.95);
+            background: #0d0e14;
             border-right: 1px solid var(--card-border);
-            padding: 2rem 1.5rem;
+            padding: 2.5rem 1.25rem;
             display: flex;
             flex-direction: column;
             position: fixed;
@@ -53,14 +55,15 @@
         }
 
         .logo {
-            font-size: 1.25rem;
+            font-size: 1.15rem;
             font-weight: 700;
-            letter-spacing: -0.025em;
+            letter-spacing: -0.03em;
             color: var(--text-color);
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            margin-bottom: 2.5rem;
+            margin-bottom: 3rem;
+            padding-left: 0.5rem;
         }
 
         .logo span {
@@ -70,7 +73,7 @@
         .nav-links {
             display: flex;
             flex-direction: column;
-            gap: 0.5rem;
+            gap: 0.35rem;
             list-style: none;
         }
 
@@ -79,42 +82,57 @@
             background: none;
             border: none;
             color: var(--text-muted);
-            padding: 0.75rem 1rem;
-            border-radius: 8px;
-            font-size: 0.95rem;
+            padding: 0.75rem 0.85rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
             font-weight: 500;
             text-align: left;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.15s ease;
             display: flex;
             align-items: center;
             gap: 0.75rem;
         }
 
-        .nav-links button:hover, .nav-links button.active {
+        .nav-links button svg {
+            width: 18px;
+            height: 18px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 2;
+            transition: stroke 0.15s ease;
+        }
+
+        .nav-links button:hover {
             color: var(--text-color);
-            background: rgba(59, 130, 246, 0.15);
+            background: rgba(255, 255, 255, 0.03);
         }
 
         .nav-links button.active {
-            border-left: 3px solid var(--primary-color);
+            color: var(--text-color);
+            background: rgba(79, 70, 229, 0.1);
+            border-left: 2px solid var(--primary-color);
+            border-radius: 0 6px 6px 0;
+            padding-left: 0.75rem;
         }
 
         .worker-status-badge {
             margin-top: auto;
-            background: rgba(255, 255, 255, 0.03);
+            background: rgba(255, 255, 255, 0.02);
             border: 1px solid var(--card-border);
-            border-radius: 8px;
-            padding: 0.75rem;
+            border-radius: 6px;
+            padding: 0.75rem 1rem;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            font-size: 0.85rem;
+            font-size: 0.8rem;
+            font-weight: 500;
+            letter-spacing: 0.02em;
         }
 
         .status-dot {
-            width: 8px;
-            height: 8px;
+            width: 6px;
+            height: 6px;
             border-radius: 50%;
             background-color: var(--accent-red);
             box-shadow: 0 0 8px var(--accent-red);
@@ -130,7 +148,7 @@
         main {
             margin-left: var(--sidebar-width);
             flex-grow: 1;
-            padding: 2.5rem;
+            padding: 3rem;
             max-width: 1200px;
             width: calc(100% - var(--sidebar-width));
         }
@@ -139,35 +157,39 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 2rem;
+            margin-bottom: 2.5rem;
+            border-bottom: 1px solid var(--card-border);
+            padding-bottom: 1.25rem;
         }
 
         h1 {
-            font-size: 1.75rem;
-            font-weight: 700;
-            letter-spacing: -0.025em;
+            font-size: 1.5rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
         }
 
         .btn-auth-reset {
             background: none;
             border: 1px solid var(--card-border);
             color: var(--text-muted);
-            padding: 0.5rem 0.75rem;
+            padding: 0.5rem 0.85rem;
             border-radius: 6px;
             cursor: pointer;
-            font-size: 0.85rem;
-            transition: all 0.2s;
+            font-size: 0.8rem;
+            font-weight: 500;
+            transition: all 0.15s ease;
         }
 
         .btn-auth-reset:hover {
             color: var(--text-color);
-            background: rgba(255, 255, 255, 0.05);
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.15);
         }
 
         /* Screen Sections */
         .screen {
             display: none;
-            animation: fadeIn 0.3s ease-out;
+            animation: fadeIn 0.2s ease-out;
         }
 
         .screen.active {
@@ -175,7 +197,7 @@
         }
 
         @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
+            from { opacity: 0; transform: translateY(4px); }
             to { opacity: 1; transform: translateY(0); }
         }
 
@@ -190,32 +212,39 @@
         .stat-card {
             background: var(--card-bg);
             border: 1px solid var(--card-border);
-            border-radius: 12px;
+            border-radius: 8px;
             padding: 1.5rem;
-            backdrop-filter: blur(12px);
         }
 
         .stat-card .label {
-            font-size: 0.85rem;
+            font-size: 0.75rem;
             color: var(--text-muted);
             margin-bottom: 0.5rem;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.06em;
+            font-weight: 600;
         }
 
         .stat-card .value {
             font-size: 2rem;
-            font-weight: 700;
+            font-weight: 600;
+            letter-spacing: -0.02em;
         }
 
-        /* Forms styling */
+        /* Cards and Tables */
         .card {
             background: var(--card-bg);
             border: 1px solid var(--card-border);
-            border-radius: 12px;
+            border-radius: 8px;
             padding: 2rem;
-            backdrop-filter: blur(12px);
             margin-bottom: 2rem;
+        }
+
+        .card h2 {
+            font-size: 1.15rem;
+            font-weight: 600;
+            margin-bottom: 1.25rem;
+            letter-spacing: -0.01em;
         }
 
         .form-grid {
@@ -238,28 +267,31 @@
         }
 
         .form-group label {
-            font-size: 0.9rem;
-            font-weight: 500;
+            font-size: 0.8rem;
+            font-weight: 600;
             color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
         }
 
         .form-control {
-            background: rgba(255, 255, 255, 0.03);
+            background: rgba(0, 0, 0, 0.2);
             border: 1px solid var(--card-border);
-            border-radius: 8px;
+            border-radius: 6px;
             color: var(--text-color);
-            padding: 0.75rem 1rem;
-            font-size: 0.95rem;
+            padding: 0.7rem 0.9rem;
+            font-size: 0.9rem;
             outline: none;
-            transition: border-color 0.2s;
+            transition: all 0.15s ease;
         }
 
         .form-control:focus {
             border-color: var(--primary-color);
+            background: rgba(0, 0, 0, 0.3);
         }
 
         .form-control option {
-            background-color: #111827;
+            background-color: #111219;
             color: var(--text-color);
         }
 
@@ -267,12 +299,12 @@
             background: var(--primary-color);
             color: white;
             border: none;
-            border-radius: 8px;
-            padding: 0.75rem 1.5rem;
-            font-size: 0.95rem;
+            border-radius: 6px;
+            padding: 0.7rem 1.5rem;
+            font-size: 0.9rem;
             font-weight: 600;
             cursor: pointer;
-            transition: background 0.2s;
+            transition: background 0.15s ease;
         }
 
         .btn-submit:hover {
@@ -290,15 +322,16 @@
         }
 
         .terminal-header {
-            background: rgba(255, 255, 255, 0.05);
+            background: rgba(255, 255, 255, 0.02);
             border: 1px solid var(--card-border);
             border-bottom: none;
-            border-radius: 12px 12px 0 0;
+            border-radius: 8px 8px 0 0;
             padding: 0.75rem 1rem;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            font-size: 0.85rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
         }
 
         .terminal-dots {
@@ -307,71 +340,69 @@
         }
 
         .terminal-dot {
-            width: 12px;
-            height: 12px;
+            width: 10px;
+            height: 10px;
             border-radius: 50%;
+            background-color: rgba(255, 255, 255, 0.1);
         }
-
-        .terminal-dots .red { background-color: var(--accent-red); }
-        .terminal-dots .yellow { background-color: var(--accent-yellow); }
-        .terminal-dots .green { background-color: var(--accent-green); }
 
         .terminal-body {
             background-color: var(--terminal-bg);
             border: 1px solid var(--card-border);
-            border-radius: 0 0 12px 12px;
+            border-radius: 0 0 8px 8px;
             padding: 1.25rem;
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.85rem;
-            line-height: 1.5;
+            font-size: 0.8rem;
+            line-height: 1.6;
             height: 350px;
             overflow-y: auto;
             white-space: pre-wrap;
-            color: #d1d5db;
+            color: #a3a8b4;
         }
 
-        /* Tables & Lists */
+        /* Tables */
         table {
             width: 100%;
             border-collapse: collapse;
             text-align: left;
-            margin-top: 1rem;
+            margin-top: 0.5rem;
         }
 
         th, td {
-            padding: 1rem;
+            padding: 0.85rem 1rem;
             border-bottom: 1px solid var(--card-border);
         }
 
         th {
-            font-size: 0.85rem;
+            font-size: 0.75rem;
             font-weight: 600;
             color: var(--text-muted);
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.06em;
         }
 
         td {
-            font-size: 0.95rem;
+            font-size: 0.85rem;
         }
 
         tr:hover td {
-            background: rgba(255, 255, 255, 0.02);
+            background: rgba(255, 255, 255, 0.01);
         }
 
         .badge {
             display: inline-block;
-            padding: 0.25rem 0.6rem;
-            border-radius: 9999px;
-            font-size: 0.75rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
             font-weight: 600;
             text-transform: uppercase;
+            letter-spacing: 0.02em;
         }
 
-        .badge-pending { background: rgba(245, 158, 11, 0.15); color: var(--accent-yellow); }
-        .badge-progress { background: rgba(59, 130, 246, 0.15); color: var(--primary-color); }
-        .badge-done { background: rgba(16, 185, 129, 0.15); color: var(--accent-green); }
-        .badge-failed { background: rgba(239, 68, 68, 0.15); color: var(--accent-red); }
+        .badge-pending { background: rgba(245, 158, 11, 0.08); color: var(--accent-yellow); border: 1px solid rgba(245, 158, 11, 0.15); }
+        .badge-progress { background: rgba(79, 70, 229, 0.08); color: #818cf8; border: 1px solid rgba(79, 70, 229, 0.15); }
+        .badge-done { background: rgba(16, 185, 129, 0.08); color: var(--accent-green); border: 1px solid rgba(16, 185, 129, 0.15); }
+        .badge-failed { background: rgba(244, 63, 94, 0.08); color: var(--accent-red); border: 1px solid rgba(244, 63, 94, 0.15); }
 
         /* Auth Modal */
         .modal-overlay {
@@ -381,7 +412,7 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.8);
+            background: rgba(5, 6, 10, 0.9);
             backdrop-filter: blur(8px);
             z-index: 1000;
             align-items: center;
@@ -393,36 +424,38 @@
         }
 
         .modal {
-            background: #111827;
+            background: #0d0e14;
             border: 1px solid var(--card-border);
-            border-radius: 12px;
+            border-radius: 8px;
             padding: 2.5rem;
             max-width: 400px;
             width: 90%;
-            text-align: center;
-            box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+            box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
         }
 
         .modal h2 {
-            margin-bottom: 1rem;
-            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+            font-size: 1.25rem;
+            font-weight: 600;
+            letter-spacing: -0.01em;
         }
 
         .modal p {
             color: var(--text-muted);
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             margin-bottom: 1.5rem;
+            line-height: 1.4;
         }
 
         .modal input {
             width: 100%;
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.25rem;
         }
 
-        /* Accordion style for table logs */
+        /* Collapsible details */
         .logs-row {
             display: none;
-            background: rgba(0, 0, 0, 0.2);
+            background: rgba(0, 0, 0, 0.15);
         }
 
         .logs-row.active {
@@ -431,15 +464,17 @@
 
         .logs-pre {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.8rem;
+            font-size: 0.75rem;
             padding: 1rem;
-            max-height: 200px;
+            max-height: 250px;
             overflow-y: auto;
             white-space: pre-wrap;
-            background: #030712;
-            border-radius: 8px;
+            background: #040508;
+            border-radius: 6px;
             margin: 0.5rem 0;
             border: 1px solid var(--card-border);
+            color: #a3a8b4;
+            line-height: 1.5;
         }
     </style>
 </head>
@@ -450,24 +485,44 @@
         <div class="modal">
             <h2>Авторизация</h2>
             <p>Для доступа к панели администратора введите API-ключ шлюза (BOT_API_KEY).</p>
-            <input type="password" id="api-key-input" class="form-control" placeholder="API Key..." />
-            <button id="btn-save-auth" class="btn-submit" style="width: 100%;">Войти</button>
+            <input type="password" id="api-key-input" class="form-control" placeholder="Ключ API..." />
+            <button id="btn-save-auth" class="btn-submit" style="width: 100%;">Подключиться</button>
         </div>
     </div>
 
     <!-- Sidebar -->
     <aside>
         <div class="logo">
-            ⚙️ Intra<span>Link</span>
+            Intra<span>Link</span>
         </div>
         <ul class="nav-links">
-            <li><button class="active" onclick="switchScreen('dashboard')">📊 Панель монитора</button></li>
-            <li><button onclick="switchScreen('install')">🚀 Ручная установка</button></li>
-            <li><button onclick="switchScreen('history')">📜 Журнал операций</button></li>
-            <li><button onclick="switchScreen('kb')">📚 База моделей</button></li>
+            <li>
+                <button class="active" onclick="switchScreen('dashboard')">
+                    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+                    Мониторинг
+                </button>
+            </li>
+            <li>
+                <button onclick="switchScreen('install')">
+                    <svg viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                    Установка принтеров
+                </button>
+            </li>
+            <li>
+                <button onclick="switchScreen('history')">
+                    <svg viewBox="0 0 24 24"><path d="M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>
+                    Журнал операций
+                </button>
+            </li>
+            <li>
+                <button onclick="switchScreen('kb')">
+                    <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5V4.5z"/></svg>
+                    База моделей
+                </button>
+            </li>
         </ul>
         <div class="worker-status-badge">
-            <span>Статус Воркера:</span>
+            <span>СТАТУС ВОРКЕРА</span>
             <div style="display: flex; align-items: center; gap: 0.5rem;">
                 <span id="worker-status-text">OFFLINE</span>
                 <div id="worker-status-dot" class="status-dot"></div>
@@ -478,43 +533,43 @@
     <!-- Main Workspace -->
     <main>
         <header>
-            <h1 id="screen-title">Панель монитора</h1>
-            <button class="btn-auth-reset" onclick="resetAuth()">🔒 Выйти</button>
+            <h1 id="screen-title">Мониторинг</h1>
+            <button class="btn-auth-reset" onclick="resetAuth()">Выйти из панели</button>
         </header>
 
         <!-- SCREEN: Dashboard -->
         <section id="screen-dashboard" class="screen active">
             <div class="stats-grid">
                 <div class="stat-card">
-                    <div class="label">Установок сегодня</div>
+                    <div class="label">Выполнено сегодня</div>
                     <div class="value" id="stat-today">0</div>
                 </div>
                 <div class="stat-card">
-                    <div class="label">Активных заданий</div>
+                    <div class="label">Активные процессы</div>
                     <div class="value" id="stat-active">0</div>
                 </div>
                 <div class="stat-card">
-                    <div class="label">Всего ошибок</div>
+                    <div class="label">Ошибки установки</div>
                     <div class="value" id="stat-errors">0</div>
                 </div>
             </div>
 
             <div class="card">
-                <h2>Недавняя активность</h2>
+                <h2>Недавние процессы установки</h2>
                 <div style="overflow-x: auto;">
                     <table>
                         <thead>
                             <tr>
-                                <th>Task ID</th>
-                                <th>Имя ПК</th>
+                                <th>Идентификатор</th>
+                                <th>Имя компьютера</th>
                                 <th>Модель</th>
-                                <th>Тип</th>
-                                <th>Состояние</th>
+                                <th>Подключение</th>
+                                <th>Статус</th>
                             </tr>
                         </thead>
                         <tbody id="dashboard-recent-jobs">
                             <tr>
-                                <td colspan="5" style="text-align: center; color: var(--text-muted);">Загрузка...</td>
+                                <td colspan="5" style="text-align: center; color: var(--text-muted);">Загрузка процессов...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -525,15 +580,15 @@
         <!-- SCREEN: Manual Install -->
         <section id="screen-install" class="screen">
             <div class="card">
-                <h2>Запустить установку принтера</h2>
+                <h2>Параметры ручной установки</h2>
                 <form id="install-form" onsubmit="submitInstallForm(event)">
                     <div class="form-grid">
                         <div class="form-group">
-                            <label for="target_pc">Имя компьютера (Target PC) *</label>
+                            <label for="target_pc">Имя компьютера (Target PC)</label>
                             <input type="text" id="target_pc" class="form-control" required placeholder="Например: WS-102" />
                         </div>
                         <div class="form-group">
-                            <label for="model_key">Модель принтера (из Базы) *</label>
+                            <label for="model_key">Модель принтера</label>
                             <select id="model_key" class="form-control" required>
                                 <option value="">Выберите принтер...</option>
                             </select>
@@ -541,18 +596,18 @@
                     </div>
                     <div class="form-grid">
                         <div class="form-group">
-                            <label for="connection_type">Тип подключения *</label>
+                            <label for="connection_type">Тип подключения</label>
                             <select id="connection_type" class="form-control" required onchange="toggleAddressField()">
                                 <option value="tcpip">Сетевой (TCP/IP)</option>
                                 <option value="usb">Локальный (USB)</option>
                             </select>
                         </div>
                         <div class="form-group" id="printer-address-group">
-                            <label for="printer_address">IP-адрес / DNS принтера *</label>
+                            <label for="printer_address">Сетевой адрес (IP / DNS)</label>
                             <input type="text" id="printer_address" class="form-control" placeholder="Например: 192.168.1.100" />
                         </div>
                     </div>
-                    <button type="submit" class="btn-submit">🚀 Запустить процесс</button>
+                    <button type="submit" class="btn-submit">Запустить установку</button>
                 </form>
             </div>
 
@@ -560,11 +615,11 @@
             <div id="install-terminal-container" class="terminal-container">
                 <div class="terminal-header">
                     <div class="terminal-dots">
-                        <span class="terminal-dot red"></span>
-                        <span class="terminal-dot yellow"></span>
-                        <span class="terminal-dot green"></span>
+                        <span class="terminal-dot"></span>
+                        <span class="terminal-dot"></span>
+                        <span class="terminal-dot"></span>
                     </div>
-                    <div style="font-weight: 500;">Лог установки (Реальное время) - Задача #<span id="active-terminal-id">0</span></div>
+                    <div style="font-weight: 500;">Лог установки: Задача #<span id="active-terminal-id">0</span></div>
                     <div>SSE Connected</div>
                 </div>
                 <div id="terminal-body" class="terminal-body">
@@ -576,17 +631,17 @@
         <!-- SCREEN: History -->
         <section id="screen-history" class="screen">
             <div class="card">
-                <h2>Все операции</h2>
+                <h2>Журнал операций</h2>
                 <div style="overflow-x: auto;">
                     <table>
                         <thead>
                             <tr>
-                                <th>Task ID</th>
-                                <th>Имя ПК</th>
+                                <th>Идентификатор</th>
+                                <th>Имя компьютера</th>
                                 <th>Модель</th>
-                                <th>Тип</th>
-                                <th>Состояние</th>
-                                <th>Действие</th>
+                                <th>Подключение</th>
+                                <th>Статус</th>
+                                <th>Подробности</th>
                             </tr>
                         </thead>
                         <tbody id="history-jobs-list">
@@ -602,16 +657,16 @@
         <!-- SCREEN: Knowledge Base -->
         <section id="screen-kb" class="screen">
             <div class="card">
-                <h2>База знаний принтеров</h2>
+                <h2>Поддерживаемые модели принтеров</h2>
                 <div style="overflow-x: auto;">
                     <table>
                         <thead>
                             <tr>
-                                <th>Ключ (model_key)</th>
-                                <th>Отображаемое имя</th>
-                                <th>Имя драйвера</th>
+                                <th>Идентификатор</th>
+                                <th>Модель</th>
+                                <th>Драйвер</th>
                                 <th>Тип подключения</th>
-                                <th>Производитель</th>
+                                <th>Вендор</th>
                             </tr>
                         </thead>
                         <tbody id="kb-list">
@@ -633,7 +688,6 @@
         let dashboardInterval = null;
         let activeEventSource = null;
 
-        // Инициализация при загрузке
         window.addEventListener('DOMContentLoaded', () => {
             if (!apiKey) {
                 document.getElementById('auth-modal').classList.add('active');
@@ -654,7 +708,6 @@
             });
         });
 
-        // Сброс авторизации
         function resetAuth() {
             localStorage.removeItem('BOT_API_KEY');
             apiKey = '';
@@ -663,7 +716,6 @@
             document.getElementById('api-key-input').value = '';
         }
 
-        // Переключение экранов
         function switchScreen(screenId) {
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
             document.querySelectorAll('.nav-links button').forEach(b => b.classList.remove('active'));
@@ -673,21 +725,18 @@
                 screen.classList.add('active');
                 currentScreen = screenId;
                 
-                // Находим кнопку и делаем её активной
                 const btn = Array.from(document.querySelectorAll('.nav-links button')).find(b => b.onclick.toString().includes(screenId));
                 if (btn) btn.classList.add('active');
             }
 
-            // Обновляем заголовок страницы
             const titles = {
-                'dashboard': 'Панель монитора',
-                'install': 'Ручная установка',
+                'dashboard': 'Мониторинг',
+                'install': 'Установка принтеров',
                 'history': 'Журнал операций',
                 'kb': 'База моделей принтеров'
             };
             document.getElementById('screen-title').textContent = titles[screenId] || 'Панель';
 
-            // Если закрываем экран установки, глушим SSE стрим
             if (screenId !== 'install' && activeEventSource) {
                 activeEventSource.close();
                 activeEventSource = null;
@@ -696,7 +745,6 @@
             loadScreenData();
         }
 
-        // Общие заголовки запросов
         function getHeaders() {
             return {
                 'Content-Type': 'application/json',
@@ -704,7 +752,6 @@
             };
         }
 
-        // Показ и скрытие поля IP адреса
         function toggleAddressField() {
             const connType = document.getElementById('connection_type').value;
             const addressGroup = document.getElementById('printer-address-group');
@@ -719,7 +766,6 @@
             }
         }
 
-        // Запуск периодического мониторинга (heartbeat и дашборд)
         function startMonitoring() {
             checkStatus();
             statusInterval = setInterval(checkStatus, 5000);
@@ -740,7 +786,6 @@
             }
         }
 
-        // Проверка статуса воркера
         async function checkStatus() {
             try {
                 const res = await fetch('/admin/api/worker-status', { headers: getHeaders() });
@@ -764,7 +809,6 @@
             }
         }
 
-        // Загрузка данных на экраны при открытии
         function loadScreenData() {
             if (!apiKey) return;
             
@@ -779,7 +823,6 @@
             }
         }
 
-        // Загрузка инфы для Dashboard
         async function loadDashboardData() {
             try {
                 const res = await fetch('/admin/api/print-jobs', { headers: getHeaders() });
@@ -789,15 +832,11 @@
                 }
                 const jobs = await res.json();
                 
-                // Вычисляем статы
                 let todayCount = 0;
                 let activeCount = 0;
                 let errorCount = 0;
                 
-                const todayStr = new Date().toDateString();
-                
                 jobs.forEach(job => {
-                    // Статус "active" (всё что не done/failed/waiting_approval на паузе)
                     const activeStates = ['probing', 'copying', 'installing', 'verifying', 'routing', 'parsing'];
                     if (activeStates.includes(job.state)) activeCount++;
                     if (job.state === 'failed') errorCount++;
@@ -808,10 +847,9 @@
                 document.getElementById('stat-active').textContent = activeCount;
                 document.getElementById('stat-errors').textContent = errorCount;
 
-                // Заполняем таблицу
                 const tbody = document.getElementById('dashboard-recent-jobs');
                 if (jobs.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Активных задач нет</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Активных процессов нет</td></tr>`;
                     return;
                 }
 
@@ -830,14 +868,12 @@
             }
         }
 
-        // Загрузка списка моделей в форму ручной установки
         async function loadKnowledgeBaseOptions() {
             try {
                 const res = await fetch('/admin/api/knowledge-base', { headers: getHeaders() });
                 const kb = await res.json();
                 const select = document.getElementById('model_key');
                 
-                // Сохраняем выбранную модель, если была
                 const selectedVal = select.value;
                 
                 select.innerHTML = '<option value="">Выберите принтер...</option>';
@@ -851,7 +887,6 @@
             }
         }
 
-        // Загрузка списка всей истории
         async function loadHistoryData() {
             try {
                 const res = await fetch('/admin/api/print-jobs', { headers: getHeaders() });
@@ -874,13 +909,13 @@
                             ${job.error_message ? `<div style="font-size: 0.75rem; color: var(--accent-red); margin-top: 0.25rem;">${job.error_message}</div>` : ''}
                         </td>
                         <td>
-                            <button onclick="toggleRowLogs(${job.task_id})" class="btn-auth-reset">📝 Логи</button>
+                            <button onclick="toggleRowLogs(${job.task_id})" class="btn-auth-reset">Логи</button>
                         </td>
                     </tr>
                     <tr id="logs-row-${job.task_id}" class="logs-row">
                         <td colspan="6">
-                            <div style="font-size: 0.8rem; font-weight: 600; margin-bottom: 0.5rem;">Журнал событий:</div>
-                            <div id="logs-content-${job.task_id}" class="logs-pre">Подключение к логам...</div>
+                            <div style="font-size: 0.8rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-muted);">Журнал событий:</div>
+                            <div id="logs-content-${job.task_id}" class="logs-pre">Подключение...</div>
                         </td>
                     </tr>
                 `).join('');
@@ -889,52 +924,38 @@
             }
         }
 
-        // Разворачивание/сворачивание логов в истории
         function toggleRowLogs(jobId) {
             const row = document.getElementById(`logs-row-${jobId}`);
             const content = document.getElementById(`logs-content-${jobId}`);
             
             if (row.classList.contains('active')) {
                 row.classList.remove('active');
+                if (row.eventSource) {
+                    row.eventSource.close();
+                    row.eventSource = null;
+                }
             } else {
                 row.classList.add('active');
-                content.textContent = 'Загрузка логов...';
-                
-                // Подключаемся к SSE логам для просмотра
-                // SSE работает через GET, передавая query-параметр auth key, но поскольку наш эндпоинт защищен verify_api_key,
-                // а стандартный EventSource в браузере не умеет отправлять кастомные заголовки, 
-                // мы передадим API-ключ в query-параметре!
-                // Ой, погодите, verify_api_key считывает только X-Bot-Api-Key заголовок!
-                // Чтобы обойти это ограничение, мы можем подключиться по EventSource, передав токен в query-параметре, 
-                // НО наш verify_api_key проверяет строго заголовок.
-                // Решение: Чтобы SSE работал нативно без переделки verify_api_key, в JS мы можем использовать polyfill, 
-                // либо мы можем временно пропатчить verify_api_key, чтобы он принимал ключ из query-параметра bot_api_key.
-                // Давайте добавим поддержку bot_api_key query-параметра в наш verify_api_key! 
-                // Но прямо сейчас мы можем сделать фетч через Headers, считать логи из Redis один раз, 
-                // ИЛИ использовать EventSource со специальным URL.
-                // Давайте проверим: в EventSource мы передадим url `/admin/api/print-jobs/${jobId}/logs?api_key=${apiKey}`
-                // Для этого в admin.py мы добавим альтернативный способ авторизации по query.
-                // Да, это отличная идея, мы добавим поддержку auth по query-параметру!
+                content.textContent = 'Подключение к потоку логов...';
                 
                 const eventSource = new EventSource(`/admin/api/print-jobs/${jobId}/logs?api_key=${apiKey}`);
                 
                 eventSource.onmessage = function(event) {
-                    if (content.textContent === 'Загрузка логов...' || content.textContent.includes('Подключение')) {
+                    if (content.textContent.includes('Подключение')) {
                         content.textContent = '';
                     }
                     content.textContent += event.data + '\n';
+                    content.scrollTop = content.scrollHeight;
                 };
                 
                 eventSource.onerror = function(err) {
                     eventSource.close();
                 };
                 
-                // Сохраняем ссылку на SSE на самой строке, чтобы закрыть его при закрытии строки
                 row.eventSource = eventSource;
             }
         }
 
-        // Загрузка страницы KB
         async function loadKBList() {
             try {
                 const res = await fetch('/admin/api/knowledge-base', { headers: getHeaders() });
@@ -945,7 +966,7 @@
                     <tr>
                         <td style="font-family: 'JetBrains Mono', monospace; font-weight: 500;">${printer.model_key}</td>
                         <td>${printer.display_name}</td>
-                        <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;">${printer.driver_name}</td>
+                        <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted);">${printer.driver_name}</td>
                         <td><span class="badge badge-progress">${printer.connection_type}</span></td>
                         <td>${printer.vendor}</td>
                     </tr>
@@ -955,7 +976,6 @@
             }
         }
 
-        // Отправка формы ручной установки
         async function submitInstallForm(event) {
             event.preventDefault();
             
@@ -969,7 +989,7 @@
             try {
                 const btn = event.target.querySelector('button[type="submit"]');
                 btn.disabled = true;
-                btn.textContent = '🚀 Инициализация...';
+                btn.textContent = 'Инициализация...';
 
                 const res = await fetch('/admin/api/print-jobs', {
                     method: 'POST',
@@ -980,21 +1000,19 @@
                 const result = await res.json();
                 
                 if (res.status === 200) {
-                    // Подключаемся к терминалу для вывода логов
                     startTerminal(result.task_id);
                 } else {
                     alert(`Ошибка запуска: ${result.detail || 'Неизвестная ошибка'}`);
                 }
                 
                 btn.disabled = false;
-                btn.textContent = '🚀 Запустить процесс';
+                btn.textContent = 'Запустить установку';
             } catch (e) {
                 console.error(e);
                 alert("Ошибка соединения с сервером");
             }
         }
 
-        // Запуск вывода логов в реальном времени
         function startTerminal(jobId) {
             const container = document.getElementById('install-terminal-container');
             const termId = document.getElementById('active-terminal-id');
@@ -1002,30 +1020,26 @@
             
             container.classList.add('active');
             termId.textContent = jobId;
-            termBody.textContent = 'Инициализация подключения к SSE...\n';
+            termBody.textContent = 'Инициализация логов...\n';
             
             if (activeEventSource) {
                 activeEventSource.close();
             }
 
-            // Подключение к потоку SSE
             activeEventSource = new EventSource(`/admin/api/print-jobs/${jobId}/logs?api_key=${apiKey}`);
             
             activeEventSource.onmessage = function(event) {
-                // Добавление строки лога в терминал
                 termBody.textContent += event.data + '\n';
-                // Автоскролл
                 termBody.scrollTop = termBody.scrollHeight;
             };
             
             activeEventSource.onerror = function(err) {
-                termBody.textContent += '\n[SYSTEM] Поток логов закрыт или завершен.\n';
+                termBody.textContent += '\n[SYSTEM] Поток логов завершен.\n';
                 activeEventSource.close();
                 activeEventSource = null;
             };
         }
 
-        // Хелпер для цвета бейджиков
         function getBadgeType(state) {
             const mapping = {
                 'pending': 'pending',
