@@ -36,7 +36,7 @@
             background-color: var(--bg-color);
             color: var(--text-color);
             min-height: 100vh;
-            display: flex;
+            display: block;
             overflow-x: hidden;
             -webkit-font-smoothing: antialiased;
         }
@@ -147,10 +147,9 @@
         /* Main Content Container */
         main {
             margin-left: var(--sidebar-width);
-            flex-grow: 1;
             padding: 3rem;
-            max-width: 1200px;
-            width: calc(100% - var(--sidebar-width));
+            max-width: 1600px;
+            width: auto;
         }
 
         header {
