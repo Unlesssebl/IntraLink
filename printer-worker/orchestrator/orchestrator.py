@@ -1,5 +1,6 @@
 import logging
 import contextvars
+import asyncio
 from .schemas import PrintJob, JobState, KnowledgeBase
 from .router import JobRouter
 from strategies import get_strategy
@@ -17,6 +18,14 @@ STATUS_IN_PROGRESS = 27  # В работе
 STATUS_WAITING = 35      # Требует уточнения
 STATUS_ON_HOLD = 40      # На доработку (передано специалисту)
 STATUS_RESOLVED = 29     # Выполнена
+
+# Глобальный словарь блокировок по целевым ПК для исключения конфликтов одновременной установки
+_pc_locks: dict[str, asyncio.Lock] = {}
+
+def get_pc_lock(target_pc: str) -> asyncio.Lock:
+    if target_pc not in _pc_locks:
+        _pc_locks[target_pc] = asyncio.Lock()
+    return _pc_locks[target_pc]
 
 class PrinterOrchestrator:
     """
@@ -40,7 +49,15 @@ class PrinterOrchestrator:
             await add_task_expenses(job.tg_user_id, job.task_id, minutes)
 
     async def run(self, job: PrintJob) -> None:
+        from worker_services.redis_listener import save_job_state
         token = current_task_id.set(job.task_id)
+        _failure_handled = False
+
+        async def fail(job_obj: PrintJob, error_msg: str) -> None:
+            nonlocal _failure_handled
+            _failure_handled = True
+            await self.handle_failure(job_obj, error_msg)
+
         try:
             if job.state != JobState.WAITING_APPROVAL:
                 logger.info("Начало выполнения задачи установки принтера для Task ID: %d", job.task_id)
@@ -48,18 +65,21 @@ class PrinterOrchestrator:
                 # 1. Переход в статус "В работе" в системе IntraService
                 await self._update_status(job, STATUS_IN_PROGRESS)
                 await self._add_comment(job, "🔧 Запущена автоматическая установка принтера...")
+                await save_job_state(job)
 
                 # 2. Маршрутизация (Fast-Track или Smart-Track)
                 job.state = JobState.ROUTING
+                await save_job_state(job)
                 job = await self.router.route(job)
+                await save_job_state(job)
 
                 if job.state == JobState.FAILED:
-                    await self.handle_failure(job, job.error_message or "Маршрутизация не удалась")
+                    await fail(job, job.error_message or "Маршрутизация не удалась")
                     return
 
                 # 2.5 Ожидание подтверждения (Approval Gate)
                 job.state = JobState.WAITING_APPROVAL
-                from worker_services.redis_listener import publish_approval_request, save_job_state
+                from worker_services.redis_listener import publish_approval_request
                 await save_job_state(job)
                 await publish_approval_request(job)
                 logger.info("Задача %d ожидает подтверждения. Пауза.", job.task_id)
@@ -67,16 +87,17 @@ class PrinterOrchestrator:
             else:
                 logger.info("Возобновление задачи установки принтера после подтверждения для Task ID: %d", job.task_id)
                 job.state = JobState.PROBING
+                await save_job_state(job)
 
             # 3. Загрузка подходящей стратегии установки
             if not job.connection_type:
-                await self.handle_failure(job, "Тип подключения принтера не определен")
+                await fail(job, "Тип подключения принтера не определен")
                 return
             if not job.target_pc:
-                await self.handle_failure(job, "Целевой ПК не определен")
+                await fail(job, "Целевой ПК не определен")
                 return
             if not job.driver_info:
-                await self.handle_failure(job, "Драйвер принтера не определен")
+                await fail(job, "Драйвер принтера не определен")
                 return
                 
             assert job.connection_type is not None
@@ -98,54 +119,62 @@ class PrinterOrchestrator:
             )
 
             # Включение WinRM
-            job.state = JobState.PROBING
-            await self._add_comment(
-                job, 
-                f"🚀 Инициализация удаленного подключения к {job.target_pc} (WMI Bootstrap)..."
-            )
-            try:
-                await wmi_exec.enable_winrm()
-            except Exception as e:
-                await self.handle_failure(job, f"Не удалось инициализировать подключение (WMI Bootstrap): {e}")
-                return
+            winrm_enabled_successfully = False
+            async with get_pc_lock(job.target_pc):
+                try:
+                    job.state = JobState.PROBING
+                    await save_job_state(job)
+                    await self._add_comment(
+                        job, 
+                        f"🚀 Инициализация удаленного подключения к {job.target_pc} (WMI Bootstrap)..."
+                    )
+                    try:
+                        await wmi_exec.enable_winrm()
+                        winrm_enabled_successfully = True
+                    except Exception as e:
+                        await fail(job, f"Не удалось инициализировать подключение (WMI Bootstrap): {e}")
+                        return
 
-            try:
-                # 4. Проверка готовности (WinRM Probe / USB detection)
-                await self._add_comment(
-                    job, 
-                    f"🔎 Диагностика целевого хоста {job.target_pc}. Проверка подключения принтера по {job.connection_type.value.upper()}..."
-                )
-                job = await strategy.probe(job)
+                    # 4. Проверка готовности (WinRM Probe / USB detection)
+                    await self._add_comment(
+                        job, 
+                        f"🔎 Диагностика целевого хоста {job.target_pc}. Проверка подключения принтера по {job.connection_type.value.upper()}..."
+                    )
+                    job = await strategy.probe(job)
+                    await save_job_state(job)
 
-                # 5. Обработка случая, когда USB-принтер отключен (WAITING)
-                if job.state == JobState.WAITING:
-                    logger.info("Задача #%d переведена в режим ожидания (USB кабель не подключен)", job.task_id)
-                    await self._update_status(job, STATUS_WAITING)
+                    # 5. Обработка случая, когда USB-принтер отключен (WAITING)
+                    if job.state == JobState.WAITING:
+                        logger.info("Задача #%d переведена в режим ожидания (USB кабель не подключен)", job.task_id)
+                        await self._update_status(job, STATUS_WAITING)
+                        await self._add_comment(
+                            job,
+                            f"⏳ Внимание: {job.error_message}. Пожалуйста, подключите USB кабель принтера и включите устройство, после чего перезапустите задачу вручную (через веб-панель администратора или команду бота)."
+                        )
+                        await save_job_state(job)
+                        return
+
+                    if job.state == JobState.FAILED:
+                        await fail(job, f"Сбой этапа диагностики: {job.error_message}")
+                        return
+
+                    # 6. Выполнение установки
+                    assert job.driver_info is not None
                     await self._add_comment(
                         job,
-                        f"⏳ Внимание: {job.error_message}. Пожалуйста, подключите USB кабель принтера и включите устройство, после чего установка продолжится автоматически."
+                        f"📥 Установка драйвера {job.driver_info.display_name} и настройка портов на ПК {job.target_pc}..."
                     )
-                    return
+                    job = await strategy.execute(job)
+                    await save_job_state(job)
 
-                if job.state == JobState.FAILED:
-                    await self.handle_failure(job, f"Сбой этапа диагностики: {job.error_message}")
-                    return
-
-                # 6. Выполнение установки
-                assert job.driver_info is not None
-                await self._add_comment(
-                    job,
-                    f"📥 Установка драйвера {job.driver_info.display_name} и настройка портов на ПК {job.target_pc}..."
-                )
-                job = await strategy.execute(job)
-
-            finally:
-                # Всегда отключаем WinRM после завершения установки (успешной или нет)
-                logger.info("Отключение WinRM на %s...", job.target_pc)
-                try:
-                    await wmi_exec.disable_winrm()
-                except Exception as e:
-                    logger.warning("Не удалось отключить WinRM на %s: %s", job.target_pc, e)
+                finally:
+                    if winrm_enabled_successfully:
+                        # Всегда отключаем WinRM после завершения установки (успешной или нет)
+                        logger.info("Отключение WinRM на %s...", job.target_pc)
+                        try:
+                            await wmi_exec.disable_winrm()
+                        except Exception as e:
+                            logger.warning("Не удалось отключить WinRM на %s: %s", job.target_pc, e)
 
             # 7. Финализация результатов
             if job.state == JobState.DONE:
@@ -161,19 +190,30 @@ class PrinterOrchestrator:
                     f"Тип подключения: {job.connection_type.value.upper()}\n"
                     f"Используемый драйвер: {job.driver_info.driver_name}"
                 )
+                await save_job_state(job)
             else:
-                await self.handle_failure(job, job.error_message or "Неизвестная ошибка во время установки")
+                await fail(job, job.error_message or "Неизвестная ошибка во время установки")
 
         except Exception as e:
-            logger.exception("Критическая ошибка оркестрации задачи #%d: %s", job.task_id, e)
-            job.state = JobState.FAILED
-            job.error_message = f"Внутренняя ошибка оркестратора: {e}"
-            await self.handle_failure(job, job.error_message)
+            if not _failure_handled:
+                logger.exception("Критическая ошибка оркестрации задачи #%d: %s", job.task_id, e)
+                job.state = JobState.FAILED
+                job.error_message = f"Внутренняя ошибка оркестратора: {e}"
+                await self.handle_failure(job, job.error_message)
+            else:
+                logger.debug("Исключение в run() проигнорировано, так как сбой уже обработан: %s", e)
         finally:
             current_task_id.reset(token)
 
     async def handle_failure(self, job: PrintJob, error_detail: str) -> None:
         logger.error("Сбой выполнения задачи #%d. Состояние: %s. Причина: %s", job.task_id, job.state.value, error_detail)
+        job.state = JobState.FAILED
+        job.error_message = error_detail
+        try:
+            from worker_services.redis_listener import save_job_state
+            await save_job_state(job)
+        except Exception:
+            pass
         # Переводим в «Требует уточнения» (35): переход из «В работе» (27) в «На доработку» (40)
         # запрещён бизнес-процессом «Настройка\установка», поэтому используем статус 35.
         await self._update_status(job, STATUS_WAITING)

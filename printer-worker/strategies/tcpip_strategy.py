@@ -8,6 +8,12 @@ from executors.smb_executor import smb_executor
 
 logger = logging.getLogger(__name__)
 
+def escape_ps(text: str) -> str:
+    """
+    Экранирует одинарные кавычки для безопасной подстановки параметров в PowerShell скрипты.
+    """
+    return text.replace("'", "''")
+
 @strategy(ConnectionType.TCPIP)
 class TcpIpPortStrategy(PrinterStrategy):
     async def probe(self, job: PrintJob) -> PrintJob:
@@ -17,10 +23,11 @@ class TcpIpPortStrategy(PrinterStrategy):
             return job
 
         driver_name = job.driver_info.driver_name
+        driver_name_esc = escape_ps(driver_name)
         logger.info("Проверка наличия драйвера '%s' на ПК %s", driver_name, job.target_pc)
         
         # Скрипт проверки существования драйвера
-        script = f"Get-PrinterDriver -Name '{driver_name}' -ErrorAction SilentlyContinue"
+        script = f"Get-PrinterDriver -Name '{driver_name_esc}' -ErrorAction SilentlyContinue"
         status, stdout, stderr = await winrm_executor.run_powershell(job.target_pc, script)
         
         if status == 0 and driver_name in stdout:
@@ -34,88 +41,108 @@ class TcpIpPortStrategy(PrinterStrategy):
         return job
 
     async def execute(self, job: PrintJob) -> PrintJob:
+        from worker_services.redis_listener import save_job_state
         if not job.target_pc or not job.driver_info or not job.printer_address:
             job.state = JobState.FAILED
             job.error_message = "Неполные параметры сетевого принтера (IP/DNS адрес не указан)"
+            await save_job_state(job)
             return job
 
         # 1. Диагностика
         job = await self.probe(job)
         if job.state == JobState.FAILED:
+            await save_job_state(job)
             return job
 
         assert job.target_pc is not None
         assert job.driver_info is not None
 
         driver_name = job.driver_info.driver_name
+        driver_name_esc = escape_ps(driver_name)
         inf_path = job.driver_info.driver_inf_path
         
         _, dest_subdir, inf_filename = smb_executor.parse_driver_path(inf_path)
         remote_temp_path = f"C:\\Windows\\Temp\\printer_drivers\\{dest_subdir}\\{inf_filename}"
+        remote_temp_path_esc = escape_ps(remote_temp_path)
 
         # 2. Копирование и установка драйвера при необходимости
         if job.error_message == "DRIVER_MISSING":
             job.state = JobState.COPYING
+            await save_job_state(job)
             logger.info("Копирование драйвера %s на %s", inf_path, job.target_pc)
             success = await smb_executor.copy_driver_to_temp(inf_path, job.target_pc)
             if not success:
                 job.state = JobState.FAILED
                 job.error_message = f"Не удалось скопировать драйвер на удаленный ПК {job.target_pc} по SMB"
+                await save_job_state(job)
                 return job
 
             job.state = JobState.INSTALLING
+            await save_job_state(job)
             logger.info("Установка драйвера '%s' на ПК %s", driver_name, job.target_pc)
             # Скрипт импорта драйвера в Windows
             install_driver_script = (
-                f"pnputil /add-driver '{remote_temp_path}' /install ; "
-                f"Add-PrinterDriver -Name '{driver_name}'"
+                f"pnputil /add-driver '{remote_temp_path_esc}' /install ; "
+                f"Add-PrinterDriver -Name '{driver_name_esc}'"
             )
             status, stdout, stderr = await winrm_executor.run_powershell(job.target_pc, install_driver_script)
             if status != 0:
                 job.state = JobState.FAILED
                 job.error_message = f"Сбой добавления драйвера принтера в ОС: {stderr or stdout}"
+                await save_job_state(job)
                 return job
 
         # 3. Создание TCP/IP порта
         job.state = JobState.INSTALLING
+        await save_job_state(job)
         port_name = f"IP_{job.printer_address}"
+        port_name_esc = escape_ps(port_name)
+        printer_address_esc = escape_ps(job.printer_address)
         logger.info("Создание сетевого порта %s на ПК %s", port_name, job.target_pc)
         port_script = (
-            f"if (-not (Get-PrinterPort -Name '{port_name}' -ErrorAction SilentlyContinue)) {{"
-            f"  Add-PrinterPort -Name '{port_name}' -PrinterHostAddress '{job.printer_address}'"
+            f"if (-not (Get-PrinterPort -Name '{port_name_esc}' -ErrorAction SilentlyContinue)) {{"
+            f"  Add-PrinterPort -Name '{port_name_esc}' -PrinterHostAddress '{printer_address_esc}'"
             f"}}"
         )
         status, stdout, stderr = await winrm_executor.run_powershell(job.target_pc, port_script)
         if status != 0:
             job.state = JobState.FAILED
             job.error_message = f"Сбой создания сетевого порта {port_name}: {stderr or stdout}"
+            await save_job_state(job)
             return job
 
-        # 4. Добавление принтера
+        # 4. Добавление или обновление принтера
         printer_name = job.driver_info.display_name
-        logger.info("Создание принтера '%s' на ПК %s", printer_name, job.target_pc)
+        printer_name_esc = escape_ps(printer_name)
+        logger.info("Создание или обновление свойств принтера '%s' на ПК %s", printer_name, job.target_pc)
         printer_script = (
-            f"if (-not (Get-Printer -Name '{printer_name}' -ErrorAction SilentlyContinue)) {{"
-            f"  Add-Printer -Name '{printer_name}' -DriverName '{driver_name}' -PortName '{port_name}'"
+            f"if (-not (Get-Printer -Name '{printer_name_esc}' -ErrorAction SilentlyContinue)) {{"
+            f"  Add-Printer -Name '{printer_name_esc}' -DriverName '{driver_name_esc}' -PortName '{port_name_esc}'"
+            f"}} else {{"
+            f"  Set-Printer -Name '{printer_name_esc}' -DriverName '{driver_name_esc}' -PortName '{port_name_esc}'"
             f"}}"
         )
         status, stdout, stderr = await winrm_executor.run_powershell(job.target_pc, printer_script)
         if status != 0:
             job.state = JobState.FAILED
-            job.error_message = f"Сбой создания принтера {printer_name}: {stderr or stdout}"
+            job.error_message = f"Сбой добавления/настройки принтера {printer_name}: {stderr or stdout}"
+            await save_job_state(job)
             return job
 
         # 5. Верификация
         job.state = JobState.VERIFYING
-        verify_script = f"Get-Printer -Name '{printer_name}' | Select-Object Name, PortName, DriverName | ConvertTo-Json"
+        await save_job_state(job)
+        verify_script = f"Get-Printer -Name '{printer_name_esc}' | Select-Object Name, PortName, DriverName | ConvertTo-Json"
         status, stdout, stderr = await winrm_executor.run_powershell(job.target_pc, verify_script)
         
         if status == 0 and printer_name in stdout:
             logger.info("Принтер '%s' успешно верифицирован на %s", printer_name, job.target_pc)
             job.state = JobState.DONE
             job.error_message = None
+            await save_job_state(job)
         else:
             job.state = JobState.FAILED
             job.error_message = f"Верификация принтера не удалась: {stderr or stdout}"
+            await save_job_state(job)
 
         return job

@@ -38,7 +38,8 @@ class SMBExecutor:
                 else:
                     with open_file(src_item, mode='rb') as f_src:
                         with open_file(dest_item, mode='wb') as f_dst:
-                            f_dst.write(f_src.read())
+                            while chunk := f_src.read(4 * 1024 * 1024):
+                                f_dst.write(chunk)
             except Exception as e:
                 logger.error(f"Ошибка копирования элемента {src_item}: {e}")
                 raise
@@ -86,10 +87,17 @@ class SMBExecutor:
             logger.error("Ошибка копирования SMB директории %s на %s: %s", src, dest_host, e)
             return False
 
-    async def copy_driver_to_temp(self, src: str, dest_host: str) -> bool:
+    async def copy_driver_to_temp(self, src: str, dest_host: str, timeout: float = 600.0) -> bool:
         """
         Асинхронно копирует файл драйвера в C:\\Windows\\Temp\\printer_drivers на удаленный ПК.
         """
-        return await asyncio.to_thread(self._copy_file_sync, src, dest_host, "C$\\Windows\\Temp")
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._copy_file_sync, src, dest_host, "C$\\Windows\\Temp"),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            logger.error("Таймаут (%s сек) при SMB копировании драйвера %s на хост %s", timeout, src, dest_host)
+            return False
 
 smb_executor = SMBExecutor()

@@ -83,13 +83,20 @@ class WMIExecutor:
         finally:
             dcom.disconnect()
 
-    async def execute(self, command: str) -> None:
+    async def execute(self, command: str, timeout: float = 30.0) -> None:
         """
         Асинхронная обертка для выполнения команды через WMI.
         """
-        await asyncio.to_thread(self._sync_execute, command)
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self._sync_execute, command),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Таймаут WMI команды ({timeout} сек) на {self.target_ip}")
+            raise WmiBootstrapError(f"Таймаут WMI команды ({timeout} сек) на {self.target_ip}")
 
-    async def enable_winrm(self) -> None:
+    async def enable_winrm(self, timeout: float = 40.0) -> None:
         """
         Запускает команду включения WinRM на удаленном хосте.
         Эквивалент: winrm quickconfig -q
@@ -110,13 +117,17 @@ class WMIExecutor:
         cmd = f"powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -EncodedCommand {encoded}"
         
         logger.info(f"[{self.target_ip}] Инициализация включения WinRM через WMI...")
-        await self.execute(cmd)
+        try:
+            await asyncio.wait_for(self.execute(cmd), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.error(f"[{self.target_ip}] Таймаут выполнения операции включения WinRM")
+            raise WmiBootstrapError(f"Таймаут при включении WinRM на {self.target_ip}")
         
         # Даем службе время на запуск
         await asyncio.sleep(5)
         logger.info(f"[{self.target_ip}] Ожидание запуска WinRM завершено.")
 
-    async def disable_winrm(self) -> None:
+    async def disable_winrm(self, timeout: float = 30.0) -> None:
         """
         Отключает WinRM для возврата системы в безопасное состояние.
         """
@@ -126,5 +137,9 @@ class WMIExecutor:
         cmd = f"powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -EncodedCommand {encoded}"
         
         logger.info(f"[{self.target_ip}] Инициализация отключения WinRM через WMI...")
-        await self.execute(cmd)
+        try:
+            await asyncio.wait_for(self.execute(cmd), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.error(f"[{self.target_ip}] Таймаут выполнения операции отключения WinRM")
+            raise WmiBootstrapError(f"Таймаут при отключении WinRM на {self.target_ip}")
         logger.info(f"[{self.target_ip}] Команда отключения отправлена.")

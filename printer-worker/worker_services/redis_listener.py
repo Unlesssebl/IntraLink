@@ -6,7 +6,7 @@ import redis.asyncio as aioredis
 from typing import Optional
 from worker_config import REDIS_URL, MAX_CONCURRENT_JOBS
 from orchestrator.schemas import PrintJob, JobState
-from worker_services.api_client import get_task_details
+from worker_services.api_client import get_task_details, update_task_status, add_task_comment
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +22,13 @@ def get_redis() -> aioredis.Redis:
 import time
 
 async def save_job_state(job: PrintJob) -> None:
-    r = get_redis()
-    await r.setex(f"printer_job:{job.task_id}", 86400, job.model_dump_json())
     try:
+        r = get_redis()
+        await r.setex(f"printer_job:{job.task_id}", 86400, job.model_dump_json())
         await r.zadd("printer_jobs_list", {str(job.task_id): time.time()})
         await r.zremrangebyrank("printer_jobs_list", 0, -101)
     except Exception as e:
-        logger.error("Ошибка при сохранении ID задачи в список printer_jobs_list: %s", e)
+        logger.error("Ошибка при сохранении состояния задачи #%d в Redis: %s", job.task_id, e)
 
 async def load_job_state(task_id: int) -> Optional[PrintJob]:
     r = get_redis()
@@ -57,77 +57,101 @@ _semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 _active_tasks: set[int] = set()
 
 async def _process_approval_response(payload: dict) -> None:
-    async with _semaphore:
-        task_id = payload.get("task_id")
-        action = payload.get("action")  # "approve", "reject", "update"
-        
-        if not task_id:
-            return
+    task_id = payload.get("task_id")
+    if not task_id:
+        return
+
+    if task_id in _active_tasks:
+        logger.info("Событие 'approval_response' для задачи #%d пропущено: задача уже обрабатывается", task_id)
+        return
+
+    _active_tasks.add(task_id)
+    try:
+        async with _semaphore:
+            action = payload.get("action")  # "approve", "reject", "update"
             
-        job = await load_job_state(task_id)
-        if not job:
-            logger.error("Job %s не найден в Redis при получении approval_response", task_id)
-            return
-            
-        from worker_main import get_orchestrator
-        orchestrator = get_orchestrator()
-        
-        if action == "approve":
-            await orchestrator.run(job)
-        elif action == "update":
-            job.target_pc = payload.get("target_pc", job.target_pc)
-            job.model_key = payload.get("model_key", job.model_key)
-            if payload.get("connection_type"):
-                from orchestrator.schemas import ConnectionType
-                job.connection_type = ConnectionType(payload.get("connection_type"))
-            
-            if job.model_key:
-                job.driver_info = orchestrator.kb.find_by_key(job.model_key)
+            job = await load_job_state(task_id)
+            if not job:
+                logger.error("Job %s не найден в Redis при получении approval_response", task_id)
+                return
                 
-            await save_job_state(job)
-            await orchestrator.run(job)
-        elif action == "reject":
-            job.state = JobState.FAILED
-            job.error_message = "Отменено инженером технической поддержки."
-            # Мы можем вызвать внутренний метод, чтобы залогировать отказ в IntraService
-            # Но правильнее вызывать run с FAILED стейтом, либо напрямую update_task_status
-            await orchestrator.handle_failure(job, job.error_message)
+            from worker_main import get_orchestrator
+            orchestrator = get_orchestrator()
+            
+            if action == "approve":
+                await orchestrator.run(job)
+            elif action == "update":
+                job.target_pc = payload.get("target_pc", job.target_pc)
+                job.model_key = payload.get("model_key", job.model_key)
+                if payload.get("connection_type"):
+                    from orchestrator.schemas import ConnectionType
+                    job.connection_type = ConnectionType(payload.get("connection_type"))
+                
+                if job.model_key:
+                    job.driver_info = orchestrator.kb.find_by_key(job.model_key)
+                    
+                await save_job_state(job)
+                await orchestrator.run(job)
+            elif action == "reject":
+                job.state = JobState.FAILED
+                job.error_message = "Отменено инженером технической поддержки."
+                await orchestrator.handle_failure(job, job.error_message)
+    except Exception as e:
+        logger.exception("Ошибка при обработке подтверждения для задачи #%d: %s", task_id, e)
+    finally:
+        _active_tasks.discard(task_id)
+        logger.debug("Задача #%d (approval_response) удалена из активных", task_id)
 
 async def _process_manual_trigger(payload: dict) -> None:
-    async with _semaphore:
-        task_id = payload.get("task_id")
-        tg_user_id = payload.get("tg_user_id") or 0
-        target_pc = payload.get("target_pc")
-        model_key = payload.get("model_key")
-        connection_type = payload.get("connection_type")
-        printer_address = payload.get("printer_address")
+    task_id = payload.get("task_id")
+    if not task_id:
+        logger.error("Неполные данные для ручного запуска (отсутствует task_id): %s", payload)
+        return
 
-        if not task_id or not target_pc or not model_key:
-            logger.error("Неполные данные для ручного запуска в сообщении: %s", payload)
-            return
+    if task_id in _active_tasks:
+        logger.info("Событие 'manual_trigger' для задачи #%d пропущено: задача уже обрабатывается", task_id)
+        return
 
-        from orchestrator.schemas import ConnectionType
-        from worker_main import get_orchestrator
-        orchestrator = get_orchestrator()
+    _active_tasks.add(task_id)
+    try:
+        async with _semaphore:
+            tg_user_id = payload.get("tg_user_id") or 0
+            target_pc = payload.get("target_pc")
+            model_key = payload.get("model_key")
+            connection_type = payload.get("connection_type")
+            printer_address = payload.get("printer_address")
 
-        job = PrintJob(
-            task_id=task_id,
-            tg_user_id=tg_user_id,
-            raw_text=f"Ручная установка: {model_key} на ПК {target_pc}",
-            state=JobState.PROBING,
-            target_pc=target_pc,
-            model_key=model_key,
-            connection_type=ConnectionType(connection_type) if connection_type else None,
-            printer_address=printer_address,
-            is_manual=True
-        )
+            if not target_pc or not model_key:
+                logger.error("Неполные данные для ручного запуска в сообщении: %s", payload)
+                return
 
-        if job.model_key:
-            job.driver_info = orchestrator.kb.find_by_key(job.model_key)
+            from orchestrator.schemas import ConnectionType
+            from worker_main import get_orchestrator
+            orchestrator = get_orchestrator()
 
-        await save_job_state(job)
-        logger.info("Запущен ручной процесс установки для задачи #%d", task_id)
-        await orchestrator.run(job)
+            job = PrintJob(
+                task_id=task_id,
+                tg_user_id=tg_user_id,
+                raw_text=f"Ручная установка: {model_key} на ПК {target_pc}",
+                state=JobState.PROBING,
+                target_pc=target_pc,
+                model_key=model_key,
+                connection_type=ConnectionType(connection_type) if connection_type else None,
+                printer_address=printer_address,
+                is_manual=True
+            )
+
+            if job.model_key:
+                job.driver_info = orchestrator.kb.find_by_key(job.model_key)
+
+            await save_job_state(job)
+            logger.info("Запущен ручной процесс установки для задачи #%d", task_id)
+            await orchestrator.run(job)
+    except Exception as e:
+        logger.exception("Ошибка при ручном запуске для задачи #%d: %s", task_id, e)
+    finally:
+        _active_tasks.discard(task_id)
+        logger.debug("Задача #%d (manual_trigger) удалена из активных", task_id)
 
 async def _process_event(payload: dict) -> None:
     async with _semaphore:
@@ -234,11 +258,91 @@ async def _process_event(payload: dict) -> None:
             _active_tasks.discard(task_id)
             logger.debug("Задача #%d удалена из активных", task_id)
 
+async def _recover_orphan_jobs() -> None:
+    logger.info("Запуск сканирования для восстановления сиротских задач в Redis...")
+    r = get_redis()
+    
+    # Локальные импорты для избежания циклических ссылок
+    from executors.wmi_executor import WMIExecutor
+    from worker_config import WINRM_USERNAME, WINRM_PASSWORD
+    from orchestrator.orchestrator import STATUS_WAITING
+    
+    try:
+        async for key in r.scan_iter("printer_job:*"):
+            try:
+                data = await r.get(key)
+                if not data:
+                    continue
+                
+                job = PrintJob.model_validate_json(data)
+                
+                # Зависшие задачи, требующие отключения WinRM на удаленном PC и перевода в FAILED
+                if job.state in (
+                    JobState.PROBING,
+                    JobState.ROUTING,
+                    JobState.PARSING,
+                    JobState.COPYING,
+                    JobState.INSTALLING,
+                    JobState.VERIFYING
+                ):
+                    logger.warning("Обнаружена зависшая задача #%d в состоянии %s. Восстановление...", job.task_id, job.state.value)
+                    
+                    if job.target_pc:
+                        domain = ""
+                        username = WINRM_USERNAME
+                        if "\\" in username:
+                            domain, username = username.split("\\", 1)
+                        
+                        wmi = WMIExecutor(
+                            target_ip=job.target_pc,
+                            username=username,
+                            password=WINRM_PASSWORD,
+                            domain=domain
+                        )
+                        try:
+                            logger.info("Отключение WinRM на ПК %s для сиротской задачи #%d...", job.target_pc, job.task_id)
+                            await wmi.disable_winrm()
+                        except Exception as ex:
+                            logger.error("Не удалось отключить WinRM для сиротской задачи #%d: %s", job.task_id, ex)
+                    
+                    job.state = JobState.FAILED
+                    job.error_message = "Установка прервана из-за перезапуска сервиса. Задача сброшена в очередь ожидания."
+                    await save_job_state(job)
+                    
+                    if not job.is_manual:
+                        try:
+                            await update_task_status(job.tg_user_id, job.task_id, STATUS_WAITING)
+                            await add_task_comment(job.tg_user_id, job.task_id, f"❌ {job.error_message}")
+                        except Exception as ex:
+                            logger.error("Не удалось отправить статус в ИС для сиротской задачи #%d: %s", job.task_id, ex)
+                            
+                elif job.state == JobState.WAITING_APPROVAL:
+                    logger.warning("Обнаружена зависшая задача #%d в состоянии WAITING_APPROVAL. Восстановление...", job.task_id)
+                    job.state = JobState.FAILED
+                    job.error_message = "Подтверждение из Telegram-бота не было получено из-за перезапуска сервиса. Задача требует ручного перезапуска."
+                    await save_job_state(job)
+                    
+                    if not job.is_manual:
+                        try:
+                            await update_task_status(job.tg_user_id, job.task_id, STATUS_WAITING)
+                            await add_task_comment(job.tg_user_id, job.task_id, f"❌ {job.error_message}")
+                        except Exception as ex:
+                            logger.error("Не удалось отправить статус в ИС для сиротской задачи #%d: %s", job.task_id, ex)
+            except Exception as e:
+                logger.error("Ошибка разбора/восстановления для ключа %s: %s", key, e)
+    except Exception as e:
+        logger.error("Ошибка при сканировании ключей printer_job:* в Redis: %s", e)
+    logger.info("Сканирование и восстановление сиротских задач завершено.")
+
 async def start_redis_listener():
     """
     Фоновый процесс подписки на Redis Pub/Sub для прослушивания событий IntraService.
     """
     logger.info("Запуск фонового подписчика Redis Pub/Sub на канале 'intraservice_events'...")
+    try:
+        await _recover_orphan_jobs()
+    except Exception as e:
+        logger.exception("Критическая ошибка при восстановлении сиротских задач: %s", e)
     while True:
         redis = None
         try:

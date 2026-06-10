@@ -15,22 +15,41 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Пользовательский хэндлер для трансляции логов конкретной задачи в Redis
+# Пользовательский хэндлер для трансляции логов конкретной задачи в Redis
 class RedisLogHandler(logging.Handler):
+    def __init__(self, loop=None):
+        super().__init__()
+        try:
+            self.loop = loop or asyncio.get_running_loop()
+        except RuntimeError:
+            self.loop = None
+
     def emit(self, record):
         task_id = current_task_id.get()
-        if task_id:
+        if task_id and self.loop:
             try:
-                loop = asyncio.get_running_loop()
                 log_message = self.format(record)
                 async def pub():
                     try:
                         from worker_services.redis_listener import get_redis
                         r = get_redis()
                         await r.publish(f"printer_job_logs:{task_id}", log_message)
+                        history_key = f"printer_job_logs_history:{task_id}"
+                        await r.rpush(history_key, log_message)
+                        await r.expire(history_key, 86400)
                     except Exception:
                         pass
-                loop.create_task(pub())
-            except RuntimeError:
+                
+                try:
+                    current_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    current_loop = None
+                
+                if current_loop is self.loop:
+                    self.loop.create_task(pub())
+                else:
+                    asyncio.run_coroutine_threadsafe(pub(), self.loop)
+            except Exception:
                 pass
 
 _kb: Optional[KnowledgeBase] = None

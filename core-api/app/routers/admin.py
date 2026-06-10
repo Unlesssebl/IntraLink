@@ -161,6 +161,15 @@ async def log_stream_generator(job_id: int):
     
     yield "event: message\ndata: [SYSTEM] Подключение к потоку логов... ожидание вывода воркера.\n\n"
     
+    # Считываем накопленные логи из истории в Redis
+    try:
+        history = await r.lrange(f"printer_job_logs_history:{job_id}", 0, -1)
+        if history:
+            for log_line in history:
+                yield f"event: message\ndata: {log_line}\n\n"
+    except Exception as e:
+        logger.error("Ошибка чтения истории логов для задачи #%d: %s", job_id, e)
+    
     # Отправим также текущий стейт задачи, если он есть
     job_data_raw = await r.get(f"printer_job:{job_id}")
     if job_data_raw:
@@ -175,6 +184,9 @@ async def log_stream_generator(job_id: int):
         except Exception:
             pass
 
+    import time
+    last_msg_time = time.monotonic()
+
     try:
         while True:
             # Считываем из Pub/Sub с таймаутом
@@ -183,8 +195,12 @@ async def log_stream_generator(job_id: int):
                 log_line = message.get("data")
                 if log_line:
                     yield f"event: message\ndata: {log_line}\n\n"
+                    last_msg_time = time.monotonic()
             else:
-                # Отправляем ping каждые 15 секунд для удержания SSE соединения открытым
+                # Проверяем, сколько времени прошло без сообщений
+                if time.monotonic() - last_msg_time > 15.0:
+                    yield ": ping\n\n"
+                    last_msg_time = time.monotonic()
                 await asyncio.sleep(0.5)
     except asyncio.CancelledError:
         logger.info("SSE клиент отключился от логов задачи #%d", job_id)
