@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sys
 import os
+from unittest.mock import patch, AsyncMock
 
 # Добавляем пути, чтобы импорты работали
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -11,7 +12,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("test_install")
 
 from orchestrator.schemas import PrintJob, JobState, ConnectionType
-
 from strategies import get_strategy
 from executors.wmi_executor import WMIExecutor
 import worker_config as config
@@ -22,16 +22,15 @@ async def test_install():
     
     logger.info("Загрузка базы знаний...")
     import json
-    with open(config.PRINTERS_KB_PATH, "r", encoding="utf-8") as f:
+    kb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge_base", "printers_knowledge_base.json")
+    with open(kb_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     from orchestrator.schemas import KnowledgeBase
     kb = KnowledgeBase.model_validate(data)
     
     driver_info = kb.find_by_key(model_key)
-    if not driver_info:
-        logger.error(f"Драйвер {model_key} не найден!")
-        return
-        
+    assert driver_info is not None, f"Драйвер {model_key} не найден!"
+    
     logger.info(f"Найден драйвер: {driver_info.display_name}")
     
     # Формируем фиктивную задачу
@@ -52,45 +51,66 @@ async def test_install():
     if "\\" in username:
         domain, username = username.split("\\", 1)
 
-    wmi_exec = WMIExecutor(
-        target_ip=job.target_pc,
-        username=username,
-        password=config.WINRM_PASSWORD,
-        domain=domain
-    )
+    # Задаем моки
+    with patch("executors.wmi_executor.WMIExecutor.enable_winrm", new_callable=AsyncMock) as mock_enable_winrm, \
+         patch("executors.wmi_executor.WMIExecutor.disable_winrm", new_callable=AsyncMock) as mock_disable_winrm, \
+         patch("strategies.tcpip_strategy.winrm_executor.run_powershell", new_callable=AsyncMock) as mock_run_ps, \
+         patch("strategies.tcpip_strategy.smb_executor.copy_driver_to_temp", new_callable=AsyncMock) as mock_copy_smb:
 
-    logger.info("Попытка включения WinRM через WMI...")
-    try:
+        # Настраиваем возвращаемые значения для run_powershell
+        # 1-й вызов (ручной probe в тесте): Get-PrinterDriver. Вернем status=1 (драйвер отсутствует)
+        # 2-й вызов (внутренний probe в execute): Get-PrinterDriver. Вернем status=1 (драйвер отсутствует)
+        # 3-й вызов (execute -> install_driver_script): pnputil
+        # 4-й вызов (execute -> port_script): Add-PrinterPort
+        # 5-й вызов (execute -> printer_script): Add-Printer
+        # 6-й вызов (execute -> verify_script): Get-Printer (Verification)
+        mock_run_ps.side_effect = [
+            (1, "Driver not found", ""),      # Get-PrinterDriver (manual probe)
+            (1, "Driver not found", ""),      # Get-PrinterDriver (internal probe)
+            (0, "Driver installed", ""),      # pnputil
+            (0, "Port added", ""),            # Add-PrinterPort
+            (0, "Printer added", ""),         # Add-Printer
+            (0, driver_info.display_name, "") # Get-Printer (Verification)
+        ]
+        
+        mock_copy_smb.return_value = True
+
+        assert job.target_pc is not None
+        wmi_exec = WMIExecutor(
+            target_ip=job.target_pc,
+            username=username,
+            password=config.WINRM_PASSWORD,
+            domain=domain
+        )
+
+        logger.info("Попытка включения WinRM через WMI...")
         await wmi_exec.enable_winrm()
         logger.info("WinRM успешно включен!")
-    except Exception as e:
-        logger.error(f"Ошибка включения WinRM: {e}")
-        return
 
-    try:
-        strategy = get_strategy(job.connection_type)
-        logger.info("Начало выполнения стратегии установки...")
-        
-        # probe
-        job = await strategy.probe(job)
-        if job.state == JobState.FAILED:
-            logger.error(f"Диагностика не пройдена: {job.error_message}")
-            return
-            
-        # execute
-        job = await strategy.execute(job)
-        if job.state == JobState.DONE:
-            logger.info("Установка успешно завершена!")
-        else:
-            logger.error(f"Установка завершилась с ошибкой: {job.error_message}")
-            
-    finally:
-        logger.info("Отключение WinRM...")
         try:
+            assert job.connection_type is not None
+            strategy = get_strategy(job.connection_type)
+            logger.info("Начало выполнения стратегии установки...")
+            
+            # probe
+            job = await strategy.probe(job)
+            assert job.state != JobState.FAILED, f"Диагностика не пройдена: {job.error_message}"
+                
+            # execute
+            job = await strategy.execute(job)
+            assert job.state == JobState.DONE, f"Установка завершилась с ошибкой: {job.error_message}"
+            logger.info("Установка успешно завершена!")
+                
+        finally:
+            logger.info("Отключение WinRM...")
             await wmi_exec.disable_winrm()
             logger.info("WinRM успешно отключен!")
-        except Exception as e:
-            logger.error(f"Ошибка при отключении WinRM: {e}")
+
+        # Проверим, что моки вызывались
+        mock_enable_winrm.assert_called_once()
+        mock_disable_winrm.assert_called_once()
+        mock_copy_smb.assert_called_once()
+        assert mock_run_ps.call_count == 6
 
 if __name__ == "__main__":
     asyncio.run(test_install())

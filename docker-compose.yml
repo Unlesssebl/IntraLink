@@ -36,6 +36,12 @@ services:
       # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
       - ENCRYPTION_KEY=
 
+    dns:
+      - 10.244.0.11
+      - 172.18.128.50
+      - 8.8.8.8
+    dns_search:
+      - corporate.loc
     depends_on:
       - postgres
       - redis
@@ -51,6 +57,12 @@ services:
     environment:
       - CORE_API_URL=http://core-api:8000/api/v1
       - REDIS_URL=redis://redis:6379/0
+    dns:
+      - 10.244.0.11
+      - 172.18.128.50
+      - 8.8.8.8
+    dns_search:
+      - corporate.loc
     depends_on:
       - core-api
       - redis
@@ -69,6 +81,12 @@ services:
       - LLM_API_URL=http://host.docker.internal:11434
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    dns:
+      - 10.244.0.11
+      - 172.18.128.50
+      - 8.8.8.8
+    dns_search:
+      - corporate.loc
     depends_on:
       - core-api
       - redis

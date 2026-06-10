@@ -20,6 +20,11 @@ class TaskStatusRequest(BaseModel):
     tg_user_id: int
     status_id: int
 
+class TaskExpensesRequest(BaseModel):
+    tg_user_id: int
+    minutes: int
+
+
 @router.get("/tasks", response_model=Any, status_code=status.HTTP_200_OK)
 async def get_tasks(
     request: Request,
@@ -146,4 +151,34 @@ async def update_task_status(
             detail=f"Не удалось обновить статус задачи {task_id}."
         )
     return {"status": "success"}
+
+
+@router.post("/tasks/{task_id}/expenses", status_code=status.HTTP_200_OK)
+async def add_task_expenses(
+    task_id: int,
+    payload: TaskExpensesRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Добавить трудозатраты к задаче.
+    """
+    from sqlalchemy import select
+    query = select(User).where(User.tg_user_id == payload.tg_user_id)
+    result = await db.execute(query)
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Пользователь с Telegram ID {payload.tg_user_id} не найден."
+        )
+    
+    success = await intraservice.add_task_expenses(user.is_password_b64, task_id, payload.minutes)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Не удалось добавить трудозатраты к задаче {task_id}."
+        )
+    return {"status": "success"}
+
 

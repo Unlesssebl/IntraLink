@@ -49,8 +49,9 @@ class TcpIpPortStrategy(PrinterStrategy):
 
         driver_name = job.driver_info.driver_name
         inf_path = job.driver_info.driver_inf_path
-        filename = os.path.basename(inf_path)
-        remote_temp_path = f"C:\\Windows\\Temp\\printer_drivers\\{filename}"
+        
+        _, dest_subdir, inf_filename = smb_executor.parse_driver_path(inf_path)
+        remote_temp_path = f"C:\\Windows\\Temp\\printer_drivers\\{dest_subdir}\\{inf_filename}"
 
         # 2. Копирование и установка драйвера при необходимости
         if job.error_message == "DRIVER_MISSING":

@@ -196,3 +196,20 @@ async def update_task_status(auth_b64: str, task_id: int, status_id: int) -> boo
     )
     return res is not None
 
+
+async def add_task_expenses(auth_b64: str, task_id: int, minutes: int) -> bool:
+    """
+    Добавляет трудозатраты к задаче в IntraService.
+    """
+    res = await _make_request(
+        endpoint="taskexpenses",
+        method="POST",
+        auth_b64=auth_b64,
+        json_data={
+            "TaskId": task_id,
+            "Minutes": minutes
+        }
+    )
+    return res is not None
+
+

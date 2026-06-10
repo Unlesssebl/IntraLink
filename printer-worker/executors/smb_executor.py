@@ -1,8 +1,9 @@
 import os
 import logging
 import asyncio
+import ntpath
 from typing import Tuple
-from smbclient import register_session, copyfile, mkdir
+from smbclient import register_session, copyfile, mkdir, stat
 from worker_config import WINRM_USERNAME, WINRM_PASSWORD
 
 logger = logging.getLogger(__name__)
@@ -42,12 +43,29 @@ class SMBExecutor:
                 logger.error(f"Ошибка копирования элемента {src_item}: {e}")
                 raise
 
+    @staticmethod
+    def parse_driver_path(inf_path: str) -> Tuple[str, str, str]:
+        """
+        Разбирает Windows-путь к драйверу (который может быть файлом .inf или папкой).
+        Возвращает кортеж: (src_dir, dest_subdir, inf_filename)
+        """
+        normalized_path = inf_path.rstrip("\\")
+        if normalized_path.lower().endswith('.inf'):
+            src_dir = ntpath.dirname(normalized_path)
+            dest_subdir = ntpath.basename(src_dir)
+            inf_filename = ntpath.basename(normalized_path)
+        else:
+            src_dir = normalized_path
+            dest_subdir = ntpath.basename(src_dir)
+            inf_filename = "*.inf"
+        return src_dir, dest_subdir, inf_filename
+
     def _copy_file_sync(self, src: str, dest_host: str, dest_path: str) -> bool:
         try:
-            # Нам нужно также зарегистрировать сессию для исходного сервера, если он запаролен,
-            # но в данном случае считаем, что доступ открыт или используется тот же юзер
-            import urllib.parse
-            src_host = src.strip("\\").split("\\")[0]
+            # Разбираем путь с помощью статического метода
+            src_dir, dest_subdir, _ = self.parse_driver_path(src)
+
+            src_host = src_dir.strip("\\").split("\\")[0]
             try:
                 register_session(src_host, username=self.username, password=self.password)
             except Exception:
@@ -58,11 +76,10 @@ class SMBExecutor:
             except Exception:
                 pass
             
-            basename = os.path.basename(src.rstrip("\\"))
-            unc_dest_dir = f"\\\\{dest_host}\\C$\\Windows\\Temp\\printer_drivers\\{basename}"
+            unc_dest_dir = f"\\\\{dest_host}\\{dest_path}\\printer_drivers\\{dest_subdir}"
             
-            logger.info("SMB -> Копирование директории %s в %s", src, unc_dest_dir)
-            self._copy_dir_smb(src, unc_dest_dir)
+            logger.info("SMB -> Копирование директории %s в %s", src_dir, unc_dest_dir)
+            self._copy_dir_smb(src_dir, unc_dest_dir)
             
             return True
         except Exception as e:

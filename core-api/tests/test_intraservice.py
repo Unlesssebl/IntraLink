@@ -591,3 +591,41 @@ class TestUpdateTaskStatus:
 
         assert result is False
 
+
+# ---------------------------------------------------------------------------
+# БЛОК 10: add_task_expenses
+# ---------------------------------------------------------------------------
+
+class TestAddTaskExpenses:
+    """Тесты добавления трудозатрат по задаче."""
+
+    @pytest.mark.asyncio
+    async def test_calls_taskexpenses_endpoint_post(self):
+        """add_task_expenses должен обращаться к POST taskexpenses."""
+        import app.services.intraservice as is_module
+
+        with patch("app.services.intraservice._make_request", new_callable=AsyncMock,
+                   return_value={"Id": 99}) as mock_req:
+            result = await is_module.add_task_expenses("auth", task_id=42, minutes=30)
+
+        assert result is True
+        call_args, call_kwargs = mock_req.call_args
+        endpoint = call_args[0] if call_args else call_kwargs.get("endpoint")
+        method = call_kwargs.get("method")
+        json_data = call_kwargs.get("json_data")
+        assert endpoint == "taskexpenses"
+        assert method == "POST"
+        assert json_data == {"TaskId": 42, "Minutes": 30}
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_api_error(self):
+        """Если API вернул ошибку (None), add_task_expenses должен вернуть False."""
+        import app.services.intraservice as is_module
+
+        with patch("app.services.intraservice._make_request", new_callable=AsyncMock,
+                   return_value=None):
+            result = await is_module.add_task_expenses("auth", task_id=42, minutes=30)
+
+        assert result is False
+
+

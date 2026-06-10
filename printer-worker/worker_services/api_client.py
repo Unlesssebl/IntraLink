@@ -12,6 +12,12 @@ async def init_session() -> None:
     if _session is None or _session.closed:
         _session = aiohttp.ClientSession()
 
+async def get_session() -> aiohttp.ClientSession:
+    global _session
+    if _session is None or _session.closed:
+        await init_session()
+    return _session
+
 async def close_session() -> None:
     global _session
     if _session is not None and not _session.closed:
@@ -102,3 +108,21 @@ async def update_task_status(tg_user_id: int, task_id: int, status_id: int) -> b
         json_data=payload
     )
     return res is not None
+
+
+async def add_task_expenses(tg_user_id: int, task_id: int, minutes: int) -> bool:
+    """
+    Добавляет трудозатраты в задачу через Core API.
+    """
+    logger.info("Добавление трудозатрат в задачу #%d (%d мин) для пользователя %s", task_id, minutes, tg_user_id)
+    payload = {
+        "tg_user_id": tg_user_id,
+        "minutes": minutes
+    }
+    res = await _make_request(
+        endpoint=f"tasks/{task_id}/expenses",
+        method="POST",
+        json_data=payload
+    )
+    return res is not None
+

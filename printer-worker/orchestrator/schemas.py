@@ -29,6 +29,7 @@ class PrinterDriverInfo(BaseModel):
     connection_type: ConnectionType
 
 class KnowledgeBase(BaseModel):
+    printer_name_prefixes: List[str] = Field(default_factory=lambda: ["ittp"])
     printers: List[PrinterDriverInfo]
 
     def find_by_key(self, key: str) -> Optional[PrinterDriverInfo]:
@@ -67,17 +68,38 @@ class KnowledgeBase(BaseModel):
         return None
 
 class LLMParseResult(BaseModel):
-    target_pc: str = Field(..., description="NetBIOS-имя или IP-адрес целевого компьютера")
-    model_key: str = Field(..., description="Ключевой идентификатор модели принтера из базы знаний")
+    target_pc: str = Field(default="", description="NetBIOS-имя или IP-адрес целевого компьютера")
+    model_key: str = Field(default="unknown", description="Ключевой идентификатор модели принтера из базы знаний")
     connection_type: Optional[ConnectionType] = Field(None, description="Тип подключения: tcpip или usb")
     printer_address: Optional[str] = Field(None, description="IP-адрес или DNS-имя сетевого принтера (для tcpip)")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Степень уверенности парсинга от 0.0 до 1.0")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Степень уверенности парсинга от 0.0 до 1.0")
 
     @field_validator("connection_type", mode="before")
     def empty_str_to_none(cls, v):
         if v == "":
             return None
         return v
+
+    @field_validator("target_pc", mode="before")
+    def validate_target_pc(cls, v):
+        if v is None:
+            return ""
+        return str(v)
+
+    @field_validator("model_key", mode="before")
+    def validate_model_key(cls, v):
+        if v is None or v == "":
+            return "unknown"
+        return str(v)
+
+    @field_validator("confidence", mode="before")
+    def validate_confidence(cls, v):
+        if v is None:
+            return 0.0
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return 0.0
 
 class PrintJob(BaseModel):
     task_id: int

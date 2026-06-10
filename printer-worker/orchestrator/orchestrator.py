@@ -2,7 +2,7 @@ import logging
 from .schemas import PrintJob, JobState, KnowledgeBase
 from .router import JobRouter
 from strategies import get_strategy
-from worker_services.api_client import add_task_comment, update_task_status
+from worker_services.api_client import add_task_comment, update_task_status, add_task_expenses
 import worker_config as config
 from executors.wmi_executor import WMIExecutor, WmiBootstrapError
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ class PrinterOrchestrator:
                 job = await self.router.route(job)
 
                 if job.state == JobState.FAILED:
-                    await self.handle_failure(job, "Маршрутизация не удалась")
+                    await self.handle_failure(job, job.error_message or "Маршрутизация не удалась")
                     return
 
                 # 2.5 Ожидание подтверждения (Approval Gate)
@@ -136,6 +136,8 @@ class PrinterOrchestrator:
             # 7. Финализация результатов
             if job.state == JobState.DONE:
                 logger.info("Установка принтера по задаче #%d завершена успешно!", job.task_id)
+                # Списание трудозатрат перед переводом в статус "Выполнена"
+                await add_task_expenses(job.tg_user_id, job.task_id, config.WORKLOG_MINUTES)
                 await update_task_status(job.tg_user_id, job.task_id, STATUS_RESOLVED)
                 assert job.driver_info is not None
                 assert job.connection_type is not None

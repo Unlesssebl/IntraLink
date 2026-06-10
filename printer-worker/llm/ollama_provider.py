@@ -4,6 +4,7 @@ import aiohttp
 from .base import LLMProvider
 from orchestrator.schemas import LLMParseResult
 from worker_config import LLM_API_URL, LLM_MODEL_NAME
+from worker_services.api_client import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ class OllamaProvider(LLMProvider):
             "  \"target_pc\": \"имя компьютера (например, PC-ADMIN, 192.168.1.50)\",\n"
             "  \"model_key\": \"идентификатор принтера (один из: hp_lj_m428, kyocera_ecosys_m2040dn, xerox_b210)\",\n"
             "  \"connection_type\": \"tcpip или usb\",\n"
+            "  \"printer_address\": \"IP-адрес или сетевое имя принтера, если применимо (иначе null)\",\n"
             "  \"confidence\": число от 0.0 до 1.0 (степень твоей уверенности)\n"
             "}\n"
             "Если компьютер не указан, верни пустую строку в target_pc.\n"
@@ -33,16 +35,16 @@ class OllamaProvider(LLMProvider):
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        response_text = data.get("response", "{}")
-                        parsed_json = json.loads(response_text)
-                        # Валидируем через Pydantic
-                        return LLMParseResult.model_validate(parsed_json)
-                    else:
-                        logger.error("Ошибка Ollama API [%d]", response.status)
+            session = await get_session()
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    response_text = data.get("response", "{}")
+                    parsed_json = json.loads(response_text)
+                    # Валидируем через Pydantic
+                    return LLMParseResult.model_validate(parsed_json)
+                else:
+                    logger.error("Ошибка Ollama API [%d]", response.status)
         except Exception as e:
             logger.exception("Ошибка обращения к Ollama: %s", e)
 
