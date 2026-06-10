@@ -19,9 +19,16 @@ def get_redis() -> aioredis.Redis:
         _redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
     return _redis_client
 
+import time
+
 async def save_job_state(job: PrintJob) -> None:
     r = get_redis()
     await r.setex(f"printer_job:{job.task_id}", 86400, job.model_dump_json())
+    try:
+        await r.zadd("printer_jobs_list", {str(job.task_id): time.time()})
+        await r.zremrangebyrank("printer_jobs_list", 0, -101)
+    except Exception as e:
+        logger.error("Ошибка при сохранении ID задачи в список printer_jobs_list: %s", e)
 
 async def load_job_state(task_id: int) -> Optional[PrintJob]:
     r = get_redis()
@@ -85,6 +92,42 @@ async def _process_approval_response(payload: dict) -> None:
             # Мы можем вызвать внутренний метод, чтобы залогировать отказ в IntraService
             # Но правильнее вызывать run с FAILED стейтом, либо напрямую update_task_status
             await orchestrator.handle_failure(job, job.error_message)
+
+async def _process_manual_trigger(payload: dict) -> None:
+    async with _semaphore:
+        task_id = payload.get("task_id")
+        tg_user_id = payload.get("tg_user_id") or 0
+        target_pc = payload.get("target_pc")
+        model_key = payload.get("model_key")
+        connection_type = payload.get("connection_type")
+        printer_address = payload.get("printer_address")
+
+        if not task_id or not target_pc or not model_key:
+            logger.error("Неполные данные для ручного запуска в сообщении: %s", payload)
+            return
+
+        from orchestrator.schemas import ConnectionType
+        from worker_main import get_orchestrator
+        orchestrator = get_orchestrator()
+
+        job = PrintJob(
+            task_id=task_id,
+            tg_user_id=tg_user_id,
+            raw_text=f"Ручная установка: {model_key} на ПК {target_pc}",
+            state=JobState.PROBING,
+            target_pc=target_pc,
+            model_key=model_key,
+            connection_type=ConnectionType(connection_type) if connection_type else None,
+            printer_address=printer_address,
+            is_manual=True
+        )
+
+        if job.model_key:
+            job.driver_info = orchestrator.kb.find_by_key(job.model_key)
+
+        await save_job_state(job)
+        logger.info("Запущен ручной процесс установки для задачи #%d", task_id)
+        await orchestrator.run(job)
 
 async def _process_event(payload: dict) -> None:
     async with _semaphore:
@@ -224,6 +267,11 @@ async def start_redis_listener():
                     # Обработка ответов от бота
                     if event_type == "approval_response":
                         asyncio.create_task(_process_approval_response(payload))
+                        continue
+                    
+                    # Обработка ручного запуска из веб-интерфейса
+                    if event_type == "manual_trigger":
+                        asyncio.create_task(_process_manual_trigger(payload))
                         continue
                     
                     # Фильтруем события IntraService

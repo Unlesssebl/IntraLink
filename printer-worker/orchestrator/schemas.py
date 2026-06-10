@@ -112,4 +112,5 @@ class PrintJob(BaseModel):
     printer_address: Optional[str] = None
     driver_info: Optional[PrinterDriverInfo] = None
     error_message: Optional[str] = None
+    is_manual: bool = False
 

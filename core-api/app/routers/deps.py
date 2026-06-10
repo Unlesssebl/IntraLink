@@ -1,5 +1,6 @@
 import secrets
-from fastapi import Header, HTTPException, status, Depends
+from typing import Optional
+from fastapi import Header, Query, HTTPException, status, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -7,12 +8,20 @@ from app.config import settings
 from app.database.db import get_db, User
 
 async def verify_api_key(
-    x_bot_api_key: str = Header(..., alias="X-Bot-Api-Key", description="API-ключ бота для доступа к Core API")
+    x_bot_api_key: Optional[str] = Header(None, alias="X-Bot-Api-Key", description="API-ключ бота для доступа к Core API"),
+    api_key: Optional[str] = Query(None, description="API-ключ в query-параметрах для SSE")
 ) -> str:
     """
     Зависимость для проверки API-ключа бота.
-    Сравнивает переданный заголовок X-Bot-Api-Key с настроенным в конфигурации.
+    Сравнивает переданный заголовок X-Bot-Api-Key или query-параметр api_key с настроенным в конфигурации.
     """
+    key_to_check = x_bot_api_key or api_key
+    if not key_to_check:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API-ключ не предоставлен."
+        )
+
     if not settings.BOT_API_KEY:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -20,12 +29,12 @@ async def verify_api_key(
         )
     
     # Используем secrets.compare_digest для предотвращения атак по времени (Timing Attacks)
-    if not secrets.compare_digest(x_bot_api_key, settings.BOT_API_KEY):
+    if not secrets.compare_digest(key_to_check, settings.BOT_API_KEY):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный или отсутствующий API-ключ."
         )
-    return x_bot_api_key
+    return key_to_check
 
 async def get_user_by_tg_id(
     tg_user_id: int,

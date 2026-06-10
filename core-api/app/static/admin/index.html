@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IntraLink — Панель Администратора</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --card-bg: rgba(17, 24, 39, 0.7);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --text-color: #f3f4f6;
+            --text-muted: #9ca3af;
+            --primary-color: #3b82f6;
+            --primary-hover: #2563eb;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --accent-yellow: #f59e0b;
+            --sidebar-width: 260px;
+            --terminal-bg: #030712;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            min-height: 100vh;
+            display: flex;
+            overflow-x: hidden;
+        }
+
+        /* Sidebar Styling */
+        aside {
+            width: var(--sidebar-width);
+            background: rgba(17, 24, 39, 0.95);
+            border-right: 1px solid var(--card-border);
+            padding: 2rem 1.5rem;
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            height: 100vh;
+            z-index: 100;
+        }
+
+        .logo {
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            color: var(--text-color);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 2.5rem;
+        }
+
+        .logo span {
+            color: var(--primary-color);
+        }
+
+        .nav-links {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            list-style: none;
+        }
+
+        .nav-links button {
+            width: 100%;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            text-align: left;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .nav-links button:hover, .nav-links button.active {
+            color: var(--text-color);
+            background: rgba(59, 130, 246, 0.15);
+        }
+
+        .nav-links button.active {
+            border-left: 3px solid var(--primary-color);
+        }
+
+        .worker-status-badge {
+            margin-top: auto;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            padding: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.85rem;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--accent-red);
+            box-shadow: 0 0 8px var(--accent-red);
+            transition: all 0.3s;
+        }
+
+        .status-dot.online {
+            background-color: var(--accent-green);
+            box-shadow: 0 0 8px var(--accent-green);
+        }
+
+        /* Main Content Container */
+        main {
+            margin-left: var(--sidebar-width);
+            flex-grow: 1;
+            padding: 2.5rem;
+            max-width: 1200px;
+            width: calc(100% - var(--sidebar-width));
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+        }
+
+        h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+        }
+
+        .btn-auth-reset {
+            background: none;
+            border: 1px solid var(--card-border);
+            color: var(--text-muted);
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+
+        .btn-auth-reset:hover {
+            color: var(--text-color);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        /* Screen Sections */
+        .screen {
+            display: none;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        .screen.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Dashboard Overview Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2.5rem;
+        }
+
+        .stat-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            backdrop-filter: blur(12px);
+        }
+
+        .stat-card .label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: 700;
+        }
+
+        /* Forms styling */
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 2rem;
+            backdrop-filter: blur(12px);
+            margin-bottom: 2rem;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        @media (max-width: 768px) {
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .form-group label {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        .form-control {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            color: var(--text-color);
+            padding: 0.75rem 1rem;
+            font-size: 0.95rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .form-control:focus {
+            border-color: var(--primary-color);
+        }
+
+        .form-control option {
+            background-color: #111827;
+            color: var(--text-color);
+        }
+
+        .btn-submit {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 0.75rem 1.5rem;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn-submit:hover {
+            background: var(--primary-hover);
+        }
+
+        /* Terminal Logs View */
+        .terminal-container {
+            display: none;
+            margin-top: 2rem;
+        }
+
+        .terminal-container.active {
+            display: block;
+        }
+
+        .terminal-header {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--card-border);
+            border-bottom: none;
+            border-radius: 12px 12px 0 0;
+            padding: 0.75rem 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.85rem;
+        }
+
+        .terminal-dots {
+            display: flex;
+            gap: 6px;
+        }
+
+        .terminal-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .terminal-dots .red { background-color: var(--accent-red); }
+        .terminal-dots .yellow { background-color: var(--accent-yellow); }
+        .terminal-dots .green { background-color: var(--accent-green); }
+
+        .terminal-body {
+            background-color: var(--terminal-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 0 0 12px 12px;
+            padding: 1.25rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            height: 350px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            color: #d1d5db;
+        }
+
+        /* Tables & Lists */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            margin-top: 1rem;
+        }
+
+        th, td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--card-border);
+        }
+
+        th {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        td {
+            font-size: 0.95rem;
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.6rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-pending { background: rgba(245, 158, 11, 0.15); color: var(--accent-yellow); }
+        .badge-progress { background: rgba(59, 130, 246, 0.15); color: var(--primary-color); }
+        .badge-done { background: rgba(16, 185, 129, 0.15); color: var(--accent-green); }
+        .badge-failed { background: rgba(239, 68, 68, 0.15); color: var(--accent-red); }
+
+        /* Auth Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(8px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal {
+            background: #111827;
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 2.5rem;
+            max-width: 400px;
+            width: 90%;
+            text-align: center;
+            box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+        }
+
+        .modal h2 {
+            margin-bottom: 1rem;
+            font-size: 1.5rem;
+        }
+
+        .modal p {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .modal input {
+            width: 100%;
+            margin-bottom: 1.5rem;
+        }
+
+        /* Accordion style for table logs */
+        .logs-row {
+            display: none;
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        .logs-row.active {
+            display: table-row;
+        }
+
+        .logs-pre {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            padding: 1rem;
+            max-height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            background: #030712;
+            border-radius: 8px;
+            margin: 0.5rem 0;
+            border: 1px solid var(--card-border);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Auth Modal -->
+    <div id="auth-modal" class="modal-overlay">
+        <div class="modal">
+            <h2>Авторизация</h2>
+            <p>Для доступа к панели администратора введите API-ключ шлюза (BOT_API_KEY).</p>
+            <input type="password" id="api-key-input" class="form-control" placeholder="API Key..." />
+            <button id="btn-save-auth" class="btn-submit" style="width: 100%;">Войти</button>
+        </div>
+    </div>
+
+    <!-- Sidebar -->
+    <aside>
+        <div class="logo">
+            ⚙️ Intra<span>Link</span>
+        </div>
+        <ul class="nav-links">
+            <li><button class="active" onclick="switchScreen('dashboard')">📊 Панель монитора</button></li>
+            <li><button onclick="switchScreen('install')">🚀 Ручная установка</button></li>
+            <li><button onclick="switchScreen('history')">📜 Журнал операций</button></li>
+            <li><button onclick="switchScreen('kb')">📚 База моделей</button></li>
+        </ul>
+        <div class="worker-status-badge">
+            <span>Статус Воркера:</span>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <span id="worker-status-text">OFFLINE</span>
+                <div id="worker-status-dot" class="status-dot"></div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Workspace -->
+    <main>
+        <header>
+            <h1 id="screen-title">Панель монитора</h1>
+            <button class="btn-auth-reset" onclick="resetAuth()">🔒 Выйти</button>
+        </header>
+
+        <!-- SCREEN: Dashboard -->
+        <section id="screen-dashboard" class="screen active">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="label">Установок сегодня</div>
+                    <div class="value" id="stat-today">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Активных заданий</div>
+                    <div class="value" id="stat-active">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Всего ошибок</div>
+                    <div class="value" id="stat-errors">0</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Недавняя активность</h2>
+                <div style="overflow-x: auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Task ID</th>
+                                <th>Имя ПК</th>
+                                <th>Модель</th>
+                                <th>Тип</th>
+                                <th>Состояние</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dashboard-recent-jobs">
+                            <tr>
+                                <td colspan="5" style="text-align: center; color: var(--text-muted);">Загрузка...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- SCREEN: Manual Install -->
+        <section id="screen-install" class="screen">
+            <div class="card">
+                <h2>Запустить установку принтера</h2>
+                <form id="install-form" onsubmit="submitInstallForm(event)">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="target_pc">Имя компьютера (Target PC) *</label>
+                            <input type="text" id="target_pc" class="form-control" required placeholder="Например: WS-102" />
+                        </div>
+                        <div class="form-group">
+                            <label for="model_key">Модель принтера (из Базы) *</label>
+                            <select id="model_key" class="form-control" required>
+                                <option value="">Выберите принтер...</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="connection_type">Тип подключения *</label>
+                            <select id="connection_type" class="form-control" required onchange="toggleAddressField()">
+                                <option value="tcpip">Сетевой (TCP/IP)</option>
+                                <option value="usb">Локальный (USB)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="printer-address-group">
+                            <label for="printer_address">IP-адрес / DNS принтера *</label>
+                            <input type="text" id="printer_address" class="form-control" placeholder="Например: 192.168.1.100" />
+                        </div>
+                    </div>
+                    <button type="submit" class="btn-submit">🚀 Запустить процесс</button>
+                </form>
+            </div>
+
+            <!-- Terminal log output -->
+            <div id="install-terminal-container" class="terminal-container">
+                <div class="terminal-header">
+                    <div class="terminal-dots">
+                        <span class="terminal-dot red"></span>
+                        <span class="terminal-dot yellow"></span>
+                        <span class="terminal-dot green"></span>
+                    </div>
+                    <div style="font-weight: 500;">Лог установки (Реальное время) - Задача #<span id="active-terminal-id">0</span></div>
+                    <div>SSE Connected</div>
+                </div>
+                <div id="terminal-body" class="terminal-body">
+                    Ожидание запуска задачи...
+                </div>
+            </div>
+        </section>
+
+        <!-- SCREEN: History -->
+        <section id="screen-history" class="screen">
+            <div class="card">
+                <h2>Все операции</h2>
+                <div style="overflow-x: auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Task ID</th>
+                                <th>Имя ПК</th>
+                                <th>Модель</th>
+                                <th>Тип</th>
+                                <th>Состояние</th>
+                                <th>Действие</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-jobs-list">
+                            <tr>
+                                <td colspan="6" style="text-align: center; color: var(--text-muted);">Загрузка журнала...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- SCREEN: Knowledge Base -->
+        <section id="screen-kb" class="screen">
+            <div class="card">
+                <h2>База знаний принтеров</h2>
+                <div style="overflow-x: auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Ключ (model_key)</th>
+                                <th>Отображаемое имя</th>
+                                <th>Имя драйвера</th>
+                                <th>Тип подключения</th>
+                                <th>Производитель</th>
+                            </tr>
+                        </thead>
+                        <tbody id="kb-list">
+                            <tr>
+                                <td colspan="5" style="text-align: center; color: var(--text-muted);">Загрузка базы знаний...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- JS Logic -->
+    <script>
+        let apiKey = localStorage.getItem('BOT_API_KEY') || '';
+        let currentScreen = 'dashboard';
+        let statusInterval = null;
+        let dashboardInterval = null;
+        let activeEventSource = null;
+
+        // Инициализация при загрузке
+        window.addEventListener('DOMContentLoaded', () => {
+            if (!apiKey) {
+                document.getElementById('auth-modal').classList.add('active');
+            } else {
+                startMonitoring();
+                loadScreenData();
+            }
+
+            document.getElementById('btn-save-auth').addEventListener('click', () => {
+                const input = document.getElementById('api-key-input').value.trim();
+                if (input) {
+                    apiKey = input;
+                    localStorage.setItem('BOT_API_KEY', apiKey);
+                    document.getElementById('auth-modal').classList.remove('active');
+                    startMonitoring();
+                    loadScreenData();
+                }
+            });
+        });
+
+        // Сброс авторизации
+        function resetAuth() {
+            localStorage.removeItem('BOT_API_KEY');
+            apiKey = '';
+            stopMonitoring();
+            document.getElementById('auth-modal').classList.add('active');
+            document.getElementById('api-key-input').value = '';
+        }
+
+        // Переключение экранов
+        function switchScreen(screenId) {
+            document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+            document.querySelectorAll('.nav-links button').forEach(b => b.classList.remove('active'));
+            
+            const screen = document.getElementById(`screen-${screenId}`);
+            if (screen) {
+                screen.classList.add('active');
+                currentScreen = screenId;
+                
+                // Находим кнопку и делаем её активной
+                const btn = Array.from(document.querySelectorAll('.nav-links button')).find(b => b.onclick.toString().includes(screenId));
+                if (btn) btn.classList.add('active');
+            }
+
+            // Обновляем заголовок страницы
+            const titles = {
+                'dashboard': 'Панель монитора',
+                'install': 'Ручная установка',
+                'history': 'Журнал операций',
+                'kb': 'База моделей принтеров'
+            };
+            document.getElementById('screen-title').textContent = titles[screenId] || 'Панель';
+
+            // Если закрываем экран установки, глушим SSE стрим
+            if (screenId !== 'install' && activeEventSource) {
+                activeEventSource.close();
+                activeEventSource = null;
+            }
+
+            loadScreenData();
+        }
+
+        // Общие заголовки запросов
+        function getHeaders() {
+            return {
+                'Content-Type': 'application/json',
+                'X-Bot-Api-Key': apiKey
+            };
+        }
+
+        // Показ и скрытие поля IP адреса
+        function toggleAddressField() {
+            const connType = document.getElementById('connection_type').value;
+            const addressGroup = document.getElementById('printer-address-group');
+            const addressInput = document.getElementById('printer_address');
+            
+            if (connType === 'usb') {
+                addressGroup.style.display = 'none';
+                addressInput.removeAttribute('required');
+            } else {
+                addressGroup.style.display = 'flex';
+                addressInput.setAttribute('required', 'true');
+            }
+        }
+
+        // Запуск периодического мониторинга (heartbeat и дашборд)
+        function startMonitoring() {
+            checkStatus();
+            statusInterval = setInterval(checkStatus, 5000);
+            
+            dashboardInterval = setInterval(() => {
+                if (currentScreen === 'dashboard') {
+                    loadDashboardData();
+                }
+            }, 3000);
+        }
+
+        function stopMonitoring() {
+            clearInterval(statusInterval);
+            clearInterval(dashboardInterval);
+            if (activeEventSource) {
+                activeEventSource.close();
+                activeEventSource = null;
+            }
+        }
+
+        // Проверка статуса воркера
+        async function checkStatus() {
+            try {
+                const res = await fetch('/admin/api/worker-status', { headers: getHeaders() });
+                if (res.status === 401) {
+                    resetAuth();
+                    return;
+                }
+                const data = await res.json();
+                const textEl = document.getElementById('worker-status-text');
+                const dotEl = document.getElementById('worker-status-dot');
+                
+                if (data.status === 'online') {
+                    textEl.textContent = 'ONLINE';
+                    dotEl.className = 'status-dot online';
+                } else {
+                    textEl.textContent = 'OFFLINE';
+                    dotEl.className = 'status-dot';
+                }
+            } catch (e) {
+                console.error("Heartbeat error", e);
+            }
+        }
+
+        // Загрузка данных на экраны при открытии
+        function loadScreenData() {
+            if (!apiKey) return;
+            
+            if (currentScreen === 'dashboard') {
+                loadDashboardData();
+            } else if (currentScreen === 'install') {
+                loadKnowledgeBaseOptions();
+            } else if (currentScreen === 'history') {
+                loadHistoryData();
+            } else if (currentScreen === 'kb') {
+                loadKBList();
+            }
+        }
+
+        // Загрузка инфы для Dashboard
+        async function loadDashboardData() {
+            try {
+                const res = await fetch('/admin/api/print-jobs', { headers: getHeaders() });
+                if (res.status === 401) {
+                    resetAuth();
+                    return;
+                }
+                const jobs = await res.json();
+                
+                // Вычисляем статы
+                let todayCount = 0;
+                let activeCount = 0;
+                let errorCount = 0;
+                
+                const todayStr = new Date().toDateString();
+                
+                jobs.forEach(job => {
+                    // Статус "active" (всё что не done/failed/waiting_approval на паузе)
+                    const activeStates = ['probing', 'copying', 'installing', 'verifying', 'routing', 'parsing'];
+                    if (activeStates.includes(job.state)) activeCount++;
+                    if (job.state === 'failed') errorCount++;
+                    if (job.state === 'done') todayCount++;
+                });
+
+                document.getElementById('stat-today').textContent = todayCount;
+                document.getElementById('stat-active').textContent = activeCount;
+                document.getElementById('stat-errors').textContent = errorCount;
+
+                // Заполняем таблицу
+                const tbody = document.getElementById('dashboard-recent-jobs');
+                if (jobs.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Активных задач нет</td></tr>`;
+                    return;
+                }
+
+                tbody.innerHTML = jobs.slice(0, 10).map(job => `
+                    <tr>
+                        <td style="font-family: 'JetBrains Mono', monospace;">#${job.task_id}</td>
+                        <td>${job.target_pc || '—'}</td>
+                        <td>${job.model_key || 'Не определена'}</td>
+                        <td>${(job.connection_type || '—').toUpperCase()}</td>
+                        <td><span class="badge badge-${getBadgeType(job.state)}">${job.state}</span></td>
+                    </tr>
+                `).join('');
+                
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // Загрузка списка моделей в форму ручной установки
+        async function loadKnowledgeBaseOptions() {
+            try {
+                const res = await fetch('/admin/api/knowledge-base', { headers: getHeaders() });
+                const kb = await res.json();
+                const select = document.getElementById('model_key');
+                
+                // Сохраняем выбранную модель, если была
+                const selectedVal = select.value;
+                
+                select.innerHTML = '<option value="">Выберите принтер...</option>';
+                kb.printers.forEach(printer => {
+                    select.innerHTML += `<option value="${printer.model_key}">${printer.display_name} (${printer.vendor})</option>`;
+                });
+                
+                if (selectedVal) select.value = selectedVal;
+            } catch (e) {
+                console.error("KB load options error", e);
+            }
+        }
+
+        // Загрузка списка всей истории
+        async function loadHistoryData() {
+            try {
+                const res = await fetch('/admin/api/print-jobs', { headers: getHeaders() });
+                const jobs = await res.json();
+                const tbody = document.getElementById('history-jobs-list');
+                
+                if (jobs.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">История пуста</td></tr>`;
+                    return;
+                }
+
+                tbody.innerHTML = jobs.map(job => `
+                    <tr>
+                        <td style="font-family: 'JetBrains Mono', monospace;">#${job.task_id}</td>
+                        <td>${job.target_pc || '—'}</td>
+                        <td>${job.model_key || '—'}</td>
+                        <td>${(job.connection_type || '—').toUpperCase()}</td>
+                        <td>
+                            <span class="badge badge-${getBadgeType(job.state)}">${job.state}</span>
+                            ${job.error_message ? `<div style="font-size: 0.75rem; color: var(--accent-red); margin-top: 0.25rem;">${job.error_message}</div>` : ''}
+                        </td>
+                        <td>
+                            <button onclick="toggleRowLogs(${job.task_id})" class="btn-auth-reset">📝 Логи</button>
+                        </td>
+                    </tr>
+                    <tr id="logs-row-${job.task_id}" class="logs-row">
+                        <td colspan="6">
+                            <div style="font-size: 0.8rem; font-weight: 600; margin-bottom: 0.5rem;">Журнал событий:</div>
+                            <div id="logs-content-${job.task_id}" class="logs-pre">Подключение к логам...</div>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // Разворачивание/сворачивание логов в истории
+        function toggleRowLogs(jobId) {
+            const row = document.getElementById(`logs-row-${jobId}`);
+            const content = document.getElementById(`logs-content-${jobId}`);
+            
+            if (row.classList.contains('active')) {
+                row.classList.remove('active');
+            } else {
+                row.classList.add('active');
+                content.textContent = 'Загрузка логов...';
+                
+                // Подключаемся к SSE логам для просмотра
+                // SSE работает через GET, передавая query-параметр auth key, но поскольку наш эндпоинт защищен verify_api_key,
+                // а стандартный EventSource в браузере не умеет отправлять кастомные заголовки, 
+                // мы передадим API-ключ в query-параметре!
+                // Ой, погодите, verify_api_key считывает только X-Bot-Api-Key заголовок!
+                // Чтобы обойти это ограничение, мы можем подключиться по EventSource, передав токен в query-параметре, 
+                // НО наш verify_api_key проверяет строго заголовок.
+                // Решение: Чтобы SSE работал нативно без переделки verify_api_key, в JS мы можем использовать polyfill, 
+                // либо мы можем временно пропатчить verify_api_key, чтобы он принимал ключ из query-параметра bot_api_key.
+                // Давайте добавим поддержку bot_api_key query-параметра в наш verify_api_key! 
+                // Но прямо сейчас мы можем сделать фетч через Headers, считать логи из Redis один раз, 
+                // ИЛИ использовать EventSource со специальным URL.
+                // Давайте проверим: в EventSource мы передадим url `/admin/api/print-jobs/${jobId}/logs?api_key=${apiKey}`
+                // Для этого в admin.py мы добавим альтернативный способ авторизации по query.
+                // Да, это отличная идея, мы добавим поддержку auth по query-параметру!
+                
+                const eventSource = new EventSource(`/admin/api/print-jobs/${jobId}/logs?api_key=${apiKey}`);
+                
+                eventSource.onmessage = function(event) {
+                    if (content.textContent === 'Загрузка логов...' || content.textContent.includes('Подключение')) {
+                        content.textContent = '';
+                    }
+                    content.textContent += event.data + '\n';
+                };
+                
+                eventSource.onerror = function(err) {
+                    eventSource.close();
+                };
+                
+                // Сохраняем ссылку на SSE на самой строке, чтобы закрыть его при закрытии строки
+                row.eventSource = eventSource;
+            }
+        }
+
+        // Загрузка страницы KB
+        async function loadKBList() {
+            try {
+                const res = await fetch('/admin/api/knowledge-base', { headers: getHeaders() });
+                const kb = await res.json();
+                const tbody = document.getElementById('kb-list');
+                
+                tbody.innerHTML = kb.printers.map(printer => `
+                    <tr>
+                        <td style="font-family: 'JetBrains Mono', monospace; font-weight: 500;">${printer.model_key}</td>
+                        <td>${printer.display_name}</td>
+                        <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;">${printer.driver_name}</td>
+                        <td><span class="badge badge-progress">${printer.connection_type}</span></td>
+                        <td>${printer.vendor}</td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // Отправка формы ручной установки
+        async function submitInstallForm(event) {
+            event.preventDefault();
+            
+            const payload = {
+                target_pc: document.getElementById('target_pc').value.trim(),
+                model_key: document.getElementById('model_key').value,
+                connection_type: document.getElementById('connection_type').value,
+                printer_address: document.getElementById('printer_address').value.trim() || null
+            };
+
+            try {
+                const btn = event.target.querySelector('button[type="submit"]');
+                btn.disabled = true;
+                btn.textContent = '🚀 Инициализация...';
+
+                const res = await fetch('/admin/api/print-jobs', {
+                    method: 'POST',
+                    headers: getHeaders(),
+                    body: JSON.stringify(payload)
+                });
+                
+                const result = await res.json();
+                
+                if (res.status === 200) {
+                    // Подключаемся к терминалу для вывода логов
+                    startTerminal(result.task_id);
+                } else {
+                    alert(`Ошибка запуска: ${result.detail || 'Неизвестная ошибка'}`);
+                }
+                
+                btn.disabled = false;
+                btn.textContent = '🚀 Запустить процесс';
+            } catch (e) {
+                console.error(e);
+                alert("Ошибка соединения с сервером");
+            }
+        }
+
+        // Запуск вывода логов в реальном времени
+        function startTerminal(jobId) {
+            const container = document.getElementById('install-terminal-container');
+            const termId = document.getElementById('active-terminal-id');
+            const termBody = document.getElementById('terminal-body');
+            
+            container.classList.add('active');
+            termId.textContent = jobId;
+            termBody.textContent = 'Инициализация подключения к SSE...\n';
+            
+            if (activeEventSource) {
+                activeEventSource.close();
+            }
+
+            // Подключение к потоку SSE
+            activeEventSource = new EventSource(`/admin/api/print-jobs/${jobId}/logs?api_key=${apiKey}`);
+            
+            activeEventSource.onmessage = function(event) {
+                // Добавление строки лога в терминал
+                termBody.textContent += event.data + '\n';
+                // Автоскролл
+                termBody.scrollTop = termBody.scrollHeight;
+            };
+            
+            activeEventSource.onerror = function(err) {
+                termBody.textContent += '\n[SYSTEM] Поток логов закрыт или завершен.\n';
+                activeEventSource.close();
+                activeEventSource = null;
+            };
+        }
+
+        // Хелпер для цвета бейджиков
+        function getBadgeType(state) {
+            const mapping = {
+                'pending': 'pending',
+                'waiting_approval': 'pending',
+                'waiting': 'pending',
+                'routing': 'progress',
+                'parsing': 'progress',
+                'probing': 'progress',
+                'copying': 'progress',
+                'installing': 'progress',
+                'verifying': 'progress',
+                'done': 'done',
+                'failed': 'failed'
+            };
+            return mapping[state] || 'progress';
+        }
+    </script>
+</body>
+</html>

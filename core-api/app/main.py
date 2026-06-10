@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, status
 
 from app.database.db import init_db
-from app.routers import auth, tasks, users
+from app.routers import auth, tasks, users, admin
 
 # Настройка логирования
 logging.basicConfig(
@@ -62,6 +62,7 @@ app = FastAPI(
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(tasks.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
+app.include_router(admin.router)
 
 @app.get("/health", status_code=status.HTTP_200_OK, tags=["System"])
 async def health_check():

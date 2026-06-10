@@ -71,10 +71,14 @@
 │   │   ├── models/            # Схемы валидации Pydantic
 │   │   │   └── schemas.py
 │   │   ├── routers/           # Контроллеры FastAPI (endpoints)
+│   │   │   ├── admin.py       # Панель администратора (/admin, /admin/api/*)
 │   │   │   ├── auth.py        # /auth/login, /auth/logout
 │   │   │   ├── deps.py        # Зависимости (проверка API-ключа, сессии)
 │   │   │   ├── tasks.py       # /tasks (заявки, комментарии, жизненный цикл)
 │   │   │   └── users.py       # /users (профиль пользователя)
+│   │   ├── static/            # Статические ресурсы веб-панели
+│   │   │   └── admin/
+│   │   │       └── index.html # HTML/JS/CSS панели администратора
 │   │   ├── services/
 │   │   │   ├── crypto.py      # Модуль шифрования/дешифрования токенов
 │   │   │   ├── intraservice.py# Интеграционный клиент с REST API IntraService

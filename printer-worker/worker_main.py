@@ -4,7 +4,7 @@ import asyncio
 from typing import Optional
 from worker_config import PRINTERS_KB_PATH
 from orchestrator.schemas import KnowledgeBase
-from orchestrator.orchestrator import PrinterOrchestrator
+from orchestrator.orchestrator import PrinterOrchestrator, current_task_id
 from worker_services.api_client import init_session, close_session
 from worker_services.redis_listener import start_redis_listener
 
@@ -13,6 +13,25 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Пользовательский хэндлер для трансляции логов конкретной задачи в Redis
+class RedisLogHandler(logging.Handler):
+    def emit(self, record):
+        task_id = current_task_id.get()
+        if task_id:
+            try:
+                loop = asyncio.get_running_loop()
+                log_message = self.format(record)
+                async def pub():
+                    try:
+                        from worker_services.redis_listener import get_redis
+                        r = get_redis()
+                        await r.publish(f"printer_job_logs:{task_id}", log_message)
+                    except Exception:
+                        pass
+                loop.create_task(pub())
+            except RuntimeError:
+                pass
 
 _kb: Optional[KnowledgeBase] = None
 _orchestrator: Optional[PrinterOrchestrator] = None
@@ -42,8 +61,28 @@ def get_orchestrator() -> PrinterOrchestrator:
         _orchestrator = PrinterOrchestrator(get_kb())
     return _orchestrator
 
+async def start_heartbeat():
+    """
+    Фоновая задача периодической отправки статуса "online" в Redis.
+    """
+    from worker_services.redis_listener import get_redis
+    logger.info("Запуск фоновой отправки heartbeat в Redis...")
+    while True:
+        try:
+            r = get_redis()
+            await r.setex("printer_worker:status", 10, "online")
+        except Exception as e:
+            logger.error("Ошибка при отправке heartbeat в Redis: %s", e)
+        await asyncio.sleep(5)
+
 async def main():
     logger.info("Запуск микросервиса printer-worker...")
+    
+    # Регистрация RedisLogHandler на корневом логгере
+    root_logger = logging.getLogger()
+    redis_handler = RedisLogHandler()
+    redis_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s"))
+    root_logger.addHandler(redis_handler)
     
     # Инициализация сессии API-клиента
     await init_session()
@@ -53,6 +92,9 @@ async def main():
     
     # Запуск фонового подписчика Redis
     listener_task = asyncio.create_task(start_redis_listener())
+    
+    # Запуск фонового heartbeat
+    heartbeat_task = asyncio.create_task(start_heartbeat())
     
     # Event для ожидания сигнала остановки
     stop_event = asyncio.Event()
@@ -64,8 +106,9 @@ async def main():
     finally:
         logger.info("Завершение работы фонового процесса...")
         listener_task.cancel()
+        heartbeat_task.cancel()
         try:
-            await listener_task
+            await asyncio.gather(listener_task, heartbeat_task, return_exceptions=True)
         except asyncio.CancelledError:
             pass
         
