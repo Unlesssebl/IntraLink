@@ -161,7 +161,7 @@ async def handle_job_action(task_id: int, payload: JobActionRequest):
     try:
         r = get_redis_client()
         event = {
-            "event_type": "printer_approval_response",
+            "event_type": "approval_response",
             "task_id": task_id,
             "action": payload.action,
             "tg_user_id": 0  # 0 означает запуск из веб-панели

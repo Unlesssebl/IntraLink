@@ -93,8 +93,28 @@ async def test_router_parsing():
         assert routed_job_snmp.driver_info is not None, "Драйвер должен быть найден"
         assert routed_job_snmp.driver_info.model_key == "kyocera_ecosys_m2040dn"
         
-    print("SNMP Auto-Discovery успешно протестирован!")
-
+    print("=== Тестирование Приоритета SNMP над Fast-Track ===")
+    job_priority = PrintJob(
+        task_id=125,
+        tg_user_id=456,
+        raw_text="Установить принтер ittp-wrong на PC-TEST",
+        target_pc="PC-TEST",
+        model_key="wrong_model_key",
+        printer_address="192.168.1.60"
+    )
+    
+    with patch("orchestrator.snmp.probe_printer_model") as mock_probe:
+        # SNMP находит правильную модель
+        mock_probe.return_value = "Kyocera ECOSYS M2040dn"
+        
+        routed_job_priority = await router.route(job_priority)
+        
+        print(f"Результат теста приоритета:")
+        print(f"  model_key (должен быть kyocera_ecosys_m2040dn): {routed_job_priority.model_key}")
+        
+        assert routed_job_priority.model_key == "kyocera_ecosys_m2040dn", f"SNMP должен был переопределить модель! Получено: {routed_job_priority.model_key}"
+    
+    print("Приоритет SNMP успешно подтвержден!")
 
 if __name__ == "__main__":
     import asyncio

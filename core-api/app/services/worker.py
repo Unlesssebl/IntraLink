@@ -72,7 +72,10 @@ async def process_user(
                 pending_notifications = []
 
                 # 1. Проверка НОВЫХ заявок
-                tasks_data = await get_tasks(auth_b64, {"CreatedMoreThan": api_filter_time})
+                tasks_data = await get_tasks(auth_b64, {
+                    "CreatedMoreThan": api_filter_time,
+                    "include": "executorids"
+                })
                 if tasks_data is None:
                     logger.error(
                         "Не удалось получить новые заявки для пользователя %s из-за ошибки API. Пропуск итерации.",
@@ -91,6 +94,12 @@ async def process_user(
 
                 any_new_task = False
                 for task in new_tasks:
+                    # Фильтр: уведомляем только если пользователь является исполнителем
+                    executor_ids_str = str(task.get("ExecutorIds") or "")
+                    executor_ids = [eid.strip() for eid in executor_ids_str.split(",") if eid.strip()]
+                    if str(is_user_id) not in executor_ids:
+                        continue
+
                     if task["Id"] > last_task_id:
                         status_name = task.get("StatusName")
                         if not status_name and task.get("StatusId") in statuses_map:
@@ -108,6 +117,8 @@ async def process_user(
                         payload = {
                             "event_type": "new_task",
                             "tg_user_id": tg_id,
+                            "is_user_id": is_user_id,
+                            "is_login": db_user.is_login,
                             "task_id": task["Id"],
                             "task_name": task["Name"],
                             "message": message_text
@@ -179,6 +190,8 @@ async def process_user(
                                         payload = {
                                             "event_type": "new_comment",
                                             "tg_user_id": tg_id,
+                                            "is_user_id": is_user_id,
+                                            "is_login": db_user.is_login,
                                             "task_id": task["Id"],
                                             "task_name": task["Name"],
                                             "message": message_text
@@ -200,6 +213,8 @@ async def process_user(
                                         payload = {
                                             "event_type": "status_change",
                                             "tg_user_id": tg_id,
+                                            "is_user_id": is_user_id,
+                                            "is_login": db_user.is_login,
                                             "task_id": task["Id"],
                                             "task_name": task["Name"],
                                             "message": message_text,

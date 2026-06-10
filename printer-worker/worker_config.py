@@ -34,6 +34,10 @@ WORKLOG_MINUTES: int = int(os.getenv("WORKLOG_MINUTES", "15"))
 _executor_id_raw = os.getenv("PRINTER_EXECUTOR_IS_USER_ID", "")
 PRINTER_EXECUTOR_IS_USER_ID: int | None = int(_executor_id_raw) if _executor_id_raw.strip().isdigit() else None
 
+# Логин аккаунта исполнителя в IntraService (например, intratest).
+# Используется как альтернатива PRINTER_EXECUTOR_IS_USER_ID для удобства.
+PRINTER_EXECUTOR_LOGIN: str = os.getenv("PRINTER_EXECUTOR_LOGIN", "").strip()
+
 
 # Валидация обязательных параметров
 if not BOT_API_KEY:

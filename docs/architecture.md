@@ -150,7 +150,7 @@ flowchart TB
 *   **`llm/`** — Взаимодействие с LLM (Ollama/OpenAI) для разбора неструктурированных заявок.
 *   **`strategies/`** — Реестр стратегий (Strategy Pattern) для различных типов принтеров (`TcpIpPortStrategy`, `UsbDiscoveryStrategy`).
 *   **`executors/`** — Низкоуровневые классы для работы с WinRM, SMB и WMI (`wmi_executor.py` для динамического включения WinRM).
-*   **`worker_services/`** — Клиент Core API и подписчик Redis. Включает механизм целевой фильтрации задач по ID исполнителя (`PRINTER_EXECUTOR_IS_USER_ID`), защищающий воркер от обработки чужих заявок.
+*   **`worker_services/`** — Клиент Core API и подписчик Redis. Включает механизм целевой ранней фильтрации задач по ID исполнителя (`PRINTER_EXECUTOR_IS_USER_ID`) или логину (`PRINTER_EXECUTOR_LOGIN`), защищающий воркер от холостых HTTP-запросов и обработки чужих заявок.
 *   **`worker_config.py`** — Настройки и конфигурация микросервиса.
 
 ### ⚡ В. Core API (`core-api/app/`)
@@ -308,15 +308,23 @@ sequenceDiagram
     
     alt Подтверждение через Telegram
         User->>TG: Нажатие кнопки
-        TG->>Redis: Publish ("printer_actions", "printer_approval_response")
+        TG->>Redis: Publish ("printer_actions", "approval_response")
     else Подтверждение через Веб-панель
         Admin->>AdminUI: Нажатие кнопки
-        AdminUI->>Redis: Publish ("printer_actions", "printer_approval_response", tg_user_id=0)
+        AdminUI->>Redis: Publish ("printer_actions", "approval_response", tg_user_id=0)
     end
     
     Redis->>Worker: Получение ответа (action: "approve" или "reject")
     Worker->>Worker: Продолжение установки или отмена заявки
 ```
+
+### 3.5. Алгоритм определения параметров установки (Smart Routing)
+
+Воркер использует многоуровневый алгоритм (маршрутизатор) для определения модели принтера и целевого ПК:
+
+1.  **SNMP Auto-Discovery (Высший приоритет):** Если в тексте заявки обнаружен IP-адрес или сетевое имя (hostname), воркер опрашивает устройство по SNMP. Полученная модель сравнивается с Базой Знаний. Это самый надежный метод, исключающий ошибки ручного ввода.
+2.  **Fast-Track (Предзаполненные поля):** Если модель не определена по сети, воркер проверяет кастомные поля заявки в IntraService (номер ПК и модель). Если они заполнены корректно и модель есть в БЗ, используется этот вариант.
+3.  **Smart-Track (LLM-анализ):** Если адрес не найден или SNMP/Fast-Track не дали результата, текст заявки отправляется в LLM (Ollama/OpenAI). Нейросеть извлекает параметры из неструктурированного описания ("поставьте принтер 2040 на комп Иванова"). Результат принимается только при высоком уровне уверенности (Confidence Score > 0.65).
 
 ---
 

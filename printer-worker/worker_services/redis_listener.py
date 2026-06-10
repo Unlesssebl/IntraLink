@@ -180,6 +180,26 @@ async def _process_event(payload: dict) -> None:
             logger.error("Отсутствует tg_user_id или task_id в событии: %s", payload)
             return
 
+        # Ранняя фильтрация: отбрасываем чужие заявки до HTTP-запроса
+        from worker_config import PRINTER_EXECUTOR_IS_USER_ID, PRINTER_EXECUTOR_LOGIN
+        if PRINTER_EXECUTOR_IS_USER_ID is not None:
+            event_is_user_id = payload.get("is_user_id")
+            if event_is_user_id and int(event_is_user_id) != PRINTER_EXECUTOR_IS_USER_ID:
+                logger.debug(
+                    "Ранняя фильтрация: событие для задачи #%d пропущено (is_user_id=%s, ожидается=%d)",
+                    task_id, event_is_user_id, PRINTER_EXECUTOR_IS_USER_ID
+                )
+                return
+                
+        if PRINTER_EXECUTOR_LOGIN:
+            event_login = payload.get("is_login")
+            if event_login and event_login.lower() != PRINTER_EXECUTOR_LOGIN.lower():
+                logger.debug(
+                    "Ранняя фильтрация: событие для задачи #%d пропущено (is_login='%s', ожидается='%s')",
+                    task_id, event_login, PRINTER_EXECUTOR_LOGIN
+                )
+                return
+
         # Дедупликация: пропускаем задачу если она уже обрабатывается
         if task_id in _active_tasks:
             logger.info(
@@ -208,21 +228,6 @@ async def _process_event(payload: dict) -> None:
             if not task_data:
                 logger.error("Пустой ответ по задаче #%d", task_id)
                 return
-
-            # Фильтр по исполнителю: обрабатываем только задачи, где назначен нужный исполнитель.
-            # Управляется переменной окружения PRINTER_EXECUTOR_IS_USER_ID.
-            from worker_config import PRINTER_EXECUTOR_IS_USER_ID
-            if PRINTER_EXECUTOR_IS_USER_ID is not None:
-                executor_ids_raw = task_data.get("ExecutorIds") or ""
-                executor_ids = {
-                    int(x.strip()) for x in executor_ids_raw.split(",") if x.strip().isdigit()
-                }
-                if PRINTER_EXECUTOR_IS_USER_ID not in executor_ids:
-                    logger.debug(
-                        "Задача #%d пропущена: исполнитель %d не найден среди %s",
-                        task_id, PRINTER_EXECUTOR_IS_USER_ID, executor_ids_raw or "(пусто)"
-                    )
-                    return
 
             # Текст заявки собираем из Name + Description
             raw_text = f"{task_data.get('Name', '')} {task_data.get('Description', '')}"

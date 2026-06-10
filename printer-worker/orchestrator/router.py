@@ -31,21 +31,46 @@ class JobRouter:
     async def route(self, job: PrintJob) -> PrintJob:
         logger.info("Маршрутизация задачи #%d", job.task_id)
 
-        # 1. Попытка Fast-Track: проверка, есть ли уже предзаполненные поля
-        if job.target_pc and job.model_key:
+        # 1. Извлечение адреса принтера (IP или Хостнейм) из текста, если он не задан
+        if not job.printer_address:
+            job.printer_address = self._parse_printer_address(job.raw_text)
+
+        # 2. Попытка SNMP-автоопределения модели (Высший приоритет)
+        # Пробуем определить модель по сети, если адрес известен.
+        if job.printer_address:
+            from .snmp import probe_printer_model
+            discovered_model = await probe_printer_model(job.printer_address)
+            if discovered_model:
+                driver = self.kb.find_by_name(discovered_model)
+                if driver:
+                    logger.info("SNMP Auto-Discovery: модель '%s' успешно определена по сети для %s", driver.model_key, job.printer_address)
+                    job.model_key = driver.model_key
+                    job.driver_info = driver
+                    job.connection_type = driver.connection_type
+                    
+                    # Если уже есть целевой ПК, маршрутизация завершена
+                    if job.target_pc:
+                        logger.info("SNMP Auto-Discovery успешно завершил маршрутизацию для задачи #%d", job.task_id)
+                        return job
+                else:
+                    logger.warning("SNMP определил модель '%s', но она отсутствует в Базе Знаний", discovered_model)
+
+        # 3. Попытка Fast-Track: проверка, есть ли уже предзаполненные поля (из кастомных полей IS)
+        if job.target_pc and job.model_key and job.model_key not in (None, "", "-", "unknown"):
             logger.info("Fast-Track: обнаружены предзаполненные поля (ПК: %s, Модель: %s)", job.target_pc, job.model_key)
             # Сначала точный поиск по model_key
             driver = self.kb.find_by_key(job.model_key)
-            # Если не нашли — нечёткий поиск по display_name (кастомное поле содержит название)
+            # Если не нашли — нечёткий поиск по display_name (кастомное поле может содержать название)
             if not driver:
                 driver = self.kb.find_by_name(job.model_key)
                 if driver:
                     logger.info("Fast-Track: нечёткий поиск нашёл модель '%s' для строки '%s'", driver.model_key, job.model_key)
+            
             if driver:
                 job.model_key = driver.model_key  # нормализуем к model_key из БЗ
                 job.driver_info = driver
                 job.connection_type = driver.connection_type
-                # Если сетевой принтер, пробуем найти IP/DNS в тексте
+                # Если сетевой принтер, пробуем найти IP/DNS в тексте (если еще не нашли)
                 if driver.connection_type == "tcpip" and not job.printer_address:
                     job.printer_address = self._parse_printer_address(job.raw_text)
                 
@@ -54,25 +79,7 @@ class JobRouter:
             else:
                 logger.warning("Модель %s не найдена в Базе Знаний ни по ключу, ни по имени. Фолбэк на Smart-Track.", job.model_key)
 
-        # 1.5 Попытка SNMP-автоопределения модели сетевого принтера по его IP/DNS
-        parsed_addr = job.printer_address or self._parse_printer_address(job.raw_text)
-        if parsed_addr and (not job.model_key or job.model_key == "-" or not self.kb.find_by_key(job.model_key)):
-            from .snmp import probe_printer_model
-            discovered_model = await probe_printer_model(parsed_addr)
-            if discovered_model:
-                driver = self.kb.find_by_name(discovered_model)
-                if driver:
-                    logger.info("SNMP Auto-Discovery: модель '%s' успешно определена по сети для %s", driver.model_key, parsed_addr)
-                    job.model_key = driver.model_key
-                    job.driver_info = driver
-                    job.connection_type = driver.connection_type
-                    job.printer_address = parsed_addr
-                    
-                    if job.target_pc:
-                        logger.info("SNMP Auto-Discovery успешно завершил маршрутизацию для задачи #%d", job.task_id)
-                        return job
-
-        # 2. Smart-Track: использование LLM-as-a-Function
+        # 4. Smart-Track: использование LLM-as-a-Function
         logger.info("Smart-Track: Запуск LLM-парсинга для задачи #%d", job.task_id)
         job.state = JobState.PARSING
         
@@ -90,7 +97,7 @@ class JobRouter:
                 )
                 return job
             
-            # Валидация модели по нашей БЗ (если не определена по SNMP)
+            # Валидация модели по нашей БЗ (если не определена ранее по SNMP)
             if not job.driver_info:
                 driver = self.kb.find_by_key(result.model_key)
                 if not driver:
