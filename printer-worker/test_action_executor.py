@@ -151,3 +151,24 @@ async def test_execute_action_error_default():
         
         mock_update_status.assert_not_called()
         mock_add_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_execute_action_error_preformatted():
+    job = PrintJob(
+        task_id=106,
+        tg_user_id=555,
+        raw_text="Установите принтер",
+        state=JobState.FAILED,
+        connection_type=ConnectionType.TCPIP,
+    )
+
+    with (
+        patch("worker_services.action_executor.update_task_status", new_callable=AsyncMock) as mock_update_status,
+        patch("worker_services.action_executor.add_task_comment", new_callable=AsyncMock) as mock_add_comment
+    ):
+        error_msg = "Здравствуйте! Не вижу ваш компьютер в сети (PC-TEST) и принтер (10.244.1.1)."
+        await execute_action("on_error", job, error_msg)
+        
+        mock_update_status.assert_called_once_with(555, 106, 35)
+        mock_add_comment.assert_called_once_with(555, 106, error_msg)
