@@ -527,33 +527,6 @@ async def start_redis_listener():
                             )
                             continue
 
-                    # Проверяем, что в тексте сообщения или темы есть упоминание установки принтера.
-                    # Исключение: если запрос ручной из бота (is_manual_start=True), поля message/task_name
-                    # отсутствуют — пропускаем текстовый фильтр, так как нажатие кнопки уже является
-                    # явным подтверждением того, что задача про принтер.
-                    is_manual_start = payload.get("is_manual_start", False)
-                    msg_content = (payload.get("message") or "").lower()
-                    task_name = (payload.get("task_name") or "").lower()
-
-                    is_printer_request = is_manual_start or any(
-                        word in msg_content or word in task_name
-                        for word in (
-                            "принтер",
-                            "printer",
-                            "печать",
-                            "print",
-                            "установить принтер",
-                            "подключить принтер",
-                        )
-                    )
-
-                    if not is_printer_request:
-                        logger.debug(
-                            "Событие задачи #%d пропущено: не относится к установке принтера",
-                            payload.get("task_id"),
-                        )
-                        continue
-
                     # Запускаем обработку события асинхронно
                     asyncio.create_task(_process_event(payload))
 
