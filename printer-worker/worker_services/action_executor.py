@@ -12,7 +12,7 @@ async def execute_action(action_name: str, job: PrintJob, error_detail: str = ""
     if job.is_manual:
         return
 
-    rule: ActionRule = ACTIONS.get(action_name)
+    rule: ActionRule | None = ACTIONS.get(action_name)
     if not rule:
         logger.warning(f"Неизвестное действие '{action_name}'. Пропуск.")
         return
