@@ -1097,16 +1097,7 @@
 
         <div class="sidebar-nav">
             <div class="nav-section-label">Мониторинг</div>
-            <button class="nav-item active" id="nav-dashboard" onclick="goTo('dashboard')">
-                <svg viewBox="0 0 24 24">
-                    <rect x="3" y="3" width="7" height="9" rx="1" />
-                    <rect x="14" y="3" width="7" height="5" rx="1" />
-                    <rect x="14" y="12" width="7" height="9" rx="1" />
-                    <rect x="3" y="16" width="7" height="5" rx="1" />
-                </svg>
-                Обзор
-            </button>
-            <button class="nav-item" id="nav-history" onclick="goTo('history')">
+            <button class="nav-item active" id="nav-history" onclick="goTo('history')">
                 <svg viewBox="0 0 24 24">
                     <path d="M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
                 </svg>
@@ -1152,8 +1143,8 @@
 
         <div class="content">
 
-            <!-- ─────── SCREEN: Dashboard ──────────────────────── -->
-            <section id="screen-dashboard" class="screen active">
+            <!-- ─────── SCREEN: History ────────────────────────── -->
+            <section id="screen-history" class="screen active">
                 <div class="stats-row">
                     <div class="stat-card">
                         <div class="stat-icon green">
@@ -1197,39 +1188,8 @@
                 <div class="card mb-0">
                     <div class="card-header">
                         <div>
-                            <div class="card-title">Последние операции</div>
-                            <div class="card-subtitle">Актуально — обновляется каждые 5 секунд</div>
-                        </div>
-                    </div>
-                    <div class="table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>№ задачи</th>
-                                    <th>Компьютер</th>
-                                    <th>Модель принтера</th>
-                                    <th>Подключение</th>
-                                    <th>Статус</th>
-                                    <th>Действия</th>
-                                </tr>
-                            </thead>
-                            <tbody id="dash-jobs-body">
-                                <tr class="empty-row">
-                                    <td colspan="6">Загрузка данных...</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </section>
-
-            <!-- ─────── SCREEN: History ────────────────────────── -->
-            <section id="screen-history" class="screen">
-                <div class="card mb-0">
-                    <div class="card-header">
-                        <div>
                             <div class="card-title">Журнал операций</div>
-                            <div class="card-subtitle">Последние 50 задач из Redis</div>
+                            <div class="card-subtitle">Последние 50 задач из Redis — обновляется каждые 5 секунд</div>
                         </div>
                     </div>
                     <div class="table-wrap">
@@ -1241,7 +1201,7 @@
                                     <th>Модель принтера</th>
                                     <th>Тип</th>
                                     <th>Статус</th>
-                                    <th></th>
+                                    <th>Действия</th>
                                 </tr>
                             </thead>
                             <tbody id="history-body">
@@ -1367,13 +1327,12 @@
     <script>
         // ─────────────────────── State ────────────────────────────────────
         let apiKey = localStorage.getItem('il_api_key') || '';
-        let currentScreen = 'dashboard';
+        let currentScreen = 'history';
         let statusTimer = null;
         let dashTimer = null;
         let activeSse = null;
 
         const SCREENS = {
-            dashboard: 'Обзор',
             history: 'Журнал операций',
             install: 'Установка принтера',
             kb: 'Поддерживаемые модели'
@@ -1402,7 +1361,7 @@
         function openApp() {
             document.getElementById('auth-overlay').classList.remove('open');
             startPolling();
-            goTo('dashboard');
+            goTo('history');
         }
 
         function doLogout() {
@@ -1437,8 +1396,7 @@
         }
 
         function loadScreen(screen) {
-            if (screen === 'dashboard') loadDashboard();
-            else if (screen === 'history') loadHistory();
+            if (screen === 'history') loadHistory();
             else if (screen === 'install') loadInstallOptions();
             else if (screen === 'kb') loadKB();
         }
@@ -1450,7 +1408,7 @@
             checkWorkerStatus();
             statusTimer = setInterval(checkWorkerStatus, 5000);
             dashTimer = setInterval(() => {
-                if (currentScreen === 'dashboard') loadDashboard();
+                if (currentScreen === 'history') loadHistory();
             }, 5000);
         }
 
@@ -1484,11 +1442,20 @@
         }
 
         // ─────────────────────── Dashboard ────────────────────────────────
-        async function loadDashboard() {
+        // ─────────────────────── History ──────────────────────────────────
+        async function loadHistory() {
+            const tbody = document.getElementById('history-body');
+            
+            // Показываем лоадер только при первой загрузке или если таблица пуста
+            if (!tbody.children.length || tbody.querySelector('.empty-row td')?.textContent === 'Загрузка журнала...') {
+                tbody.innerHTML = `<tr class="empty-row"><td colspan="6">Загрузка журнала...</td></tr>`;
+            }
+
             try {
                 const res = await apiFetch('/admin/api/print-jobs');
                 const jobs = await res.json();
 
+                // Обновляем статистику
                 let done = 0, active = 0, err = 0;
                 const inProgress = ['probing', 'copying', 'installing', 'verifying', 'routing', 'parsing', 'waiting', 'pending'];
 
@@ -1498,41 +1465,17 @@
                     if (inProgress.includes(j.state)) active++;
                 });
 
-                document.getElementById('stat-done').textContent = done;
-                document.getElementById('stat-active').textContent = active;
-                document.getElementById('stat-errors').textContent = err;
+                const statDone = document.getElementById('stat-done');
+                const statActive = document.getElementById('stat-active');
+                const statErrors = document.getElementById('stat-errors');
+                if (statDone) statDone.textContent = done;
+                if (statActive) statActive.textContent = active;
+                if (statErrors) statErrors.textContent = err;
 
-                const tbody = document.getElementById('dash-jobs-body');
-                if (!jobs.length) {
-                    tbody.innerHTML = `<tr class="empty-row"><td colspan="6">Активных операций нет</td></tr>`;
+                // Если открыты логи у любой задачи, не перерисовываем таблицу, чтобы не сбросить просмотр
+                if (document.querySelector('.log-row.open')) {
                     return;
                 }
-
-                tbody.innerHTML = jobs.slice(0, 10).map(j => `
-            <tr>
-                <td class="td-mono">#${j.task_id}</td>
-                <td>${esc(j.target_pc || '—')}</td>
-                <td>${esc(j.model_key || '—')}</td>
-                <td><span class="badge badge-${connBadge(j.connection_type)}">${esc((j.connection_type || '—').toUpperCase())}</span></td>
-                <td><span class="badge badge-${stateBadge(j.state)}">${esc(j.state)}</span></td>
-                <td style="white-space: nowrap;">
-                    ${j.state === 'waiting_approval' ? 
-                      `<button class="btn btn-outline btn-sm" style="color:var(--green);border-color:var(--green-bg);margin-right:4px" onclick="sendJobAction(${j.task_id}, 'approve')">Подтвердить</button>` +
-                      `<button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red-bg);" onclick="sendJobAction(${j.task_id}, 'reject')">Отклонить</button>` 
-                      : ''}
-                </td>
-            </tr>
-        `).join('');
-            } catch (e) { if (e.message !== 'Unauthorized') console.error(e); }
-        }
-
-        // ─────────────────────── History ──────────────────────────────────
-        async function loadHistory() {
-            const tbody = document.getElementById('history-body');
-            tbody.innerHTML = `<tr class="empty-row"><td colspan="6">Загрузка...</td></tr>`;
-            try {
-                const res = await apiFetch('/admin/api/print-jobs');
-                const jobs = await res.json();
 
                 if (!jobs.length) {
                     tbody.innerHTML = `<tr class="empty-row"><td colspan="6">История пуста</td></tr>`;
@@ -1540,7 +1483,7 @@
                 }
 
                 tbody.innerHTML = jobs.map(j => `
-            <tr>
+            <tr id="job-row-${j.task_id}">
                 <td class="td-mono">#${j.task_id}</td>
                 <td>${esc(j.target_pc || '—')}</td>
                 <td>${esc(j.model_key || '—')}</td>
@@ -1550,11 +1493,10 @@
                     ${j.error_message ? `<div style="font-size:0.72rem;color:var(--red);margin-top:0.25rem;">${esc(j.error_message)}</div>` : ''}
                 </td>
                 <td style="white-space: nowrap;">
-                    <button class="btn btn-outline btn-sm" onclick="toggleLogs(${j.task_id}, this)">Логи</button>
                     ${j.state === 'waiting_approval' ? 
-                      `<button class="btn btn-outline btn-sm" style="color:var(--green);border-color:var(--green-bg);margin-left:4px" onclick="sendJobAction(${j.task_id}, 'approve')" title="Запустить установку с этими параметрами">Подтвердить</button>` +
-                      `<button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red-bg);margin-left:4px" onclick="sendJobAction(${j.task_id}, 'reject')" title="Отменить автоматическую установку">Отклонить</button>` 
-                      : ''}
+                      `<button class="btn btn-outline btn-sm" style="color:var(--green);border-color:var(--green-bg);margin-right:4px" onclick="sendJobAction(${j.task_id}, 'approve')" title="Запустить установку с этими параметрами">Подтвердить</button>` +
+                      `<button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red-bg);" onclick="sendJobAction(${j.task_id}, 'reject')" title="Отменить автоматическую установку">Отклонить</button>` 
+                      : `<button class="btn btn-outline btn-sm" onclick="toggleLogs(${j.task_id}, this)">Логи</button>`}
                 </td>
             </tr>
             <tr id="log-row-${j.task_id}" class="log-row">
