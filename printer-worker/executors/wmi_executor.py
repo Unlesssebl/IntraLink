@@ -128,7 +128,7 @@ class WMIExecutor:
             try:
                 # Пытаемся открыть TCP-соединение
                 _, writer = await asyncio.wait_for(
-                    asyncio.open_connection(self.target_ip, port), timeout=1.0
+                    asyncio.open_connection(self.target_ip, port), timeout=3.0
                 )
                 writer.close()
                 try:
@@ -142,27 +142,96 @@ class WMIExecutor:
         logger.warning(f"[{self.target_ip}] Превышен таймаут ожидания порта {port}.")
         return False
 
+    def _read_bootstrap_log_sync(self, retries: int = 5, retry_delay: float = 1.5) -> str | None:
+        """
+        Синхронно читает wmi_bootstrap.log с удаленного ПК через SMB.
+
+        Файл может быть заблокирован активным Start-Transcript (0xc0000043),
+        если PowerShell-процесс ещё не завершился. Выполняем ретраи с паузой.
+        """
+        import time
+        from smbclient import register_session, open_file
+
+        unc_path = f"\\\\{self.target_ip}\\C$\\Windows\\Temp\\wmi_bootstrap.log"
+        logger.debug(f"[{self.target_ip}] Попытка прочитать лог {unc_path} через SMB...")
+
+        # Регистрируем SMB-сессию один раз перед ретраями
+        try:
+            register_session(
+                self.target_ip, username=self.username, password=self.password
+            )
+        except Exception as e:
+            logger.debug(
+                f"SMB: регистрация сессии для {self.target_ip} не удалась "
+                f"(возможно, уже зарегистрирована): {e}"
+            )
+
+        last_error: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                with open_file(unc_path, mode="rb") as f:
+                    content_bytes = f.read()
+
+                # PowerShell Transcript пишет UTF-16 LE с BOM, либо UTF-8
+                for enc in ("utf-8-sig", "utf-16", "utf-8"):
+                    try:
+                        return content_bytes.decode(enc)
+                    except (UnicodeDecodeError, Exception):
+                        continue
+                return content_bytes.decode("utf-8", errors="replace")
+
+            except Exception as e:
+                last_error = e
+                # 0xc0000043 = STATUS_SHARING_VIOLATION — файл заблокирован Transcript-ом
+                if "0xc0000043" in str(e) and attempt < retries:
+                    logger.debug(
+                        f"[{self.target_ip}] Лог заблокирован (попытка {attempt}/{retries}), "
+                        f"повтор через {retry_delay}с..."
+                    )
+                    time.sleep(retry_delay)
+                    continue
+                break
+
+        logger.warning(
+            f"[{self.target_ip}] Не удалось прочитать удаленный лог {unc_path}: {last_error}"
+        )
+        return None
+
     async def enable_winrm(self, timeout: float = 40.0) -> None:
         """
         Запускает команду включения WinRM на удаленном хосте.
-        Эквивалент: winrm quickconfig -q с дополнительными проверками для идемпотентности.
+
+        Принцип минимального воздействия:
+        - НЕ меняем StartupType (не превращаем временный сеанс в постоянный автозапуск).
+        - НЕ создаём новые правила брандмауэра — активируем встроенное правило Windows
+          'WINRM-HTTP-In-TCP*', которое уже присутствует в системе.
+        - НЕ трогаем LocalAccountTokenFilterPolicy — нужен только для локальных учёток,
+          мы работаем через доменную учётную запись.
         """
-        # Запускаем PowerShell в фоне, который проверяет текущее состояние.
-        # Если WinRM уже запущен и настроен под наши требования (Basic Auth + AllowUnencrypted)
-        # И настроен хотя бы один слушатель (listener) WinRM, мы просто завершаем работу без перезапуска службы.
         ps_script = (
+            "$ErrorActionPreference = 'Continue'; "
+            "Start-Transcript -Path 'C:\\Windows\\Temp\\wmi_bootstrap.log' -Force; "
+            # Сначала проверяем службу через Get-Service (это не обращается к диску WSMan:\ и не вызывает автозапуск с запросом подтверждения)
             "$service = Get-Service -Name WinRM -ErrorAction SilentlyContinue; "
-            "$basic = (Get-Item WSMan:\\localhost\\Service\\Auth\\Basic -ErrorAction SilentlyContinue).Value; "
-            "$unenc = (Get-Item WSMan:\\localhost\\Service\\AllowUnencrypted -ErrorAction SilentlyContinue).Value; "
-            "$listeners = Get-ChildItem WSMan:\\localhost\\Listener -ErrorAction SilentlyContinue; "
-            "if ($service -and $service.Status -eq 'Running' -and $basic -eq 'true' -and $unenc -eq 'true' -and $listeners) { "
-            "  exit 0; "
+            "if (-not $service) { "
+            "  Write-Output 'WinRM service not found.'; "
+            "  Stop-Transcript; exit 1; "
             "} "
-            "Enable-PSRemoting -Force -SkipNetworkProfileCheck; "
-            "New-NetFirewallRule -Name 'WinRM-Custom-5985' -DisplayName 'WinRM Custom' -Profile Any -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5985 -ErrorAction SilentlyContinue; "
-            "Set-Item WSMan:\\localhost\\Service\\Auth\\Basic -Value $true; "
-            "Set-Item WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true; "
-            "Restart-Service WinRM"
+            # Гарантируем запуск службы до обращения к WSMan:\
+            "if ($service.Status -ne 'Running') { "
+            "  Start-Service -Name WinRM; "
+            "} "
+            # Теперь служба запущена, применяем настройки (они идемпотентны)
+            "Set-Item WSMan:\\localhost\\Service\\Auth\\Basic -Value $true -Force; "
+            "Set-Item WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true -Force; "
+            # Слушатель создаём только если его нет совсем (обычно уже есть)
+            "if (-not (Get-ChildItem WSMan:\\localhost\\Listener -ErrorAction SilentlyContinue)) { "
+            "  New-Item -Path WSMan:\\localhost\\Listener -Address * -Transport HTTP -Force; "
+            "} "
+            # Обязательно активируем встроенное правило Windows каждый раз, так как оно могло быть отключено в disable_winrm
+            "Enable-NetFirewallRule -Name 'WINRM-HTTP-In-TCP*' -ErrorAction SilentlyContinue; "
+            "Write-Output 'WinRM setup complete.'; "
+            "Stop-Transcript"
         )
         # Кодируем скрипт в Base64 для передачи через powershell -EncodedCommand
         encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("utf-8")
@@ -183,9 +252,18 @@ class WMIExecutor:
             )
             raise
 
-        # Динамическое ожидание порта 5985 вместо слепого sleep(5). Увеличено до 60 секунд для медленных ПК.
-        port_opened = await self._wait_for_port(5985, timeout=60.0)
+        # Динамическое ожидание порта 5985 вместо слепого sleep(5). Увеличено до 120 секунд для медленных ПК.
+        port_opened = await self._wait_for_port(5985, timeout=120.0)
         if not port_opened:
+            log_content = await asyncio.to_thread(self._read_bootstrap_log_sync)
+            if log_content:
+                logger.error(
+                    f"[{self.target_ip}] Не удалось запустить WinRM. Содержимое wmi_bootstrap.log:\n{log_content}"
+                )
+            else:
+                logger.error(
+                    f"[{self.target_ip}] Не удалось запустить WinRM, лог wmi_bootstrap.log пуст или недоступен."
+                )
             raise WmiBootstrapError(
                 f"Не удалось дождаться открытия порта WinRM (5985) на {self.target_ip}"
             )
@@ -197,8 +275,19 @@ class WMIExecutor:
     async def disable_winrm(self, timeout: float = 30.0) -> None:
         """
         Отключает WinRM для возврата системы в безопасное состояние.
+
+        Симметрично enable_winrm:
+        - НЕ меняем StartupType обратно (мы его не меняли при включении).
+        - Деактивируем встроенное правило брандмауэра 'WINRM-HTTP-In-TCP*'
+          (которое активировали при включении).
+        - Останавливаем службу.
         """
-        ps_script = "Stop-Service WinRM; Set-Service WinRM -StartupType Manual; Remove-NetFirewallRule -Name 'WinRM-Custom-5985' -ErrorAction SilentlyContinue;"
+        ps_script = (
+            # Останавливаем службу
+            "Stop-Service -Name WinRM -ErrorAction SilentlyContinue; "
+            # Деактивируем встроенное правило (симметрично Enable-NetFirewallRule в enable_winrm)
+            "Disable-NetFirewallRule -Name 'WINRM-HTTP-In-TCP*' -ErrorAction SilentlyContinue;"
+        )
         encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("utf-8")
         cmd = f"powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -EncodedCommand {encoded}"
 

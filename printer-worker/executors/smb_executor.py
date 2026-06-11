@@ -31,8 +31,8 @@ class SMBExecutor:
         try:
             mkdir(dest_dir)
         except Exception as e:
-            err_str = str(e)
-            if "0xC0000035" not in err_str and "object_name_collision" not in err_str.lower():
+            err_str = str(e).lower()
+            if "0xc0000035" not in err_str and "object_name_collision" not in err_str:
                 logger.error("SMB: не удалось создать директорию %s: %s", dest_dir, e)
                 raise
 

@@ -122,6 +122,10 @@ async def main():
     )
     root_logger.addHandler(redis_handler)
 
+    # Отключение избыточного логирования от сторонних библиотек (особенно smbprotocol, спамящего при копировании)
+    logging.getLogger("smbprotocol").setLevel(logging.WARNING)
+    logging.getLogger("smbclient").setLevel(logging.WARNING)
+
     # Инициализация сессии API-клиента
     await init_session()
 

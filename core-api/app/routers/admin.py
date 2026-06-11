@@ -222,7 +222,8 @@ async def _get_historical_logs(r, job_id: int) -> list[str]:
     """
     logs = []
     try:
-        history = await r.lrange(f"printer_job_logs_history:{job_id}", 0, -1)
+        # Ограничим выдачу истории последними 1000 строками во избежание зависания браузера
+        history = await r.lrange(f"printer_job_logs_history:{job_id}", -100, -1)
         if history:
             logs.extend(f"event: message\ndata: {log_line}\n\n" for log_line in history)
     except Exception as e:

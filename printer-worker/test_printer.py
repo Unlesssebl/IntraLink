@@ -168,5 +168,55 @@ async def test_wmi_executor_wait_for_port_timeout():
         assert mock_connect.call_count > 0
 
 
+async def test_wmi_executor_read_bootstrap_log_success():
+    executor = WMIExecutor("127.0.0.1", "user", "pass")
+
+    mock_file = MagicMock()
+    mock_file.read.return_value = b"Test log output"
+    mock_file.__enter__.return_value = mock_file
+
+    with (
+        patch("smbclient.register_session") as mock_register,
+        patch("smbclient.open_file", return_value=mock_file) as mock_open,
+    ):
+        result = executor._read_bootstrap_log_sync()
+        assert result == "Test log output"
+        mock_register.assert_called_once_with("127.0.0.1", username="user", password="pass")
+        mock_open.assert_called_once_with("\\\\127.0.0.1\\C$\\Windows\\Temp\\wmi_bootstrap.log", mode="rb")
+
+
+async def test_wmi_executor_read_bootstrap_log_failure():
+    executor = WMIExecutor("127.0.0.1", "user", "pass")
+
+    with (
+        patch("smbclient.register_session", side_effect=Exception("Connection failed")),
+    ):
+        result = executor._read_bootstrap_log_sync()
+        assert result is None
+
+
+async def test_wmi_executor_enable_winrm_timeout_with_log():
+    from executors.wmi_executor import WmiBootstrapError
+
+    executor = WMIExecutor("127.0.0.1", "user", "pass")
+
+    with (
+        patch.object(executor, "execute", new_callable=AsyncMock) as mock_execute,
+        patch.object(executor, "_wait_for_port", new_callable=AsyncMock) as mock_wait,
+        patch.object(executor, "_read_bootstrap_log_sync", return_value="Some error in bootstrap") as mock_read_log,
+    ):
+        mock_wait.return_value = False
+
+        try:
+            await executor.enable_winrm()
+            assert False, "Should have raised WmiBootstrapError"
+        except WmiBootstrapError as e:
+            assert "Не удалось дождаться открытия порта WinRM" in str(e)
+
+        mock_execute.assert_called_once()
+        mock_wait.assert_called_once_with(5985, timeout=120.0)
+        mock_read_log.assert_called_once()
+
+
 if __name__ == "__main__":
     asyncio.run(test_install())

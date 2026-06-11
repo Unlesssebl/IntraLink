@@ -4,6 +4,7 @@ import time
 from typing import Tuple
 import winrm
 import winrm.exceptions
+import requests
 from worker_config import WINRM_USERNAME, WINRM_PASSWORD, WINRM_TRANSPORT
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,11 @@ class WinRMExecutor:
                 std_out = rs.std_out.decode("utf-8", errors="replace")
                 std_err = rs.std_err.decode("utf-8", errors="replace")
                 return rs.status_code, std_out, std_err
-            except (winrm.exceptions.WinRMTransportError, ConnectionError) as e:
+            except (
+                winrm.exceptions.WinRMTransportError,
+                ConnectionError,
+                requests.exceptions.RequestException,
+            ) as e:
                 if attempt < retries:
                     logger.warning(
                         "Временный сбой WinRM подключения к %s (попытка %d/%d): %s",
