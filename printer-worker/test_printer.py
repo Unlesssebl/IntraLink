@@ -76,17 +76,19 @@ async def test_install():
             "strategies.tcpip_strategy.smb_executor.copy_driver_to_temp",
             new_callable=AsyncMock,
         ) as mock_copy_smb,
+        patch(
+            "strategies.tcpip_strategy.smb_executor.check_source_accessible",
+            new_callable=AsyncMock,
+        ) as mock_check_source,
     ):
         # Настраиваем возвращаемые значения для run_powershell
         # 1-й вызов (ручной probe в тесте): Get-PrinterDriver. Вернем status=1 (драйвер отсутствует)
-        # 2-й вызов (внутренний probe в execute): Get-PrinterDriver. Вернем status=1 (драйвер отсутствует)
-        # 3-й вызов (execute -> install_driver_script): pnputil
-        # 4-й вызов (execute -> port_script): Add-PrinterPort
-        # 5-й вызов (execute -> printer_script): Add-Printer
-        # 6-й вызов (execute -> verify_script): Get-Printer (Verification)
+        # 2-й вызов (execute -> install_driver_script): pnputil
+        # 3-й вызов (execute -> port_script): Add-PrinterPort
+        # 4-й вызов (execute -> printer_script): Add-Printer
+        # 5-й вызов (execute -> verify_script): Get-Printer (Verification)
         mock_run_ps.side_effect = [
             (1, "Driver not found", ""),  # Get-PrinterDriver (manual probe)
-            (1, "Driver not found", ""),  # Get-PrinterDriver (internal probe)
             (0, "Driver installed", ""),  # pnputil
             (0, "Port added", ""),  # Add-PrinterPort
             (0, "Printer added", ""),  # Add-Printer
@@ -94,6 +96,7 @@ async def test_install():
         ]
 
         mock_copy_smb.return_value = True
+        mock_check_source.return_value = True
 
         assert job.target_pc is not None
         wmi_exec = WMIExecutor(
@@ -134,7 +137,7 @@ async def test_install():
         mock_enable_winrm.assert_called_once()
         mock_disable_winrm.assert_called_once()
         mock_copy_smb.assert_called_once()
-        assert mock_run_ps.call_count == 6
+        assert mock_run_ps.call_count == 5
 
 
 async def test_wmi_executor_wait_for_port():

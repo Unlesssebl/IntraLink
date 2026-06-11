@@ -24,8 +24,11 @@ class SMBExecutor:
 
         try:
             mkdir(dest_dir)
-        except Exception:
-            pass
+        except Exception as e:
+            err_str = str(e)
+            if "0xC0000035" not in err_str and "object_name_collision" not in err_str.lower():
+                logger.error("SMB: не удалось создать директорию %s: %s", dest_dir, e)
+                raise
 
         for item in listdir(src_dir):
             src_item = f"{src_dir}\\{item}"
@@ -41,6 +44,12 @@ class SMBExecutor:
                         with open_file(dest_item, mode="wb") as f_dst:
                             while chunk := f_src.read(4 * 1024 * 1024):
                                 f_dst.write(chunk)
+                    
+                    src_size = stat(src_item).st_size
+                    dst_size = stat(dest_item).st_size
+                    if src_size != dst_size:
+                        logger.error("SMB: размер файла не совпадает после копирования %s -> %s (%s != %s)", src_item, dest_item, src_size, dst_size)
+                        raise Exception(f"File size mismatch: {src_size} != {dst_size}")
             except Exception as e:
                 logger.error(f"Ошибка копирования элемента {src_item}: {e}")
                 raise
@@ -67,7 +76,8 @@ class SMBExecutor:
             # Разбираем путь с помощью статического метода
             src_dir, dest_subdir, _ = self.parse_driver_path(src)
 
-            src_host = src_dir.strip("\\").split("\\")[0]
+            drive, _ = ntpath.splitdrive(src_dir)
+            src_host = drive.lstrip("\\").split("\\")[0] if drive.startswith("\\\\") else src_dir.strip("\\").split("\\")[0]
             try:
                 register_session(
                     src_host, username=self.username, password=self.password
@@ -127,7 +137,8 @@ class SMBExecutor:
         def _check_sync() -> bool:
             try:
                 src_dir, _, _ = self.parse_driver_path(src)
-                src_host = src_dir.strip("\\").split("\\")[0]
+                drive, _ = ntpath.splitdrive(src_dir)
+                src_host = drive.lstrip("\\").split("\\")[0] if drive.startswith("\\\\") else src_dir.strip("\\").split("\\")[0]
                 try:
                     register_session(src_host, username=self.username, password=self.password)
                 except Exception as e:

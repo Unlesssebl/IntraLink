@@ -111,7 +111,8 @@ def parse_snmp_response(data: bytes) -> Optional[str]:
         if val_tag == 0x04:  # Octet String
             return data[pos : pos + val_len].decode("utf-8", errors="ignore")
         return None
-    except Exception:
+    except Exception as e:
+        logger.debug("parse_snmp_response error: %s | hex=%s", e, data.hex()[:80])
         return None
 
 

@@ -1,6 +1,5 @@
 import logging
 import asyncio
-import functools
 from typing import Tuple
 import winrm
 from worker_config import WINRM_USERNAME, WINRM_PASSWORD, WINRM_TRANSPORT
@@ -19,7 +18,6 @@ class WinRMExecutor:
         self.password = WINRM_PASSWORD
         self.transport = WINRM_TRANSPORT
 
-    @functools.lru_cache(maxsize=32)
     def _get_session(self, target_pc: str) -> winrm.Session:
         endpoint = f"http://{target_pc}:5985/wsman"
         return winrm.Session(
@@ -39,8 +37,8 @@ class WinRMExecutor:
             session = self._get_session(target_pc)
             # Запуск PowerShell скрипта
             rs = session.run_ps(script)
-            std_out = rs.std_out.decode("utf-8", errors="ignore")
-            std_err = rs.std_err.decode("utf-8", errors="ignore")
+            std_out = rs.std_out.decode("utf-8", errors="replace")
+            std_err = rs.std_err.decode("utf-8", errors="replace")
             return rs.status_code, std_out, std_err
         except Exception as e:
             logger.error("Сбой WinRM подключения к %s: %s", target_pc, e)
