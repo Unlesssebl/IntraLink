@@ -75,6 +75,38 @@ class PrinterOrchestrator:
                     await fail(job, job.error_message or "Маршрутизация не удалась")
                     return
 
+                # 2.4 Валидация наличия всех необходимых данных (до запроса подтверждения)
+                if not job.connection_type:
+                    await fail(job, "Тип подключения принтера не определен")
+                    return
+                if not job.target_pc:
+                    await fail(job, "Целевой ПК не определен")
+                    return
+                if not job.driver_info:
+                    await fail(job, "Драйвер принтера не определен")
+                    return
+
+                # 2.4.1 Проверка доступности целевого ПК
+                from orchestrator.snmp import is_host_reachable
+                logger.info("Проверка доступности целевого ПК по сети: %s", job.target_pc)
+                job.state = JobState.PROBING
+                await save_job_state(job)
+                
+                is_pc_reachable = await is_host_reachable(job.target_pc)
+                if not is_pc_reachable:
+                    logger.warning("Целевой ПК %s недоступен (ping failed)", job.target_pc)
+                    await fail(job, f"Не удалось инициализировать подключение: целевой ПК {job.target_pc} недоступен (ping failed)")
+                    return
+
+                # 2.4.2 Проверка доступности МФУ по сети (для tcpip)
+                if job.connection_type == "tcpip" and job.printer_address:
+                    logger.info("Проверка доступности МФУ по сети: %s", job.printer_address)
+                    is_reachable = await is_host_reachable(job.printer_address)
+                    if not is_reachable:
+                        logger.warning("МФУ %s недоступно (ping failed)", job.printer_address)
+                        await fail(job, f"ping failed for printer {job.printer_address}")
+                        return
+
                 # 2.5 Ожидание подтверждения (Approval Gate)
                 job.state = JobState.WAITING_APPROVAL
                 from worker_services.redis_listener import publish_approval_request
@@ -92,18 +124,9 @@ class PrinterOrchestrator:
                 await save_job_state(job)
 
             # 3. Загрузка подходящей стратегии установки
-            if not job.connection_type:
-                await fail(job, "Тип подключения принтера не определен")
-                return
-            if not job.target_pc:
-                await fail(job, "Целевой ПК не определен")
-                return
-            if not job.driver_info:
-                await fail(job, "Драйвер принтера не определен")
-                return
-
             assert job.connection_type is not None
             assert job.target_pc is not None
+            assert job.driver_info is not None
 
             strategy = get_strategy(job.connection_type)
 
@@ -147,7 +170,7 @@ class PrinterOrchestrator:
                             "Задача #%d переведена в режим ожидания (USB кабель не подключен)",
                             job.task_id,
                         )
-                        await execute_action("on_usb_disconnected", job, job.error_message)
+                        await execute_action("on_usb_disconnected", job, job.error_message or "")
                         await save_job_state(job)
                         return
 

@@ -135,6 +135,29 @@ async def resolve_hostname(hostname: str, timeout: float = 1.0) -> Optional[str]
         return None
 
 
+import platform
+
+async def is_host_reachable(host: str, timeout: int = 2) -> bool:
+    try:
+        # Determine the OS
+        param = '-n' if platform.system().lower() == 'windows' else '-c'
+        timeout_param = '-w' if platform.system().lower() == 'windows' else '-W'
+        # Windows ping timeout is in milliseconds, Linux in seconds
+        timeout_val = str(timeout * 1000) if platform.system().lower() == 'windows' else str(timeout)
+
+        command = ['ping', param, '1', timeout_param, timeout_val, host]
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await process.communicate()
+        return process.returncode == 0
+    except Exception as e:
+        logger.debug("Ping failed for %s: %s", host, e)
+        return False
+
+
 def query_snmp_oid_sync(
     ip: str, oid: str, port: int = 161, community: str = "public", timeout: float = 1.5, retries: int = 2
 ) -> Optional[str]:

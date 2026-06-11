@@ -189,7 +189,7 @@ async def add_task_comment(auth_b64: str, task_id: int, comment: str) -> bool:
         endpoint=f"task/{task_id}",
         method="PUT",
         auth_b64=auth_b64,
-        json_data={"Comment": comment},
+        json_data={"Comment": comment, "IsPrivateComment": False},
     )
     return res is not None
 

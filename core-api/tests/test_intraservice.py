@@ -628,7 +628,7 @@ class TestAddTaskComment:
         json_data = call_kwargs.get("json_data")
         assert endpoint == "task/42"
         assert method == "PUT"
-        assert json_data == {"Comment": "Тестовый коммент"}
+        assert json_data == {"Comment": "Тестовый коммент", "IsPrivateComment": False}
 
     @pytest.mark.asyncio
     async def test_returns_false_on_api_error(self):
