@@ -460,7 +460,7 @@ class TestProcessUserNewTask:
 
         call_args = mock_redis.publish.call_args
         payload = json.loads(call_args[0][1])
-        assert "В работе" in payload["message"]
+        assert "В работе" in payload["text"]
 
     @pytest.mark.asyncio
     async def test_new_task_status_fallback_to_na(
@@ -504,7 +504,7 @@ class TestProcessUserNewTask:
 
         call_args = mock_redis.publish.call_args
         payload = json.loads(call_args[0][1])
-        assert "N/A" in payload["message"]
+        assert "N/A" in payload["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +570,7 @@ class TestProcessUserNewComment:
         mock_redis.publish.assert_awaited_once()
         payload = json.loads(mock_redis.publish.call_args[0][1])
         assert payload["event_type"] == "new_comment"
-        assert "Всё починено!" in payload["message"]
+        assert "Всё починено!" in payload["text"]
 
     @pytest.mark.asyncio
     async def test_old_comment_not_published(
@@ -739,7 +739,77 @@ class TestProcessUserStatusChange:
         mock_redis.publish.assert_awaited_once()
         payload = json.loads(mock_redis.publish.call_args[0][1])
         assert payload["event_type"] == "status_change"
-        assert "Закрыта" in payload["message"]
+        assert "Закрыта" in payload["text"]
+
+
+# ---------------------------------------------------------------------------
+# БЛОК 5.5: process_user — назначение исполнителя
+# ---------------------------------------------------------------------------
+
+
+class TestProcessUserExecutorAssigned:
+    """Тесты обработки назначения исполнителя."""
+
+    @pytest.mark.asyncio
+    async def test_executor_assigned_published(
+        self, mock_redis, utc_now, moscow_tz, base_web_url
+    ):
+        """
+        Событие назначения исполнителя (Executors) должно публиковаться.
+        """
+        import app.services.worker as worker_module
+
+        user = make_user(is_user_id=42)
+        mock_db = AsyncMock()
+        mock_db.get = AsyncMock(return_value=user)
+        mock_db.commit = AsyncMock()
+        mock_db_cm = MagicMock()
+        mock_db_cm.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db_cm.__aexit__ = AsyncMock(return_value=False)
+
+        tasks_response_empty = {"Tasks": [], "Statuses": []}
+        updated_task = make_task(task_id=5, executor_ids="42", status_name="Открыта", status_id=31)
+        updated_response = {"Tasks": [updated_task], "Statuses": []}
+
+        # lifetime: событие смены исполнителя (Executors)
+        lifetime = [
+            {
+                "Date": "2025-06-01 13:30:00",
+                "EditorId": 8664,
+                "Editor": "Беликов Ален",
+                "Executors": "belikov IntraTest",
+            }
+        ]
+
+        semaphore = asyncio.Semaphore(5)
+
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response_empty, updated_response],
+            ),
+            patch(
+                "app.services.worker.get_task_lifetime",
+                new_callable=AsyncMock,
+                return_value=lifetime,
+            ),
+        ):
+            await worker_module.process_user(
+                user_id=123456,
+                redis_client=mock_redis,
+                base_web_url=base_web_url,
+                semaphore=semaphore,
+                current_time_utc=utc_now,
+                intraservice_tz=moscow_tz,
+            )
+
+        mock_redis.publish.assert_awaited_once()
+        payload = json.loads(mock_redis.publish.call_args[0][1])
+        assert payload["event_type"] == "executor_assigned"
+        assert "belikov IntraTest" in payload["text"]
+        assert payload["status_id"] == 31
 
 
 # ---------------------------------------------------------------------------
@@ -990,4 +1060,4 @@ class TestApiResponseFormats:
 
         mock_redis.publish.assert_awaited_once()
         payload = json.loads(mock_redis.publish.call_args[0][1])
-        assert "Из словаря!" in payload["message"]
+        assert "Из словаря!" in payload["text"]

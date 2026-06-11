@@ -96,9 +96,18 @@ class JobRouter:
                 job.model_key = driver.model_key  # нормализуем к model_key из БЗ
                 job.driver_info = driver
                 job.connection_type = driver.connection_type
-                # Если сетевой принтер, пробуем найти IP/DNS в тексте (если еще не нашли)
-                if driver.connection_type == "tcpip" and not job.printer_address:
-                    job.printer_address = self._parse_printer_address(job.raw_text)
+                # Если сетевой принтер, проверяем наличие IP/DNS
+                if driver.connection_type == "tcpip":
+                    if not job.printer_address:
+                        job.printer_address = self._parse_printer_address(job.raw_text)
+                    if not job.printer_address:
+                        logger.warning(
+                            "Fast-Track: не найден IP/DNS для сетевого принтера %s (tcpip). Переход в FAILED.",
+                            driver.model_key
+                        )
+                        job.state = JobState.FAILED
+                        job.error_message = "Для сетевого принтера не удалось определить IP-адрес или DNS-имя."
+                        return job
 
                 logger.info("Fast-Track успешно пройден для задачи #%d", job.task_id)
                 return job

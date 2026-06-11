@@ -5,10 +5,10 @@ from .schemas import PrintJob, JobState, KnowledgeBase
 from .router import JobRouter
 from strategies import get_strategy
 from worker_services.api_client import (
-    add_task_comment,
     update_task_status,
     add_task_expenses,
 )
+from worker_services.action_executor import execute_action
 from worker_services.redis_listener import save_job_state, get_redis
 import worker_config as config
 from executors.wmi_executor import WMIExecutor
@@ -39,10 +39,6 @@ class PrinterOrchestrator:
         if not job.is_manual:
             await update_task_status(job.tg_user_id, job.task_id, status_id)
 
-    async def _add_comment(self, job: PrintJob, comment: str) -> None:
-        if not job.is_manual:
-            await add_task_comment(job.tg_user_id, job.task_id, comment)
-
     async def _add_expenses(self, job: PrintJob, minutes: int) -> None:
         if not job.is_manual:
             await add_task_expenses(job.tg_user_id, job.task_id, minutes)
@@ -67,9 +63,6 @@ class PrinterOrchestrator:
 
                 # 1. Переход в статус "В работе" в системе IntraService
                 await self._update_status(job, STATUS_IN_PROGRESS)
-                await self._add_comment(
-                    job, "🔧 Запущена автоматическая установка принтера..."
-                )
                 await save_job_state(job)
 
                 # 2. Маршрутизация (Fast-Track или Smart-Track)
@@ -134,10 +127,6 @@ class PrinterOrchestrator:
                 try:
                     job.state = JobState.PROBING
                     await save_job_state(job)
-                    await self._add_comment(
-                        job,
-                        f"🚀 Инициализация удаленного подключения к {job.target_pc} (WMI Bootstrap)...",
-                    )
                     try:
                         await wmi_exec.enable_winrm()
                         winrm_enabled_successfully = True
@@ -149,10 +138,6 @@ class PrinterOrchestrator:
                         return
 
                     # 4. Проверка готовности (WinRM Probe / USB detection)
-                    await self._add_comment(
-                        job,
-                        f"🔎 Диагностика целевого хоста {job.target_pc}. Проверка подключения принтера по {job.connection_type.value.upper()}...",
-                    )
                     job = await strategy.probe(job)
                     await save_job_state(job)
 
@@ -162,11 +147,7 @@ class PrinterOrchestrator:
                             "Задача #%d переведена в режим ожидания (USB кабель не подключен)",
                             job.task_id,
                         )
-                        await self._update_status(job, STATUS_WAITING)
-                        await self._add_comment(
-                            job,
-                            f"⏳ Внимание: {job.error_message}. Пожалуйста, подключите USB кабель принтера и включите устройство, после чего перезапустите задачу вручную (через веб-панель администратора или команду бота).",
-                        )
+                        await execute_action("on_usb_disconnected", job, job.error_message)
                         await save_job_state(job)
                         return
 
@@ -176,10 +157,6 @@ class PrinterOrchestrator:
 
                     # 6. Выполнение установки
                     assert job.driver_info is not None
-                    await self._add_comment(
-                        job,
-                        f"📥 Установка драйвера {job.driver_info.display_name} и настройка портов на ПК {job.target_pc}...",
-                    )
                     job = await strategy.execute(job)
                     await save_job_state(job)
 
@@ -201,15 +178,9 @@ class PrinterOrchestrator:
                 )
                 # Списание трудозатрат перед переводом в статус "Выполнена"
                 await self._add_expenses(job, config.WORKLOG_MINUTES)
-                await self._update_status(job, STATUS_RESOLVED)
                 assert job.driver_info is not None
                 assert job.connection_type is not None
-                await self._add_comment(
-                    job,
-                    f"✅ Успех: Принтер '{job.driver_info.display_name}' успешно установлен и настроен на компьютере {job.target_pc}.\n"
-                    f"Тип подключения: {job.connection_type.value.upper()}\n"
-                    f"Используемый драйвер: {job.driver_info.driver_name}",
-                )
+                await execute_action("on_success", job)
                 await save_job_state(job)
             else:
                 await fail(
@@ -249,9 +220,4 @@ class PrinterOrchestrator:
             pass
         # Переводим в «Требует уточнения» (35): переход из «В работе» (27) в «На доработку» (40)
         # запрещён бизнес-процессом «Настройка\установка», поэтому используем статус 35.
-        await self._update_status(job, STATUS_WAITING)
-        await self._add_comment(
-            job,
-            f"❌ Ошибка автоустановки на этапе '{job.state.value}': {error_detail}.\n"
-            f"Задача передана на ручной разбор специалисту технической поддержки.",
-        )
+        await execute_action("on_error", job, error_detail)

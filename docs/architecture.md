@@ -252,6 +252,8 @@ sequenceDiagram
                     Work->>Redis: Publish ("intraservice_events", "new_comment" payload)
                 else Изменён статус
                     Work->>Redis: Publish ("intraservice_events", "status_change" payload)
+                else Назначен исполнитель
+                    Work->>Redis: Publish ("intraservice_events", "executor_assigned" payload)
                 end
             end
 

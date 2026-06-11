@@ -10,7 +10,6 @@ from orchestrator.schemas import PrintJob, JobState
 from worker_services.api_client import (
     get_task_details,
     update_task_status,
-    add_task_comment,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,15 +90,15 @@ async def _process_approval_response(payload: dict) -> None:
                 )
                 tg_user_id = payload.get("tg_user_id")
                 if tg_user_id:
-                    from orchestrator.orchestrator import STATUS_WAITING
+                    from worker_services.action_executor import execute_action
 
-                    await update_task_status(tg_user_id, task_id, STATUS_WAITING)
-                    await add_task_comment(
-                        tg_user_id,
-                        task_id,
-                        "❌ Ошибка автоустановки: Внутреннее состояние задачи утеряно в Redis (например, из-за перезапуска сервиса). "
-                        "Пожалуйста, запустите установку заново.",
+                    dummy_job = PrintJob(
+                        task_id=task_id,
+                        tg_user_id=tg_user_id,
+                        raw_text="",
+                        state=JobState.FAILED,
                     )
+                    await execute_action("on_state_lost", dummy_job)
                 return
 
             from worker_main import get_orchestrator
@@ -412,12 +411,8 @@ async def _recover_orphan_jobs() -> None:
 
                     if not job.is_manual:
                         try:
-                            await update_task_status(
-                                job.tg_user_id, job.task_id, STATUS_WAITING
-                            )
-                            await add_task_comment(
-                                job.tg_user_id, job.task_id, f"❌ {job.error_message}"
-                            )
+                            from worker_services.action_executor import execute_action
+                            await execute_action("on_orphan_recovered", job)
                         except Exception as ex:
                             logger.error(
                                 "Не удалось отправить статус в ИС для сиротской задачи #%d: %s",
@@ -436,12 +431,8 @@ async def _recover_orphan_jobs() -> None:
 
                     if not job.is_manual:
                         try:
-                            await update_task_status(
-                                job.tg_user_id, job.task_id, STATUS_WAITING
-                            )
-                            await add_task_comment(
-                                job.tg_user_id, job.task_id, f"❌ {job.error_message}"
-                            )
+                            from worker_services.action_executor import execute_action
+                            await execute_action("on_orphan_recovered", job)
                         except Exception as ex:
                             logger.error(
                                 "Не удалось отправить статус в ИС для сиротской задачи #%d: %s",
@@ -513,15 +504,16 @@ async def start_redis_listener():
                         continue
 
                     # Фильтруем события IntraService
-                    if event_type not in ("new_task", "status_change"):
+                    if event_type not in ("new_task", "status_change", "executor_assigned"):
                         continue
 
-                    # Если это изменение статуса, реагируем только на перевод в "Открыта" (ID: 31)
-                    if event_type == "status_change":
+                    # Если это изменение статуса или назначение исполнителя, реагируем только на статус "Открыта" (ID: 31)
+                    if event_type in ("status_change", "executor_assigned"):
                         status_id = payload.get("status_id")
                         if status_id != 31:
                             logger.debug(
-                                "Событие status_change для задачи #%d пропущено: статус %s не является стартовым",
+                                "Событие %s для задачи #%d пропущено: статус %s не является стартовым",
+                                event_type,
                                 payload.get("task_id"),
                                 status_id,
                             )

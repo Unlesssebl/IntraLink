@@ -121,7 +121,7 @@ async def _check_new_tasks(
                 "is_login": db_user.is_login,
                 "task_id": task["Id"],
                 "task_name": task["Name"],
-                "message": message_text,
+                "text": message_text,
             }
 
             notifications.append(payload)
@@ -174,7 +174,7 @@ def _process_lifetime_event(  # noqa: PLR0913
             "is_login": db_user.is_login,
             "task_id": task["Id"],
             "task_name": task["Name"],
-            "message": message_text,
+            "text": message_text,
         }
 
     if event.get("StatusId"):
@@ -196,8 +196,28 @@ def _process_lifetime_event(  # noqa: PLR0913
             "is_login": db_user.is_login,
             "task_id": task["Id"],
             "task_name": task["Name"],
-            "message": message_text,
+            "text": message_text,
             "status_id": int(event.get("StatusId")),
+        }
+
+    if "Executors" in event:
+        editor = event.get("Editor", "Unknown")
+        message_text = (
+            f"👤 <b>Назначен исполнитель в заявке #{task['Id']}</b> "
+            f"редактором <i>{editor}</i>:\n"
+            f"Новый исполнитель: {event['Executors']}\n"
+            f"🔗 <a href='{base_web_url}/Task/View/{task['Id']}'>"
+            "Открыть в браузере</a>"
+        )
+        return {
+            "event_type": "executor_assigned",
+            "tg_user_id": db_user.tg_user_id,
+            "is_user_id": db_user.is_user_id,
+            "is_login": db_user.is_login,
+            "task_id": task["Id"],
+            "task_name": task["Name"],
+            "text": message_text,
+            "status_id": int(task.get("StatusId")) if task.get("StatusId") is not None else None,
         }
 
     return None
