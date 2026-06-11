@@ -1,5 +1,5 @@
 import logging
-from orchestrator.schemas import PrintJob
+from orchestrator.schemas import PrintJob, ErrorType
 from action_config import ACTIONS, ActionRule, ERROR_RULES, STATUS_WAITING
 from worker_services.api_client import update_task_status, add_task_comment
 
@@ -23,11 +23,13 @@ async def execute_action(action_name: str, job: PrintJob, error_detail: str = ""
     # Адаптивный выбор шаблона для глобальной ошибки
     comment_text = None
     if action_name == "on_error" and error_detail:
-        if error_detail.strip().startswith("Здравствуйте!"):
-            logger.info("Обнаружено готовое пользовательское сообщение об ошибке.")
+        if job.error_type == ErrorType.USER:
+            # Ошибка пользовательская — сообщение уже отформатировано в оркестраторе, отправляем как есть
+            logger.info("Тип ошибки USER: отправка готового комментария пользователю.")
             comment_text = error_detail
             status_id = STATUS_WAITING
         else:
+            # Системная ошибка — ищем адаптивное правило по ключевым словам
             for error_rule in ERROR_RULES:
                 if any(kw.lower() in error_detail.lower() for kw in error_rule["keywords"]):
                     logger.info("Найдено адаптивное правило для ошибки. Шаблон заменен.")

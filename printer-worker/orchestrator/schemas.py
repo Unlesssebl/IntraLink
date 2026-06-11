@@ -8,6 +8,11 @@ class ConnectionType(str, Enum):
     USB = "usb"
 
 
+class ErrorType(str, Enum):
+    USER = "user"     # Пользователь может что-то предпринять — отправить комментарий в заявку
+    SYSTEM = "system" # Инфраструктурный сбой — только для логов, пользователя не тревожить
+
+
 class JobState(str, Enum):
     PENDING = "pending"
     ROUTING = "routing"
@@ -161,3 +166,6 @@ class PrintJob(BaseModel):
     # Флаг устанавливается в probe(): True — драйвер уже есть, False — нужно копировать.
     # Хранится явно, чтобы не злоупотреблять полем error_message как каналом передачи состояния.
     driver_installed: Optional[bool] = None
+    # Тип ошибки: USER — пользователь может устранить (отправляем комментарий),
+    # SYSTEM — инфраструктурный сбой (тихий режим, только логи).
+    error_type: ErrorType = ErrorType.SYSTEM

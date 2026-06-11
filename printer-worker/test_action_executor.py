@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, AsyncMock
-from orchestrator.schemas import PrintJob, JobState, ConnectionType, PrinterDriverInfo
+from orchestrator.schemas import PrintJob, JobState, ConnectionType, PrinterDriverInfo, ErrorType
 from worker_services.action_executor import execute_action
 
 @pytest.mark.asyncio
@@ -161,6 +161,7 @@ async def test_execute_action_error_preformatted():
         raw_text="Установите принтер",
         state=JobState.FAILED,
         connection_type=ConnectionType.TCPIP,
+        error_type=ErrorType.USER,
     )
 
     with (

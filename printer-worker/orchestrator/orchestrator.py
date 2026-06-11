@@ -1,7 +1,7 @@
 import logging
 import contextvars
 import asyncio
-from .schemas import PrintJob, JobState, KnowledgeBase
+from .schemas import PrintJob, JobState, KnowledgeBase, ErrorType
 from .router import JobRouter
 from strategies import get_strategy
 from worker_services.api_client import (
@@ -145,6 +145,7 @@ class PrinterOrchestrator:
                             "Если все проверено, но связь не появилась, обратитесь по телефону 49-87."
                         )
                         
+                    job.error_type = ErrorType.USER
                     await fail(job, error_msg)
                     return
 
