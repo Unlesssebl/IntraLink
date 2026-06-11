@@ -92,7 +92,7 @@ class WMIExecutor:
                     f"Ошибка выполнения WMI команды, код: {return_code}"
                 )
 
-            logger.debug(f"Процесс WMI успешно запущен, PID: {process_id}")
+            logger.info(f"[{self.target_ip}] Процесс WMI успешно запущен, PID: {process_id}")
             return return_code
 
         except Exception as e:
@@ -159,7 +159,6 @@ class WMIExecutor:
             "  exit 0; "
             "} "
             "Enable-PSRemoting -Force -SkipNetworkProfileCheck; "
-            "Set-NetFirewallRule -Name 'WINRM-HTTP-In-TCP*' -RemoteAddress Any -ErrorAction SilentlyContinue; "
             "New-NetFirewallRule -Name 'WinRM-Custom-5985' -DisplayName 'WinRM Custom' -Profile Any -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5985 -ErrorAction SilentlyContinue; "
             "Set-Item WSMan:\\localhost\\Service\\Auth\\Basic -Value $true; "
             "Set-Item WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true; "
@@ -169,6 +168,10 @@ class WMIExecutor:
         encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("utf-8")
         cmd = f"powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -EncodedCommand {encoded}"
 
+        logger.warning(
+            "[SECURITY] [%s] WinRM настраивается с AllowUnencrypted=true и Basic Auth. "
+            "Допустимо только в изолированном VLAN!", self.target_ip
+        )
         logger.info(f"[{self.target_ip}] Инициализация включения WinRM через WMI...")
         # Таймаут передаётся напрямую в execute(), который сам оборачивает вызов в asyncio.wait_for.
         # Двойная обёртка wait_for(wait_for(...)) намеренно исключена.
@@ -195,7 +198,7 @@ class WMIExecutor:
         """
         Отключает WinRM для возврата системы в безопасное состояние.
         """
-        ps_script = "Stop-Service WinRM; Set-Service WinRM -StartupType Manual; Remove-NetFirewallRule -Name 'WinRM-Custom-5985' -ErrorAction SilentlyContinue; Set-NetFirewallRule -Name 'WINRM-HTTP-In-TCP*' -RemoteAddress LocalSubnet -ErrorAction SilentlyContinue;"
+        ps_script = "Stop-Service WinRM; Set-Service WinRM -StartupType Manual; Remove-NetFirewallRule -Name 'WinRM-Custom-5985' -ErrorAction SilentlyContinue;"
         encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("utf-8")
         cmd = f"powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -EncodedCommand {encoded}"
 

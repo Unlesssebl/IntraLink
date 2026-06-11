@@ -2,6 +2,7 @@ import logging
 import asyncio
 import ntpath
 import stat as stat_mod
+import urllib.parse
 from typing import Tuple
 from smbclient import register_session, mkdir, stat
 from worker_config import WINRM_USERNAME, WINRM_PASSWORD
@@ -15,9 +16,14 @@ class SMBExecutor:
     Копирование файлов выполняется в потоке с использованием asyncio.to_thread.
     """
 
-    def __init__(self):
-        self.username = WINRM_USERNAME
-        self.password = WINRM_PASSWORD
+    def __init__(self, username: str | None = None, password: str | None = None):
+        self.username = username or WINRM_USERNAME
+        self.password = password or WINRM_PASSWORD
+
+    @staticmethod
+    def _extract_smb_host(unc_path: str) -> str:
+        parsed = urllib.parse.urlsplit("smb:" + unc_path.replace("\\", "/"))
+        return parsed.netloc or unc_path.strip("\\").split("\\")[0]
 
     def _copy_dir_smb(self, src_dir: str, dest_dir: str):
         from smbclient import listdir, open_file
@@ -76,8 +82,7 @@ class SMBExecutor:
             # Разбираем путь с помощью статического метода
             src_dir, dest_subdir, _ = self.parse_driver_path(src)
 
-            drive, _ = ntpath.splitdrive(src_dir)
-            src_host = drive.lstrip("\\").split("\\")[0] if drive.startswith("\\\\") else src_dir.strip("\\").split("\\")[0]
+            src_host = self._extract_smb_host(src_dir)
             try:
                 register_session(
                     src_host, username=self.username, password=self.password
@@ -137,8 +142,7 @@ class SMBExecutor:
         def _check_sync() -> bool:
             try:
                 src_dir, _, _ = self.parse_driver_path(src)
-                drive, _ = ntpath.splitdrive(src_dir)
-                src_host = drive.lstrip("\\").split("\\")[0] if drive.startswith("\\\\") else src_dir.strip("\\").split("\\")[0]
+                src_host = self._extract_smb_host(src_dir)
                 try:
                     register_session(src_host, username=self.username, password=self.password)
                 except Exception as e:

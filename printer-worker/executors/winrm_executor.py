@@ -1,7 +1,9 @@
 import logging
 import asyncio
+import time
 from typing import Tuple
 import winrm
+import winrm.exceptions
 from worker_config import WINRM_USERNAME, WINRM_PASSWORD, WINRM_TRANSPORT
 
 logger = logging.getLogger(__name__)
@@ -33,16 +35,39 @@ class WinRMExecutor:
         )
 
     def _run_ps_sync(self, target_pc: str, script: str) -> Tuple[int, str, str]:
-        try:
-            session = self._get_session(target_pc)
-            # Запуск PowerShell скрипта
-            rs = session.run_ps(script)
-            std_out = rs.std_out.decode("utf-8", errors="replace")
-            std_err = rs.std_err.decode("utf-8", errors="replace")
-            return rs.status_code, std_out, std_err
-        except Exception as e:
-            logger.error("Сбой WinRM подключения к %s: %s", target_pc, e)
-            return -1, "", str(e)
+        UTF8_PREFIX = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        full_script = UTF8_PREFIX + script
+
+        retries = 2
+        for attempt in range(retries + 1):
+            try:
+                session = self._get_session(target_pc)
+                # Запуск PowerShell скрипта
+                rs = session.run_ps(full_script)
+                std_out = rs.std_out.decode("utf-8", errors="replace")
+                std_err = rs.std_err.decode("utf-8", errors="replace")
+                return rs.status_code, std_out, std_err
+            except (winrm.exceptions.WinRMTransportError, ConnectionError) as e:
+                if attempt < retries:
+                    logger.warning(
+                        "Временный сбой WinRM подключения к %s (попытка %d/%d): %s",
+                        target_pc,
+                        attempt + 1,
+                        retries,
+                        e,
+                    )
+                    time.sleep(2.0)
+                else:
+                    logger.error(
+                        "Сбой WinRM подключения к %s после %d попыток: %s",
+                        target_pc,
+                        retries + 1,
+                        e,
+                    )
+                    return -1, "", str(e)
+            except Exception as e:
+                logger.error("Критический сбой WinRM подключения к %s: %s", target_pc, e)
+                return -1, "", str(e)
 
     async def run_powershell(
         self, target_pc: str, script: str, timeout: float = 90.0

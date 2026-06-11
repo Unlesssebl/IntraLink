@@ -136,34 +136,40 @@ async def resolve_hostname(hostname: str, timeout: float = 1.0) -> Optional[str]
 
 
 def query_snmp_oid_sync(
-    ip: str, oid: str, port: int = 161, community: str = "public", timeout: float = 1.5
+    ip: str, oid: str, port: int = 161, community: str = "public", timeout: float = 1.5, retries: int = 2
 ) -> Optional[str]:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(timeout)
     request_data = build_snmp_get_request(oid, community)
-    try:
-        sock.sendto(request_data, (ip, port))
-        data, addr = sock.recvfrom(4096)
-        return parse_snmp_response(data)
-    except socket.timeout:
-        return None
-    except Exception as e:
-        logger.debug("SNMP sync query error for %s: %s", ip, e)
-        return None
-    finally:
-        sock.close()
+    for attempt in range(retries + 1):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        try:
+            sock.sendto(request_data, (ip, port))
+            data, addr = sock.recvfrom(4096)
+            return parse_snmp_response(data)
+        except socket.timeout:
+            if attempt < retries:
+                logger.debug(
+                    "SNMP timeout (попытка %d/%d) для %s", attempt + 1, retries, ip
+                )
+            else:
+                return None
+        except Exception as e:
+            logger.debug("SNMP sync query error для %s: %s", ip, e)
+            return None
+        finally:
+            sock.close()
 
 
 async def query_snmp_oid(
-    ip: str, oid: str, port: int = 161, community: str = "public", timeout: float = 1.5
+    ip: str, oid: str, port: int = 161, community: str = "public", timeout: float = 1.5, retries: int = 2
 ) -> Optional[str]:
     return await asyncio.to_thread(
-        query_snmp_oid_sync, ip, oid, port, community, timeout
+        query_snmp_oid_sync, ip, oid, port, community, timeout, retries
     )
 
 
 async def probe_printer_model(
-    ip_or_host: str, community: str = "public", timeout: float = 1.5
+    ip_or_host: str, community: str = "public", timeout: float = 1.5, retries: int = 2
 ) -> Optional[str]:
     """
     Пробует получить модель сетевого принтера по IP адресу или имени хоста с помощью SNMP.
@@ -181,7 +187,7 @@ async def probe_printer_model(
 
     # 2. Опрос OID
     model = await query_snmp_oid(
-        ip, OID_HR_DEVICE_DESCR, community=community, timeout=timeout
+        ip, OID_HR_DEVICE_DESCR, community=community, timeout=timeout, retries=retries
     )
     if model:
         model = model.strip()
@@ -189,7 +195,7 @@ async def probe_printer_model(
         return model
 
     model = await query_snmp_oid(
-        ip, OID_SYS_DESCR, community=community, timeout=timeout
+        ip, OID_SYS_DESCR, community=community, timeout=timeout, retries=retries
     )
     if model:
         model = model.strip()
