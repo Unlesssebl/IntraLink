@@ -107,14 +107,20 @@ class PrinterOrchestrator:
                 errors = []
                 if not is_pc_reachable:
                     logger.warning("Целевой ПК %s недоступен (ping failed)", job.target_pc)
-                    errors.append(f"целевой ПК {job.target_pc} недоступен")
+                    errors.append("компьютер")
                     
                 if printer_task and not is_printer_reachable:
                     logger.warning("МФУ %s недоступно (ping failed)", job.printer_address)
-                    errors.append(f"МФУ {job.printer_address} недоступно")
+                    errors.append("принтер")
                     
                 if errors:
-                    error_msg = "Не удалось инициализировать подключение: " + " и ".join(errors) + " (ping failed)"
+                    if len(errors) == 2:
+                        error_msg = f"К сожалению, автоматическая установка сейчас невозможна. Компьютер ({job.target_pc}) и принтер ({job.printer_address}) не отвечают по сети. Пожалуйста, убедитесь, что они включены."
+                    elif not is_pc_reachable:
+                        error_msg = f"К сожалению, автоматическая установка сейчас невозможна. Ваш компьютер ({job.target_pc}) не отвечает по сети. Пожалуйста, убедитесь, что он включен."
+                    else:
+                        error_msg = f"К сожалению, автоматическая установка сейчас невозможна. Выбранный принтер ({job.printer_address}) не отвечает по сети. Пожалуйста, убедитесь, что он включен."
+                        
                     await fail(job, error_msg)
                     return
 
