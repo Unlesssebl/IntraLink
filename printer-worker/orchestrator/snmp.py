@@ -137,7 +137,7 @@ async def resolve_hostname(hostname: str, timeout: float = 1.0) -> Optional[str]
 
 import platform
 
-async def is_host_reachable(host: str, timeout: int = 2) -> bool:
+async def is_host_reachable(host: str, timeout: int = 5) -> bool:
     try:
         # Determine the OS
         param = '-n' if platform.system().lower() == 'windows' else '-c'
@@ -154,7 +154,7 @@ async def is_host_reachable(host: str, timeout: int = 2) -> bool:
         await process.communicate()
         return process.returncode == 0
     except Exception as e:
-        logger.debug("Ping failed for %s: %s", host, e)
+        logger.warning("Исключение при вызове утилиты ping для %s: %s", host, e)
         return False
 
 

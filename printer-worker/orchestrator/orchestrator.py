@@ -86,26 +86,37 @@ class PrinterOrchestrator:
                     await fail(job, "Драйвер принтера не определен")
                     return
 
-                # 2.4.1 Проверка доступности целевого ПК
+                # 2.4.1 Проверка доступности целевых узлов (параллельно)
                 from orchestrator.snmp import is_host_reachable
-                logger.info("Проверка доступности целевого ПК по сети: %s", job.target_pc)
+                import asyncio
+                
+                logger.info("Проверка доступности целевых узлов по сети (ПК: %s, МФУ: %s)", 
+                            job.target_pc, job.printer_address if job.connection_type == "tcpip" else "N/A")
                 job.state = JobState.PROBING
                 await save_job_state(job)
                 
-                is_pc_reachable = await is_host_reachable(job.target_pc)
+                pc_task = asyncio.create_task(is_host_reachable(job.target_pc))
+                printer_task = None
+                
+                if job.connection_type == "tcpip" and job.printer_address:
+                    printer_task = asyncio.create_task(is_host_reachable(job.printer_address))
+                
+                is_pc_reachable = await pc_task
+                is_printer_reachable = await printer_task if printer_task else True
+                
+                errors = []
                 if not is_pc_reachable:
                     logger.warning("Целевой ПК %s недоступен (ping failed)", job.target_pc)
-                    await fail(job, f"Не удалось инициализировать подключение: целевой ПК {job.target_pc} недоступен (ping failed)")
+                    errors.append(f"целевой ПК {job.target_pc} недоступен")
+                    
+                if printer_task and not is_printer_reachable:
+                    logger.warning("МФУ %s недоступно (ping failed)", job.printer_address)
+                    errors.append(f"МФУ {job.printer_address} недоступно")
+                    
+                if errors:
+                    error_msg = "Не удалось инициализировать подключение: " + " и ".join(errors) + " (ping failed)"
+                    await fail(job, error_msg)
                     return
-
-                # 2.4.2 Проверка доступности МФУ по сети (для tcpip)
-                if job.connection_type == "tcpip" and job.printer_address:
-                    logger.info("Проверка доступности МФУ по сети: %s", job.printer_address)
-                    is_reachable = await is_host_reachable(job.printer_address)
-                    if not is_reachable:
-                        logger.warning("МФУ %s недоступно (ping failed)", job.printer_address)
-                        await fail(job, f"ping failed for printer {job.printer_address}")
-                        return
 
                 # 2.5 Ожидание подтверждения (Approval Gate)
                 job.state = JobState.WAITING_APPROVAL
