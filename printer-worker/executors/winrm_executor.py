@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import functools
 from typing import Tuple
 import winrm
 from worker_config import WINRM_USERNAME, WINRM_PASSWORD, WINRM_TRANSPORT
@@ -18,19 +19,24 @@ class WinRMExecutor:
         self.password = WINRM_PASSWORD
         self.transport = WINRM_TRANSPORT
 
-    def _run_ps_sync(self, target_pc: str, script: str) -> Tuple[int, str, str]:
-        # pywinrm требует указания URL эндпоинта WinRM
-        # По умолчанию используем HTTP на порту 5985
+    @functools.lru_cache(maxsize=32)
+    def _get_session(self, target_pc: str) -> winrm.Session:
         endpoint = f"http://{target_pc}:5985/wsman"
+        return winrm.Session(
+            endpoint,
+            auth=(self.username, self.password),
+            transport=self.transport,
+            server_cert_validation="ignore",
+            # operation_timeout_sec (60) < asyncio.wait_for timeout (90):
+            # pywinrm завершается первым с кодом ошибки, а не бросает TimeoutError
+            # из asyncio — это намеренная расстановка таймаутов.
+            read_timeout_sec=70,
+            operation_timeout_sec=60,
+        )
+
+    def _run_ps_sync(self, target_pc: str, script: str) -> Tuple[int, str, str]:
         try:
-            session = winrm.Session(
-                endpoint,
-                auth=(self.username, self.password),
-                transport=self.transport,
-                server_cert_validation="ignore",
-                read_timeout_sec=70,
-                operation_timeout_sec=60,
-            )
+            session = self._get_session(target_pc)
             # Запуск PowerShell скрипта
             rs = session.run_ps(script)
             std_out = rs.std_out.decode("utf-8", errors="ignore")

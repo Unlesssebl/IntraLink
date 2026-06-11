@@ -1,18 +1,11 @@
 import logging
-from .base import PrinterStrategy
+from .base import PrinterStrategy, escape_ps
 from . import strategy
 from orchestrator.schemas import PrintJob, JobState, ConnectionType
 from executors.winrm_executor import winrm_executor
 from executors.smb_executor import smb_executor
 
 logger = logging.getLogger(__name__)
-
-
-def escape_ps(text: str) -> str:
-    """
-    Экранирует одинарные кавычки для безопасной подстановки параметров в PowerShell скрипты.
-    """
-    return text.replace("'", "''")
 
 
 @strategy(ConnectionType.TCPIP)
@@ -29,7 +22,6 @@ class TcpIpPortStrategy(PrinterStrategy):
             "Проверка наличия драйвера '%s' на ПК %s", driver_name, job.target_pc
         )
 
-        # Скрипт проверки существования драйвера
         script = (
             f"Get-PrinterDriver -Name '{driver_name_esc}' -ErrorAction SilentlyContinue"
         )
@@ -41,15 +33,19 @@ class TcpIpPortStrategy(PrinterStrategy):
             logger.info(
                 "Драйвер '%s' уже установлен на ПК %s", driver_name, job.target_pc
             )
-            # Флаг о том, что копирование не требуется, сохраняем в метаданных/контексте
-            job.error_message = "DRIVER_EXISTS"
+            job.driver_installed = True
         else:
             logger.info("Драйвер '%s' отсутствует на ПК %s", driver_name, job.target_pc)
-            job.error_message = "DRIVER_MISSING"
+            job.driver_installed = False
 
         return job
 
     async def execute(self, job: PrintJob) -> PrintJob:
+        """
+        Выполняет установку TCP/IP-принтера.
+        Предполагает, что probe() уже был вызван оркестратором — job.driver_installed установлен.
+        Повторный вызов probe() здесь намеренно отсутствует.
+        """
         from worker_services.redis_listener import save_job_state
 
         if not job.target_pc or not job.driver_info or not job.printer_address:
@@ -57,12 +53,6 @@ class TcpIpPortStrategy(PrinterStrategy):
             job.error_message = (
                 "Неполные параметры сетевого принтера (IP/DNS адрес не указан)"
             )
-            await save_job_state(job)
-            return job
-
-        # 1. Диагностика
-        job = await self.probe(job)
-        if job.state == JobState.FAILED:
             await save_job_state(job)
             return job
 
@@ -80,11 +70,21 @@ class TcpIpPortStrategy(PrinterStrategy):
         )
         remote_temp_path_esc = escape_ps(remote_temp_path)
 
-        # 2. Копирование и установка драйвера при необходимости
-        if job.error_message == "DRIVER_MISSING":
+        # 1. Копирование и установка драйвера при необходимости.
+        # Если probe() определил, что драйвер отсутствует (driver_installed=False) или
+        # probe() не был вызван (driver_installed=None) — копируем на всякий случай.
+        if not job.driver_installed:
             job.state = JobState.COPYING
             await save_job_state(job)
             logger.info("Копирование драйвера %s на %s", inf_path, job.target_pc)
+
+            # Проверка доступности источника перед копированием
+            if not await smb_executor.check_source_accessible(inf_path):
+                job.state = JobState.FAILED
+                job.error_message = f"Источник драйвера недоступен по SMB: {inf_path}"
+                await save_job_state(job)
+                return job
+
             success = await smb_executor.copy_driver_to_temp(inf_path, job.target_pc)
             if not success:
                 job.state = JobState.FAILED
@@ -95,7 +95,6 @@ class TcpIpPortStrategy(PrinterStrategy):
             job.state = JobState.INSTALLING
             await save_job_state(job)
             logger.info("Установка драйвера '%s' на ПК %s", driver_name, job.target_pc)
-            # Скрипт импорта драйвера в Windows
             install_driver_script = (
                 f"pnputil /add-driver '{remote_temp_path_esc}' /install ; "
                 f"Add-PrinterDriver -Name '{driver_name_esc}'"
@@ -111,7 +110,7 @@ class TcpIpPortStrategy(PrinterStrategy):
                 await save_job_state(job)
                 return job
 
-        # 3. Создание TCP/IP порта
+        # 2. Создание TCP/IP порта
         job.state = JobState.INSTALLING
         await save_job_state(job)
         port_name = f"IP_{job.printer_address}"
@@ -134,7 +133,7 @@ class TcpIpPortStrategy(PrinterStrategy):
             await save_job_state(job)
             return job
 
-        # 4. Добавление или обновление принтера
+        # 3. Добавление или обновление принтера
         printer_name = job.driver_info.display_name
         printer_name_esc = escape_ps(printer_name)
         logger.info(
@@ -160,7 +159,7 @@ class TcpIpPortStrategy(PrinterStrategy):
             await save_job_state(job)
             return job
 
-        # 5. Верификация
+        # 4. Верификация
         job.state = JobState.VERIFYING
         await save_job_state(job)
         verify_script = f"Get-Printer -Name '{printer_name_esc}' | Select-Object Name, PortName, DriverName | ConvertTo-Json"

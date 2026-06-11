@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import ntpath
+import stat as stat_mod
 from typing import Tuple
 from smbclient import register_session, mkdir, stat
 from worker_config import WINRM_USERNAME, WINRM_PASSWORD
@@ -32,8 +33,6 @@ class SMBExecutor:
             try:
                 # Если это директория, stat отработает, если файл - тоже, но в smbclient нет isdir,
                 # можно использовать S_ISDIR(stat(src_item).st_mode)
-                import stat as stat_mod
-
                 mode = stat(src_item).st_mode
                 if stat_mod.S_ISDIR(mode):
                     self._copy_dir_smb(src_item, dest_item)
@@ -73,15 +72,15 @@ class SMBExecutor:
                 register_session(
                     src_host, username=self.username, password=self.password
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("SMB: регистрация сессии для %s не удалась (возможно, уже зарегистрирована): %s", src_host, e)
 
             try:
                 register_session(
                     dest_host, username=self.username, password=self.password
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("SMB: регистрация сессии для %s не удалась (возможно, уже зарегистрирована): %s", dest_host, e)
 
             unc_dest_dir = (
                 f"\\\\{dest_host}\\{dest_path}\\printer_drivers\\{dest_subdir}"
@@ -120,4 +119,30 @@ class SMBExecutor:
             return False
 
 
+    async def check_source_accessible(self, src: str) -> bool:
+        """
+        Асинхронная проверка доступности UNC-пути источника перед копированием.
+        Сетевой вызов stat() выполняется в потоке, чтобы не блокировать event loop.
+        """
+        def _check_sync() -> bool:
+            try:
+                src_dir, _, _ = self.parse_driver_path(src)
+                src_host = src_dir.strip("\\").split("\\")[0]
+                try:
+                    register_session(src_host, username=self.username, password=self.password)
+                except Exception as e:
+                    logger.debug(
+                        "SMB: регистрация сессии для %s не удалась (возможно, уже зарегистрирована): %s",
+                        src_host, e,
+                    )
+                stat(src_dir)
+                return True
+            except Exception as e:
+                logger.error("SMB: источник '%s' недоступен: %s", src, e)
+                return False
+
+        return await asyncio.to_thread(_check_sync)
+
+
 smb_executor = SMBExecutor()
+

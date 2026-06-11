@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from .base import PrinterStrategy
+from .base import PrinterStrategy, escape_ps
 from . import strategy
 from orchestrator.schemas import PrintJob, JobState, ConnectionType
 from executors.winrm_executor import winrm_executor
@@ -8,12 +8,31 @@ from executors.smb_executor import smb_executor
 
 logger = logging.getLogger(__name__)
 
+# Параметры ожидания PnP-обнаружения принтера Windows
+_PNP_POLL_INTERVAL = 2.0   # секунды между попытками проверки
+_PNP_POLL_TIMEOUT  = 30.0  # максимальное суммарное время ожидания
 
-def escape_ps(text: str) -> str:
+
+async def _wait_for_printer_pnp(target_pc: str, driver_name: str) -> bool:
     """
-    Экранирует одинарные кавычки для безопасной подстановки параметров в PowerShell скрипты.
+    Ожидает, пока Windows PnP не зарегистрирует принтер с указанным именем драйвера.
+    Возвращает True, если принтер появился в течение _PNP_POLL_TIMEOUT секунд.
+    Используется вместо слепого asyncio.sleep для надёжной верификации USB-принтеров.
     """
-    return text.replace("'", "''")
+    driver_name_esc = escape_ps(driver_name)
+    verify_script = (
+        f"Get-CimInstance Win32_Printer "
+        f"| Where-Object {{$_.DriverName -like '*{driver_name_esc}*'}} "
+        f"| Select-Object Name, DriverName | ConvertTo-Json"
+    )
+    elapsed = 0.0
+    while elapsed < _PNP_POLL_TIMEOUT:
+        status, stdout, stderr = await winrm_executor.run_powershell(target_pc, verify_script)
+        if status == 0 and stdout.strip():
+            return True
+        await asyncio.sleep(_PNP_POLL_INTERVAL)
+        elapsed += _PNP_POLL_INTERVAL
+    return False
 
 
 @strategy(ConnectionType.USB)
@@ -49,12 +68,8 @@ class UsbDiscoveryStrategy(PrinterStrategy):
             "Обнаружен USB-принтер с PNP ID: %s на ПК %s", pnp_id, job.target_pc
         )
 
-        # Сопоставляем с Базой Знаний
-        # Если self.kb не передан напрямую, мы его загрузим или получим из реестра/контекста
         if not self.kb:
-            # Импортируем локально во избежание круговых импортов
             from worker_main import get_kb
-
             self.kb = get_kb()
 
         driver = self.kb.find_by_hw_id(pnp_id)
@@ -80,13 +95,12 @@ class UsbDiscoveryStrategy(PrinterStrategy):
         return job
 
     async def execute(self, job: PrintJob) -> PrintJob:
+        """
+        Выполняет установку USB-принтера.
+        Предполагает, что probe() уже был вызван оркестратором — job.driver_info установлен.
+        Повторный вызов probe() здесь намеренно отсутствует.
+        """
         from worker_services.redis_listener import save_job_state
-
-        # 1. Diagnostics
-        job = await self.probe(job)
-        if job.state in (JobState.WAITING, JobState.FAILED):
-            await save_job_state(job)
-            return job
 
         assert job.target_pc is not None
         assert job.driver_info is not None
@@ -100,6 +114,13 @@ class UsbDiscoveryStrategy(PrinterStrategy):
             f"C:\\Windows\\Temp\\printer_drivers\\{dest_subdir}\\{inf_filename}"
         )
         remote_temp_path_esc = escape_ps(remote_temp_path)
+
+        # 1. Проверка доступности источника перед копированием
+        if not await smb_executor.check_source_accessible(inf_path):
+            job.state = JobState.FAILED
+            job.error_message = f"Источник драйвера недоступен по SMB: {inf_path}"
+            await save_job_state(job)
+            return job
 
         # 2. Копируем драйвер на целевой ПК
         job.state = JobState.COPYING
@@ -130,53 +151,42 @@ class UsbDiscoveryStrategy(PrinterStrategy):
             await save_job_state(job)
             return job
 
-        # Даем Windows Plug-and-Play время на автоматическое обнаружение и создание принтера
-        logger.info("Ожидание Plug-and-Play автоопределения принтера (5 секунд)...")
-        await asyncio.sleep(5)
-
-        # 4. Верификация
+        # 4. Верификация через polling вместо слепого sleep.
+        # pnputil установил INF, теперь ждём автоматического PnP-обнаружения принтера.
         job.state = JobState.VERIFYING
         await save_job_state(job)
-        # Проверяем наличие принтера с данным именем драйвера
-        verify_script = f"Get-CimInstance Win32_Printer | Where-Object {{$_.DriverName -like '*{driver_name_esc}*'}} | Select-Object Name, DriverName | ConvertTo-Json"
-        status, stdout, stderr = await winrm_executor.run_powershell(
-            job.target_pc, verify_script
+        logger.info(
+            "Ожидание PnP-обнаружения принтера на ПК %s (до %.0f сек)...",
+            job.target_pc, _PNP_POLL_TIMEOUT,
         )
+        found = await _wait_for_printer_pnp(job.target_pc, driver_name)
 
-        if status == 0 and stdout.strip():
+        if not found:
+            # PnP не справился сам — принудительный рескан устройств.
+            # pnputil /scan-devices — правильный способ инициировать рескан на Windows 10+.
             logger.info(
-                "USB-принтер успешно определился в системе на %s: %s",
+                "PnP не обнаружил принтер автоматически, запускаем принудительный рескан на ПК %s",
                 job.target_pc,
-                stdout.strip(),
+            )
+            rescan_script = "pnputil /scan-devices"
+            await winrm_executor.run_powershell(job.target_pc, rescan_script)
+
+            # Повторное ожидание после рескана
+            found = await _wait_for_printer_pnp(job.target_pc, driver_name)
+
+        if found:
+            logger.info(
+                "USB-принтер успешно определился в системе на %s", job.target_pc
             )
             job.state = JobState.DONE
             job.error_message = None
             await save_job_state(job)
         else:
-            # Попробуем сделать принудительный рескан PnP
-            rescan_script = (
-                "Get-CimInstance Win32_PnPEntity | Where-Object {$_.PNPDeviceID -like 'USBPRINT*'} | ForEach-Object { "
-                "  $_.InvokeMethod('Enable', $null) "
-                "}"
+            job.state = JobState.FAILED
+            job.error_message = (
+                "Драйвер установлен, но Windows PnP не обнаружил принтер. "
+                "Проверьте USB-подключение."
             )
-            await winrm_executor.run_powershell(job.target_pc, rescan_script)
-            await asyncio.sleep(3)
-
-            # Повторная верификация
-            status, stdout, stderr = await winrm_executor.run_powershell(
-                job.target_pc, verify_script
-            )
-            if status == 0 and stdout.strip():
-                logger.info(
-                    "USB-принтер успешно определился после рескана PnP на %s",
-                    job.target_pc,
-                )
-                job.state = JobState.DONE
-                job.error_message = None
-                await save_job_state(job)
-            else:
-                job.state = JobState.FAILED
-                job.error_message = "Драйвер установлен, но Windows PnP не обнаружил принтер. Проверьте USB-подключение."
-                await save_job_state(job)
+            await save_job_state(job)
 
         return job

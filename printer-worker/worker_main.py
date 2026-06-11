@@ -1,6 +1,7 @@
 import json
 import logging
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from worker_config import PRINTERS_KB_PATH
 from orchestrator.schemas import KnowledgeBase
@@ -108,6 +109,11 @@ async def start_heartbeat():
 async def main():
     logger.info("Запуск микросервиса printer-worker...")
 
+    # Установка глобального ThreadPoolExecutor для изоляции тяжелых I/O операций (SMB, WinRM)
+    io_pool = ThreadPoolExecutor(max_workers=100, thread_name_prefix="PrinterIO")
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(io_pool)
+
     # Регистрация RedisLogHandler на корневом логгере
     root_logger = logging.getLogger()
     redis_handler = RedisLogHandler()
@@ -146,6 +152,8 @@ async def main():
 
         # Гарантированное закрытие aiohttp сессии
         await close_session()
+        # Завершение пула потоков
+        io_pool.shutdown(wait=False)
         logger.info("Микросервис printer-worker успешно остановлен.")
 
 

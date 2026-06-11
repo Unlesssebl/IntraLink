@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 from impacket.dcerpc.v5.dcomrt import DCOMConnection
 from impacket.dcerpc.v5.dcom import wmi
@@ -158,27 +159,29 @@ class WMIExecutor:
             "  exit 0; "
             "} "
             "Enable-PSRemoting -Force -SkipNetworkProfileCheck; "
+            "Set-NetFirewallRule -Name 'WINRM-HTTP-In-TCP*' -RemoteAddress Any -ErrorAction SilentlyContinue; "
+            "New-NetFirewallRule -Name 'WinRM-Custom-5985' -DisplayName 'WinRM Custom' -Profile Any -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5985 -ErrorAction SilentlyContinue; "
             "Set-Item WSMan:\\localhost\\Service\\Auth\\Basic -Value $true; "
             "Set-Item WSMan:\\localhost\\Service\\AllowUnencrypted -Value $true; "
             "Restart-Service WinRM"
         )
         # Кодируем скрипт в Base64 для передачи через powershell -EncodedCommand
-        import base64
-
         encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("utf-8")
         cmd = f"powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -EncodedCommand {encoded}"
 
         logger.info(f"[{self.target_ip}] Инициализация включения WinRM через WMI...")
+        # Таймаут передаётся напрямую в execute(), который сам оборачивает вызов в asyncio.wait_for.
+        # Двойная обёртка wait_for(wait_for(...)) намеренно исключена.
         try:
-            await asyncio.wait_for(self.execute(cmd), timeout=timeout)
-        except asyncio.TimeoutError:
+            await self.execute(cmd, timeout=timeout)
+        except WmiBootstrapError:
             logger.error(
                 f"[{self.target_ip}] Таймаут выполнения операции включения WinRM"
             )
-            raise WmiBootstrapError(f"Таймаут при включении WinRM на {self.target_ip}")
+            raise
 
-        # Динамическое ожидание порта 5985 вместо слепого sleep(5). Увеличено до 30 секунд для медленных ПК.
-        port_opened = await self._wait_for_port(5985, timeout=30.0)
+        # Динамическое ожидание порта 5985 вместо слепого sleep(5). Увеличено до 60 секунд для медленных ПК.
+        port_opened = await self._wait_for_port(5985, timeout=60.0)
         if not port_opened:
             raise WmiBootstrapError(
                 f"Не удалось дождаться открытия порта WinRM (5985) на {self.target_ip}"
@@ -192,18 +195,17 @@ class WMIExecutor:
         """
         Отключает WinRM для возврата системы в безопасное состояние.
         """
-        ps_script = "Stop-Service WinRM; Set-Service WinRM -StartupType Manual"
-        import base64
-
+        ps_script = "Stop-Service WinRM; Set-Service WinRM -StartupType Manual; Remove-NetFirewallRule -Name 'WinRM-Custom-5985' -ErrorAction SilentlyContinue; Set-NetFirewallRule -Name 'WINRM-HTTP-In-TCP*' -RemoteAddress LocalSubnet -ErrorAction SilentlyContinue;"
         encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("utf-8")
         cmd = f"powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -EncodedCommand {encoded}"
 
         logger.info(f"[{self.target_ip}] Инициализация отключения WinRM через WMI...")
+        # Таймаут передаётся напрямую в execute(), двойная обёртка wait_for исключена.
         try:
-            await asyncio.wait_for(self.execute(cmd), timeout=timeout)
-        except asyncio.TimeoutError:
+            await self.execute(cmd, timeout=timeout)
+        except WmiBootstrapError:
             logger.error(
                 f"[{self.target_ip}] Таймаут выполнения операции отключения WinRM"
             )
-            raise WmiBootstrapError(f"Таймаут при отключении WinRM на {self.target_ip}")
+            raise
         logger.info(f"[{self.target_ip}] Команда отключения отправлена.")

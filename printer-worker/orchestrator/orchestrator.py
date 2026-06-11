@@ -9,6 +9,7 @@ from worker_services.api_client import (
     update_task_status,
     add_task_expenses,
 )
+from worker_services.redis_listener import save_job_state, get_redis
 import worker_config as config
 from executors.wmi_executor import WMIExecutor
 
@@ -22,15 +23,6 @@ STATUS_IN_PROGRESS = 27  # В работе
 STATUS_WAITING = 35  # Требует уточнения
 STATUS_ON_HOLD = 40  # На доработку (передано специалисту)
 STATUS_RESOLVED = 29  # Выполнена
-
-# Глобальный словарь блокировок по целевым ПК для исключения конфликтов одновременной установки
-_pc_locks: dict[str, asyncio.Lock] = {}
-
-
-def get_pc_lock(target_pc: str) -> asyncio.Lock:
-    if target_pc not in _pc_locks:
-        _pc_locks[target_pc] = asyncio.Lock()
-    return _pc_locks[target_pc]
 
 
 class PrinterOrchestrator:
@@ -135,9 +127,10 @@ class PrinterOrchestrator:
                 domain=domain,
             )
 
-            # Включение WinRM
+            # Включение WinRM и блокировка выполнения
             winrm_enabled_successfully = False
-            async with get_pc_lock(job.target_pc):
+            r = get_redis()
+            async with r.lock(f"printer_pc_lock:{job.target_pc}", timeout=3600):
                 try:
                     job.state = JobState.PROBING
                     await save_job_state(job)

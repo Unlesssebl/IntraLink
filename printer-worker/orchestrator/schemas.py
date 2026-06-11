@@ -158,3 +158,6 @@ class PrintJob(BaseModel):
     driver_info: Optional[PrinterDriverInfo] = None
     error_message: Optional[str] = None
     is_manual: bool = False
+    # Флаг устанавливается в probe(): True — драйвер уже есть, False — нужно копировать.
+    # Хранится явно, чтобы не злоупотреблять полем error_message как каналом передачи состояния.
+    driver_installed: Optional[bool] = None
