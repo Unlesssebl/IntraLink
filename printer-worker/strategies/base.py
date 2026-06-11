@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from orchestrator.schemas import PrintJob
 
+
 class PrinterStrategy(ABC):
     @abstractmethod
     async def probe(self, job: PrintJob) -> PrintJob:

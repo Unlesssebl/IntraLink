@@ -6,8 +6,10 @@ from impacket.dcerpc.v5.dtypes import NULL
 
 logger = logging.getLogger(__name__)
 
+
 class WmiBootstrapError(Exception):
     pass
+
 
 class WMIExecutor:
     """
@@ -16,7 +18,8 @@ class WMIExecutor:
     когда нет возможности настроить его через GPO.
     Все вызовы заворачиваются в asyncio.to_thread, чтобы не блокировать event loop.
     """
-    def __init__(self, target_ip: str, username: str, password: str, domain: str = ''):
+
+    def __init__(self, target_ip: str, username: str, password: str, domain: str = ""):
         self.target_ip = target_ip
         self.username = username
         self.password = password
@@ -28,18 +31,18 @@ class WMIExecutor:
         Возвращает код возврата метода Create (0 - успех).
         """
         logger.debug(f"Подключение к WMI на {self.target_ip} для выполнения: {command}")
-        
+
         # Подключаемся к DCOM
         try:
             dcom = DCOMConnection(
-                self.target_ip, 
-                self.username, 
-                self.password, 
-                self.domain, 
-                '', 
-                '', 
-                None, 
-                oxidResolver=True
+                self.target_ip,
+                self.username,
+                self.password,
+                self.domain,
+                "",
+                "",
+                None,
+                oxidResolver=True,
             )
         except Exception as e:
             logger.error(f"Ошибка подключения DCOM к {self.target_ip}: {e}")
@@ -47,36 +50,50 @@ class WMIExecutor:
 
         try:
             # Получаем интерфейс IWbemLevel1Login
-            iInterface = dcom.CoCreateInstanceEx(wmi.CLSID_WbemLevel1Login, wmi.IID_IWbemLevel1Login)
+            iInterface = dcom.CoCreateInstanceEx(
+                wmi.CLSID_WbemLevel1Login, wmi.IID_IWbemLevel1Login
+            )
             iWbemLevel1Login = wmi.IWbemLevel1Login(iInterface)
-            
+
             # Логинимся в пространство имен root\cimv2
-            iWbemServices = iWbemLevel1Login.NTLMLogin('//./root/cimv2', NULL, NULL)
+            iWbemServices = iWbemLevel1Login.NTLMLogin("//./root/cimv2", NULL, NULL)
             iWbemLevel1Login.RemRelease()
-            
+
             # Получаем класс Win32_Process
-            win32Process, _ = iWbemServices.GetObject('Win32_Process')
-            
+            win32Process, _ = iWbemServices.GetObject("Win32_Process")
+
             # Запускаем команду (в скрытом окне)
             # В Win32_Process.Create параметры: CommandLine, CurrentDirectory, ProcessStartupInformation
             # Игнорируем вывод, нам нужно только запустить процесс активации WinRM
-            result = win32Process.Create(command, 'C:\\', None)
-            
+            result = win32Process.Create(command, "C:\\", None)
+
             # В Impacket result является IWbemClassObject. Чтобы получить значения, нужно использовать getProperties()
             props = result.getProperties()
-            return_code_prop = props.get('ReturnValue')
-            return_code = return_code_prop['value'] if isinstance(return_code_prop, dict) else (getattr(return_code_prop, 'value', -1) if return_code_prop else -1)
-            
-            process_id_prop = props.get('ProcessId')
-            process_id = process_id_prop['value'] if isinstance(process_id_prop, dict) else (getattr(process_id_prop, 'value', 0) if process_id_prop else 0)
-            
+            return_code_prop = props.get("ReturnValue")
+            return_code = (
+                return_code_prop["value"]
+                if isinstance(return_code_prop, dict)
+                else (
+                    getattr(return_code_prop, "value", -1) if return_code_prop else -1
+                )
+            )
+
+            process_id_prop = props.get("ProcessId")
+            process_id = (
+                process_id_prop["value"]
+                if isinstance(process_id_prop, dict)
+                else (getattr(process_id_prop, "value", 0) if process_id_prop else 0)
+            )
+
             if return_code != 0:
                 logger.error(f"WMI Win32_Process.Create вернул ошибку {return_code}")
-                raise WmiBootstrapError(f"Ошибка выполнения WMI команды, код: {return_code}")
-                
+                raise WmiBootstrapError(
+                    f"Ошибка выполнения WMI команды, код: {return_code}"
+                )
+
             logger.debug(f"Процесс WMI успешно запущен, PID: {process_id}")
             return return_code
-            
+
         except Exception as e:
             logger.error(f"Сбой выполнения WMI команды на {self.target_ip}: {e}")
             raise WmiBootstrapError(f"Сбой WMI: {e}")
@@ -89,12 +106,13 @@ class WMIExecutor:
         """
         try:
             await asyncio.wait_for(
-                asyncio.to_thread(self._sync_execute, command),
-                timeout=timeout
+                asyncio.to_thread(self._sync_execute, command), timeout=timeout
             )
         except asyncio.TimeoutError:
             logger.error(f"Таймаут WMI команды ({timeout} сек) на {self.target_ip}")
-            raise WmiBootstrapError(f"Таймаут WMI команды ({timeout} сек) на {self.target_ip}")
+            raise WmiBootstrapError(
+                f"Таймаут WMI команды ({timeout} сек) на {self.target_ip}"
+            )
 
     async def _wait_for_port(self, port: int, timeout: float = 15.0) -> bool:
         """
@@ -102,14 +120,14 @@ class WMIExecutor:
         Возвращает True, если порт стал доступен, иначе False.
         """
         import time
+
         start_time = time.time()
         logger.debug(f"[{self.target_ip}] Ожидание доступности порта {port}...")
         while time.time() - start_time < timeout:
             try:
                 # Пытаемся открыть TCP-соединение
                 _, writer = await asyncio.wait_for(
-                    asyncio.open_connection(self.target_ip, port),
-                    timeout=1.0
+                    asyncio.open_connection(self.target_ip, port), timeout=1.0
                 )
                 writer.close()
                 try:
@@ -146,21 +164,26 @@ class WMIExecutor:
         )
         # Кодируем скрипт в Base64 для передачи через powershell -EncodedCommand
         import base64
-        encoded = base64.b64encode(ps_script.encode('utf-16le')).decode('utf-8')
+
+        encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("utf-8")
         cmd = f"powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -EncodedCommand {encoded}"
-        
+
         logger.info(f"[{self.target_ip}] Инициализация включения WinRM через WMI...")
         try:
             await asyncio.wait_for(self.execute(cmd), timeout=timeout)
         except asyncio.TimeoutError:
-            logger.error(f"[{self.target_ip}] Таймаут выполнения операции включения WinRM")
+            logger.error(
+                f"[{self.target_ip}] Таймаут выполнения операции включения WinRM"
+            )
             raise WmiBootstrapError(f"Таймаут при включении WinRM на {self.target_ip}")
-        
+
         # Динамическое ожидание порта 5985 вместо слепого sleep(5). Увеличено до 30 секунд для медленных ПК.
         port_opened = await self._wait_for_port(5985, timeout=30.0)
         if not port_opened:
-            raise WmiBootstrapError(f"Не удалось дождаться открытия порта WinRM (5985) на {self.target_ip}")
-            
+            raise WmiBootstrapError(
+                f"Не удалось дождаться открытия порта WinRM (5985) на {self.target_ip}"
+            )
+
         # Небольшая пауза на стабилизацию после открытия порта
         await asyncio.sleep(1.0)
         logger.info(f"[{self.target_ip}] Ожидание запуска WinRM завершено.")
@@ -171,13 +194,16 @@ class WMIExecutor:
         """
         ps_script = "Stop-Service WinRM; Set-Service WinRM -StartupType Manual"
         import base64
-        encoded = base64.b64encode(ps_script.encode('utf-16le')).decode('utf-8')
+
+        encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("utf-8")
         cmd = f"powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -EncodedCommand {encoded}"
-        
+
         logger.info(f"[{self.target_ip}] Инициализация отключения WinRM через WMI...")
         try:
             await asyncio.wait_for(self.execute(cmd), timeout=timeout)
         except asyncio.TimeoutError:
-            logger.error(f"[{self.target_ip}] Таймаут выполнения операции отключения WinRM")
+            logger.error(
+                f"[{self.target_ip}] Таймаут выполнения операции отключения WinRM"
+            )
             raise WmiBootstrapError(f"Таймаут при отключении WinRM на {self.target_ip}")
         logger.info(f"[{self.target_ip}] Команда отключения отправлена.")

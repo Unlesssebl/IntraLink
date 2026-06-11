@@ -1,76 +1,85 @@
-from datetime import datetime
-import aiohttp
 import base64
 import logging
-from typing import Optional, Dict, Any, List, Tuple
+from datetime import datetime
+from http import HTTPStatus
+from typing import Any
+
+import aiohttp
+
 from app.config import settings
 from app.services.crypto import decrypt_token
 
 logger = logging.getLogger(__name__)
 
-def parse_api_date(date_str: Optional[str]) -> Optional[datetime]:
+
+def parse_api_date(date_str: str | None) -> datetime | None:
     """
-    Парсит дату из API IntraService. 
+    Парсит дату из API IntraService.
     Поддерживает форматы: YYYY-MM-DD HH:MM:SS, YYYY-MM-DDTHH:MM:SS, DD.MM.YYYY HH:MM:SS
     """
     if not date_str:
         return None
-    
+
     date_str = date_str.replace("T", " ")
-    
+
     formats = [
         "%Y-%m-%d %H:%M:%S.%f",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
         "%d.%m.%Y %H:%M:%S.%f",
         "%d.%m.%Y %H:%M:%S",
-        "%d.%m.%Y %H:%M"
+        "%d.%m.%Y %H:%M",
     ]
-    
+
     for fmt in formats:
         try:
-            return datetime.strptime(date_str, fmt)
+            return datetime.strptime(date_str, fmt)  # noqa: DTZ007
         except ValueError:
             continue
-    
+
     logger.warning("Не удалось спарсить дату: %s", date_str)
     return None
 
-_session: Optional[aiohttp.ClientSession] = None
+
+_session: aiohttp.ClientSession | None = None
+
 
 async def init_session() -> None:
     """
     Инициализирует глобальную сессию aiohttp.ClientSession.
     """
-    global _session
+    global _session  # noqa: PLW0603
     if _session is None or _session.closed:
-        # TODO(security): Проверить SSL_VERIFY в соответствии с правилами безопасной разработки.
+        # TODO(security): Проверить SSL_VERIFY в соответствии с правилами
+        # безопасной разработки.
         # Внутренние домены могут требовать отключения проверки SSL в тестовой среде.
         connector = aiohttp.TCPConnector(ssl=settings.SSL_VERIFY)
         _session = aiohttp.ClientSession(connector=connector)
+
 
 async def close_session() -> None:
     """
     Закрывает глобальную сессию aiohttp.ClientSession.
     """
-    global _session
+    global _session  # noqa: PLW0603
     if _session is not None and not _session.closed:
         await _session.close()
         _session = None
 
-async def _make_request(
+
+async def _make_request(  # noqa: PLR0913
     endpoint: str,
     method: str = "GET",
-    auth_b64: Optional[str] = None,
-    auth_header: Optional[str] = None,
-    params: Optional[Dict[str, Any]] = None,
-    json_data: Optional[Dict[str, Any]] = None
-) -> Optional[Any]:
+    auth_b64: str | None = None,
+    auth_header: str | None = None,
+    params: dict[str, Any] | None = None,
+    json_data: dict[str, Any] | None = None,
+) -> Any | None:
     """
     Универсальная функция для выполнения HTTP-запросов к API IntraService.
     """
     url = f"{settings.INTRASERVICE_URL.rstrip('/')}/{endpoint.lstrip('/')}"
-    
+
     headers = {"Content-Type": "application/json"}
     if auth_b64:
         decrypted_auth = decrypt_token(auth_b64)
@@ -91,32 +100,34 @@ async def _make_request(
             headers=headers,
             params=params,
             json=json_data,
-            timeout=aiohttp.ClientTimeout(total=30)
+            timeout=aiohttp.ClientTimeout(total=30),
         ) as response:
-            if response.status == 200:
+            if response.status == HTTPStatus.OK:
                 return await response.json()
-            else:
-                text = await response.text()
-                logger.error("Ошибка API [%d] для %s: %s", response.status, endpoint, text)
-                return None
+            text = await response.text()
+            logger.error("Ошибка API [%d] для %s: %s", response.status, endpoint, text)
+            return None
     except Exception as e:
         logger.exception("Сетевая ошибка при запросе к API %s: %s", endpoint, e)
         return None
 
-async def verify_credentials(login: str, password: str) -> Tuple[Optional[str], Optional[int]]:
+
+async def verify_credentials(
+    login: str, password: str
+) -> tuple[str | None, int | None]:
     """
     Проверяет учетные данные пользователя в IntraService.
     Возвращает (auth_b64, user_id) при успехе, иначе (None, None).
     """
     auth_header = aiohttp.BasicAuth(login, password).encode()
-    
+
     response_data = await _make_request(
         endpoint="user",
         method="GET",
         auth_header=auth_header,
-        params={"getcurrentuserinfo": "true"}
+        params={"getcurrentuserinfo": "true"},
     )
-    
+
     if response_data is not None:
         auth_str = f"{login}:{password}"
         auth_b64 = base64.b64encode(auth_str.encode()).decode()
@@ -124,22 +135,21 @@ async def verify_credentials(login: str, password: str) -> Tuple[Optional[str], 
         return auth_b64, user_id
     return None, None
 
-async def get_tasks(auth_b64: str, filters: Optional[Dict[str, Any]] = None) -> Optional[Any]:
+
+async def get_tasks(auth_b64: str, filters: dict[str, Any] | None = None) -> Any | None:
     """
     Получает список задач из IntraService.
     """
     params = {"include": "status"}
     if filters:
         params.update(filters)
-        
+
     return await _make_request(
-        endpoint="task",
-        method="GET",
-        auth_b64=auth_b64,
-        params=params
+        endpoint="task", method="GET", auth_b64=auth_b64, params=params
     )
 
-async def get_task_lifetime(auth_b64: str, task_id: int) -> Optional[List[Dict[str, Any]]]:
+
+async def get_task_lifetime(auth_b64: str, task_id: int) -> list[dict[str, Any]] | None:
     """
     Получает историю изменений (lifetime) задачи.
     """
@@ -147,20 +157,18 @@ async def get_task_lifetime(auth_b64: str, task_id: int) -> Optional[List[Dict[s
         endpoint="tasklifetime",
         method="GET",
         auth_b64=auth_b64,
-        params={"taskid": task_id}
+        params={"taskid": task_id},
     )
 
-async def get_statuses(auth_b64: str) -> Optional[List[Dict[str, Any]]]:
+
+async def get_statuses(auth_b64: str) -> list[dict[str, Any]] | None:
     """
     Получает справочник статусов задач.
     """
-    return await _make_request(
-        endpoint="taskstatus",
-        method="GET",
-        auth_b64=auth_b64
-    )
+    return await _make_request(endpoint="taskstatus", method="GET", auth_b64=auth_b64)
 
-async def get_single_task(auth_b64: str, task_id: int) -> Optional[Dict[str, Any]]:
+
+async def get_single_task(auth_b64: str, task_id: int) -> dict[str, Any] | None:
     """
     Получает детальную информацию по конкретной задаче с кастомными полями.
     Используется printer-worker для Fast-Track маршрутизации.
@@ -169,8 +177,9 @@ async def get_single_task(auth_b64: str, task_id: int) -> Optional[Dict[str, Any
         endpoint=f"task/{task_id}",
         method="GET",
         auth_b64=auth_b64,
-        params={"include": "customfields,status"}
+        params={"include": "customfields,status"},
     )
+
 
 async def add_task_comment(auth_b64: str, task_id: int, comment: str) -> bool:
     """
@@ -180,9 +189,10 @@ async def add_task_comment(auth_b64: str, task_id: int, comment: str) -> bool:
         endpoint=f"task/{task_id}",
         method="PUT",
         auth_b64=auth_b64,
-        json_data={"Comment": comment}
+        json_data={"Comment": comment},
     )
     return res is not None
+
 
 async def update_task_status(auth_b64: str, task_id: int, status_id: int) -> bool:
     """
@@ -192,7 +202,7 @@ async def update_task_status(auth_b64: str, task_id: int, status_id: int) -> boo
         endpoint=f"task/{task_id}",
         method="PUT",
         auth_b64=auth_b64,
-        json_data={"StatusId": status_id}
+        json_data={"StatusId": status_id},
     )
     return res is not None
 
@@ -205,11 +215,6 @@ async def add_task_expenses(auth_b64: str, task_id: int, minutes: int) -> bool:
         endpoint="taskexpenses",
         method="POST",
         auth_b64=auth_b64,
-        json_data={
-            "TaskId": task_id,
-            "Minutes": minutes
-        }
+        json_data={"TaskId": task_id, "Minutes": minutes},
     )
     return res is not None
-
-

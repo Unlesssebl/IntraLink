@@ -2,16 +2,22 @@ import logging
 import json
 import asyncio
 import re
+import time
 import redis.asyncio as aioredis
 from typing import Optional
 from worker_config import REDIS_URL, MAX_CONCURRENT_JOBS
 from orchestrator.schemas import PrintJob, JobState
-from worker_services.api_client import get_task_details, update_task_status, add_task_comment
+from worker_services.api_client import (
+    get_task_details,
+    update_task_status,
+    add_task_comment,
+)
 
 logger = logging.getLogger(__name__)
 
 # Глобальный клиент Redis для публикации и сохранения стейта
 _redis_client = None
+
 
 def get_redis() -> aioredis.Redis:
     global _redis_client
@@ -19,7 +25,6 @@ def get_redis() -> aioredis.Redis:
         _redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
     return _redis_client
 
-import time
 
 async def save_job_state(job: PrintJob) -> None:
     try:
@@ -28,7 +33,10 @@ async def save_job_state(job: PrintJob) -> None:
         await r.zadd("printer_jobs_list", {str(job.task_id): time.time()})
         await r.zremrangebyrank("printer_jobs_list", 0, -101)
     except Exception as e:
-        logger.error("Ошибка при сохранении состояния задачи #%d в Redis: %s", job.task_id, e)
+        logger.error(
+            "Ошибка при сохранении состояния задачи #%d в Redis: %s", job.task_id, e
+        )
+
 
 async def load_job_state(task_id: int) -> Optional[PrintJob]:
     r = get_redis()
@@ -36,6 +44,7 @@ async def load_job_state(task_id: int) -> Optional[PrintJob]:
     if data:
         return PrintJob.model_validate_json(data)
     return None
+
 
 async def publish_approval_request(job: PrintJob) -> None:
     r = get_redis()
@@ -46,9 +55,10 @@ async def publish_approval_request(job: PrintJob) -> None:
         "target_pc": job.target_pc,
         "model_key": job.model_key,
         "connection_type": job.connection_type.value if job.connection_type else None,
-        "driver_name": job.driver_info.display_name if job.driver_info else None
+        "driver_name": job.driver_info.display_name if job.driver_info else None,
     }
     await r.publish("printer_actions", json.dumps(payload))
+
 
 # Семафор для ограничения одновременных сессий WinRM/SMB
 _semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
@@ -56,38 +66,46 @@ _semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 # Множество task_id, которые сейчас обрабатываются (дедупликация)
 _active_tasks: set[int] = set()
 
+
 async def _process_approval_response(payload: dict) -> None:
     task_id = payload.get("task_id")
     if not task_id:
         return
 
     if task_id in _active_tasks:
-        logger.info("Событие 'approval_response' для задачи #%d пропущено: задача уже обрабатывается", task_id)
+        logger.info(
+            "Событие 'approval_response' для задачи #%d пропущено: задача уже обрабатывается",
+            task_id,
+        )
         return
 
     _active_tasks.add(task_id)
     try:
         async with _semaphore:
             action = payload.get("action")  # "approve", "reject", "update"
-            
+
             job = await load_job_state(task_id)
             if not job:
-                logger.error("Job %s не найден в Redis при получении approval_response", task_id)
+                logger.error(
+                    "Job %s не найден в Redis при получении approval_response", task_id
+                )
                 tg_user_id = payload.get("tg_user_id")
                 if tg_user_id:
                     from orchestrator.orchestrator import STATUS_WAITING
+
                     await update_task_status(tg_user_id, task_id, STATUS_WAITING)
                     await add_task_comment(
                         tg_user_id,
                         task_id,
                         "❌ Ошибка автоустановки: Внутреннее состояние задачи утеряно в Redis (например, из-за перезапуска сервиса). "
-                        "Пожалуйста, запустите установку заново."
+                        "Пожалуйста, запустите установку заново.",
                     )
                 return
-                
+
             from worker_main import get_orchestrator
+
             orchestrator = get_orchestrator()
-            
+
             if action == "approve":
                 await orchestrator.run(job)
             elif action == "update":
@@ -95,11 +113,12 @@ async def _process_approval_response(payload: dict) -> None:
                 job.model_key = payload.get("model_key", job.model_key)
                 if payload.get("connection_type"):
                     from orchestrator.schemas import ConnectionType
+
                     job.connection_type = ConnectionType(payload.get("connection_type"))
-                
+
                 if job.model_key:
                     job.driver_info = orchestrator.kb.find_by_key(job.model_key)
-                    
+
                 await save_job_state(job)
                 await orchestrator.run(job)
             elif action == "reject":
@@ -107,19 +126,27 @@ async def _process_approval_response(payload: dict) -> None:
                 job.error_message = "Отменено инженером технической поддержки."
                 await orchestrator.handle_failure(job, job.error_message)
     except Exception as e:
-        logger.exception("Ошибка при обработке подтверждения для задачи #%d: %s", task_id, e)
+        logger.exception(
+            "Ошибка при обработке подтверждения для задачи #%d: %s", task_id, e
+        )
     finally:
         _active_tasks.discard(task_id)
         logger.debug("Задача #%d (approval_response) удалена из активных", task_id)
 
+
 async def _process_manual_trigger(payload: dict) -> None:
     task_id = payload.get("task_id")
     if not task_id:
-        logger.error("Неполные данные для ручного запуска (отсутствует task_id): %s", payload)
+        logger.error(
+            "Неполные данные для ручного запуска (отсутствует task_id): %s", payload
+        )
         return
 
     if task_id in _active_tasks:
-        logger.info("Событие 'manual_trigger' для задачи #%d пропущено: задача уже обрабатывается", task_id)
+        logger.info(
+            "Событие 'manual_trigger' для задачи #%d пропущено: задача уже обрабатывается",
+            task_id,
+        )
         return
 
     _active_tasks.add(task_id)
@@ -132,11 +159,14 @@ async def _process_manual_trigger(payload: dict) -> None:
             printer_address = payload.get("printer_address")
 
             if not target_pc or not model_key:
-                logger.error("Неполные данные для ручного запуска в сообщении: %s", payload)
+                logger.error(
+                    "Неполные данные для ручного запуска в сообщении: %s", payload
+                )
                 return
 
             from orchestrator.schemas import ConnectionType
             from worker_main import get_orchestrator
+
             orchestrator = get_orchestrator()
 
             job = PrintJob(
@@ -146,9 +176,11 @@ async def _process_manual_trigger(payload: dict) -> None:
                 state=JobState.PROBING,
                 target_pc=target_pc,
                 model_key=model_key,
-                connection_type=ConnectionType(connection_type) if connection_type else None,
+                connection_type=ConnectionType(connection_type)
+                if connection_type
+                else None,
                 printer_address=printer_address,
-                is_manual=True
+                is_manual=True,
             )
 
             if job.model_key:
@@ -163,6 +195,7 @@ async def _process_manual_trigger(payload: dict) -> None:
         _active_tasks.discard(task_id)
         logger.debug("Задача #%d (manual_trigger) удалена из активных", task_id)
 
+
 async def _process_event(payload: dict) -> None:
     async with _semaphore:
         tg_user_id_raw = payload.get("tg_user_id")
@@ -173,7 +206,11 @@ async def _process_event(payload: dict) -> None:
             tg_user_id = int(tg_user_id_raw) if tg_user_id_raw is not None else None
             task_id = int(task_id_raw) if task_id_raw is not None else None
         except (ValueError, TypeError):
-            logger.error("Не удалось привести tg_user_id (%s) или task_id (%s) к int", tg_user_id_raw, task_id_raw)
+            logger.error(
+                "Не удалось привести tg_user_id (%s) или task_id (%s) к int",
+                tg_user_id_raw,
+                task_id_raw,
+            )
             return
 
         if tg_user_id is None or task_id is None:
@@ -182,21 +219,29 @@ async def _process_event(payload: dict) -> None:
 
         # Ранняя фильтрация: отбрасываем чужие заявки до HTTP-запроса
         from worker_config import PRINTER_EXECUTOR_IS_USER_ID, PRINTER_EXECUTOR_LOGIN
+
         if PRINTER_EXECUTOR_IS_USER_ID is not None:
             event_is_user_id = payload.get("is_user_id")
-            if event_is_user_id and int(event_is_user_id) != PRINTER_EXECUTOR_IS_USER_ID:
+            if (
+                event_is_user_id
+                and int(event_is_user_id) != PRINTER_EXECUTOR_IS_USER_ID
+            ):
                 logger.debug(
                     "Ранняя фильтрация: событие для задачи #%d пропущено (is_user_id=%s, ожидается=%d)",
-                    task_id, event_is_user_id, PRINTER_EXECUTOR_IS_USER_ID
+                    task_id,
+                    event_is_user_id,
+                    PRINTER_EXECUTOR_IS_USER_ID,
                 )
                 return
-                
+
         if PRINTER_EXECUTOR_LOGIN:
             event_login = payload.get("is_login")
             if event_login and event_login.lower() != PRINTER_EXECUTOR_LOGIN.lower():
                 logger.debug(
                     "Ранняя фильтрация: событие для задачи #%d пропущено (is_login='%s', ожидается='%s')",
-                    task_id, event_login, PRINTER_EXECUTOR_LOGIN
+                    task_id,
+                    event_login,
+                    PRINTER_EXECUTOR_LOGIN,
                 )
                 return
 
@@ -204,18 +249,27 @@ async def _process_event(payload: dict) -> None:
         if task_id in _active_tasks:
             logger.info(
                 "Событие '%s' для задачи #%d пропущено: задача уже обрабатывается",
-                event_type, task_id
+                event_type,
+                task_id,
             )
             return
 
         _active_tasks.add(task_id)
-        logger.info("Обработка события '%s' для задачи #%d (пользователь %d)", event_type, task_id, tg_user_id)
+        logger.info(
+            "Обработка события '%s' для задачи #%d (пользователь %d)",
+            event_type,
+            task_id,
+            tg_user_id,
+        )
 
         try:
             # Получаем подробности задачи из Core API
             raw_response = await get_task_details(tg_user_id, task_id)
             if not raw_response:
-                logger.error("Не удалось загрузить подробности задачи #%d из Core API. Пропуск.", task_id)
+                logger.error(
+                    "Не удалось загрузить подробности задачи #%d из Core API. Пропуск.",
+                    task_id,
+                )
                 return
 
             # IntraService возвращает обёртку {Task: {...}, Statuses: [...]}
@@ -263,7 +317,10 @@ async def _process_event(payload: dict) -> None:
 
             logger.info(
                 "Параметры задачи #%d: target_pc=%s, model_key=%s, raw_text='%s'",
-                task_id, target_pc, model_key, raw_text
+                task_id,
+                target_pc,
+                model_key,
+                raw_text,
             )
 
             # Создаем контекст выполнения PrintJob
@@ -273,11 +330,12 @@ async def _process_event(payload: dict) -> None:
                 raw_text=raw_text,
                 state=JobState.PENDING,
                 target_pc=target_pc,
-                model_key=model_key
+                model_key=model_key,
             )
 
             # Создаем оркестратор и запускаем стейт-машину
             from worker_main import get_orchestrator
+
             orchestrator = get_orchestrator()
             await orchestrator.run(job)
 
@@ -288,24 +346,25 @@ async def _process_event(payload: dict) -> None:
             _active_tasks.discard(task_id)
             logger.debug("Задача #%d удалена из активных", task_id)
 
+
 async def _recover_orphan_jobs() -> None:
     logger.info("Запуск сканирования для восстановления сиротских задач в Redis...")
     r = get_redis()
-    
+
     # Локальные импорты для избежания циклических ссылок
     from executors.wmi_executor import WMIExecutor
     from worker_config import WINRM_USERNAME, WINRM_PASSWORD
     from orchestrator.orchestrator import STATUS_WAITING
-    
+
     try:
         async for key in r.scan_iter("printer_job:*"):
             try:
                 data = await r.get(key)
                 if not data:
                     continue
-                
+
                 job = PrintJob.model_validate_json(data)
-                
+
                 # Зависшие задачи, требующие отключения WinRM на удаленном PC и перевода в FAILED
                 if job.state in (
                     JobState.PROBING,
@@ -313,62 +372,96 @@ async def _recover_orphan_jobs() -> None:
                     JobState.PARSING,
                     JobState.COPYING,
                     JobState.INSTALLING,
-                    JobState.VERIFYING
+                    JobState.VERIFYING,
                 ):
-                    logger.warning("Обнаружена зависшая задача #%d в состоянии %s. Восстановление...", job.task_id, job.state.value)
-                    
+                    logger.warning(
+                        "Обнаружена зависшая задача #%d в состоянии %s. Восстановление...",
+                        job.task_id,
+                        job.state.value,
+                    )
+
                     if job.target_pc:
                         domain = ""
                         username = WINRM_USERNAME
                         if "\\" in username:
                             domain, username = username.split("\\", 1)
-                        
+
                         wmi = WMIExecutor(
                             target_ip=job.target_pc,
                             username=username,
                             password=WINRM_PASSWORD,
-                            domain=domain
+                            domain=domain,
                         )
                         try:
-                            logger.info("Отключение WinRM на ПК %s для сиротской задачи #%d...", job.target_pc, job.task_id)
+                            logger.info(
+                                "Отключение WinRM на ПК %s для сиротской задачи #%d...",
+                                job.target_pc,
+                                job.task_id,
+                            )
                             await wmi.disable_winrm()
                         except Exception as ex:
-                            logger.error("Не удалось отключить WinRM для сиротской задачи #%d: %s", job.task_id, ex)
-                    
+                            logger.error(
+                                "Не удалось отключить WinRM для сиротской задачи #%d: %s",
+                                job.task_id,
+                                ex,
+                            )
+
                     job.state = JobState.FAILED
                     job.error_message = "Установка прервана из-за перезапуска сервиса. Задача сброшена в очередь ожидания."
                     await save_job_state(job)
-                    
+
                     if not job.is_manual:
                         try:
-                            await update_task_status(job.tg_user_id, job.task_id, STATUS_WAITING)
-                            await add_task_comment(job.tg_user_id, job.task_id, f"❌ {job.error_message}")
+                            await update_task_status(
+                                job.tg_user_id, job.task_id, STATUS_WAITING
+                            )
+                            await add_task_comment(
+                                job.tg_user_id, job.task_id, f"❌ {job.error_message}"
+                            )
                         except Exception as ex:
-                            logger.error("Не удалось отправить статус в ИС для сиротской задачи #%d: %s", job.task_id, ex)
-                            
+                            logger.error(
+                                "Не удалось отправить статус в ИС для сиротской задачи #%d: %s",
+                                job.task_id,
+                                ex,
+                            )
+
                 elif job.state == JobState.WAITING_APPROVAL:
-                    logger.warning("Обнаружена зависшая задача #%d в состоянии WAITING_APPROVAL. Восстановление...", job.task_id)
+                    logger.warning(
+                        "Обнаружена зависшая задача #%d в состоянии WAITING_APPROVAL. Восстановление...",
+                        job.task_id,
+                    )
                     job.state = JobState.FAILED
                     job.error_message = "Подтверждение из Telegram-бота не было получено из-за перезапуска сервиса. Задача требует ручного перезапуска."
                     await save_job_state(job)
-                    
+
                     if not job.is_manual:
                         try:
-                            await update_task_status(job.tg_user_id, job.task_id, STATUS_WAITING)
-                            await add_task_comment(job.tg_user_id, job.task_id, f"❌ {job.error_message}")
+                            await update_task_status(
+                                job.tg_user_id, job.task_id, STATUS_WAITING
+                            )
+                            await add_task_comment(
+                                job.tg_user_id, job.task_id, f"❌ {job.error_message}"
+                            )
                         except Exception as ex:
-                            logger.error("Не удалось отправить статус в ИС для сиротской задачи #%d: %s", job.task_id, ex)
+                            logger.error(
+                                "Не удалось отправить статус в ИС для сиротской задачи #%d: %s",
+                                job.task_id,
+                                ex,
+                            )
             except Exception as e:
                 logger.error("Ошибка разбора/восстановления для ключа %s: %s", key, e)
     except Exception as e:
         logger.error("Ошибка при сканировании ключей printer_job:* в Redis: %s", e)
     logger.info("Сканирование и восстановление сиротских задач завершено.")
 
+
 async def start_redis_listener():
     """
     Фоновый процесс подписки на Redis Pub/Sub для прослушивания событий IntraService.
     """
-    logger.info("Запуск фонового подписчика Redis Pub/Sub на канале 'intraservice_events'...")
+    logger.info(
+        "Запуск фонового подписчика Redis Pub/Sub на канале 'intraservice_events'..."
+    )
     try:
         await _recover_orphan_jobs()
     except Exception as e:
@@ -379,35 +472,46 @@ async def start_redis_listener():
             redis = aioredis.from_url(REDIS_URL, decode_responses=True)
             async with redis.pubsub() as pubsub:
                 await pubsub.subscribe("intraservice_events", "printer_actions")
-                logger.info("Подписка на Redis Pub/Sub каналы 'intraservice_events' и 'printer_actions' успешно оформлена.")
-                
+                logger.info(
+                    "Подписка на Redis Pub/Sub каналы 'intraservice_events' и 'printer_actions' успешно оформлена."
+                )
+
                 while True:
-                    message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=1.0
+                    )
                     if message is None or message.get("type") != "message":
                         continue
-                    
+
                     payload_str = message.get("data")
                     if not isinstance(payload_str, (str, bytes)):
-                        logger.error("Неверный формат данных сообщения из Redis: %s", type(payload_str))
+                        logger.error(
+                            "Неверный формат данных сообщения из Redis: %s",
+                            type(payload_str),
+                        )
                         continue
                     try:
                         payload = json.loads(payload_str)
                     except Exception as e:
-                        logger.error("Ошибка парсинга JSON события из Redis: %s. Данные: %s", e, payload_str)
+                        logger.error(
+                            "Ошибка парсинга JSON события из Redis: %s. Данные: %s",
+                            e,
+                            payload_str,
+                        )
                         continue
-                    
+
                     event_type = payload.get("event_type")
-                    
+
                     # Обработка ответов от бота
                     if event_type == "approval_response":
                         asyncio.create_task(_process_approval_response(payload))
                         continue
-                    
+
                     # Обработка ручного запуска из веб-интерфейса
                     if event_type == "manual_trigger":
                         asyncio.create_task(_process_manual_trigger(payload))
                         continue
-                    
+
                     # Фильтруем события IntraService
                     if event_type not in ("new_task", "status_change"):
                         continue
@@ -416,9 +520,13 @@ async def start_redis_listener():
                     if event_type == "status_change":
                         status_id = payload.get("status_id")
                         if status_id != 31:
-                            logger.debug("Событие status_change для задачи #%d пропущено: статус %s не является стартовым", payload.get("task_id"), status_id)
+                            logger.debug(
+                                "Событие status_change для задачи #%d пропущено: статус %s не является стартовым",
+                                payload.get("task_id"),
+                                status_id,
+                            )
                             continue
-                    
+
                     # Проверяем, что в тексте сообщения или темы есть упоминание установки принтера.
                     # Исключение: если запрос ручной из бота (is_manual_start=True), поля message/task_name
                     # отсутствуют — пропускаем текстовый фильтр, так как нажатие кнопки уже является
@@ -426,24 +534,37 @@ async def start_redis_listener():
                     is_manual_start = payload.get("is_manual_start", False)
                     msg_content = (payload.get("message") or "").lower()
                     task_name = (payload.get("task_name") or "").lower()
-                    
+
                     is_printer_request = is_manual_start or any(
                         word in msg_content or word in task_name
-                        for word in ("принтер", "printer", "печать", "print", "установить принтер", "подключить принтер")
+                        for word in (
+                            "принтер",
+                            "printer",
+                            "печать",
+                            "print",
+                            "установить принтер",
+                            "подключить принтер",
+                        )
                     )
-                    
+
                     if not is_printer_request:
-                        logger.debug("Событие задачи #%d пропущено: не относится к установке принтера", payload.get("task_id"))
+                        logger.debug(
+                            "Событие задачи #%d пропущено: не относится к установке принтера",
+                            payload.get("task_id"),
+                        )
                         continue
 
                     # Запускаем обработку события асинхронно
                     asyncio.create_task(_process_event(payload))
-                    
+
         except asyncio.CancelledError:
             logger.info("Слушатель Redis Pub/Sub остановлен.")
             break
         except Exception as e:
-            logger.exception("Сбой соединения с Redis. Повторное подключение через 5 секунд... Ошибка: %s", e)
+            logger.exception(
+                "Сбой соединения с Redis. Повторное подключение через 5 секунд... Ошибка: %s",
+                e,
+            )
             await asyncio.sleep(5)
         finally:
             if redis is not None:

@@ -1,20 +1,23 @@
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, status, Response
+
+from fastapi import FastAPI, Response, status
 from fastapi.responses import RedirectResponse
 
 from app.database.db import init_db
-from app.routers import auth, tasks, users, admin
+from app.routers import admin, auth, tasks, users
+from app.services.intraservice import close_session, init_session
+from app.services.worker import start_worker, stop_worker
 
 # Настройка логирования
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
+
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     # Действия при запуске приложения
     logger.info("Инициализация базы данных...")
     try:
@@ -22,22 +25,18 @@ async def lifespan(app: FastAPI):
         logger.info("База данных успешно инициализирована.")
     except Exception as e:
         logger.exception("Ошибка при инициализации базы данных: %s", e)
-    
-    # Инициализация сессии IntraService API
-    from app.services.intraservice import init_session, close_session
+
     logger.info("Инициализация HTTP-сессии IntraService...")
     try:
         await init_session()
     except Exception as e:
         logger.exception("Ошибка при инициализации HTTP-сессии: %s", e)
-    
-    # Запуск фонового воркера опроса и публикации событий
-    from app.services.worker import start_worker, stop_worker
+
     try:
         await start_worker()
     except Exception as e:
         logger.exception("Ошибка при запуске фонового воркера: %s", e)
-    
+
     yield
     # Действия при остановке приложения
     logger.info("Остановка приложения Core API...")
@@ -45,18 +44,19 @@ async def lifespan(app: FastAPI):
         await stop_worker()
     except Exception as e:
         logger.exception("Ошибка при остановке фонового воркера: %s", e)
-        
+
     logger.info("Закрытие HTTP-сессии IntraService...")
     try:
         await close_session()
     except Exception as e:
         logger.exception("Ошибка при закрытии HTTP-сессии: %s", e)
 
+
 app = FastAPI(
     title="IntraService Core API Gateway",
     description="Микросервис-шлюз для интеграции с API IntraService",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Подключение роутеров с единым префиксом версии API v1
@@ -65,12 +65,14 @@ app.include_router(tasks.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(admin.router)
 
+
 @app.get("/", include_in_schema=False)
 async def root_redirect():
     """
     Перенаправление с корня на панель администратора.
     """
     return RedirectResponse(url="/admin")
+
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
@@ -79,6 +81,7 @@ async def favicon():
     """
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+
 @app.get("/health", status_code=status.HTTP_200_OK, tags=["System"])
 async def health_check():
     """
@@ -86,4 +89,3 @@ async def health_check():
     Не требует авторизации по API Key.
     """
     return {"status": "healthy", "service": "intraservice-core-api"}
-

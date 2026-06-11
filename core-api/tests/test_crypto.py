@@ -7,8 +7,7 @@
   - Симметричность: зашифрованный токен успешно расшифровывается
   - Устойчивость к исключениям: ошибки не пробрасываются наружу
 """
-import os
-import pytest
+
 from cryptography.fernet import Fernet
 
 
@@ -25,15 +24,18 @@ PLAIN_TOKEN = "dXNlcjpwYXNz"  # base64 от "user:pass"
 # БЛОК 1: encrypt_token
 # ---------------------------------------------------------------------------
 
+
 class TestEncryptToken:
     """Тесты функции encrypt_token."""
 
     def test_encrypts_token_when_key_set(self):
         """При наличии ключа токен должен шифроваться (результат ≠ оригиналу)."""
         from cryptography.fernet import Fernet as F
+
         fernet = F(TEST_FERNET_KEY.encode())
 
         import app.services.crypto as crypto_module
+
         original_fernet = crypto_module._fernet
         crypto_module._fernet = fernet
 
@@ -48,6 +50,7 @@ class TestEncryptToken:
     def test_returns_plain_token_when_no_key(self):
         """Без ключа шифрования токен возвращается как есть."""
         import app.services.crypto as crypto_module
+
         original_fernet = crypto_module._fernet
         crypto_module._fernet = None
 
@@ -60,6 +63,7 @@ class TestEncryptToken:
         """Пустой токен возвращается пустой строкой (нет попытки шифрования)."""
         import app.services.crypto as crypto_module
         from cryptography.fernet import Fernet as F
+
         original_fernet = crypto_module._fernet
         crypto_module._fernet = F(TEST_FERNET_KEY.encode())
 
@@ -86,16 +90,19 @@ class TestEncryptToken:
 # БЛОК 2: decrypt_token
 # ---------------------------------------------------------------------------
 
+
 class TestDecryptToken:
     """Тесты функции decrypt_token."""
 
     def test_decrypts_valid_encrypted_token(self):
         """Корректно зашифрованный токен должен успешно расшифровываться."""
         from cryptography.fernet import Fernet as F
+
         fernet = F(TEST_FERNET_KEY.encode())
         encrypted = fernet.encrypt(PLAIN_TOKEN.encode()).decode()
 
         import app.services.crypto as crypto_module
+
         original_fernet = crypto_module._fernet
         crypto_module._fernet = fernet
 
@@ -107,6 +114,7 @@ class TestDecryptToken:
     def test_returns_token_as_is_when_no_key(self):
         """Без ключа шифрования токен возвращается как есть (passthrough)."""
         import app.services.crypto as crypto_module
+
         original_fernet = crypto_module._fernet
         crypto_module._fernet = None
 
@@ -119,6 +127,7 @@ class TestDecryptToken:
         """Пустой токен возвращается пустой строкой."""
         import app.services.crypto as crypto_module
         from cryptography.fernet import Fernet as F
+
         original_fernet = crypto_module._fernet
         crypto_module._fernet = F(TEST_FERNET_KEY.encode())
 
@@ -134,6 +143,7 @@ class TestDecryptToken:
         """
         from cryptography.fernet import Fernet as F
         import app.services.crypto as crypto_module
+
         original_fernet = crypto_module._fernet
         crypto_module._fernet = F(TEST_FERNET_KEY.encode())
 
@@ -163,15 +173,18 @@ class TestDecryptToken:
 # БЛОК 3: Симметричность encrypt/decrypt
 # ---------------------------------------------------------------------------
 
+
 class TestEncryptDecryptSymmetry:
     """Тесты на симметричность: зашифровать → расшифровать = оригинал."""
 
     def test_round_trip_with_valid_key(self):
         """encrypt_token → decrypt_token должен вернуть исходный токен."""
         from cryptography.fernet import Fernet as F
+
         fernet = F(TEST_FERNET_KEY.encode())
 
         import app.services.crypto as crypto_module
+
         original_fernet = crypto_module._fernet
         crypto_module._fernet = fernet
 
@@ -184,9 +197,11 @@ class TestEncryptDecryptSymmetry:
     def test_round_trip_with_special_chars(self):
         """Токен со спецсимволами должен проходить round-trip без потерь."""
         from cryptography.fernet import Fernet as F
+
         fernet = F(TEST_FERNET_KEY.encode())
 
         import app.services.crypto as crypto_module
+
         original_fernet = crypto_module._fernet
         crypto_module._fernet = fernet
 
@@ -200,6 +215,7 @@ class TestEncryptDecryptSymmetry:
     def test_round_trip_without_key_is_identity(self):
         """Без ключа encrypt и decrypt — обе функции identity (токен не меняется)."""
         import app.services.crypto as crypto_module
+
         original_fernet = crypto_module._fernet
         crypto_module._fernet = None
 

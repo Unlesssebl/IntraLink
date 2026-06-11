@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List, Any
+
 
 # Схемы для авторизации
 class LoginRequest(BaseModel):
@@ -7,24 +7,27 @@ class LoginRequest(BaseModel):
     login: str
     password: str
 
+
 class LoginResponse(BaseModel):
     status: str
     message: str
-    is_user_id: Optional[int] = None
+    is_user_id: int | None = None
+
 
 # Схемы для пользователей
 class UserResponse(BaseModel):
     tg_user_id: int
     is_login: str
-    is_user_id: Optional[int] = None
+    is_user_id: int | None = None
     last_task_id: int
     last_comment_id: int
-    last_check_time: Optional[str] = None
+    last_check_time: str | None = None
 
     class Config:
         from_attributes = True
 
+
 class UserStateUpdate(BaseModel):
-    last_task_id: Optional[int] = None
-    last_comment_id: Optional[int] = None
-    last_check_time: Optional[str] = None
+    last_task_id: int | None = None
+    last_comment_id: int | None = None
+    last_check_time: str | None = None

@@ -1,9 +1,12 @@
-import os
-import json
-import random
 import asyncio
+import contextlib
+import json
 import logging
-from typing import Optional, List, Dict, Any
+import os
+import random
+import time
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -15,43 +18,68 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Admin UI"])
 
+PING_INTERVAL = 15.0
+
+
 # Вспомогательный класс для ручного запуска задачи
 class ManualJobRequest(BaseModel):
     target_pc: str
     model_key: str
     connection_type: str
-    printer_address: Optional[str] = None
+    printer_address: str | None = None
+
 
 # Путь к файлу базы знаний
-KB_PATH = os.environ.get(
-    "PRINTERS_KB_PATH",
-    os.path.abspath(os.path.join(
-        os.path.dirname(__file__), "..", "..", "..", "printer-worker", "knowledge_base", "printers_knowledge_base.json"
-    ))
+KB_PATH = Path(
+    os.environ.get(
+        "PRINTERS_KB_PATH",
+        str(
+            Path(__file__).resolve().parent
+            / ".."
+            / ".."
+            / ".."
+            / "printer-worker"
+            / "knowledge_base"
+            / "printers_knowledge_base.json"
+        ),
+    )
 )
+
+# Путь к файлу шаблона админ-панели
+HTML_PATH = (
+    Path(__file__).resolve().parent
+    / ".."
+    / "static"
+    / "admin"
+    / "index.html"
+)
+
 
 @router.get("/admin", response_class=HTMLResponse)
 async def get_admin_ui():
     """
     Отдает HTML-страницу админ-панели.
     """
-    html_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "static", "admin", "index.html"))
-    if not os.path.exists(html_path):
-        # Если папки static/admin не существует, создадим её и отдадим дефолтную страницу заглушки
+    if not HTML_PATH.exists():
+        # Если static/admin не существует, отдадим страницу заглушки
         return HTMLResponse(
-            content="<h1>Панель администратора не найдена на сервере.</h1><p>Пожалуйста, убедитесь, что static/admin/index.html существует.</p>",
-            status_code=status.HTTP_404_NOT_FOUND
+            content=(
+                "<h1>Панель администратора не найдена на сервере.</h1>"
+                "<p>Пожалуйста, убедитесь, что static/admin/index.html существует.</p>"
+            ),
+            status_code=status.HTTP_404_NOT_FOUND,
         )
     try:
-        with open(html_path, "r", encoding="utf-8") as f:
+        with HTML_PATH.open(encoding="utf-8") as f:
             html_content = f.read()
         return HTMLResponse(content=html_content)
     except Exception as e:
         logger.exception("Ошибка при чтении файла шаблона админ-панели: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка сервера при загрузке UI: {e}"
-        )
+            detail=f"Ошибка сервера при загрузке UI: {e}",
+        ) from e
+
 
 @router.get("/admin/api/worker-status", dependencies=[Depends(verify_api_key)])
 async def get_worker_status():
@@ -66,27 +94,28 @@ async def get_worker_status():
         logger.exception("Ошибка проверки статуса воркера: %s", e)
         return {"status": "offline", "error": str(e)}
 
+
 @router.get("/admin/api/knowledge-base", dependencies=[Depends(verify_api_key)])
 async def get_knowledge_base():
     """
     Считывает и отдает базу знаний принтеров.
     """
-    if not os.path.exists(KB_PATH):
+    if not KB_PATH.exists():  # noqa: ASYNC240
         logger.error("Файл базы знаний не найден по пути: %s", KB_PATH)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Файл базы знаний не найден на сервере."
+            detail="Файл базы знаний не найден на сервере.",
         )
     try:
-        with open(KB_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data
+        with KB_PATH.open(encoding="utf-8") as f:  # noqa: ASYNC230
+            return json.load(f)
     except Exception as e:
         logger.exception("Ошибка парсинга базы знаний: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Ошибка парсинга JSON базы знаний."
-        )
+            detail="Ошибка парсинга JSON базы знаний.",
+        ) from e
+
 
 @router.get("/admin/api/print-jobs", dependencies=[Depends(verify_api_key)])
 async def get_print_jobs():
@@ -97,7 +126,7 @@ async def get_print_jobs():
         r = get_redis_client()
         # Получаем последние 50 ID задач из sorted set
         task_ids = await r.zrevrange("printer_jobs_list", 0, 49)
-        
+
         jobs = []
         if task_ids:
             # Получаем все данные задач в один pipeline
@@ -105,20 +134,19 @@ async def get_print_jobs():
             for tid in task_ids:
                 pipe.get(f"printer_job:{tid}")
             results = await pipe.execute()
-            
+
             for data in results:
                 if data:
-                    try:
+                    with contextlib.suppress(Exception):
                         jobs.append(json.loads(data))
-                    except Exception:
-                        pass
         return jobs
     except Exception as e:
         logger.exception("Ошибка получения списка задач из Redis: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка Redis: {e}"
-        )
+            detail=f"Ошибка Redis: {e}",
+        ) from e
+
 
 @router.post("/admin/api/print-jobs", dependencies=[Depends(verify_api_key)])
 async def trigger_manual_job(payload: ManualJobRequest):
@@ -129,7 +157,7 @@ async def trigger_manual_job(payload: ManualJobRequest):
         r = get_redis_client()
         # Генерируем случайный ID для ручного задания (8 знаков)
         task_id = random.randint(10000000, 99999999)
-        
+
         event = {
             "event_type": "manual_trigger",
             "task_id": task_id,
@@ -137,9 +165,11 @@ async def trigger_manual_job(payload: ManualJobRequest):
             "target_pc": payload.target_pc.strip(),
             "model_key": payload.model_key,
             "connection_type": payload.connection_type,
-            "printer_address": payload.printer_address.strip() if payload.printer_address else None
+            "printer_address": payload.printer_address.strip()
+            if payload.printer_address
+            else None,
         }
-        
+
         # Публикуем событие для printer-worker
         await r.publish("printer_actions", json.dumps(event))
         logger.info("Вручную запущена задача #%d для ПК %s", task_id, payload.target_pc)
@@ -148,12 +178,17 @@ async def trigger_manual_job(payload: ManualJobRequest):
         logger.exception("Ошибка публикации ручной задачи в Redis: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось запустить задачу: {e}"
-        )
+            detail=f"Не удалось запустить задачу: {e}",
+        ) from e
+
+
 class JobActionRequest(BaseModel):
     action: str
 
-@router.post("/admin/api/print-jobs/{task_id}/action", dependencies=[Depends(verify_api_key)])
+
+@router.post(
+    "/admin/api/print-jobs/{task_id}/action", dependencies=[Depends(verify_api_key)]
+)
 async def handle_job_action(task_id: int, payload: JobActionRequest):
     """
     Отправляет решение пользователя (approve/reject/ask_user) в воркер.
@@ -164,17 +199,48 @@ async def handle_job_action(task_id: int, payload: JobActionRequest):
             "event_type": "approval_response",
             "task_id": task_id,
             "action": payload.action,
-            "tg_user_id": 0  # 0 означает запуск из веб-панели
+            "tg_user_id": 0,  # 0 означает запуск из веб-панели
         }
         await r.publish("printer_actions", json.dumps(event))
-        logger.info("Отправлено действие '%s' для задачи #%d из веб-панели", payload.action, task_id)
+        logger.info(
+            "Отправлено действие '%s' для задачи #%d из веб-панели",
+            payload.action,
+            task_id,
+        )
         return {"status": "success", "task_id": task_id}
     except Exception as e:
         logger.exception("Ошибка публикации действия в Redis: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось отправить действие: {e}"
-        )
+            detail=f"Не удалось отправить действие: {e}",
+        ) from e
+
+
+async def _get_historical_logs(r, job_id: int) -> list[str]:
+    """
+    Вспомогательная функция для получения истории логов и состояния задачи из Redis.
+    """
+    logs = []
+    try:
+        history = await r.lrange(f"printer_job_logs_history:{job_id}", 0, -1)
+        if history:
+            logs.extend(f"event: message\ndata: {log_line}\n\n" for log_line in history)
+    except Exception as e:
+        logger.error("Ошибка чтения истории логов для задачи #%d: %s", job_id, e)
+
+    job_data_raw = await r.get(f"printer_job:{job_id}")
+    if job_data_raw:
+        with contextlib.suppress(Exception):
+            job_data = json.loads(job_data_raw)
+            state = job_data.get("state", "unknown")
+            error_message = job_data.get("error_message")
+            msg = f"[SYSTEM] Текущее состояние задачи: {state}"
+            if error_message:
+                msg += f" (Ошибка: {error_message})"
+            logs.append(f"event: message\ndata: {msg}\n\n")
+    return logs
+
+
 async def log_stream_generator(job_id: int):
     """
     Генератор для SSE-стрима логов.
@@ -182,39 +248,25 @@ async def log_stream_generator(job_id: int):
     r = get_redis_client()
     pubsub = r.pubsub()
     await pubsub.subscribe(f"printer_job_logs:{job_id}")
-    
-    yield "event: message\ndata: [SYSTEM] Подключение к потоку логов... ожидание вывода воркера.\n\n"
-    
-    # Считываем накопленные логи из истории в Redis
-    try:
-        history = await r.lrange(f"printer_job_logs_history:{job_id}", 0, -1)
-        if history:
-            for log_line in history:
-                yield f"event: message\ndata: {log_line}\n\n"
-    except Exception as e:
-        logger.error("Ошибка чтения истории логов для задачи #%d: %s", job_id, e)
-    
-    # Отправим также текущий стейт задачи, если он есть
-    job_data_raw = await r.get(f"printer_job:{job_id}")
-    if job_data_raw:
-        try:
-            job_data = json.loads(job_data_raw)
-            state = job_data.get("state", "unknown")
-            error_message = job_data.get("error_message")
-            msg = f"[SYSTEM] Текущее состояние задачи: {state}"
-            if error_message:
-                msg += f" (Ошибка: {error_message})"
-            yield f"event: message\ndata: {msg}\n\n"
-        except Exception:
-            pass
 
-    import time
+    yield (
+        "event: message\n"
+        "data: [SYSTEM] Подключение к потоку логов... ожидание воркера.\n\n"
+    )
+
+    # Считываем накопленные логи из истории в Redis
+    historical_logs = await _get_historical_logs(r, job_id)
+    for log_line in historical_logs:
+        yield log_line
+
     last_msg_time = time.monotonic()
 
     try:
         while True:
             # Считываем из Pub/Sub с таймаутом
-            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=1.0
+            )
             if message:
                 log_line = message.get("data")
                 if log_line:
@@ -222,7 +274,7 @@ async def log_stream_generator(job_id: int):
                     last_msg_time = time.monotonic()
             else:
                 # Проверяем, сколько времени прошло без сообщений
-                if time.monotonic() - last_msg_time > 15.0:
+                if time.monotonic() - last_msg_time > PING_INTERVAL:
                     yield ": ping\n\n"
                     last_msg_time = time.monotonic()
                 await asyncio.sleep(0.5)
@@ -232,7 +284,10 @@ async def log_stream_generator(job_id: int):
         await pubsub.unsubscribe(f"printer_job_logs:{job_id}")
         await pubsub.close()
 
-@router.get("/admin/api/print-jobs/{job_id}/logs", dependencies=[Depends(verify_api_key)])
+
+@router.get(
+    "/admin/api/print-jobs/{job_id}/logs", dependencies=[Depends(verify_api_key)]
+)
 async def stream_job_logs(job_id: int):
     """
     SSE-эндпоинт для прослушивания логов конкретного задания в реальном времени.
@@ -243,6 +298,6 @@ async def stream_job_logs(job_id: int):
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+            "X-Accel-Buffering": "no",
+        },
     )

@@ -2,9 +2,11 @@ from enum import Enum
 from typing import Optional, List
 from pydantic import BaseModel, Field, field_validator
 
+
 class ConnectionType(str, Enum):
     TCPIP = "tcpip"
     USB = "usb"
+
 
 class JobState(str, Enum):
     PENDING = "pending"
@@ -19,6 +21,7 @@ class JobState(str, Enum):
     WAITING_APPROVAL = "waiting_approval"
     FAILED = "failed"
 
+
 class PrinterDriverInfo(BaseModel):
     model_key: str
     display_name: str
@@ -27,6 +30,7 @@ class PrinterDriverInfo(BaseModel):
     vendor: str
     supported_hw_ids: List[str] = Field(default_factory=list)
     connection_type: ConnectionType
+
 
 class KnowledgeBase(BaseModel):
     printer_name_prefixes: List[str] = Field(default_factory=lambda: ["ittp"])
@@ -63,16 +67,34 @@ class KnowledgeBase(BaseModel):
         hw_id_upper = hw_id.upper()
         for p in self.printers:
             for supported_id in p.supported_hw_ids:
-                if supported_id.upper() in hw_id_upper or hw_id_upper in supported_id.upper():
+                if (
+                    supported_id.upper() in hw_id_upper
+                    or hw_id_upper in supported_id.upper()
+                ):
                     return p
         return None
 
+
 class LLMParseResult(BaseModel):
-    target_pc: str = Field(default="", description="NetBIOS-имя или IP-адрес целевого компьютера")
-    model_key: str = Field(default="unknown", description="Ключевой идентификатор модели принтера из базы знаний")
-    connection_type: Optional[ConnectionType] = Field(None, description="Тип подключения: tcpip или usb")
-    printer_address: Optional[str] = Field(None, description="IP-адрес или DNS-имя сетевого принтера (для tcpip)")
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Степень уверенности парсинга от 0.0 до 1.0")
+    target_pc: str = Field(
+        default="", description="NetBIOS-имя или IP-адрес целевого компьютера"
+    )
+    model_key: str = Field(
+        default="unknown",
+        description="Ключевой идентификатор модели принтера из базы знаний",
+    )
+    connection_type: Optional[ConnectionType] = Field(
+        None, description="Тип подключения: tcpip или usb"
+    )
+    printer_address: Optional[str] = Field(
+        None, description="IP-адрес или DNS-имя сетевого принтера (для tcpip)"
+    )
+    confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Степень уверенности парсинга от 0.0 до 1.0",
+    )
 
     @field_validator("connection_type", mode="before")
     def empty_str_to_none(cls, v):
@@ -123,6 +145,7 @@ class LLMParseResult(BaseModel):
         except (ValueError, TypeError):
             return 0.0
 
+
 class PrintJob(BaseModel):
     task_id: int
     tg_user_id: int
@@ -135,4 +158,3 @@ class PrintJob(BaseModel):
     driver_info: Optional[PrinterDriverInfo] = None
     error_message: Optional[str] = None
     is_manual: bool = False
-

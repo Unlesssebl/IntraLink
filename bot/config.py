@@ -21,5 +21,3 @@ if not INTRAService_URL:
     raise ValueError("INTRAService_URL is not set in environment variables")
 if not REDIS_URL:
     raise ValueError("REDIS_URL is not set in environment variables")
-
-

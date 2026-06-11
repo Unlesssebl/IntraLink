@@ -5,6 +5,7 @@ from worker_config import LLM_PROVIDER
 
 _provider_instance = None
 
+
 def get_provider() -> LLMProvider:
     global _provider_instance
     if _provider_instance is None:

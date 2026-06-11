@@ -21,7 +21,9 @@ LLM_API_KEY: str = os.getenv("LLM_API_KEY") or ""
 LLM_MODEL_NAME: str = os.getenv("LLM_MODEL_NAME", "llama3")
 
 # Настройки базы знаний и печати
-PRINTERS_KB_PATH: str = os.getenv("PRINTERS_KB_PATH", "knowledge_base/printers_knowledge_base.json")
+PRINTERS_KB_PATH: str = os.getenv(
+    "PRINTERS_KB_PATH", "knowledge_base/printers_knowledge_base.json"
+)
 PRINT_OUTPUT_DIR: str = os.getenv("PRINT_OUTPUT_DIR", "./prints")
 MAX_CONCURRENT_JOBS: int = int(os.getenv("MAX_CONCURRENT_JOBS", "5"))
 
@@ -32,7 +34,9 @@ WORKLOG_MINUTES: int = int(os.getenv("WORKLOG_MINUTES", "15"))
 # Если задан — воркер будет обрабатывать только заявки, где этот пользователь назначен исполнителем.
 # Если не задан — фильтр по исполнителю не применяется (обрабатываются все принтерные заявки).
 _executor_id_raw = os.getenv("PRINTER_EXECUTOR_IS_USER_ID", "")
-PRINTER_EXECUTOR_IS_USER_ID: int | None = int(_executor_id_raw) if _executor_id_raw.strip().isdigit() else None
+PRINTER_EXECUTOR_IS_USER_ID: int | None = (
+    int(_executor_id_raw) if _executor_id_raw.strip().isdigit() else None
+)
 
 # Логин аккаунта исполнителя в IntraService (например, intratest).
 # Используется как альтернатива PRINTER_EXECUTOR_IS_USER_ID для удобства.

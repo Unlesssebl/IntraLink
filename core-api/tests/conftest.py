@@ -6,10 +6,10 @@ app.config выполняет `settings = Settings()` на уровне моду
 Это достигается через переменные окружения (os.environ), которые
 pydantic-settings читает при инициализации.
 """
+
 import os
 import pytest
-import pytest_asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
