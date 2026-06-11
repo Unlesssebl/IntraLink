@@ -26,15 +26,13 @@ class SMBExecutor:
         return parsed.netloc or unc_path.strip("\\").split("\\")[0]
 
     def _copy_dir_smb(self, src_dir: str, dest_dir: str):
-        from smbclient import listdir, open_file
+        from smbclient import listdir, open_file, makedirs
 
         try:
-            mkdir(dest_dir)
+            makedirs(dest_dir, exist_ok=True)
         except Exception as e:
-            err_str = str(e).lower()
-            if "0xc0000035" not in err_str and "object_name_collision" not in err_str:
-                logger.error("SMB: не удалось создать директорию %s: %s", dest_dir, e)
-                raise
+            logger.error("SMB: не удалось создать директорию %s: %s", dest_dir, e)
+            raise
 
         for item in listdir(src_dir):
             src_item = f"{src_dir}\\{item}"

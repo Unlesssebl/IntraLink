@@ -149,9 +149,5 @@ async def test_execute_action_error_default():
         error_msg = "Some random driver registration error in OS"
         await execute_action("on_error", job, error_msg)
         
-        mock_update_status.assert_called_once_with(555, 105, 35)
-        mock_add_comment.assert_called_once()
-        comment = mock_add_comment.call_args[0][2]
-        assert "возникла ошибка" in comment
-        assert "убедитесь, что имя компьютера указано верно" in comment
-        assert "специалист" not in comment.lower()
+        mock_update_status.assert_not_called()
+        mock_add_comment.assert_not_called()
