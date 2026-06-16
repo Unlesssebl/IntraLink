@@ -16,6 +16,9 @@ services:
     image: redis:7-alpine
     container_name: intraservice_redis
     restart: always
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
     ports:
       - "6379:6379"
 
@@ -105,6 +108,7 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
 
 
 

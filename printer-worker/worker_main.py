@@ -39,7 +39,7 @@ class RedisLogHandler(logging.Handler):
                         await r.publish(f"printer_job_logs:{task_id}", log_message)
                         history_key = f"printer_job_logs_history:{task_id}"
                         await r.rpush(history_key, log_message)
-                        await r.expire(history_key, 86400)
+                        await r.expire(history_key, 2592000)
                     except Exception:
                         pass
 
