@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, AsyncMock
-from app.routers.admin import get_worker_status, trigger_manual_job, ManualJobRequest
+from app.routers.admin import get_worker_status, trigger_manual_job, ManualJobRequest, delete_print_job
 
 
 @pytest.mark.asyncio
@@ -53,3 +53,22 @@ async def test_trigger_manual_job(mock_get_redis):
     assert response["status"] == "success"
     assert "task_id" in response
     assert mock_redis.publish.called
+
+
+@pytest.mark.asyncio
+@patch("app.routers.admin.get_redis_client")
+async def test_delete_print_job(mock_get_redis):
+    """
+    Проверяет успешное удаление задачи и логов из Redis.
+    """
+    mock_redis = AsyncMock()
+    mock_redis.zrem.return_value = 1
+    mock_redis.delete.return_value = 1
+    mock_get_redis.return_value = mock_redis
+
+    response = await delete_print_job(99999)
+    assert response == {"status": "success", "task_id": 99999}
+    mock_redis.zrem.assert_called_once_with("printer_jobs_list", "99999")
+    assert mock_redis.delete.call_count == 2
+    mock_redis.delete.assert_any_call("printer_job:99999")
+    mock_redis.delete.assert_any_call("printer_job_logs_history:99999")

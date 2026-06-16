@@ -202,8 +202,7 @@ async def handle_job_action(task_id: int, payload: JobActionRequest):
             "tg_user_id": 0,  # 0 означает запуск из веб-панели
         }
         await r.publish("printer_actions", json.dumps(event))
-        logger.info(
-            "Отправлено действие '%s' для задачи #%d из веб-панели",
+        logger.info("Отправлено действие '%s' для задачи #%d из веб-панели",
             payload.action,
             task_id,
         )
@@ -214,6 +213,33 @@ async def handle_job_action(task_id: int, payload: JobActionRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Не удалось отправить действие: {e}",
         ) from e
+
+
+@router.delete(
+    "/admin/api/print-jobs/{task_id}", dependencies=[Depends(verify_api_key)]
+)
+async def delete_print_job(task_id: int):
+    """
+    Удаляет задачу и её логи из Redis.
+    """
+    try:
+        r = get_redis_client()
+        # Удаляем задачу из sorted set
+        await r.zrem("printer_jobs_list", str(task_id))
+        # Удаляем саму задачу
+        await r.delete(f"printer_job:{task_id}")
+        # Удаляем историю логов задачи
+        await r.delete(f"printer_job_logs_history:{task_id}")
+        
+        logger.info("Задача #%d удалена из Redis через веб-панель", task_id)
+        return {"status": "success", "task_id": task_id}
+    except Exception as e:
+        logger.exception("Ошибка при удалении задачи #%d из Redis: %s", task_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка Redis: {e}",
+        ) from e
+
 
 
 async def _get_historical_logs(r, job_id: int) -> list[str]:

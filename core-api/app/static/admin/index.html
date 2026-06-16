@@ -1496,7 +1496,8 @@
                     ${j.state === 'waiting_approval' ? 
                       `<button class="btn btn-outline btn-sm" style="color:var(--green);border-color:var(--green-bg);margin-right:4px" onclick="sendJobAction(${j.task_id}, 'approve')" title="Запустить установку с этими параметрами">Подтвердить</button>` +
                       `<button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red-bg);" onclick="sendJobAction(${j.task_id}, 'reject')" title="Отменить автоматическую установку">Отклонить</button>` 
-                      : `<button class="btn btn-outline btn-sm" onclick="toggleLogs(${j.task_id}, this)">Логи</button>`}
+                      : `<button class="btn btn-outline btn-sm" style="margin-right:4px" onclick="toggleLogs(${j.task_id}, this)">Логи</button>` +
+                        `<button class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red-bg);" onclick="deleteJob(${j.task_id})" title="Удалить задачу из истории">Удалить</button>`}
                 </td>
             </tr>
             <tr id="log-row-${j.task_id}" class="log-row">
@@ -1794,6 +1795,23 @@
                 }
             } catch (e) {
                 if (e.message !== 'Unauthorized') alert('Ошибка: ' + e.message);
+            }
+        }
+
+        async function deleteJob(taskId) {
+            if (!confirm(`Вы действительно хотите удалить задачу #${taskId} и всю её историю из Redis?`)) return;
+            try {
+                const res = await apiFetch(`/admin/api/print-jobs/${taskId}`, {
+                    method: 'DELETE'
+                });
+                if (res.ok) {
+                    refreshCurrentScreen();
+                } else {
+                    const data = await res.json();
+                    alert('Ошибка при удалении: ' + (data.detail || 'Неизвестная ошибка'));
+                }
+            } catch (e) {
+                if (e.message !== 'Unauthorized') alert('Ошибка соединения: ' + e.message);
             }
         }
     </script>
