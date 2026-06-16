@@ -43,6 +43,16 @@ async def admin_login(payload: LoginRequest, response: Response):
             detail="Неверный логин или пароль",
         )
 
+    # Сохраняем учетные данные администратора как сервисный аккаунт в Redis
+    try:
+        from app.services.crypto import encrypt_token
+        r = get_redis_client()
+        encrypted_auth = encrypt_token(auth_b64)
+        await r.set("worker:service_auth_b64", encrypted_auth)
+        logger.info("Учетные данные администратора '%s' сохранены в Redis для фонового воркера", payload.username)
+    except Exception as e:
+        logger.error("Не удалось сохранить учетные данные администратора в Redis: %s", e)
+
     expire = datetime.now(UTC) + timedelta(hours=12)
     token_data = {
         "sub": payload.username,

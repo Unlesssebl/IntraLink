@@ -1049,6 +1049,11 @@
 
     <!-- ──────────────────────── Auth Modal ──────────────────────────── -->
     <div id="auth-overlay" class="overlay open">
+        <script>
+            if (localStorage.getItem('admin_logged_in') === 'true') {
+                document.getElementById('auth-overlay').classList.remove('open');
+            }
+        </script>
         <div class="modal">
             <div class="modal-logo">
                 <div class="logo-icon">
@@ -1331,6 +1336,7 @@
         let statusTimer = null;
         let dashTimer = null;
         let activeSse = null;
+        let kbCache = null;
 
         const SCREENS = {
             history: 'Журнал операций',
@@ -1363,6 +1369,9 @@
 
         function showLoginScreen() {
             stopPolling();
+            localStorage.removeItem('admin_logged_in');
+            kbCache = null;
+            sessionStorage.removeItem('kb_cache');
             document.getElementById('auth-overlay').classList.add('open');
             document.getElementById('password-input').value = '';
         }
@@ -1406,13 +1415,19 @@
         }
 
         function openApp() {
+            localStorage.setItem('admin_logged_in', 'true');
             document.getElementById('auth-overlay').classList.remove('open');
             startPolling();
-            goTo('history');
+            const savedScreen = sessionStorage.getItem('admin_current_screen') || 'history';
+            goTo(savedScreen);
         }
 
         async function doLogout() {
             stopPolling();
+            localStorage.removeItem('admin_logged_in');
+            sessionStorage.removeItem('admin_current_screen');
+            kbCache = null;
+            sessionStorage.removeItem('kb_cache');
             try {
                 await fetch('/admin/api/logout', { method: 'POST' });
             } catch (e) { /* ignore */ }
@@ -1431,6 +1446,7 @@
             if (nav) nav.classList.add('active');
 
             currentScreen = screen;
+            sessionStorage.setItem('admin_current_screen', screen);
             document.getElementById('topbar-title').textContent = SCREENS[screen] || screen;
 
             // Close SSE if leaving install screen
@@ -1600,13 +1616,32 @@
             }
         }
 
+        // ─────────────────────── KB Cache ────────────────────────────────
+        async function getKB() {
+            if (kbCache) return kbCache;
+            const cached = sessionStorage.getItem('kb_cache');
+            if (cached) {
+                try {
+                    kbCache = JSON.parse(cached);
+                    return kbCache;
+                } catch (e) {
+                    sessionStorage.removeItem('kb_cache');
+                }
+            }
+            const res = await apiFetch('/admin/api/knowledge-base');
+            if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
+            kbCache = await res.json();
+            try {
+                sessionStorage.setItem('kb_cache', JSON.stringify(kbCache));
+            } catch (e) { /* ignore storage quota */ }
+            return kbCache;
+        }
+
         // ─────────────────────── Install ──────────────────────────────────
         async function loadInstallOptions() {
             const sel = document.getElementById('f-model');
             try {
-                const res = await apiFetch('/admin/api/knowledge-base');
-                if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
-                const kb = await res.json();
+                const kb = await getKB();
                 const printers = kb.printers || [];
                 const cur = sel.value;
 
@@ -1741,15 +1776,12 @@
             const grid = document.getElementById('kb-grid');
             const label = document.getElementById('kb-count-label');
 
-            grid.innerHTML = '<p style="color:var(--text-3);font-size:0.85rem;">Загрузка...</p>';
+            if (!kbCache && !sessionStorage.getItem('kb_cache')) {
+                grid.innerHTML = '<p style="color:var(--text-3);font-size:0.85rem;">Загрузка...</p>';
+            }
 
             try {
-                const res = await apiFetch('/admin/api/knowledge-base');
-                if (!res.ok) {
-                    grid.innerHTML = `<p style="color:var(--red);font-size:0.85rem;">Ошибка загрузки: HTTP ${res.status}</p>`;
-                    return;
-                }
-                const kb = await res.json();
+                const kb = await getKB();
                 const printers = kb.printers || [];
 
                 label.textContent = `${printers.length} ${plural(printers.length, 'модель', 'модели', 'моделей')} в базе`;

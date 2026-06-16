@@ -352,26 +352,34 @@ async def process_user(
 async def check_updates():
     """
     Периодическая проверка новых заявок и комментариев на стороне Core API.
-    Использует выделенный сервисный аккаунт IntraService.
+    Использует выделенный сервисный аккаунт IntraService или учетные данные,
+    сохраненные при авторизации в веб-панели.
     """
-    if not settings.INTRASERVICE_SERVICE_LOGIN or not settings.INTRASERVICE_SERVICE_PASSWORD:
-        logger.error(
-            "Сервисный аккаунт IntraService не настроен! "
-            "Задайте INTRASERVICE_SERVICE_LOGIN и INTRASERVICE_SERVICE_PASSWORD."
-        )
-        return
-
     # Импорты внутри для избежания циклических зависимостей
     import base64
     from app.services.crypto import encrypt_token
 
-    # Готовим авторизацию для сервисного аккаунта
-    auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
-    plain_b64 = base64.b64encode(auth_str.encode()).decode()
-    service_auth_b64 = encrypt_token(plain_b64)
+    redis = get_redis_client()
+
+    # Сначала пытаемся взять данные из настроек (переменных окружения)
+    service_auth_b64 = None
+    if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
+        auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
+        plain_b64 = base64.b64encode(auth_str.encode()).decode()
+        service_auth_b64 = encrypt_token(plain_b64)
+    else:
+        # Пытаемся получить сохраненные учетные данные администратора из Redis
+        service_auth_b64 = await redis.get("worker:service_auth_b64")
+
+    if not service_auth_b64:
+        logger.warning(
+            "Сервисный аккаунт IntraService не настроен! "
+            "Пожалуйста, авторизуйтесь в веб-панели или задайте "
+            "INTRASERVICE_SERVICE_LOGIN и INTRASERVICE_SERVICE_PASSWORD в .env."
+        )
+        return
 
     base_web_url = settings.INTRASERVICE_URL.replace("/api/", "")
-    redis = get_redis_client()
 
     semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_REQUESTS)
     intraservice_tz = ZoneInfo(settings.INTRASERVICE_TZ)
