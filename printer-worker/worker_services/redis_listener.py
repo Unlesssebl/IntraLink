@@ -352,7 +352,7 @@ async def _recover_orphan_jobs() -> None:
 
     # Локальные импорты для избежания циклических ссылок
     from executors.wmi_executor import WMIExecutor
-    from worker_config import WINRM_USERNAME, WINRM_PASSWORD
+    from worker_services.credentials import get_domain_credentials
     from orchestrator.orchestrator import STATUS_WAITING
 
     try:
@@ -380,15 +380,12 @@ async def _recover_orphan_jobs() -> None:
                     )
 
                     if job.target_pc:
-                        domain = ""
-                        username = WINRM_USERNAME
-                        if "\\" in username:
-                            domain, username = username.split("\\", 1)
+                        domain, username, password = await get_domain_credentials()
 
                         wmi = WMIExecutor(
                             target_ip=job.target_pc,
                             username=username,
-                            password=WINRM_PASSWORD,
+                            password=password,
                             domain=domain,
                         )
                         try:

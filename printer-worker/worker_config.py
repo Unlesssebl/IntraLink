@@ -1,17 +1,27 @@
 import os
 from dotenv import load_dotenv
+from dotenv import load_dotenv
 
 # Загрузка переменных окружения
 load_dotenv()
+
+def read_secret_file(env_var_name: str) -> str | None:
+    path = os.getenv(env_var_name)
+    if path and os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return None
+
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY") or read_secret_file("ENCRYPTION_KEY_FILE")
 
 # Основные параметры интеграции
 CORE_API_URL: str = os.getenv("CORE_API_URL", "http://127.0.0.1:8000/api/v1")
 BOT_API_KEY: str = os.getenv("BOT_API_KEY") or ""
 REDIS_URL: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 
-# Параметры авторизации WinRM на целевых ПК
-WINRM_USERNAME: str = os.getenv("WINRM_USERNAME") or ""
-WINRM_PASSWORD: str = os.getenv("WINRM_PASSWORD") or ""
+# Параметры авторизации WinRM на целевых ПК (fallback)
+WINRM_USERNAME: str = os.getenv("WINRM_USERNAME", "").strip()
+WINRM_PASSWORD: str = os.getenv("WINRM_PASSWORD", "").strip()
 WINRM_TRANSPORT: str = os.getenv("WINRM_TRANSPORT", "ntlm")
 
 # Параметры интеграции с LLM
@@ -43,14 +53,9 @@ PRINTER_EXECUTOR_IS_USER_ID: int | None = (
 PRINTER_EXECUTOR_LOGIN: str = os.getenv("PRINTER_EXECUTOR_LOGIN", "").strip()
 
 
-# Валидация обязательных параметров
 if not BOT_API_KEY:
     raise ValueError("BOT_API_KEY is not set in environment variables")
 if not CORE_API_URL:
     raise ValueError("CORE_API_URL is not set in environment variables")
 if not REDIS_URL:
     raise ValueError("REDIS_URL is not set in environment variables")
-if not WINRM_USERNAME:
-    raise ValueError("WINRM_USERNAME is not set in environment variables")
-if not WINRM_PASSWORD:
-    raise ValueError("WINRM_PASSWORD is not set in environment variables")

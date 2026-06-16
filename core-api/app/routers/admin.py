@@ -59,7 +59,7 @@ async def admin_login(payload: LoginRequest, response: Response):
         "user_id": user_id,
         "exp": expire
     }
-    token = jwt.encode(token_data, settings.JWT_SECRET, algorithm="HS256")
+    token = jwt.encode(token_data, settings.JWT_SECRET or "", algorithm="HS256")
 
     response.set_cookie(
         key="admin_session",
@@ -88,6 +88,56 @@ async def admin_me(username: str = Depends(verify_admin_jwt)):
     Возвращает информацию о текущем авторизованном администраторе.
     """
     return {"username": username}
+
+
+class DomainAuthRequest(BaseModel):
+    username: str
+    password: str
+
+@router.post("/admin/api/domain-auth", dependencies=[Depends(verify_admin_jwt)])
+async def set_domain_auth(payload: DomainAuthRequest):
+    """
+    Сохраняет доменную учетную запись (WINRM) в Redis в зашифрованном виде.
+    """
+    try:
+        from app.services.crypto import encrypt_token
+        r = get_redis_client()
+        auth_data = {
+            "username": payload.username,
+            "password": payload.password
+        }
+        auth_json = json.dumps(auth_data)
+        encrypted_auth = encrypt_token(auth_json)
+        await r.set("worker:domain_auth", encrypted_auth)
+        logger.info("Доменная учетная запись обновлена в Redis из веб-панели")
+        return {"status": "success"}
+    except Exception as e:
+        logger.exception("Ошибка при сохранении доменной учетной записи: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось сохранить учетную запись: {e}",
+        ) from e
+
+
+@router.get("/admin/api/domain-auth", dependencies=[Depends(verify_admin_jwt)])
+async def get_domain_auth_status():
+    """
+    Возвращает статус настройки доменной учетной записи.
+    Пароль не возвращается в целях безопасности.
+    """
+    try:
+        from app.services.crypto import decrypt_token
+        r = get_redis_client()
+        encrypted_auth = await r.get("worker:domain_auth")
+        if not encrypted_auth:
+            return {"is_configured": False, "username": None}
+            
+        auth_json = decrypt_token(encrypted_auth)
+        auth_data = json.loads(auth_json)
+        return {"is_configured": True, "username": auth_data.get("username")}
+    except Exception as e:
+        logger.exception("Ошибка при чтении доменной учетной записи: %s", e)
+        return {"is_configured": False, "username": None}
 
 
 # Вспомогательный класс для ручного запуска задачи

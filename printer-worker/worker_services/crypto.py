@@ -1,20 +1,19 @@
 import logging
-
 from cryptography.fernet import Fernet, InvalidToken
 
-from app.config import settings
+from worker_config import ENCRYPTION_KEY
 
 logger = logging.getLogger(__name__)
 
 _fernet = None
 
-if settings.ENCRYPTION_KEY:
+if ENCRYPTION_KEY:
     try:
-        _fernet = Fernet(settings.ENCRYPTION_KEY.encode("utf-8"))
+        _fernet = Fernet(ENCRYPTION_KEY.encode("utf-8"))
     except Exception as e:
         logger.error("Failed to initialize Fernet with provided ENCRYPTION_KEY: %s", e)
 else:
-    logger.warning("ENCRYPTION_KEY is not set. Tokens will not be encrypted.")
+    logger.warning("ENCRYPTION_KEY is not set. Tokens will not be encrypted/decrypted.")
 
 
 def encrypt_token(plain_b64_token: str) -> str:
@@ -34,8 +33,7 @@ def encrypt_token(plain_b64_token: str) -> str:
 def decrypt_token(encrypted_token: str | bytes) -> str:
     """
     Расшифровывает токен.
-    Если расшифровка не удалась (например, старый не зашифрованный токен),
-    возвращает токен как есть.
+    Если расшифровка не удалась, возвращает токен как есть.
     """
     if not _fernet or not encrypted_token:
         if isinstance(encrypted_token, bytes):
@@ -49,7 +47,6 @@ def decrypt_token(encrypted_token: str | bytes) -> str:
         )
         return _fernet.decrypt(token_bytes).decode("utf-8")
     except InvalidToken:
-        # Вероятно, это старый не зашифрованный токен (Basic Auth base64)
         if isinstance(encrypted_token, bytes):
             return encrypted_token.decode("utf-8")
         return encrypted_token

@@ -12,6 +12,7 @@ from worker_services.action_executor import execute_action
 from worker_services.redis_listener import save_job_state, get_redis
 import worker_config as config
 from executors.wmi_executor import WMIExecutor
+from worker_services.credentials import get_domain_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -173,15 +174,12 @@ class PrinterOrchestrator:
             strategy = get_strategy(job.connection_type)
 
             # Разбор домена и пользователя
-            domain = ""
-            username = config.WINRM_USERNAME
-            if "\\" in username:
-                domain, username = username.split("\\", 1)
+            domain, username, password = await get_domain_credentials()
 
             wmi_exec = WMIExecutor(
                 target_ip=job.target_pc,
                 username=username,
-                password=config.WINRM_PASSWORD,
+                password=password,
                 domain=domain,
             )
 

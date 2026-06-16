@@ -75,7 +75,7 @@ async def verify_admin_jwt(
             detail="Сессия не найдена. Требуется авторизация.",
         )
     try:
-        payload = jwt.decode(admin_session, settings.JWT_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(admin_session, settings.JWT_SECRET or "", algorithms=["HS256"])
         username = payload.get("sub")
         if not username:
             raise HTTPException(

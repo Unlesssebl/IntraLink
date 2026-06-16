@@ -97,6 +97,9 @@ services:
       - CORE_API_URL=http://core-api:8000/api/v1
       - REDIS_URL=redis://redis:6379/0
       - LLM_API_URL=http://host.docker.internal:11434
+      - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
+    secrets:
+      - encryption_key
     extra_hosts:
       - "host.docker.internal:host-gateway"
     dns:
