@@ -7,18 +7,77 @@ import random
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime, timedelta, UTC
+import jwt
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app.routers.deps import verify_api_key
+from app.routers.deps import verify_admin_jwt
 from app.services.worker import get_redis_client
+from app.services.intraservice import verify_credentials
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Admin UI"])
 
 PING_INTERVAL = 15.0
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@router.post("/admin/api/login")
+async def admin_login(payload: LoginRequest, response: Response):
+    """
+    Проверяет учетные данные администратора в IntraService.
+    При успехе сохраняет подписанный JWT токен в HttpOnly Cookie.
+    """
+    auth_b64, user_id = await verify_credentials(payload.username, payload.password)
+    if not auth_b64:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный логин или пароль",
+        )
+
+    expire = datetime.now(UTC) + timedelta(hours=12)
+    token_data = {
+        "sub": payload.username,
+        "user_id": user_id,
+        "exp": expire
+    }
+    token = jwt.encode(token_data, settings.JWT_SECRET, algorithm="HS256")
+
+    response.set_cookie(
+        key="admin_session",
+        value=token,
+        httponly=True,
+        max_age=12 * 3600,
+        expires=expire,
+        samesite="lax",
+        secure=False,
+    )
+    return {"status": "success", "username": payload.username}
+
+
+@router.post("/admin/api/logout")
+async def admin_logout(response: Response):
+    """
+    Удаляет куку сессии администратора.
+    """
+    response.delete_cookie(key="admin_session")
+    return {"status": "success"}
+
+
+@router.get("/admin/api/me")
+async def admin_me(username: str = Depends(verify_admin_jwt)):
+    """
+    Возвращает информацию о текущем авторизованном администраторе.
+    """
+    return {"username": username}
 
 
 # Вспомогательный класс для ручного запуска задачи
@@ -81,7 +140,7 @@ async def get_admin_ui():
         ) from e
 
 
-@router.get("/admin/api/worker-status", dependencies=[Depends(verify_api_key)])
+@router.get("/admin/api/worker-status", dependencies=[Depends(verify_admin_jwt)])
 async def get_worker_status():
     """
     Возвращает текущий статус printer-worker (online/offline).
@@ -95,7 +154,7 @@ async def get_worker_status():
         return {"status": "offline", "error": str(e)}
 
 
-@router.get("/admin/api/knowledge-base", dependencies=[Depends(verify_api_key)])
+@router.get("/admin/api/knowledge-base", dependencies=[Depends(verify_admin_jwt)])
 async def get_knowledge_base():
     """
     Считывает и отдает базу знаний принтеров.
@@ -117,7 +176,7 @@ async def get_knowledge_base():
         ) from e
 
 
-@router.get("/admin/api/print-jobs", dependencies=[Depends(verify_api_key)])
+@router.get("/admin/api/print-jobs", dependencies=[Depends(verify_admin_jwt)])
 async def get_print_jobs():
     """
     Возвращает список недавних задач из Redis.
@@ -148,7 +207,7 @@ async def get_print_jobs():
         ) from e
 
 
-@router.post("/admin/api/print-jobs", dependencies=[Depends(verify_api_key)])
+@router.post("/admin/api/print-jobs", dependencies=[Depends(verify_admin_jwt)])
 async def trigger_manual_job(payload: ManualJobRequest):
     """
     Вручную инициирует установку принтера, отправляя событие в Redis.
@@ -187,7 +246,7 @@ class JobActionRequest(BaseModel):
 
 
 @router.post(
-    "/admin/api/print-jobs/{task_id}/action", dependencies=[Depends(verify_api_key)]
+    "/admin/api/print-jobs/{task_id}/action", dependencies=[Depends(verify_admin_jwt)]
 )
 async def handle_job_action(task_id: int, payload: JobActionRequest):
     """
@@ -216,7 +275,7 @@ async def handle_job_action(task_id: int, payload: JobActionRequest):
 
 
 @router.delete(
-    "/admin/api/print-jobs/{task_id}", dependencies=[Depends(verify_api_key)]
+    "/admin/api/print-jobs/{task_id}", dependencies=[Depends(verify_admin_jwt)]
 )
 async def delete_print_job(task_id: int):
     """
@@ -313,7 +372,7 @@ async def log_stream_generator(job_id: int):
 
 
 @router.get(
-    "/admin/api/print-jobs/{job_id}/logs", dependencies=[Depends(verify_api_key)]
+    "/admin/api/print-jobs/{job_id}/logs", dependencies=[Depends(verify_admin_jwt)]
 )
 async def stream_job_logs(job_id: int):
     """

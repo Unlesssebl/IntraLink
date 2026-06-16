@@ -77,6 +77,7 @@ flowchart TB
             R_Auth["auth.py<br/>(/auth/login, /auth/logout)"]:::handlerStyle
             R_Tasks["tasks.py<br/>(/tasks, /statuses)"]:::handlerStyle
             R_Users["users.py<br/>(/users)"]:::handlerStyle
+            R_Admin["admin.py<br/>(Веб-панель: /admin/api/login, /logout, /me...)"]:::handlerStyle
         end
 
         subgraph API_Services ["Службы & База данных"]
@@ -160,10 +161,11 @@ flowchart TB
 *   **`database/db.py`** — Настройка SQLAlchemy Async. Содержит декларативную ORM-модель `User`.
 *   **`models/schemas.py`** — Схемы Pydantic для валидации входных/выходных данных API.
 *   **`routers/`** — Контроллеры (endpoints):
-    *   **`auth.py`** — `/auth/login`, `/auth/logout`.
+    *   **`auth.py`** — `/auth/login`, `/auth/logout` (API для Telegram-бота).
+    *   **`admin.py`** — `/admin/api/login`, `/logout`, `/me`, `/print-jobs` (API для Веб-панели администратора).
     *   **`tasks.py`** — `/tasks`, `/tasks/{id}/lifetime`, `/statuses`.
     *   **`users.py`** — `/users/{tg_user_id}`.
-    *   **`deps.py`** — Зависимости FastAPI: проверка `X-Bot-Api-Key` (через `secrets.compare_digest`), получение пользователя из БД.
+    *   **`deps.py`** — Зависимости FastAPI: проверка `X-Bot-Api-Key` (через `secrets.compare_digest`) для бота, а также проверка JWT в HttpOnly куках `verify_admin_jwt` для администратора.
 *   **`services/`** — Бизнес-логика:
     *   **`intraservice.py`** — Низкоуровневый aiohttp-клиент для REST API IntraService.
     *   **`worker.py`** — Воркер фонового опроса (APScheduler + Redis Publisher).
@@ -341,6 +343,8 @@ sequenceDiagram
 | **Изоляция данных** | Бот не хранит учётные данные IntraService. При компрометации контейнера бота пароли недоступны. |
 | **Шифрование паролей** | `login:password` → Base64 → Fernet (AES-128-CBC + HMAC-SHA256) → PostgreSQL. Без `ENCRYPTION_KEY` расшифровка невозможна. |
 | **API-аутентификация** | Все запросы Бот → Core API защищены заголовком `X-Bot-Api-Key`. Сравнение через `secrets.compare_digest` исключает timing-атаки. |
+| **Защита веб-панели** | Доступ к API панели защищен JWT-токеном, хранящимся в `HttpOnly` cookie. Исключает утечку сессий через XSS. |
+| **Безопасное хранение секретов** | Переход на **Docker Secrets**: критические секреты (`encryption_key`, `service_password`, `jwt_secret`) монтируются только в оперативную память контейнера, исключая утечку через `docker inspect` или логи. |
 | **Удаление паролей из чата** | Сообщение с паролем удаляется из истории Telegram сразу после получения. |
 | **Защита от конфликтов установки** | Все WMI/SMB-операции установки выполняются под распределенной блокировкой Redis (`aioredis.lock`), исключая одновременную установку на одном хосте. |
 | **Динамическая защита WinRM** | При WMI бутстрапе правила брандмауэра для WinRM создаются временно. После окончания установки служба останавливается, кастомные правила удаляются, а встроенные правила WinRM ограничиваются локальной подсетью. |

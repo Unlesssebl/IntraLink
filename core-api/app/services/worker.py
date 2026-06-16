@@ -29,109 +29,56 @@ async def close_redis():
         await redis_client.close()
         redis_client = None
 
-async def _get_api_filter_time(
-    db_user: User,
-    db,
-    current_time_utc: datetime,
-    intraservice_tz: ZoneInfo,
-) -> tuple[datetime, str] | None:
-    """
-    Возвращает (last_check_time_local, api_filter_time) или None,
-    если требуется обновить last_check_time в БД и завершить обработку.
-    """
-    last_check_str = db_user.last_check_time
-    last_check_time_utc = parse_api_date(last_check_str)
-    if last_check_time_utc:
-        if last_check_time_utc.tzinfo is None:
-            last_check_time_utc = last_check_time_utc.replace(tzinfo=UTC)
-    else:
-        db_user.last_check_time = current_time_utc.strftime("%Y-%m-%d %H:%M:%S")
-        await db.commit()
-        return None
-
-    last_check_time_local = last_check_time_utc.astimezone(intraservice_tz)
-    api_filter_time = last_check_time_local.strftime("%Y-%m-%d %H:%M")
-    return last_check_time_local, api_filter_time
-
-async def _check_new_tasks(
-    db_user: User,
-    auth_b64: str,
-    api_filter_time: str,
+async def _check_new_tasks_global(
+    new_tasks: list[dict],
+    statuses_map: dict,
+    users_by_is_id: dict[str, User],
     base_web_url: str,
-) -> list[dict] | None:
+) -> list[dict]:
     """
-    Проверяет новые задачи и возвращает список событий для Redis
-    или None в случае ошибки API.
+    Проверяет новые задачи и возвращает список событий для отправки в Redis.
     """
-    tasks_data = await get_tasks(
-        auth_b64,
-        {"CreatedMoreThan": api_filter_time, "include": "executorids"},
-    )
-    if tasks_data is None:
-        logger.error(
-            "Не удалось получить новые заявки для пользователя %s "
-            "из-за ошибки API. Пропуск итерации.",
-            db_user.tg_user_id,
-        )
-        return None
-
-    new_tasks = []
-    statuses_map = {}
-    if isinstance(tasks_data, dict):
-        new_tasks = tasks_data.get("Tasks", [])
-        for s in tasks_data.get("Statuses", []):
-            statuses_map[s.get("Id")] = s.get("Name")
-    elif isinstance(tasks_data, list):
-        new_tasks = tasks_data
-
     notifications = []
-    last_task_id = db_user.last_task_id or 0
-    any_new_task = False
-
     for task in new_tasks:
-        # Уведомляем только если пользователь является исполнителем
         executor_ids_str = str(task.get("ExecutorIds") or "")
         executor_ids = [
             eid.strip()
             for eid in executor_ids_str.split(",")
             if eid.strip()
         ]
-        if str(db_user.is_user_id) not in executor_ids:
-            continue
+        for exec_id in executor_ids:
+            if exec_id in users_by_is_id:
+                db_user = users_by_is_id[exec_id]
+                last_task_id = db_user.last_task_id or 0
+                if task["Id"] > last_task_id:
+                    status_name = task.get("StatusName")
+                    if not status_name and task.get("StatusId") in statuses_map:
+                        status_name = statuses_map[task.get("StatusId")]
 
-        if task["Id"] > last_task_id:
-            status_name = task.get("StatusName")
-            if not status_name and task.get("StatusId") in statuses_map:
-                status_name = statuses_map[task.get("StatusId")]
+                    status_name = status_name or "N/A"
 
-            status_name = status_name or "N/A"
+                    message_text = (
+                        f"🆕 <b>Новая заявка #{task['Id']}</b>\n"
+                        f"📝 Тема: {task['Name']}\n"
+                        f"📊 Статус: {status_name}\n"
+                        f"🔗 <a href='{base_web_url}/Task/View/{task['Id']}'>"
+                        "Открыть в браузере</a>"
+                    )
 
-            message_text = (
-                f"🆕 <b>Новая заявка #{task['Id']}</b>\n"
-                f"📝 Тема: {task['Name']}\n"
-                f"📊 Статус: {status_name}\n"
-                f"🔗 <a href='{base_web_url}/Task/View/{task['Id']}'>"
-                "Открыть в браузере</a>"
-            )
+                    payload = {
+                        "event_type": "new_task",
+                        "tg_user_id": db_user.tg_user_id,
+                        "is_user_id": db_user.is_user_id,
+                        "is_login": db_user.is_login,
+                        "task_id": task["Id"],
+                        "task_name": task["Name"],
+                        "text": message_text,
+                    }
 
-            payload = {
-                "event_type": "new_task",
-                "tg_user_id": db_user.tg_user_id,
-                "is_user_id": db_user.is_user_id,
-                "is_login": db_user.is_login,
-                "task_id": task["Id"],
-                "task_name": task["Name"],
-                "text": message_text,
-            }
-
-            notifications.append(payload)
-            last_task_id = max(last_task_id, task["Id"])
-            any_new_task = True
-
-    if any_new_task:
-        db_user.last_task_id = last_task_id
-
+                    notifications.append(payload)
+                    db_user.last_task_id = max(db_user.last_task_id or 0, task["Id"])
     return notifications
+
 
 def _process_lifetime_event(  # noqa: PLR0913
     event: dict,
@@ -222,42 +169,22 @@ def _process_lifetime_event(  # noqa: PLR0913
 
     return None
 
-async def _check_task_updates(
-    db_user: User,
-    api_filter_time: str,
+
+async def _check_task_updates_global(  # noqa: PLR0913
+    updated_tasks: list[dict],
+    updated_statuses_map: dict,
+    users_by_is_id: dict[str, User],
     base_web_url: str,
     last_check_time_local: datetime,
     intraservice_tz: ZoneInfo,
-) -> list[dict] | None:
+    service_auth_b64: str,
+    semaphore: asyncio.Semaphore,
+) -> list[dict]:
     """
-    Проверяет обновления задач и возвращает список событий для Redis или None.
+    Проверяет изменения в обновленных задачах (комментарии, статусы) и возвращает уведомления.
     """
-    updated_tasks_data = await get_tasks(
-        db_user.is_password_b64,
-        {
-            "ChangedMoreThan": api_filter_time,
-            "include": "executorids,status",
-        },
-    )
-    if updated_tasks_data is None:
-        logger.error(
-            "Не удалось получить обновленные заявки для пользователя %s "
-            "из-за ошибки API. Пропуск итерации.",
-            db_user.tg_user_id,
-        )
-        return None
-
-    updated_tasks = []
-    updated_statuses_map = {}
-    if isinstance(updated_tasks_data, dict):
-        updated_tasks = updated_tasks_data.get("Tasks", [])
-        for s in updated_tasks_data.get("Statuses", []):
-            updated_statuses_map[s.get("Id")] = s.get("Name")
-    elif isinstance(updated_tasks_data, list):
-        updated_tasks = updated_tasks_data
-
     notifications = []
-
+    tasks_to_check = []
     for task in updated_tasks:
         executor_ids_str = str(task.get("ExecutorIds") or "")
         executor_ids = [
@@ -265,175 +192,296 @@ async def _check_task_updates(
             for eid in executor_ids_str.split(",")
             if eid.strip()
         ]
-        if str(db_user.is_user_id) not in executor_ids:
-            continue
+        has_our_executors = any(exec_id in users_by_is_id for exec_id in executor_ids)
+        if has_our_executors:
+            tasks_to_check.append((task, executor_ids))
 
+    if not tasks_to_check:
+        return notifications
+
+    async def check_single_task_history(task: dict, executor_ids: list[str]):
         task_id = task["Id"]
-        lifetime_data = await get_task_lifetime(db_user.is_password_b64, task_id)
+        async with semaphore:
+            lifetime_data = await get_task_lifetime(service_auth_b64, task_id)
 
         events = []
         if isinstance(lifetime_data, list):
             events = lifetime_data
-        elif (
-            isinstance(lifetime_data, dict)
-            and "TaskLifetimes" in lifetime_data
-        ):
+        elif isinstance(lifetime_data, dict) and "TaskLifetimes" in lifetime_data:
             events = lifetime_data["TaskLifetimes"]
 
+        task_notifications = []
         if events:
             for event in events:
-                notif = _process_lifetime_event(
-                    event,
-                    task,
-                    db_user,
-                    base_web_url,
-                    last_check_time_local,
-                    intraservice_tz,
-                    updated_statuses_map,
-                )
-                if notif:
-                    notifications.append(notif)
+                for exec_id in executor_ids:
+                    if exec_id in users_by_is_id:
+                        db_user = users_by_is_id[exec_id]
+                        notif = _process_lifetime_event(
+                            event,
+                            task,
+                            db_user,
+                            base_web_url,
+                            last_check_time_local,
+                            intraservice_tz,
+                            updated_statuses_map,
+                        )
+                        if notif:
+                            task_notifications.append(notif)
+        return task_notifications
+
+    history_tasks = [check_single_task_history(t, execs) for t, execs in tasks_to_check]
+    results = await asyncio.gather(*history_tasks)
+    for res in results:
+        notifications.extend(res)
 
     return notifications
 
-async def _publish_pending_notifications(
-    redis_client: aioredis.Redis,
-    notifications: list[dict],
-    tg_id: int,
-) -> None:
-    """
-    Публикует накопленные уведомления в Redis.
-    """
-    for payload in notifications:
-        try:
-            await redis_client.publish(
-                "intraservice_events", json.dumps(payload)
-            )
-        except Exception as pub_err:
-            logger.error(
-                "Не удалось опубликовать уведомление в Redis для пользователя %s, "
-                "событие %s, заявка %s: %s. Payload: %s",
-                tg_id,
-                payload.get("event_type"),
-                payload.get("task_id"),
-                pub_err,
-                json.dumps(payload),
-            )
 
-async def process_user(  # noqa: PLR0913
+async def process_user(
     user_id: int,
-    redis_client: aioredis.Redis,
+    redis_client,
     base_web_url: str,
     semaphore: asyncio.Semaphore,
     current_time_utc: datetime,
     intraservice_tz: ZoneInfo,
-):
+) -> None:
     """
-    Обрабатывает обновления для одного пользователя под семафором
-    и в рамках отдельной сессии БД.
+    [DEPRECATED] Обрабатывает заявки для одного конкретного пользователя.
+    Используется для обратной совместимости в юнит-тестах.
     """
-    async with semaphore, AsyncSessionLocal() as db:
-        try:
-            # Получаем свежий экземпляр пользователя, привязанный к текущей сессии
-            db_user = await db.get(User, user_id)
-            if not db_user:
-                return
+    async with AsyncSessionLocal() as db:
+        user = await db.get(User, user_id)
+        if not user:
+            logger.warning("Пользователь с ID %s не найден в БД", user_id)
+            return
 
-            tg_id = db_user.tg_user_id
-            is_user_id = db_user.is_user_id
-            auth_b64 = db_user.is_password_b64
+        if not user.is_password_b64:
+            logger.warning("У пользователя %s отсутствует пароль IntraService", user_id)
+            return
 
-            if not tg_id or not is_user_id or not auth_b64:
-                return
-
-            # Инициализация / получение временных рамок проверки
-            times_info = await _get_api_filter_time(
-                db_user, db, current_time_utc, intraservice_tz
-            )
-            if times_info is None:
-                return
-
-            last_check_time_local, api_filter_time = times_info
-
-            # 1. Проверка НОВЫХ заявок
-            new_notifications = await _check_new_tasks(
-                db_user, auth_b64, api_filter_time, base_web_url
-            )
-            if new_notifications is None:
-                return
-
-            # 2. Проверка КОММЕНТАРИЕВ и изменений статуса
-            updated_notifications = await _check_task_updates(
-                db_user,
-                api_filter_time,
-                base_web_url,
-                last_check_time_local,
-                intraservice_tz,
-            )
-            if updated_notifications is None:
-                return
-
-            pending_notifications = new_notifications + updated_notifications
-
-            # Обновляем время последней проверки на текущее UTC
-            db_user.last_check_time = current_time_utc.strftime("%Y-%m-%d %H:%M:%S")
-
-            # Фиксируем состояние в БД
+        if not user.last_check_time:
+            user.last_check_time = current_time_utc.strftime("%Y-%m-%d %H:%M:%S")
             await db.commit()
+            logger.info("Для пользователя %s инициализировано время последней проверки", user_id)
+            return
 
-            # Только если коммит прошел успешно, отправляем сообщения в Redis
-            await _publish_pending_notifications(
-                redis_client, pending_notifications, tg_id
-            )
+        last_check_time_naive = parse_api_date(user.last_check_time)
+        if not last_check_time_naive:
+            last_check_time_naive = current_time_utc
 
-        except Exception as e:
-            logger.error(
-                "Ошибка при обработке обновлений для пользователя %s: %s",
-                user_id,
-                e,
-            )
-            await db.rollback()
+        # Переводим во временную зону IntraService
+        last_check_time_local = last_check_time_naive.replace(tzinfo=UTC).astimezone(intraservice_tz)
+        api_filter_time = last_check_time_local.strftime("%Y-%m-%d %H:%M")
+
+        # 1. Запрос новых заявок
+        new_tasks_data = await get_tasks(
+            user.is_password_b64,
+            {"CreatedMoreThan": api_filter_time, "include": "executorids,status"},
+        )
+        if new_tasks_data is None:
+            logger.warning("Не удалось получить новые заявки для пользователя %s", user_id)
+            return
+
+        # 2. Запрос измененных заявок
+        updated_tasks_data = await get_tasks(
+            user.is_password_b64,
+            {"ChangedMoreThan": api_filter_time, "include": "executorids,status"},
+        )
+        if updated_tasks_data is None:
+            logger.warning("Не удалось получить обновленные заявки для пользователя %s", user_id)
+            return
+
+        # Парсим новые задачи
+        new_tasks = []
+        statuses_map = {}
+        if isinstance(new_tasks_data, dict):
+            new_tasks = new_tasks_data.get("Tasks", [])
+            for s in new_tasks_data.get("Statuses", []):
+                statuses_map[s.get("Id")] = s.get("Name")
+        elif isinstance(new_tasks_data, list):
+            new_tasks = new_tasks_data
+
+        # Парсим измененные задачи
+        updated_tasks = []
+        updated_statuses_map = {}
+        if isinstance(updated_tasks_data, dict):
+            updated_tasks = updated_tasks_data.get("Tasks", [])
+            for s in updated_tasks_data.get("Statuses", []):
+                updated_statuses_map[s.get("Id")] = s.get("Name")
+        elif isinstance(updated_tasks_data, list):
+            updated_tasks = updated_tasks_data
+
+        users_by_is_id = {str(user.is_user_id): user}
+
+        # Вызываем _check_new_tasks_global
+        new_notifications = await _check_new_tasks_global(
+            new_tasks, statuses_map, users_by_is_id, base_web_url
+        )
+
+        # Вызываем _check_task_updates_global
+        updated_notifications = await _check_task_updates_global(
+            updated_tasks,
+            updated_statuses_map,
+            users_by_is_id,
+            base_web_url,
+            last_check_time_local,
+            intraservice_tz,
+            user.is_password_b64,
+            semaphore,
+        )
+
+        pending_notifications = new_notifications + updated_notifications
+
+        # Сохраняем изменения пользователя в БД
+        user.last_check_time = current_time_utc.strftime("%Y-%m-%d %H:%M:%S")
+        await db.commit()
+
+        # Публикуем уведомления
+        if pending_notifications:
+            for payload in pending_notifications:
+                try:
+                    await redis_client.publish("intraservice_events", json.dumps(payload))
+                except Exception as pub_err:
+                    logger.error(
+                        "Ошибка отправки уведомления в Redis для пользователя %s: %s",
+                        payload.get("tg_user_id"),
+                        pub_err,
+                    )
+
 
 async def check_updates():
     """
     Периодическая проверка новых заявок и комментариев на стороне Core API.
-    Публикует события в Redis Pub/Sub.
+    Использует выделенный сервисный аккаунт IntraService.
     """
+    if not settings.INTRASERVICE_SERVICE_LOGIN or not settings.INTRASERVICE_SERVICE_PASSWORD:
+        logger.error(
+            "Сервисный аккаунт IntraService не настроен! "
+            "Задайте INTRASERVICE_SERVICE_LOGIN и INTRASERVICE_SERVICE_PASSWORD."
+        )
+        return
+
+    # Импорты внутри для избежания циклических зависимостей
+    import base64
+    from app.services.crypto import encrypt_token
+
+    # Готовим авторизацию для сервисного аккаунта
+    auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
+    plain_b64 = base64.b64encode(auth_str.encode()).decode()
+    service_auth_b64 = encrypt_token(plain_b64)
+
     base_web_url = settings.INTRASERVICE_URL.replace("/api/", "")
     redis = get_redis_client()
 
-    # Семафор для ограничения одновременных запросов в IntraService
     semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_REQUESTS)
-
     intraservice_tz = ZoneInfo(settings.INTRASERVICE_TZ)
     current_time_utc = datetime.now(UTC)
 
-    # Используем отдельную сессию для потокового чтения
-    async with AsyncSessionLocal() as stream_db:
+    # 1. Получаем время последней проверки из Redis
+    last_check_time_str = await redis.get("worker:last_check_time")
+    if last_check_time_str:
+        last_check_time_utc = parse_api_date(last_check_time_str)
+        if last_check_time_utc:
+            if last_check_time_utc.tzinfo is None:
+                last_check_time_utc = last_check_time_utc.replace(tzinfo=UTC)
+        else:
+            last_check_time_utc = current_time_utc
+    else:
+        last_check_time_utc = current_time_utc
+        await redis.set("worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S"))
+        logger.info("Первичный запуск. Время последней проверки инициализировано: %s", current_time_utc)
+        return
+
+    last_check_time_local = last_check_time_utc.astimezone(intraservice_tz)
+    api_filter_time = last_check_time_local.strftime("%Y-%m-%d %H:%M")
+
+    # 2. Получаем список всех пользователей из локальной БД
+    async with AsyncSessionLocal() as db:
         try:
-            # Читаем только tg_user_id пользователей батчами (yield_per)
-            query = select(User.tg_user_id).execution_options(yield_per=100)
-            result = await stream_db.stream(query)
+            query = select(User)
+            result = await db.execute(query)
+            users = result.scalars().all()
 
-            async for partition in result.partitions(100):
-                tasks = []
-                for row in partition:
-                    tg_id = row[0]
-                    # Передаем только tg_user_id.
-                    # Сессия будет открыта внутри process_user под семафором.
-                    tasks.append(
-                        process_user(
-                            user_id=tg_id,
-                            redis_client=redis,
-                            base_web_url=base_web_url,
-                            semaphore=semaphore,
-                            current_time_utc=current_time_utc,
-                            intraservice_tz=intraservice_tz,
+            if not users:
+                # Нет зарегистрированных пользователей, некого уведомлять
+                # Обновим время последней проверки, чтобы не накапливать интервал
+                await redis.set("worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S"))
+                return
+
+            users_by_is_id = {str(u.is_user_id): u for u in users if u.is_user_id}
+            if not users_by_is_id:
+                await redis.set("worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S"))
+                return
+
+            # 3. Запросы к IntraService от имени сервисного аккаунта
+            new_tasks_data = await get_tasks(
+                service_auth_b64,
+                {"CreatedMoreThan": api_filter_time, "include": "executorids,status"},
+            )
+
+            updated_tasks_data = await get_tasks(
+                service_auth_b64,
+                {"ChangedMoreThan": api_filter_time, "include": "executorids,status"},
+            )
+
+            # Парсим новые задачи
+            new_tasks = []
+            statuses_map = {}
+            if new_tasks_data is not None:
+                if isinstance(new_tasks_data, dict):
+                    new_tasks = new_tasks_data.get("Tasks", [])
+                    for s in new_tasks_data.get("Statuses", []):
+                        statuses_map[s.get("Id")] = s.get("Name")
+                elif isinstance(new_tasks_data, list):
+                    new_tasks = new_tasks_data
+
+            # Парсим измененные задачи
+            updated_tasks = []
+            updated_statuses_map = {}
+            if updated_tasks_data is not None:
+                if isinstance(updated_tasks_data, dict):
+                    updated_tasks = updated_tasks_data.get("Tasks", [])
+                    for s in updated_tasks_data.get("Statuses", []):
+                        updated_statuses_map[s.get("Id")] = s.get("Name")
+                elif isinstance(updated_tasks_data, list):
+                    updated_tasks = updated_tasks_data
+
+            # 4. Проверяем новые
+            new_notifications = await _check_new_tasks_global(
+                new_tasks, statuses_map, users_by_is_id, base_web_url
+            )
+
+            # 5. Проверяем изменения
+            updated_notifications = await _check_task_updates_global(
+                updated_tasks,
+                updated_statuses_map,
+                users_by_is_id,
+                base_web_url,
+                last_check_time_local,
+                intraservice_tz,
+                service_auth_b64,
+                semaphore,
+            )
+
+            pending_notifications = new_notifications + updated_notifications
+
+            # Сохраняем измененные last_task_id пользователей в БД
+            await db.commit()
+
+            # Обновляем время последней проверки в Redis
+            await redis.set("worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S"))
+
+            # Публикуем уведомления в Redis
+            if pending_notifications:
+                for payload in pending_notifications:
+                    try:
+                        await redis.publish("intraservice_events", json.dumps(payload))
+                    except Exception as pub_err:
+                        logger.error(
+                            "Ошибка отправки уведомления в Redis для пользователя %s: %s",
+                            payload.get("tg_user_id"),
+                            pub_err,
                         )
-                    )
-                if tasks:
-                    await asyncio.gather(*tasks)
-
         except Exception as e:
             logger.exception("Критическая ошибка в check_updates: %s", e)
 

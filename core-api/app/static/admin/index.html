@@ -1059,14 +1059,15 @@
                 <span class="modal-title">IntraLink Admin</span>
             </div>
             <p class="modal-desc">
-                Для доступа к панели введите API-ключ (<code
-                    style="font-family:monospace;font-size:0.85em;opacity:0.8">BOT_API_KEY</code>), настроенный в
-                конфигурации сервера.
+                Для входа в панель администратора используйте ваши учетные данные от IntraService.
             </p>
             <div class="form-group">
-                <label class="form-label" for="api-key-input">API-ключ</label>
-                <input type="password" id="api-key-input" class="form-control" placeholder="Введите ключ..."
-                    autocomplete="current-password" />
+                <label class="form-label" for="username-input">Логин</label>
+                <input type="text" id="username-input" class="form-control" placeholder="Введите логин..." required autocomplete="username" />
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="password-input">Пароль</label>
+                <input type="password" id="password-input" class="form-control" placeholder="Введите пароль..." required autocomplete="current-password" />
             </div>
             <div id="auth-error" class="alert alert-error" style="display:none;">
                 <svg viewBox="0 0 24 24">
@@ -1074,7 +1075,7 @@
                     <line x1="12" y1="8" x2="12" y2="12" />
                     <line x1="12" y1="16" x2="12.01" y2="16" />
                 </svg>
-                Неверный ключ или ключ не указан
+                Неверный логин или пароль
             </div>
             <button id="btn-auth" class="btn btn-primary" style="width:100%" onclick="doAuth()">
                 Войти
@@ -1326,7 +1327,6 @@
 
     <script>
         // ─────────────────────── State ────────────────────────────────────
-        let apiKey = localStorage.getItem('il_api_key') || '';
         let currentScreen = 'history';
         let statusTimer = null;
         let dashTimer = null;
@@ -1340,22 +1340,69 @@
 
         // ─────────────────────── Boot ─────────────────────────────────────
         window.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('api-key-input').addEventListener('keydown', e => {
+            const pwdInput = document.getElementById('password-input');
+            pwdInput.addEventListener('keydown', e => {
                 if (e.key === 'Enter') doAuth();
             });
 
-            if (apiKey) {
-                openApp();
-            }
+            checkSession();
         });
 
-        function doAuth() {
-            const val = document.getElementById('api-key-input').value.trim();
-            if (!val) return;
-            apiKey = val;
-            localStorage.setItem('il_api_key', apiKey);
-            document.getElementById('auth-error').style.display = 'none';
-            openApp();
+        async function checkSession() {
+            try {
+                const res = await fetch('/admin/api/me');
+                if (res.ok) {
+                    openApp();
+                } else {
+                    showLoginScreen();
+                }
+            } catch (e) {
+                showLoginScreen();
+            }
+        }
+
+        function showLoginScreen() {
+            stopPolling();
+            document.getElementById('auth-overlay').classList.add('open');
+            document.getElementById('password-input').value = '';
+        }
+
+        async function doAuth() {
+            const usernameInput = document.getElementById('username-input');
+            const passwordInput = document.getElementById('password-input');
+            const errorEl = document.getElementById('auth-error');
+            const btnAuth = document.getElementById('btn-auth');
+
+            const username = usernameInput.value.trim();
+            const password = passwordInput.value;
+
+            if (!username || !password) return;
+
+            errorEl.style.display = 'none';
+            btnAuth.disabled = true;
+            btnAuth.innerHTML = '<div class="spinner"></div> Вход...';
+
+            try {
+                const res = await fetch('/admin/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                if (res.ok) {
+                    openApp();
+                } else {
+                    const data = await res.json();
+                    errorEl.textContent = data.detail || 'Неверный логин или пароль';
+                    errorEl.style.display = 'flex';
+                }
+            } catch (e) {
+                errorEl.textContent = 'Ошибка сети при авторизации';
+                errorEl.style.display = 'flex';
+            } finally {
+                btnAuth.disabled = false;
+                btnAuth.innerHTML = 'Войти';
+            }
         }
 
         function openApp() {
@@ -1364,12 +1411,12 @@
             goTo('history');
         }
 
-        function doLogout() {
+        async function doLogout() {
             stopPolling();
-            apiKey = '';
-            localStorage.removeItem('il_api_key');
-            document.getElementById('auth-overlay').classList.add('open');
-            document.getElementById('api-key-input').value = '';
+            try {
+                await fetch('/admin/api/logout', { method: 'POST' });
+            } catch (e) { /* ignore */ }
+            showLoginScreen();
         }
 
         // ─────────────────────── Navigation ───────────────────────────────
@@ -1419,13 +1466,10 @@
         }
 
         // ─────────────────────── API helpers ──────────────────────────────
-        function headers() {
-            return { 'Content-Type': 'application/json', 'X-Bot-Api-Key': apiKey };
-        }
-
         async function apiFetch(url, opts = {}) {
-            const res = await fetch(url, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
-            if (res.status === 401) { doLogout(); throw new Error('Unauthorized'); }
+            const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+            const res = await fetch(url, { ...opts, headers });
+            if (res.status === 401) { showLoginScreen(); throw new Error('Unauthorized'); }
             return res;
         }
 
@@ -1526,7 +1570,7 @@
                 pre.innerHTML = '<span class="term-line-sys">Подключение к потоку...</span>';
 
                 let firstMsg = true;
-                const sse = new EventSource(`/admin/api/print-jobs/${jobId}/logs?api_key=${encodeURIComponent(apiKey)}`);
+                const sse = new EventSource(`/admin/api/print-jobs/${jobId}/logs`);
                 sse.onmessage = e => {
                     if (firstMsg) {
                         pre.innerHTML = '';
@@ -1665,7 +1709,7 @@
 
             if (activeSse) activeSse.close();
 
-            activeSse = new EventSource(`/admin/api/print-jobs/${jobId}/logs?api_key=${encodeURIComponent(apiKey)}`);
+            activeSse = new EventSource(`/admin/api/print-jobs/${jobId}/logs`);
 
             activeSse.onmessage = e => {
                 const line = e.data;

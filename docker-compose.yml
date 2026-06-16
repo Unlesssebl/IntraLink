@@ -38,10 +38,14 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
       - REDIS_URL=redis://redis:6379/0
       - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
-      # Ключ шифрования. Сгенерируйте командой:
-      # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-      - ENCRYPTION_KEY=
-
+      - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
+      - INTRASERVICE_SERVICE_LOGIN=intratest
+      - INTRASERVICE_SERVICE_PASSWORD_FILE=/run/secrets/service_password
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+    secrets:
+      - encryption_key
+      - service_password
+      - jwt_secret
     dns:
       - 10.244.0.11
       - 172.18.128.50
@@ -56,6 +60,8 @@ services:
       - redis
 
   bot:
+    profiles:
+      - with-bot
     build:
       context: ./bot
       dockerfile: Dockerfile
@@ -109,6 +115,14 @@ services:
 volumes:
   postgres_data:
   redis_data:
+
+secrets:
+  encryption_key:
+    file: ./.secrets/encryption_key.txt
+  service_password:
+    file: ./.secrets/service_password.txt
+  jwt_secret:
+    file: ./.secrets/jwt_secret.txt
 
 
 

@@ -156,4 +156,6 @@ intrabot.db-journal
 core_api.db
 core_api.db-journal
 /core-api-data/
-*.log
+*.log
+.secrets/
+

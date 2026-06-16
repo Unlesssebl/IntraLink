@@ -123,37 +123,47 @@
 
 ### Способ 1. Запуск через Docker Compose (Рекомендуемый)
 
-Для быстрого развертывания всей инфраструктуры (БД Postgres, API-шлюз и Telegram-бот) в контейнерах:
+Для повышения уровня безопасности чувствительные данные (ключи шифрования, пароли) вынесены из переменных окружения в **Docker Secrets**. Перед запуском необходимо подготовить файлы секретов.
 
-1. **Подготовьте файлы конфигурации**:
-   Создайте `.env` в папке `./bot` на основе `bot/.env.example`:
-   ```env
-   BOT_TOKEN=ваш_токен_телеграм_бота
-   CORE_API_URL=http://core-api:8000/api/v1
-   BOT_API_KEY=надежный_ключ_для_авторизации_бота
-   INTRAService_URL=https://ваш-домен.intraservice.ru/api/
-   POLLING_INTERVAL=10
-   ```
-
-   Создайте `.env` в папке `./core-api` на основе `core-api/.env.example`:
-   ```env
-   INTRASERVICE_URL=https://ваш-домен.intraservice.ru/api/
-   DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
-   BOT_API_KEY=надежный_ключ_для_авторизации_бота
-   SSL_VERIFY=False
-   # Ключ шифрования (сгенерируйте: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-   ENCRYPTION_KEY=ваш_сгенерированный_ключ
-   ```
-
-   > [!WARNING]
-   > Значение `BOT_API_KEY` в обоих файлах конфигурации должно совпадать!
-
-2. **Запустите службы**:
-   Выполните команду в корне проекта:
+#### Шаг 1. Подготовка секретов (Docker Secrets)
+Создайте каталог `.secrets` в корне проекта (он добавлен в `.gitignore` и не попадет в репозиторий) и разместите в нем следующие файлы:
+1. `.secrets/encryption_key.txt` — симметричный ключ Fernet для шифрования пользовательских паролей в БД. Можно сгенерировать командой (используя виртуальное окружение):
    ```bash
-   docker compose up --build -d
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
    ```
-   Эта команда соберет Docker-образы для Core API и Бота, поднимет контейнер PostgreSQL и автоматически применит миграции (создаст необходимые таблицы) при первом запуске FastAPI.
+2. `.secrets/service_password.txt` — пароль от сервисного аккаунта IntraService, используемого фоновым воркером для глобального мониторинга заявок.
+3. `.secrets/jwt_secret.txt` — случайная строка (ключ подписи сессий JWT для веб-панели администратора).
+
+#### Шаг 2. Подготовка файлов конфигурации
+Создайте `.env` в папке `./core-api` на основе `core-api/.env.example`. Добавьте логин сервисного аккаунта:
+```env
+INTRASERVICE_URL=https://ваш-домен.intraservice.ru/api/
+INTRASERVICE_SERVICE_LOGIN=логин_сервисного_аккаунта
+SSL_VERIFY=False
+```
+
+При необходимости запуска Telegram-бота, создайте `.env` в папке `./bot` на основе `bot/.env.example`:
+```env
+BOT_TOKEN=ваш_токен_телеграм_бота
+CORE_API_URL=http://core-api:8000/api/v1
+BOT_API_KEY=надежный_ключ_для_авторизации_бота
+INTRASERVICE_URL=https://ваш-домен.intraservice.ru/api/
+POLLING_INTERVAL=10
+```
+
+#### Шаг 3. Запуск служб
+Проект использует **Docker Compose Profiles** для разделения запуска компонентов. Бот по умолчанию отключен.
+
+*   **Запуск без Telegram-бота** (только Core API, БД, Redis, Printer Worker и Веб-панель):
+    ```bash
+    docker compose up --build -d
+    ```
+*   **Запуск с Telegram-ботом** (полный стек):
+    ```bash
+    docker compose --profile with-bot up --build -d
+    ```
+
+Команда автоматически соберет образы, настроит Docker Secrets (монтируя их как защищенные файлы /run/secrets/ в памяти контейнера) и запустит сервисы.
 
 ---
 

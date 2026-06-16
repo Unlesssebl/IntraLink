@@ -1,6 +1,7 @@
 import secrets
+import jwt
 
-from fastapi import Depends, Header, HTTPException, Query, status
+from fastapi import Depends, Header, HTTPException, Query, status, Cookie
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,3 +61,36 @@ async def get_user_by_tg_id(
             detail=f"Пользователь с Telegram ID {tg_user_id} не найден.",
         )
     return user
+
+
+async def verify_admin_jwt(
+    admin_session: str | None = Cookie(None),
+) -> str:
+    """
+    Зависимость для проверки сессии администратора по JWT токену из Cookie.
+    """
+    if not admin_session:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Сессия не найдена. Требуется авторизация.",
+        )
+    try:
+        payload = jwt.decode(admin_session, settings.JWT_SECRET, algorithms=["HS256"])
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Некорректный токен сессии.",
+            )
+        return username
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Время действия сессии истекло.",
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Невалидный токен сессии.",
+        )
+
