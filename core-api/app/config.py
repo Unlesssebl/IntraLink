@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     INTRASERVICE_SERVICE_PASSWORD: str | None = Field(
         None, description="Пароль сервисного аккаунта IntraService для фонового воркера"
     )
+    INTRASERVICE_SERVICE_USER_ID: int | None = Field(
+        None, description="ID сервисного аккаунта в IntraService"
+    )
     JWT_SECRET: str | None = Field(
         None, description="Секрет для подписи сессионных JWT токенов администратора"
     )

@@ -5,7 +5,7 @@ from fastapi import FastAPI, Response, status
 from fastapi.responses import RedirectResponse
 
 from app.database.db import init_db
-from app.routers import admin, auth, tasks, users
+from app.routers import admin, auth, service_tasks, tasks, users
 from app.services.intraservice import close_session, init_session
 from app.services.worker import start_worker, stop_worker
 
@@ -63,6 +63,7 @@ app = FastAPI(
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(tasks.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
+app.include_router(service_tasks.router, prefix="/api/v1")
 app.include_router(admin.router)
 
 

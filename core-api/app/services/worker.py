@@ -17,6 +17,15 @@ logger = logging.getLogger(__name__)
 redis_client = None
 scheduler = AsyncIOScheduler()
 
+
+class VirtualServiceUser:
+    def __init__(self, is_user_id: int, is_login: str, last_task_id: int = 0):
+        self.tg_user_id = None
+        self.is_user_id = is_user_id
+        self.is_login = is_login
+        self.last_task_id = last_task_id
+
+
 def get_redis_client():
     global redis_client  # noqa: PLW0603
     if redis_client is None:
@@ -414,14 +423,25 @@ async def check_updates():
             result = await db.execute(query)
             users = result.scalars().all()
 
-            if not users:
-                # Нет зарегистрированных пользователей, некого уведомлять
-                # Обновим время последней проверки, чтобы не накапливать интервал
-                await redis.set("worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S"))
-                return
-
             users_by_is_id = {str(u.is_user_id): u for u in users if u.is_user_id}
+
+            service_user = None
+            if settings.INTRASERVICE_SERVICE_USER_ID:
+                service_last_task_id_str = await redis.get("worker:service_last_task_id")
+                try:
+                    service_last_task_id = int(service_last_task_id_str) if service_last_task_id_str else 0
+                except ValueError:
+                    service_last_task_id = 0
+
+                service_user = VirtualServiceUser(
+                    is_user_id=settings.INTRASERVICE_SERVICE_USER_ID,
+                    is_login=settings.INTRASERVICE_SERVICE_LOGIN or "service",
+                    last_task_id=service_last_task_id
+                )
+                users_by_is_id[str(settings.INTRASERVICE_SERVICE_USER_ID)] = service_user
+
             if not users_by_is_id:
+                # Нет зарегистрированных пользователей и не задан сервисный аккаунт
                 await redis.set("worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S"))
                 return
 
@@ -479,6 +499,10 @@ async def check_updates():
 
             # Сохраняем измененные last_task_id пользователей в БД
             await db.commit()
+
+            # Сохраняем last_task_id сервисного аккаунта в Redis
+            if service_user:
+                await redis.set("worker:service_last_task_id", service_user.last_task_id)
 
             # Обновляем время последней проверки в Redis
             await redis.set("worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S"))

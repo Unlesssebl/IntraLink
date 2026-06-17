@@ -1061,3 +1061,84 @@ class TestApiResponseFormats:
         mock_redis.publish.assert_awaited_once()
         payload = json.loads(mock_redis.publish.call_args[0][1])
         assert "Из словаря!" in payload["text"]
+
+
+# ---------------------------------------------------------------------------
+# БЛОК 8: check_updates с сервисным аккаунтом
+# ---------------------------------------------------------------------------
+
+
+class TestCheckUpdatesServiceUser:
+    """Тесты check_updates для работы с сервисным аккаунтом."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.worker.get_redis_client")
+    @patch("app.services.worker.settings")
+    @patch("app.services.worker.get_tasks", new_callable=AsyncMock)
+    async def test_check_updates_with_service_user(
+        self, mock_get_tasks, mock_settings, mock_get_redis, moscow_tz, utc_now
+    ):
+        """
+        Проверяет, что check_updates корректно считывает и обрабатывает задачи,
+        назначенные на сервисный аккаунт, генерируя событие с tg_user_id = None.
+        """
+        import app.services.worker as worker_module
+
+        # Настраиваем мок настроек
+        mock_settings.INTRASERVICE_SERVICE_USER_ID = 9999
+        mock_settings.INTRASERVICE_SERVICE_LOGIN = "intratest"
+        mock_settings.INTRASERVICE_SERVICE_PASSWORD = "password"
+        mock_settings.INTRASERVICE_TZ = "Europe/Moscow"
+        mock_settings.MAX_CONCURRENT_REQUESTS = 5
+        mock_settings.POLLING_INTERVAL = 30
+        mock_settings.INTRASERVICE_URL = "http://intraservice.test/api/"
+
+        # Настраиваем мок Redis
+        mock_redis_client = AsyncMock()
+        # имитируем, что last_check_time уже задан
+        # и service_last_task_id = 100
+        mock_redis_client.get.side_effect = lambda key: {
+            "worker:last_check_time": "2025-06-01 10:00:00",
+            "worker:service_last_task_id": "100",
+        }.get(key)
+        mock_get_redis.return_value = mock_redis_client
+
+        # Настраиваем мок сессии базы данных (пустая БД, нет обычных пользователей)
+        mock_db = AsyncMock()
+        mock_db_result = MagicMock()
+        mock_db_result.scalars.return_value.all.return_value = []
+        mock_db.execute = AsyncMock(return_value=mock_db_result)
+
+        mock_db_cm = MagicMock()
+        mock_db_cm.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db_cm.__aexit__ = AsyncMock(return_value=False)
+
+        # Настраиваем мок API IntraService
+        # Новая задача #105 назначена на исполнителя 9999
+        new_task = make_task(task_id=105, executor_ids="9999", name="Сервисный принтер")
+        mock_get_tasks.side_effect = [
+            {"Tasks": [new_task], "Statuses": []},  # new tasks
+            {"Tasks": [], "Statuses": []},          # updated tasks
+        ]
+
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+        ):
+            await worker_module.check_updates()
+
+        # Проверяем, что событие ушло в Redis с правильными полями
+        mock_redis_client.publish.assert_awaited_once()
+        call_args = mock_redis_client.publish.call_args
+        channel = call_args[0][0]
+        payload = json.loads(call_args[0][1])
+
+        assert channel == "intraservice_events"
+        assert payload["event_type"] == "new_task"
+        assert payload["tg_user_id"] is None
+        assert payload["is_user_id"] == 9999
+        assert payload["is_login"] == "intratest"
+        assert payload["task_id"] == 105
+
+        # Проверяем, что service_last_task_id обновился в Redis
+        mock_redis_client.set.assert_any_call("worker:service_last_task_id", 105)
+

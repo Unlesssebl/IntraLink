@@ -65,66 +65,57 @@ async def _make_request(
         return None
 
 
-async def get_task_details(tg_user_id: int, task_id: int) -> Optional[Dict[str, Any]]:
+async def get_task_details(tg_user_id: Optional[int], task_id: int) -> Optional[Dict[str, Any]]:
     """
-    Получает детальную информацию по конкретной задаче включая кастомные поля.
-    Использует GET /tasks/{task_id} — специализированный эндпоинт с include=customfields.
+    Получает детальную информацию по конкретной задаче включая кастомные поля
+    через сервисный эндпоинт Core API.
     """
-    params = {"tg_user_id": tg_user_id}
-    return await _make_request(endpoint=f"tasks/{task_id}", method="GET", params=params)
+    return await _make_request(endpoint=f"service/tasks/{task_id}", method="GET")
 
 
-async def add_task_comment(tg_user_id: int, task_id: int, comment: str) -> bool:
+async def add_task_comment(tg_user_id: Optional[int], task_id: int, comment: str) -> bool:
     """
-    Добавляет комментарий в задачу через Core API.
-    Поскольку Core API роутер для изменения задач не всегда содержит отдельный endpoint,
-    мы можем сделать заглушку-запрос или использовать post-запрос, если Core API его поддерживает.
-    Если Core API не имеет прямого эндпоинта для комментирования, логируем это действие.
-    В реальной системе это проксируется в IntraService.
+    Добавляет комментарий в задачу через сервисный эндпоинт Core API.
     """
     logger.info(
-        "Добавление комментария в задачу #%d для пользователя %s: %s",
+        "Добавление комментария в задачу #%d от имени сервисного аккаунта: %s",
         task_id,
-        tg_user_id,
         comment,
     )
-    # Предполагаем наличие POST-запроса или прокси
-    payload = {"tg_user_id": tg_user_id, "comment": comment}
+    payload = {"comment": comment}
     res = await _make_request(
-        endpoint=f"tasks/{task_id}/comment", method="POST", json_data=payload
+        endpoint=f"service/tasks/{task_id}/comment", method="POST", json_data=payload
     )
     return res is not None
 
 
-async def update_task_status(tg_user_id: int, task_id: int, status_id: int) -> bool:
+async def update_task_status(tg_user_id: Optional[int], task_id: int, status_id: int) -> bool:
     """
-    Обновляет статус задачи.
+    Обновляет статус задачи через сервисный эндпоинт Core API.
     """
     logger.info(
-        "Обновление статуса задачи #%d на статус_id %d для пользователя %s",
+        "Обновление статуса задачи #%d на статус_id %d от имени сервисного аккаунта",
         task_id,
         status_id,
-        tg_user_id,
     )
-    payload = {"tg_user_id": tg_user_id, "status_id": status_id}
+    payload = {"status_id": status_id}
     res = await _make_request(
-        endpoint=f"tasks/{task_id}/status", method="POST", json_data=payload
+        endpoint=f"service/tasks/{task_id}/status", method="POST", json_data=payload
     )
     return res is not None
 
 
-async def add_task_expenses(tg_user_id: int, task_id: int, minutes: int) -> bool:
+async def add_task_expenses(tg_user_id: Optional[int], task_id: int, minutes: int) -> bool:
     """
-    Добавляет трудозатраты в задачу через Core API.
+    Добавляет трудозатраты в задачу через сервисный эндпоинт Core API.
     """
     logger.info(
-        "Добавление трудозатрат в задачу #%d (%d мин) для пользователя %s",
+        "Добавление трудозатрат в задачу #%d (%d мин) от имени сервисного аккаунта",
         task_id,
         minutes,
-        tg_user_id,
     )
-    payload = {"tg_user_id": tg_user_id, "minutes": minutes}
+    payload = {"minutes": minutes}
     res = await _make_request(
-        endpoint=f"tasks/{task_id}/expenses", method="POST", json_data=payload
+        endpoint=f"service/tasks/{task_id}/expenses", method="POST", json_data=payload
     )
     return res is not None

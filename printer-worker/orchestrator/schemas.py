@@ -153,7 +153,7 @@ class LLMParseResult(BaseModel):
 
 class PrintJob(BaseModel):
     task_id: int
-    tg_user_id: int
+    tg_user_id: Optional[int] = None
     raw_text: str
     state: JobState = JobState.PENDING
     target_pc: Optional[str] = None

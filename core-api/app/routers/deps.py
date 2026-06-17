@@ -94,3 +94,28 @@ async def verify_admin_jwt(
             detail="Невалидный токен сессии.",
         )
 
+
+async def get_service_auth_b64() -> str:
+    """
+    Получает зашифрованный токен авторизации сервисного аккаунта.
+    Сначала проверяет переменные окружения, затем Redis.
+    """
+    import base64
+    from app.services.crypto import encrypt_token
+    from app.services.worker import get_redis_client
+
+    if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
+        auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
+        plain_b64 = base64.b64encode(auth_str.encode()).decode()
+        return encrypt_token(plain_b64)
+
+    redis = get_redis_client()
+    service_auth_b64 = await redis.get("worker:service_auth_b64")
+    if not service_auth_b64:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Сервисный аккаунт IntraService не настроен.",
+        )
+    return service_auth_b64
+
+

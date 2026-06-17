@@ -43,8 +43,8 @@ async def test_make_request_success():
         assert res == {"status": "ok"}
         mock_req_method.assert_called_once_with(
             method="GET",
-            url="http://localhost:8000/test-endpoint",
-            headers={"Content-Type": "application/json", "X-Bot-Api-Key": "dummy_key"},
+            url=f"{api_client.CORE_API_URL.rstrip('/')}/test-endpoint",
+            headers={"Content-Type": "application/json", "X-Bot-Api-Key": api_client.BOT_API_KEY},
             params={"param": 1},
             json=None,
             timeout=aiohttp.ClientTimeout(total=20)
@@ -78,9 +78,8 @@ async def test_get_task_details():
         res = await api_client.get_task_details(tg_user_id=555, task_id=123)
         assert res == {"id": 123, "name": "Task name"}
         mock_make.assert_called_once_with(
-            endpoint="tasks/123",
-            method="GET",
-            params={"tg_user_id": 555}
+            endpoint="service/tasks/123",
+            method="GET"
         )
 
 @pytest.mark.asyncio
@@ -90,9 +89,9 @@ async def test_add_task_comment():
         res = await api_client.add_task_comment(tg_user_id=555, task_id=123, comment="Hello")
         assert res is True
         mock_make.assert_called_once_with(
-            endpoint="tasks/123/comment",
+            endpoint="service/tasks/123/comment",
             method="POST",
-            json_data={"tg_user_id": 555, "comment": "Hello"}
+            json_data={"comment": "Hello"}
         )
 
 @pytest.mark.asyncio
@@ -102,9 +101,9 @@ async def test_update_task_status():
         res = await api_client.update_task_status(tg_user_id=555, task_id=123, status_id=29)
         assert res is True
         mock_make.assert_called_once_with(
-            endpoint="tasks/123/status",
+            endpoint="service/tasks/123/status",
             method="POST",
-            json_data={"tg_user_id": 555, "status_id": 29}
+            json_data={"status_id": 29}
         )
 
 @pytest.mark.asyncio
@@ -114,7 +113,7 @@ async def test_add_task_expenses():
         res = await api_client.add_task_expenses(tg_user_id=555, task_id=123, minutes=30)
         assert res is True
         mock_make.assert_called_once_with(
-            endpoint="tasks/123/expenses",
+            endpoint="service/tasks/123/expenses",
             method="POST",
-            json_data={"tg_user_id": 555, "minutes": 30}
+            json_data={"minutes": 30}
         )

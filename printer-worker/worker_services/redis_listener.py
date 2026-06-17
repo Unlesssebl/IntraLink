@@ -212,8 +212,8 @@ async def _process_event(payload: dict) -> None:
             )
             return
 
-        if tg_user_id is None or task_id is None:
-            logger.error("Отсутствует tg_user_id или task_id в событии: %s", payload)
+        if task_id is None:
+            logger.error("Отсутствует task_id в событии: %s", payload)
             return
 
         # Ранняя фильтрация: отбрасываем чужие заявки до HTTP-запроса
@@ -255,10 +255,10 @@ async def _process_event(payload: dict) -> None:
 
         _active_tasks.add(task_id)
         logger.info(
-            "Обработка события '%s' для задачи #%d (пользователь %d)",
+            "Обработка события '%s' для задачи #%d (пользователь %s)",
             event_type,
             task_id,
-            tg_user_id,
+            str(tg_user_id) if tg_user_id is not None else "Service Account",
         )
 
         try:
