@@ -10,7 +10,15 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database.db import AsyncSessionLocal, User
-from app.services.intraservice import get_task_lifetime, get_tasks, parse_api_date
+from app.services.intraservice import (
+    get_task_lifetime,
+    get_tasks,
+    parse_api_date,
+    get_tasks_by_status,
+    get_task_comments,
+    update_task_custom_fields,
+    update_task_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +370,157 @@ async def process_user(
                     )
 
 
+async def check_waiting_printer_tasks(
+    service_auth_b64: str,
+    redis,
+    semaphore: asyncio.Semaphore,
+    users_by_is_id: dict,
+) -> None:
+    """
+    Периодически проверяет задачи в статусе STATUS_WAITING_ID (35),
+    анализирует новые комментарии от пользователей, извлекает сетевые данные (IP / имя ПК)
+    и возвращает задачи в работу (статус STATUS_OPEN_ID=31), обновляя кастомные поля.
+    """
+    import re
+
+    IP_PATTERN = re.compile(r'\b(10\.(?:244|245)\.\d{1,3}\.\d{1,3})\b')
+    PC_PREFIXES = r"(?:[KК][ZЗ][MМ]|[KК][MМ][KК]|[TТ][LЛ][KК]|[TТ][KК][TТ]|[TТ][NН][TТ]|[IИ][TТ][TТ]|[TТ][NН][MМ]|[GГ][KК][TТ])"
+    PC_NAME_PATTERN = re.compile(rf'\b({PC_PREFIXES}\d{{4}})\b', re.IGNORECASE)
+    PRINTER_NAME_PATTERN = re.compile(rf'\b({PC_PREFIXES}[PП]\d{{4}})\b', re.IGNORECASE)
+
+    def normalize_device_name(name: str) -> str:
+        trans_map = str.maketrans("КЗМПТЛНИГкзмптлниг", "KZMPTLNIGkzmptlnig")
+        return name.upper().translate(trans_map)
+
+    def extract_network_data(comment_text: str) -> dict:
+        result = {}
+        ip_match = IP_PATTERN.search(comment_text)
+        if ip_match:
+            result["printer_address"] = ip_match.group(1)
+            
+        printer_name_match = PRINTER_NAME_PATTERN.search(comment_text)
+        if printer_name_match:
+            result["printer_address"] = normalize_device_name(printer_name_match.group(1))
+            
+        pc_match = PC_NAME_PATTERN.search(comment_text)
+        if pc_match:
+            result["target_pc"] = normalize_device_name(pc_match.group(1))
+            
+        return result
+
+    # 1. Загружаем задачи в статусе 35
+    async with semaphore:
+        tasks_data = await get_tasks_by_status(service_auth_b64, settings.STATUS_WAITING_ID)
+
+    if not tasks_data:
+        return
+
+    tasks = []
+    if isinstance(tasks_data, dict):
+        tasks = tasks_data.get("Tasks", [])
+    elif isinstance(tasks_data, list):
+        tasks = tasks_data
+
+    for task in tasks:
+        task_id = task.get("Id")
+        if not task_id:
+            continue
+
+        # Проверяем, назначена ли задача на наших пользователей (включая воркера)
+        executor_ids_str = str(task.get("ExecutorIds") or "")
+        executor_ids = [eid.strip() for eid in executor_ids_str.split(",") if eid.strip()]
+        has_our_executors = any(exec_id in users_by_is_id for exec_id in executor_ids)
+        if not has_our_executors:
+            continue
+
+        # Защита от повторной обработки
+        redis_key = f"printer_resumed:{task_id}"
+        is_processed = await redis.get(redis_key)
+        if is_processed:
+            continue
+
+        # 2. Получаем историю изменений для поиска комментариев
+        async with semaphore:
+            lifetime_data = await get_task_comments(service_auth_b64, task_id)
+
+        events = []
+        if isinstance(lifetime_data, list):
+            events = lifetime_data
+        elif isinstance(lifetime_data, dict) and "TaskLifetimes" in lifetime_data:
+            events = lifetime_data["TaskLifetimes"]
+
+        if not events:
+            continue
+
+        # Ищем последний комментарий (первый с конца, т.к. список от новых к старым)
+        last_comment_event = None
+        for event in events:
+            if event.get("Comments"):
+                last_comment_event = event
+                break
+
+        if not last_comment_event:
+            continue
+
+        # Проверяем, не воркер ли автор комментария
+        editor_id = last_comment_event.get("EditorId")
+        editor_name = last_comment_event.get("Editor") or ""
+
+        is_service_comment = False
+        if settings.INTRASERVICE_SERVICE_USER_ID and editor_id == settings.INTRASERVICE_SERVICE_USER_ID:
+            is_service_comment = True
+        elif settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_LOGIN.lower() in editor_name.lower():
+            is_service_comment = True
+
+        if is_service_comment:
+            continue
+
+        # Извлекаем сетевые данные из комментария пользователя
+        comment_text = last_comment_event.get("Comments") or ""
+        extracted = extract_network_data(comment_text)
+        if not extracted:
+            continue
+
+        logger.info(
+            "Найдена полезная информация в комментарии к задаче #%d: %s. Начинаем возобновление.",
+            task_id,
+            extracted,
+        )
+
+        # 3. Формируем поля для обновления
+        fields_to_update = []
+        if "printer_address" in extracted:
+            fields_to_update.append({
+                "FieldId": settings.PRINTER_IP_CUSTOM_FIELD_ID,
+                "Value": extracted["printer_address"]
+            })
+        if "target_pc" in extracted:
+            fields_to_update.append({
+                "FieldId": settings.PRINTER_PC_CUSTOM_FIELD_ID,
+                "Value": extracted["target_pc"]
+            })
+
+        # Обновляем поля
+        async with semaphore:
+            fields_ok = await update_task_custom_fields(service_auth_b64, task_id, fields_to_update)
+
+        if not fields_ok:
+            logger.error("Не удалось обновить кастомные поля для задачи #%d", task_id)
+            continue
+
+        # 4. Переводим задачу в статус "Открыта"
+        async with semaphore:
+            status_ok = await update_task_status(service_auth_b64, task_id, settings.STATUS_OPEN_ID)
+
+        if not status_ok:
+            logger.error("Не удалось изменить статус задачи #%d на 'Открыта'", task_id)
+            continue
+
+        # 5. Сохраняем в Redis, чтобы избежать бесконечного цикла
+        await redis.set(redis_key, str(datetime.now(UTC)), ex=86400)
+        logger.info("Задача #%d успешно переведена в статус 'Открыта' с новыми параметрами", task_id)
+
+
 async def check_updates():
     """
     Периодическая проверка новых заявок и комментариев на стороне Core API.
@@ -499,6 +658,12 @@ async def check_updates():
 
             # Сохраняем измененные last_task_id пользователей в БД
             await db.commit()
+
+            # Проверяем зависшие принтерные задачи
+            try:
+                await check_waiting_printer_tasks(service_auth_b64, redis, semaphore, users_by_is_id)
+            except Exception as e_waiting:
+                logger.exception("Ошибка при обработке зависших принтерных задач: %s", e_waiting)
 
             # Сохраняем last_task_id сервисного аккаунта в Redis
             if service_user:

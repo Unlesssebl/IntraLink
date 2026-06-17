@@ -40,6 +40,7 @@ services:
       - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
       - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
       - INTRASERVICE_SERVICE_LOGIN=intratest
+      - INTRASERVICE_SERVICE_USER_ID=9891
       - INTRASERVICE_SERVICE_PASSWORD_FILE=/run/secrets/service_password
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
     secrets:

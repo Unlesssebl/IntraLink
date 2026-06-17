@@ -23,19 +23,22 @@ async def execute_action(action_name: str, job: PrintJob, error_detail: str = ""
     # Адаптивный выбор шаблона для глобальной ошибки
     comment_text = None
     if action_name == "on_error" and error_detail:
-        if job.error_type == ErrorType.USER:
-            # Ошибка пользовательская — сообщение уже отформатировано в оркестраторе, отправляем как есть
-            logger.info("Тип ошибки USER: отправка готового комментария пользователю.")
-            comment_text = error_detail
-            status_id = STATUS_WAITING
-        else:
-            # Системная ошибка — ищем адаптивное правило по ключевым словам
-            for error_rule in ERROR_RULES:
-                if any(kw.lower() in error_detail.lower() for kw in error_rule["keywords"]):
-                    logger.info("Найдено адаптивное правило для ошибки. Шаблон заменен.")
-                    comment_template = error_rule["template"]
-                    status_id = STATUS_WAITING
-                    break
+        # Сначала пытаемся найти подходящее правило в ERROR_RULES
+        found_rule = False
+        for error_rule in ERROR_RULES:
+            if any(kw.lower() in error_detail.lower() for kw in error_rule["keywords"]):
+                logger.info("Найдено адаптивное правило для ошибки. Шаблон заменен.")
+                comment_template = error_rule["template"]
+                status_id = STATUS_WAITING
+                found_rule = True
+                break
+        
+        if not found_rule:
+            if job.error_type == ErrorType.USER:
+                # Ошибка пользовательская и нет специального правила — отправляем как есть (fallback)
+                logger.info("Тип ошибки USER без правила: отправка готового комментария пользователю.")
+                comment_text = error_detail
+                status_id = STATUS_WAITING
 
     # Если смены статуса и комментария нет, выходим
     if status_id is None and not comment_template and not comment_text:
@@ -54,13 +57,15 @@ async def execute_action(action_name: str, job: PrintJob, error_detail: str = ""
         printer_name = job.driver_info.display_name if job.driver_info else "Неизвестно"
         target_pc = job.target_pc or "Неизвестно"
         connection_type = job.connection_type.value if job.connection_type else "Неизвестно"
+        printer_address = job.printer_address or "Неизвестно"
         
         try:
             comment_text = comment_template.format(
                 printer_name=printer_name,
                 target_pc=target_pc,
                 error=error_detail,
-                connection_type=connection_type
+                connection_type=connection_type,
+                printer_address=printer_address
             )
         except Exception as e:
             logger.error(f"Ошибка при форматировании комментария задачи #{job.task_id}: {e}")

@@ -5,11 +5,13 @@ from fastapi import HTTPException
 
 from app.routers.service_tasks import (
     ServiceTaskCommentRequest,
+    ServiceTaskCustomFieldsRequest,
     ServiceTaskExpensesRequest,
     ServiceTaskStatusRequest,
     add_task_comment,
     add_task_expenses,
     get_task_by_id,
+    update_task_custom_fields,
     update_task_status,
 )
 
@@ -91,3 +93,32 @@ async def test_add_task_expenses_success(mock_add_expenses):
 
     assert response == {"status": "success"}
     mock_add_expenses.assert_awaited_once_with("mocked_auth", 123, 15)
+
+
+@pytest.mark.asyncio
+@patch("app.routers.service_tasks.intraservice.update_task_custom_fields", new_callable=AsyncMock)
+async def test_update_task_custom_fields_success(mock_update_fields):
+    mock_update_fields.return_value = True
+
+    payload = ServiceTaskCustomFieldsRequest(custom_field_values=[{"FieldId": 1112, "Value": "KZM1234"}])
+    response = await update_task_custom_fields(
+        task_id=123, payload=payload, service_auth_b64="mocked_auth"
+    )
+
+    assert response == {"status": "success"}
+    mock_update_fields.assert_awaited_once_with("mocked_auth", 123, [{"FieldId": 1112, "Value": "KZM1234"}])
+
+
+@pytest.mark.asyncio
+@patch("app.routers.service_tasks.intraservice.update_task_custom_fields", new_callable=AsyncMock)
+async def test_update_task_custom_fields_failure(mock_update_fields):
+    mock_update_fields.return_value = False
+
+    payload = ServiceTaskCustomFieldsRequest(custom_field_values=[{"FieldId": 1112, "Value": "KZM1234"}])
+    with pytest.raises(HTTPException) as exc_info:
+        await update_task_custom_fields(
+            task_id=123, payload=payload, service_auth_b64="mocked_auth"
+        )
+
+    assert exc_info.value.status_code == 502
+

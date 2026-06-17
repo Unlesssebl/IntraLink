@@ -51,6 +51,18 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_REQUESTS: int = Field(
         10, description="Лимит одновременных подключений к IntraService"
     )
+    PRINTER_PC_CUSTOM_FIELD_ID: int = Field(
+        1112, description="ID кастомного поля 'Имя ПК'"
+    )
+    PRINTER_IP_CUSTOM_FIELD_ID: int = Field(
+        1103, description="ID кастомного поля 'МФУ/IP-адрес'"
+    )
+    STATUS_OPEN_ID: int = Field(
+        31, description="ID статуса 'Открыта'"
+    )
+    STATUS_WAITING_ID: int = Field(
+        35, description="ID статуса 'Требует уточнения'"
+    )
 
     # Параметры сервисного аккаунта и JWT
     INTRASERVICE_SERVICE_LOGIN: str | None = Field(

@@ -119,3 +119,22 @@ async def add_task_expenses(tg_user_id: Optional[int], task_id: int, minutes: in
         endpoint=f"service/tasks/{task_id}/expenses", method="POST", json_data=payload
     )
     return res is not None
+
+
+async def update_task_custom_fields(
+    tg_user_id: Optional[int], task_id: int, custom_field_values: list
+) -> bool:
+    """
+    Обновляет кастомные поля задачи через сервисный эндпоинт Core API.
+    """
+    logger.info(
+        "Обновление кастомных полей задачи #%d от имени сервисного аккаунта: %s",
+        task_id,
+        custom_field_values,
+    )
+    payload = {"custom_field_values": custom_field_values}
+    res = await _make_request(
+        endpoint=f"service/tasks/{task_id}/custom-fields", method="PUT", json_data=payload
+    )
+    return res is not None
+

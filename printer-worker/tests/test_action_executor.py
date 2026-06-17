@@ -173,3 +173,80 @@ async def test_execute_action_error_preformatted():
         
         mock_update_status.assert_called_once_with(555, 106, 35)
         mock_add_comment.assert_called_once_with(555, 106, error_msg)
+
+
+@pytest.mark.asyncio
+async def test_execute_action_error_ping_failed_both():
+    job = PrintJob(
+        task_id=107,
+        tg_user_id=555,
+        raw_text="Установите принтер",
+        state=JobState.FAILED,
+        target_pc="PC-TEST-107",
+        printer_address="10.244.107.107",
+        connection_type=ConnectionType.TCPIP,
+        error_type=ErrorType.USER,
+    )
+
+    with (
+        patch("worker_services.action_executor.update_task_status", new_callable=AsyncMock) as mock_update_status,
+        patch("worker_services.action_executor.add_task_comment", new_callable=AsyncMock) as mock_add_comment
+    ):
+        error_msg = "ping failed: both"
+        await execute_action("on_error", job, error_msg)
+        
+        mock_update_status.assert_called_once_with(555, 107, 35)
+        mock_add_comment.assert_called_once()
+        comment = mock_add_comment.call_args[0][2]
+        assert "Не вижу ваш компьютер в сети (PC-TEST-107) и принтер (10.244.107.107)" in comment
+        assert "сетевые кабели" in comment
+
+@pytest.mark.asyncio
+async def test_execute_action_error_ping_failed_pc():
+    job = PrintJob(
+        task_id=108,
+        tg_user_id=555,
+        raw_text="Установите принтер",
+        state=JobState.FAILED,
+        target_pc="PC-TEST-108",
+        connection_type=ConnectionType.TCPIP,
+        error_type=ErrorType.USER,
+    )
+
+    with (
+        patch("worker_services.action_executor.update_task_status", new_callable=AsyncMock) as mock_update_status,
+        patch("worker_services.action_executor.add_task_comment", new_callable=AsyncMock) as mock_add_comment
+    ):
+        error_msg = "ping failed: pc"
+        await execute_action("on_error", job, error_msg)
+        
+        mock_update_status.assert_called_once_with(555, 108, 35)
+        mock_add_comment.assert_called_once()
+        comment = mock_add_comment.call_args[0][2]
+        assert "Не вижу ваш компьютер в сети (PC-TEST-108)" in comment
+        assert "Включен компьютер?" in comment
+
+@pytest.mark.asyncio
+async def test_execute_action_error_ping_failed_printer():
+    job = PrintJob(
+        task_id=109,
+        tg_user_id=555,
+        raw_text="Установите принтер",
+        state=JobState.FAILED,
+        printer_address="10.244.109.109",
+        connection_type=ConnectionType.TCPIP,
+        error_type=ErrorType.USER,
+    )
+
+    with (
+        patch("worker_services.action_executor.update_task_status", new_callable=AsyncMock) as mock_update_status,
+        patch("worker_services.action_executor.add_task_comment", new_callable=AsyncMock) as mock_add_comment
+    ):
+        error_msg = "ping failed: printer"
+        await execute_action("on_error", job, error_msg)
+        
+        mock_update_status.assert_called_once_with(555, 109, 35)
+        mock_add_comment.assert_called_once()
+        comment = mock_add_comment.call_args[0][2]
+        assert "Не вижу принтер в сети (10.244.109.109)" in comment
+        assert "Включен ли принтер?" in comment

@@ -25,6 +25,10 @@ class ServiceTaskExpensesRequest(BaseModel):
     minutes: int
 
 
+class ServiceTaskCustomFieldsRequest(BaseModel):
+    custom_field_values: list[dict[str, Any]]
+
+
 @router.get("/tasks/{task_id}", response_model=Any, status_code=status.HTTP_200_OK)
 async def get_task_by_id(task_id: int, service_auth_b64: str = Depends(get_service_auth_b64)):
     """
@@ -98,3 +102,24 @@ async def add_task_expenses(
             detail=f"Не удалось добавить трудозатраты к задаче {task_id}.",
         )
     return {"status": "success"}
+
+
+@router.put("/tasks/{task_id}/custom-fields", status_code=status.HTTP_200_OK)
+async def update_task_custom_fields(
+    task_id: int,
+    payload: ServiceTaskCustomFieldsRequest,
+    service_auth_b64: str = Depends(get_service_auth_b64),
+):
+    """
+    Обновить кастомные поля задачи от имени сервисного аккаунта.
+    """
+    success = await intraservice.update_task_custom_fields(
+        service_auth_b64, task_id, payload.custom_field_values
+    )
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Не удалось обновить кастомные поля задачи {task_id}.",
+        )
+    return {"status": "success"}
+

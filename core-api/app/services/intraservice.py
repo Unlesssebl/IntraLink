@@ -218,3 +218,43 @@ async def add_task_expenses(auth_b64: str, task_id: int, minutes: int) -> bool:
         json_data={"TaskId": task_id, "Minutes": minutes},
     )
     return res is not None
+
+
+async def get_tasks_by_status(
+    auth_b64: str, status_id: int, page: int = 1, page_size: int = 100
+) -> Any | None:
+    """
+    Получает список задач по ID статуса.
+    """
+    params = {
+        "include": "status,customfields",
+        "StatusId": status_id,
+        "page": page,
+        "pageSize": page_size,
+    }
+    return await _make_request(
+        endpoint="task", method="GET", auth_b64=auth_b64, params=params
+    )
+
+
+async def get_task_comments(auth_b64: str, task_id: int) -> list[dict[str, Any]] | None:
+    """
+    Получает историю изменений задачи (lifetime) для анализа комментариев.
+    """
+    return await get_task_lifetime(auth_b64, task_id)
+
+
+async def update_task_custom_fields(
+    auth_b64: str, task_id: int, custom_field_values: list[dict[str, Any]]
+) -> bool:
+    """
+    Обновляет кастомные поля задачи в IntraService.
+    """
+    res = await _make_request(
+        endpoint=f"task/{task_id}",
+        method="PUT",
+        auth_b64=auth_b64,
+        json_data={"CustomFieldValues": custom_field_values},
+    )
+    return res is not None
+
