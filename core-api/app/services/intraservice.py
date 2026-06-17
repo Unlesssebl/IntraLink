@@ -168,6 +168,18 @@ async def get_statuses(auth_b64: str) -> list[dict[str, Any]] | None:
     return await _make_request(endpoint="taskstatus", method="GET", auth_b64=auth_b64)
 
 
+async def get_services(auth_b64: str) -> list[dict[str, Any]] | None:
+    """
+    Получает каталог услуг из IntraService.
+    """
+    return await _make_request(
+        endpoint="service",
+        method="GET",
+        auth_b64=auth_b64,
+        params={"include": "parentid"},
+    )
+
+
 async def get_single_task(auth_b64: str, task_id: int) -> dict[str, Any] | None:
     """
     Получает детальную информацию по конкретной задаче с кастомными полями.

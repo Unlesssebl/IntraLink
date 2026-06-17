@@ -18,6 +18,8 @@ from app.services.intraservice import (
     get_task_comments,
     update_task_custom_fields,
     update_task_status,
+    get_services,
+    add_task_comment,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,8 @@ async def _check_new_tasks_global(
     """
     notifications = []
     for task in new_tasks:
+        if task.get("_is_redirected"):
+            continue
         executor_ids_str = str(task.get("ExecutorIds") or "")
         executor_ids = [
             eid.strip()
@@ -521,6 +525,52 @@ async def check_waiting_printer_tasks(
         logger.info("Задача #%d успешно переведена в статус 'Открыта' с новыми параметрами", task_id)
 
 
+async def sync_service_catalog() -> None:
+    """
+    Получает каталог услуг из IntraService и сохраняет его в Redis в плоском виде.
+    """
+    logger.info("Синхронизация каталога услуг...")
+    redis = get_redis_client()
+    
+    # Получаем учетные данные сервисного аккаунта
+    import base64
+    from app.services.crypto import encrypt_token
+    
+    service_auth_b64 = None
+    if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
+        auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
+        plain_b64 = base64.b64encode(auth_str.encode()).decode()
+        service_auth_b64 = encrypt_token(plain_b64)
+    else:
+        service_auth_b64 = await redis.get("worker:service_auth_b64")
+        
+    if not service_auth_b64:
+        logger.warning("Не удалось выполнить синхронизацию каталога услуг: отсутствуют учетные данные.")
+        return
+        
+    try:
+        services = await get_services(service_auth_b64)
+        if not services:
+            logger.warning("Каталог услуг пуст или не удалось его получить.")
+            return
+            
+        # Формируем плоский список услуг с ID, Name, ParentId
+        flat_catalog = []
+        for svc in services:
+            flat_catalog.append({
+                "id": svc.get("Id"),
+                "name": svc.get("Name"),
+                "parent_id": svc.get("ParentId"),
+                "path": svc.get("Path")
+            })
+            
+        # Сохраняем в Redis с TTL 24 часа
+        await redis.set("worker:service_catalog", json.dumps(flat_catalog, ensure_ascii=False), ex=86400)
+        logger.info("Каталог услуг успешно синхронизирован в Redis (%d элементов).", len(flat_catalog))
+    except Exception as e:
+        logger.exception("Ошибка при синхронизации каталога услуг: %s", e)
+
+
 async def check_updates():
     """
     Периодическая проверка новых заявок и комментариев на стороне Core API.
@@ -637,6 +687,50 @@ async def check_updates():
                 elif isinstance(updated_tasks_data, list):
                     updated_tasks = updated_tasks_data
 
+            # 3a. Запускаем AI-классификатор для проверки новых задач
+            if new_tasks:
+                try:
+                    from app.services.ai_classifier import AIClassifier
+                    ai_classifier = AIClassifier()
+                    for task in new_tasks:
+                        # Фильтруем заведомо не-IT сервисы
+                        service_name = (task.get("ServiceName") or "").lower()
+                        exclude_keywords = ["ахо", "хозяйствен", "канцеляри", "клининг", "охрана"]
+                        if any(kw in service_name for kw in exclude_keywords):
+                            continue
+                            
+                        task_id = task.get("Id")
+                        redis_key = f"ai_classified:{task_id}"
+                        if await redis.get(redis_key):
+                            continue
+                            
+                        classification = await ai_classifier.classify_task(task)
+                        if classification.action == "redirect":
+                            logger.info(
+                                "AI-классификатор перенаправляет заявку #%d из '%s' в '%s'. Причина: %s",
+                                task_id,
+                                task.get("ServiceName"),
+                                classification.correct_service_name,
+                                classification.reason
+                            )
+                            # 1. Добавляем публичный комментарий
+                            comment_ok = await add_task_comment(
+                                service_auth_b64, task_id, classification.comment_text
+                            )
+                            # 2. Переводим заявку в статус 30 (Отменена)
+                            if comment_ok:
+                                status_ok = await update_task_status(
+                                    service_auth_b64, task_id, 30
+                                )
+                                if status_ok:
+                                    logger.info("AI-классификатор: заявка #%d успешно отменена.", task_id)
+                                    task["_is_redirected"] = True
+                                    
+                        # Помечаем заявку как обработанную классификатором на 7 дней
+                        await redis.set(redis_key, "1", ex=604800)
+                except Exception as e_class:
+                    logger.error("Ошибка при работе AI-классификатора: %s", e_class)
+
             # 4. Проверяем новые
             new_notifications = await _check_new_tasks_global(
                 new_tasks, statuses_map, users_by_is_id, base_web_url
@@ -693,6 +787,12 @@ async def start_worker():
     logger.info("Инициализация Redis клиента...")
     get_redis_client()
 
+    # Первичная синхронизация каталога услуг при старте
+    try:
+        await sync_service_catalog()
+    except Exception as e:
+        logger.error("Первичная синхронизация каталога услуг завершилась сбоем: %s", e)
+
     logger.info("Запуск фонового воркера APScheduler...")
     polling_interval = settings.POLLING_INTERVAL
 
@@ -705,6 +805,18 @@ async def start_worker():
         max_instances=1,
         coalesce=True,
     )
+    
+    # Ежедневная синхронизация каталога услуг
+    scheduler.add_job(
+        sync_service_catalog,
+        "interval",
+        days=1,
+        id="sync_service_catalog_job",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    
     scheduler.start()
     logger.info("Фоновый воркер запущен с интервалом %d секунд.", polling_interval)
 

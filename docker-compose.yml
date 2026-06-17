@@ -22,6 +22,20 @@ services:
     ports:
       - "6379:6379"
 
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: intraservice_litellm
+    restart: always
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml
+    command: --config /app/config.yaml
+    env_file:
+      - ./litellm/.env
+    depends_on:
+      - postgres
+
   core-api:
     build:
       context: ./core-api
@@ -43,6 +57,7 @@ services:
       - INTRASERVICE_SERVICE_USER_ID=9891
       - INTRASERVICE_SERVICE_PASSWORD_FILE=/run/secrets/service_password
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
+      - LITELLM_BASE_URL=http://litellm:4000/v1
     secrets:
       - encryption_key
       - service_password

@@ -10,7 +10,7 @@
 
 | Сервис | Технологии | Роль |
 |---|---|---|
-| **Core API** | FastAPI, SQLAlchemy 2.0, APScheduler | Шлюз к IntraService API, управление БД, фоновый мониторинг |
+| **Core API** | FastAPI, SQLAlchemy 2.0, APScheduler, ChromaDB, LiteLLM | Шлюз к IntraService API, управление БД, фоновый мониторинг, классификация заявок RAG |
 | **Telegram Bot** | aiogram 3.x, aiohttp | Пользовательский интерфейс, доставка уведомлений |
 | **Printer Worker** | Pydantic, aioredis, pywinrm | Автоматическое подключение сетевых/локальных принтеров |
 
@@ -83,16 +83,19 @@ flowchart TB
         subgraph API_Services ["Службы & База данных"]
             IS_Client["intraservice.py<br/>(aiohttp клиент)"]:::serviceStyle
             Worker["worker.py<br/>(APScheduler + Redis Publisher)"]:::serviceStyle
+            AI_Classifier["ai_classifier.py<br/>(AI Классификатор)"]:::serviceStyle
             DB_Module["db.py<br/>(SQLAlchemy async)"]:::dbStyle
         end
     end
 
     subgraph DB_Layer ["Слой данных"]
         Postgres_DB[("database PostgreSQL")]:::dbStyle
+        Chroma_DB[("ChromaDB (RAG KB)")]:::dbStyle
     end
 
     subgraph External_Systems ["Внешние системы"]
         IS_API["🌐 IntraService REST API"]:::externalStyle
+        LiteLLM_API["🌐 LiteLLM Proxy / Gemini API"]:::externalStyle
     end
 
     %% Связи
@@ -115,6 +118,9 @@ flowchart TB
     Worker -->|Чтение пользователей & стейта| DB_Module
     Worker -->|Запрос обновлений| IS_Client
     Worker -->|Публикация событий| Redis_Broker
+    Worker -->|Классификация новых заявок| AI_Classifier
+    AI_Classifier -->|Поиск похожих кейсов| Chroma_DB
+    AI_Classifier -->|REST HTTP Basic| LiteLLM_API
     
     %% Redis -> Бот и Printer Worker
     Redis_Broker -->|Доставка событий| Redis_Listener
@@ -168,8 +174,9 @@ flowchart TB
     *   **`deps.py`** — Зависимости FastAPI: проверка `X-Bot-Api-Key` (через `secrets.compare_digest`) для бота, а также проверка JWT в HttpOnly куках `verify_admin_jwt` для администратора.
 *   **`services/`** — Бизнес-логика:
     *   **`intraservice.py`** — Низкоуровневый aiohttp-клиент для REST API IntraService.
-    *   **`worker.py`** — Воркер фонового опроса (APScheduler + Redis Publisher).
+    *   **`worker.py`** — Воркер фонового опроса (APScheduler + Redis Publisher + Автомаршрутизация).
     *   **`crypto.py`** — Симметричное шифрование паролей пользователей (Fernet).
+    *   **`ai_classifier.py`** — Компонент AI-классификации и автоотмены/перенаправления ошибочно созданных заявок на основе RAG (ChromaDB) и LLM.
 
 ---
 
@@ -333,6 +340,38 @@ sequenceDiagram
 1.  **SNMP Auto-Discovery (Высший приоритет):** Если в тексте заявки обнаружен IP-адрес или сетевое имя (hostname), воркер опрашивает устройство по SNMP. Полученная модель сравнивается с Базой Знаний. Это самый надежный метод, исключающий ошибки ручного ввода.
 2.  **Fast-Track (Предзаполненные поля):** Если модель не определена по сети, воркер проверяет кастомные поля заявки в IntraService (номер ПК и модель). Если они заполнены корректно и модель есть в БЗ, используется этот вариант.
 3.  **Smart-Track (LLM-анализ):** Если адрес не найден или SNMP/Fast-Track не дали результата, текст заявки отправляется в LLM (Ollama/OpenAI). Нейросеть извлекает параметры из неструктурированного описания ("поставьте принтер 2040 на комп Иванова"). Результат принимается только при высоком уровне уверенности (Confidence Score > 0.65).
+
+### 3.6. Автоматическая классификация и перенаправление заявок (AI Classifier & RAG)
+
+При обнаружении новых заявок воркер пропускает их через модуль `AIClassifier` для проверки корректности выбранного раздела. Алгоритм использует базу знаний RAG на основе ChromaDB и LLM (`gemini-2.5-flash` через LiteLLM Proxy):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Work as worker.py
+    participant AIC as ai_classifier.py
+    participant Redis as Redis (service_catalog)
+    participant Chroma as ChromaDB (RAG KB)
+    participant LiteLLM as LiteLLM (Gemini)
+    participant IS as IntraService API
+
+    Work->>IS: get_tasks (CreatedMoreThan)
+    IS-->>Work: Новые заявки
+    loop Для каждой новой заявки
+        Work->>AIC: classify_task(task)
+        AIC->>Redis: get("worker:service_catalog")
+        Redis-->>AIC: Список всех разделов
+        AIC->>Chroma: query(Тема + Описание)
+        Chroma-->>AIC: Похожие исторические кейсы
+        AIC->>LiteLLM: parse (Промпт + Заявка + Кейсы + Каталог)
+        LiteLLM-->>AIC: ClassifierResult (action, correct_service_name, comment_text, reason)
+        AIC-->>Work: ClassifierResult
+        alt action == "redirect"
+            Work->>IS: add_task_comment(comment_text)
+            Work->>IS: update_task_status(task_id, 30 [Отменена])
+        end
+    end
+```
 
 ---
 
