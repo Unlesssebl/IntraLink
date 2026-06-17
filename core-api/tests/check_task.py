@@ -11,7 +11,7 @@ from app.config import settings
 
 async def main():
     auth_b64 = "SW50cmFUZXN0Ojg1X3dXOEV1T3lZYXcreHY2"
-    task_id = 133218
+    task_id = #Заполнить
     
     await init_session()
     try:

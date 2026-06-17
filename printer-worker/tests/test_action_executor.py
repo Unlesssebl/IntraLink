@@ -55,8 +55,8 @@ async def test_execute_action_usb_disconnected():
         mock_update_status.assert_called_once_with(555, 101, 35)  # STATUS_WAITING = 35
         mock_add_comment.assert_called_once()
         comment = mock_add_comment.call_args[0][2]
-        assert "Не вижу МФУ." in comment
-        assert "Переподключите usb кабель" in comment
+        assert "Не вижу подключения МФУ к ПК." in comment
+        assert "Переподключите USB-кабель" in comment
 
 @pytest.mark.asyncio
 async def test_execute_action_error_pc_offline():
@@ -105,7 +105,7 @@ async def test_execute_action_error_mfp_offline():
         mock_add_comment.assert_called_once()
         comment = mock_add_comment.call_args[0][2]
         assert "Не вижу МФУ в сети." in comment
-        assert "3. Переподключите сетевой кабель к МФУ;" in comment
+        assert "3. Переподключите сетевой кабель к МФУ" in comment
         assert "специалист" not in comment.lower()
 
 @pytest.mark.asyncio
