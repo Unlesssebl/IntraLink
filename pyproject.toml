@@ -24,6 +24,7 @@ dependencies = [
 
 [tool.pyright]
 extraPaths = ["bot", "core-api", "printer-worker"]
+exclude = ["**/__pyrefly_virtual__"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -36,4 +37,10 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
 ]
+
+[tool.pyrefly]
+project-excludes = [
+    "**/__pyrefly_virtual__/**",
+]
+
 

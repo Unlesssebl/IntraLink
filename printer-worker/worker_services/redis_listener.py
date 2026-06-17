@@ -262,21 +262,33 @@ async def _process_event(payload: dict) -> None:
         )
 
         try:
-            # Получаем подробности задачи из Core API
-            raw_response = await get_task_details(tg_user_id, task_id)
-            if not raw_response:
-                logger.error(
-                    "Не удалось загрузить подробности задачи #%d из Core API. Пропуск.",
-                    task_id,
-                )
-                return
+            task_data = payload.get("task_data")
 
-            # IntraService возвращает обёртку {Task: {...}, Statuses: [...]}
-            # если это словарь с ключом Task — разворачиваем
-            if isinstance(raw_response, dict) and "Task" in raw_response:
-                task_data = raw_response["Task"]
-            else:
-                task_data = raw_response
+            # Предварительная проверка наличия кастомных полей в payload
+            has_custom_fields = task_data and (
+                task_data.get("Field1112") or 
+                task_data.get("Field1103") or 
+                task_data.get("Data") or 
+                task_data.get("CreatorComments")
+            )
+
+            # Если нужных полей нет (IntraService не вернул их в списке), делаем fallback запрос
+            if not task_data or not has_custom_fields:
+                logger.info("Кастомные поля отсутствуют в событии. Выполняю fallback-запрос get_task_details для задачи #%d", task_id)
+                raw_response = await get_task_details(tg_user_id, task_id)
+                if not raw_response:
+                    logger.error(
+                        "Не удалось загрузить подробности задачи #%d из Core API. Пропуск.",
+                        task_id,
+                    )
+                    return
+
+                # IntraService возвращает обёртку {Task: {...}, Statuses: [...]}
+                # если это словарь с ключом Task — разворачиваем
+                if isinstance(raw_response, dict) and "Task" in raw_response:
+                    task_data = raw_response["Task"]
+                else:
+                    task_data = raw_response
 
             if not task_data:
                 logger.error("Пустой ответ по задаче #%d", task_id)

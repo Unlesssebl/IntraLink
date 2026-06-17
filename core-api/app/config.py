@@ -35,7 +35,7 @@ class Settings(BaseSettings):
         "redis://localhost:6379/0", description="URL-адрес для подключения к Redis"
     )
     POLLING_INTERVAL: int = Field(
-        60, description="Интервал периодического опроса в секундах"
+        30, description="Интервал периодического опроса в секундах"
     )
     ENCRYPTION_KEY: str | None = Field(
         None,
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
         "Europe/Moscow", description="Часовой пояс системы IntraService"
     )
     MAX_CONCURRENT_REQUESTS: int = Field(
-        5, description="Лимит одновременных подключений к IntraService"
+        10, description="Лимит одновременных подключений к IntraService"
     )
 
     # Параметры сервисного аккаунта и JWT

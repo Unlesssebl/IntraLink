@@ -35,7 +35,7 @@ PRINTERS_KB_PATH: str = os.getenv(
     "PRINTERS_KB_PATH", "knowledge_base/printers_knowledge_base.json"
 )
 PRINT_OUTPUT_DIR: str = os.getenv("PRINT_OUTPUT_DIR", "./prints")
-MAX_CONCURRENT_JOBS: int = int(os.getenv("MAX_CONCURRENT_JOBS", "5"))
+MAX_CONCURRENT_JOBS: int = int(os.getenv("MAX_CONCURRENT_JOBS", "10"))
 
 # Время списания трудозатрат по умолчанию при успешной установке (в минутах)
 WORKLOG_MINUTES: int = int(os.getenv("WORKLOG_MINUTES", "15"))

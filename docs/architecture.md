@@ -229,19 +229,19 @@ sequenceDiagram
             Work->>CoreDB: Запрос полных данных пользователя по ID
             CoreDB-->>Work: User (is_password_b64, last_task_id, last_check_time)
             
-            Work->>CoreIS: get_tasks(auth_b64, CreatedMoreThan=last_check_time)
-            CoreIS->>IS: GET /api/task (Basic Auth)
-            IS-->>CoreIS: Список новых задач
+            Work->>CoreIS: get_tasks(auth_b64, CreatedMoreThan=..., include=customfields)
+            CoreIS->>IS: GET /api/task?include=customfields (Basic Auth)
+            IS-->>CoreIS: Список новых задач (с кастомными полями)
             CoreIS-->>Work: Задачи
             Note over Work: Фильтрация: Id > last_task_id
             alt Есть новые задачи
-                Work->>Redis: Publish ("intraservice_events", "new_task" payload)
+                Work->>Redis: Publish ("intraservice_events", "new_task" payload + task_data)
                 Work->>CoreDB: Обновление last_task_id
             end
 
-            Work->>CoreIS: get_tasks(auth_b64, ChangedMoreThan=last_check_time)
-            CoreIS->>IS: GET /api/task (Basic Auth)
-            IS-->>CoreIS: Измененные задачи
+            Work->>CoreIS: get_tasks(auth_b64, ChangedMoreThan=..., include=customfields)
+            CoreIS->>IS: GET /api/task?include=customfields (Basic Auth)
+            IS-->>CoreIS: Измененные задачи (с кастомными полями)
             CoreIS-->>Work: Задачи
             
             loop Для каждой задачи, где пользователь — исполнитель
@@ -251,11 +251,11 @@ sequenceDiagram
                 CoreIS-->>Work: События
                 Note over Work: Фильтрация событий: дата > last_check_time
                 alt Есть новые комментарии
-                    Work->>Redis: Publish ("intraservice_events", "new_comment" payload)
+                    Work->>Redis: Publish ("intraservice_events", "new_comment" payload + task_data)
                 else Изменён статус
-                    Work->>Redis: Publish ("intraservice_events", "status_change" payload)
+                    Work->>Redis: Publish ("intraservice_events", "status_change" payload + task_data)
                 else Назначен исполнитель
-                    Work->>Redis: Publish ("intraservice_events", "executor_assigned" payload)
+                    Work->>Redis: Publish ("intraservice_events", "executor_assigned" payload + task_data)
                 end
             end
 

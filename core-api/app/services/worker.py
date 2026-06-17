@@ -73,6 +73,7 @@ async def _check_new_tasks_global(
                         "task_id": task["Id"],
                         "task_name": task["Name"],
                         "text": message_text,
+                        "task_data": task,
                     }
 
                     notifications.append(payload)
@@ -122,6 +123,7 @@ def _process_lifetime_event(  # noqa: PLR0913
             "task_id": task["Id"],
             "task_name": task["Name"],
             "text": message_text,
+            "task_data": task,
         }
 
     if event.get("StatusId"):
@@ -145,6 +147,7 @@ def _process_lifetime_event(  # noqa: PLR0913
             "task_name": task["Name"],
             "text": message_text,
             "status_id": int(event.get("StatusId")),
+            "task_data": task,
         }
 
     if "Executors" in event:
@@ -165,6 +168,7 @@ def _process_lifetime_event(  # noqa: PLR0913
             "task_name": task["Name"],
             "text": message_text,
             "status_id": int(task.get("StatusId")) if task.get("StatusId") is not None else None,
+            "task_data": task,
         }
 
     return None
@@ -276,7 +280,7 @@ async def process_user(
         # 1. Запрос новых заявок
         new_tasks_data = await get_tasks(
             user.is_password_b64,
-            {"CreatedMoreThan": api_filter_time, "include": "executorids,status"},
+            {"CreatedMoreThan": api_filter_time, "include": "executorids,status,customfields"},
         )
         if new_tasks_data is None:
             logger.warning("Не удалось получить новые заявки для пользователя %s", user_id)
@@ -285,7 +289,7 @@ async def process_user(
         # 2. Запрос измененных заявок
         updated_tasks_data = await get_tasks(
             user.is_password_b64,
-            {"ChangedMoreThan": api_filter_time, "include": "executorids,status"},
+            {"ChangedMoreThan": api_filter_time, "include": "executorids,status,customfields"},
         )
         if updated_tasks_data is None:
             logger.warning("Не удалось получить обновленные заявки для пользователя %s", user_id)
@@ -424,12 +428,12 @@ async def check_updates():
             # 3. Запросы к IntraService от имени сервисного аккаунта
             new_tasks_data = await get_tasks(
                 service_auth_b64,
-                {"CreatedMoreThan": api_filter_time, "include": "executorids,status"},
+                {"CreatedMoreThan": api_filter_time, "include": "executorids,status,customfields"},
             )
 
             updated_tasks_data = await get_tasks(
                 service_auth_b64,
-                {"ChangedMoreThan": api_filter_time, "include": "executorids,status"},
+                {"ChangedMoreThan": api_filter_time, "include": "executorids,status,customfields"},
             )
 
             # Парсим новые задачи
