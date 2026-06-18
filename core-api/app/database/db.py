@@ -1,8 +1,10 @@
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import BigInteger, Integer, String
+from sqlalchemy import BigInteger, Integer, String, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from pgvector.sqlalchemy import Vector
 
 from app.config import settings
 
@@ -34,6 +36,25 @@ class User(Base):
     )  # Храним в виде строки ISO, как было в боте
 
 
+# Модель базы знаний RAG (датасета заявок)
+class TaskKnowledgeBase(Base):
+    __tablename__ = "task_knowledge_base"
+
+    task_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    original_name: Mapped[str] = mapped_column(String, nullable=False)
+    problem: Mapped[str] = mapped_column(String, nullable=False)
+    solution: Mapped[str] = mapped_column(String, nullable=False)
+    
+    service_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    service_name: Mapped[str] = mapped_column(String, nullable=False)
+    status_name: Mapped[str] = mapped_column(String, nullable=False)
+    
+    classification_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    
+    # Колонка вектора эмбеддингов
+    embedding: Mapped[list[float]] = mapped_column(Vector(settings.EMBEDDING_DIMENSION))
+
+
 # Зависимость (dependency) для получения сессии базы данных в FastAPI
 async def get_db() -> AsyncGenerator[AsyncSession]:
     async with AsyncSessionLocal() as session:
@@ -46,4 +67,5 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
 # Функция инициализации БД (создание таблиц)
 async def init_db() -> None:
     async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
         await conn.run_sync(Base.metadata.create_all)

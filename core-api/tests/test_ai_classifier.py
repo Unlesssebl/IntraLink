@@ -19,9 +19,9 @@ async def test_ai_classifier_none_action():
     mock_llm_client.beta.chat.completions.parse = AsyncMock(return_value=mock_response)
     
     with (
-        patch("app.services.ai_classifier.chromadb.PersistentClient") as mock_chroma,
         patch("app.services.ai_classifier.AsyncOpenAI", return_value=mock_llm_client),
-        patch("app.services.ai_classifier.get_redis_client") as mock_redis_func
+        patch("app.services.ai_classifier.get_redis_client") as mock_redis_func,
+        patch.object(AIClassifier, "get_similar_cases", return_value="Похожих кейсов не найдено") as mock_similar_cases
     ):
         mock_redis = AsyncMock()
         mock_redis.get = AsyncMock(return_value=None)
@@ -43,6 +43,7 @@ async def test_ai_classifier_none_action():
         assert result.correct_service_id == -1
         assert result.correct_service_name == ""
         assert result.comment_text == ""
+        mock_similar_cases.assert_called_once()
         
 @pytest.mark.asyncio
 async def test_ai_classifier_redirect_action():
@@ -61,23 +62,16 @@ async def test_ai_classifier_redirect_action():
     mock_llm_client.beta.chat.completions.parse = AsyncMock(return_value=mock_response)
     
     with (
-        patch("app.services.ai_classifier.chromadb.PersistentClient") as mock_chroma,
         patch("app.services.ai_classifier.AsyncOpenAI", return_value=mock_llm_client),
-        patch("app.services.ai_classifier.get_redis_client") as mock_redis_func
+        patch("app.services.ai_classifier.get_redis_client") as mock_redis_func,
+        patch.object(AIClassifier, "get_similar_cases", return_value="Кейс #132437 (Раздел: Создание электронной почты, Статус: Отменена):\nПроблема: восстановить пароль. Решение: отменить и перенаправить.") as mock_similar_cases
     ):
         mock_redis = AsyncMock()
+        mock_redis.get = MagicMock()
         mock_redis.get = AsyncMock(return_value='[{"id": 70, "name": "Разблокировка электронной почты", "parent_id": 50}]')
         mock_redis_func.return_value = mock_redis
         
         classifier = AIClassifier()
-        
-        # Симулируем поиск похожих кейсов в ChromaDB
-        mock_collection = MagicMock()
-        mock_collection.query = MagicMock(return_value={
-            "documents": [["Проблема: восстановить пароль. Решение: отменить и перенаправить в разблокировку."]],
-            "metadatas": [[{"task_id": 132437, "service_name": "Создание электронной почты", "status_name": "Отменена"}]]
-        })
-        classifier.collection = mock_collection
         
         task = {
             "Id": 12345,
@@ -93,3 +87,4 @@ async def test_ai_classifier_redirect_action():
         assert result.correct_service_id == 70
         assert result.correct_service_name == "Разблокировка электронной почты"
         assert "пересоздайте" in result.comment_text.lower()
+        mock_similar_cases.assert_called_once()

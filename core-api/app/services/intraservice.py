@@ -176,7 +176,7 @@ async def get_services(auth_b64: str) -> list[dict[str, Any]] | None:
         endpoint="service",
         method="GET",
         auth_b64=auth_b64,
-        params={"include": "parentid"},
+        params={"include": "parentid", "for": "createtask", "pagesize": "1000"},
     )
 
 
@@ -239,8 +239,8 @@ async def get_tasks_by_status(
     Получает список задач по ID статуса.
     """
     params = {
-        "include": "status,customfields",
-        "StatusId": status_id,
+        "include": "status,customfields,service",
+        "StatusIds": str(status_id),
         "page": page,
         "pageSize": page_size,
     }

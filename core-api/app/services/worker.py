@@ -554,9 +554,15 @@ async def sync_service_catalog() -> None:
             logger.warning("Каталог услуг пуст или не удалось его получить.")
             return
             
+        services_list = []
+        if isinstance(services, dict):
+            services_list = services.get("Services") or []
+        elif isinstance(services, list):
+            services_list = services
+            
         # Формируем плоский список услуг с ID, Name, ParentId
         flat_catalog = []
-        for svc in services:
+        for svc in services_list:
             flat_catalog.append({
                 "id": svc.get("Id"),
                 "name": svc.get("Name"),

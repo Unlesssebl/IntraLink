@@ -10,4 +10,4 @@ apscheduler
 cryptography>=42.0.0
 pyjwt>=2.8.0
 openai
-chromadb
+pgvector

@@ -78,6 +78,23 @@ class Settings(BaseSettings):
         None, description="Секрет для подписи сессионных JWT токенов администратора"
     )
 
+    # Параметры LiteLLM и эмбеддингов
+    LITELLM_API_KEY: str = Field(
+        "sk-intraservice-master-key", description="API-ключ для авторизации в LiteLLM Proxy"
+    )
+    LITELLM_BASE_URL: str = Field(
+        "http://localhost:4000/v1", description="Базовый URL для LiteLLM Proxy"
+    )
+    GEMINI_MODEL: str = Field(
+        "gemini-2.5-flash", description="Имя LLM модели для классификации и извлечения"
+    )
+    EMBEDDING_MODEL: str = Field(
+        "gemini-embedding-2", description="Имя модели эмбеддингов"
+    )
+    EMBEDDING_DIMENSION: int = Field(
+        3072, description="Размерность векторов модели эмбеддингов"
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )

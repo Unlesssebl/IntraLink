@@ -10,7 +10,7 @@
 
 | Сервис | Технологии | Роль |
 |---|---|---|
-| **Core API** | FastAPI, SQLAlchemy 2.0, APScheduler, ChromaDB, LiteLLM | Шлюз к IntraService API, управление БД, фоновый мониторинг, классификация заявок RAG |
+| **Core API** | FastAPI, SQLAlchemy 2.0, APScheduler, pgvector, LiteLLM | Шлюз к IntraService API, управление БД, фоновый мониторинг, классификация заявок RAG |
 | **Telegram Bot** | aiogram 3.x, aiohttp | Пользовательский интерфейс, доставка уведомлений |
 | **Printer Worker** | Pydantic, aioredis, pywinrm | Автоматическое подключение сетевых/локальных принтеров |
 
@@ -89,8 +89,7 @@ flowchart TB
     end
 
     subgraph DB_Layer ["Слой данных"]
-        Postgres_DB[("database PostgreSQL")]:::dbStyle
-        Chroma_DB[("ChromaDB (RAG KB)")]:::dbStyle
+        Postgres_DB[("PostgreSQL (App Data & RAG KB)")]:::dbStyle
     end
 
     subgraph External_Systems ["Внешние системы"]
@@ -119,7 +118,7 @@ flowchart TB
     Worker -->|Запрос обновлений| IS_Client
     Worker -->|Публикация событий| Redis_Broker
     Worker -->|Классификация новых заявок| AI_Classifier
-    AI_Classifier -->|Поиск похожих кейсов| Chroma_DB
+    AI_Classifier -->|Поиск похожих кейсов| Postgres_DB
     AI_Classifier -->|REST HTTP Basic| LiteLLM_API
     
     %% Redis -> Бот и Printer Worker
@@ -176,7 +175,7 @@ flowchart TB
     *   **`intraservice.py`** — Низкоуровневый aiohttp-клиент для REST API IntraService.
     *   **`worker.py`** — Воркер фонового опроса (APScheduler + Redis Publisher + Автомаршрутизация).
     *   **`crypto.py`** — Симметричное шифрование паролей пользователей (Fernet).
-    *   **`ai_classifier.py`** — Компонент AI-классификации и автоотмены/перенаправления ошибочно созданных заявок на основе RAG (ChromaDB) и LLM.
+    *   **`ai_classifier.py`** — Компонент AI-классификации и автоотмены/перенаправления ошибочно созданных заявок на основе RAG (PostgreSQL + pgvector) и LLM.
 
 ---
 
@@ -351,7 +350,7 @@ sequenceDiagram
     participant Work as worker.py
     participant AIC as ai_classifier.py
     participant Redis as Redis (service_catalog)
-    participant Chroma as ChromaDB (RAG KB)
+    participant PG as PostgreSQL (pgvector)
     participant LiteLLM as LiteLLM (Gemini)
     participant IS as IntraService API
 
@@ -361,8 +360,8 @@ sequenceDiagram
         Work->>AIC: classify_task(task)
         AIC->>Redis: get("worker:service_catalog")
         Redis-->>AIC: Список всех разделов
-        AIC->>Chroma: query(Тема + Описание)
-        Chroma-->>AIC: Похожие исторические кейсы
+        AIC->>PG: SQL (cosine_distance)
+        PG-->>AIC: Похожие исторические кейсы
         AIC->>LiteLLM: parse (Промпт + Заявка + Кейсы + Каталог)
         LiteLLM-->>AIC: ClassifierResult (action, correct_service_name, comment_text, reason)
         AIC-->>Work: ClassifierResult

@@ -20,6 +20,8 @@ dependencies = [
     "pywinrm>=0.4.3",
     "smbprotocol>=1.12.0",
     "impacket>=0.12.0",
+    "pgvector>=0.2.0",
+    "openai",
 ]
 
 [tool.pyright]

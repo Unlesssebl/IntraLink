@@ -14,6 +14,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import settings
 from app.services import intraservice
 from app.services.worker import get_redis_client
+from app.database.db import AsyncSessionLocal, TaskKnowledgeBase, init_db
+from app.services.embeddings import get_embedding
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -26,13 +28,6 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
     logger.warning("Библиотека openai не установлена. Запуск в режиме Dry-Run.")
-
-try:
-    import chromadb
-    CHROMA_AVAILABLE = True
-except ImportError:
-    CHROMA_AVAILABLE = False
-    logger.warning("Библиотека chromadb не установлена. Запуск в режиме Dry-Run.")
 
 
 class Classification(BaseModel):
@@ -284,7 +279,7 @@ async def process_task_with_gemini(client: Any, task: dict, comments: list) -> T
             )
         )
 
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    model_name = settings.GEMINI_MODEL
     max_retries = 3
     initial_delay = 2
     backoff_factor = 2
@@ -337,8 +332,8 @@ async def fetch_task_comments_safe(auth_b64: str, task_id: int, semaphore: async
 
 async def main():
     # Настройки подключения к LiteLLM Proxy
-    litellm_key = os.getenv("LITELLM_API_KEY", "sk-intraservice-master-key")
-    litellm_base_url = os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1")
+    litellm_key = settings.LITELLM_API_KEY
+    litellm_base_url = settings.LITELLM_BASE_URL
 
     # Инициализация сервисного аккаунта IntraService
     service_login = settings.INTRASERVICE_SERVICE_LOGIN
@@ -369,6 +364,14 @@ async def main():
             "Логин или пароль сервисного аккаунта не заданы в настройках и отсутствуют в Redis! "
             "Пожалуйста, авторизуйтесь в веб-панели или задайте INTRASERVICE_SERVICE_LOGIN и INTRASERVICE_SERVICE_PASSWORD."
         )
+        sys.exit(1)
+
+    # Инициализируем БД перед началом работы (включая создание расширения pgvector и таблиц)
+    try:
+        await init_db()
+        logger.info("База данных PostgreSQL успешно инициализирована (таблицы созданы).")
+    except Exception as e:
+        logger.error("Ошибка при инициализации базы данных: %s", e)
         sys.exit(1)
 
     # Пути к файлам результатов и чекпоинту в папке скрипта
@@ -406,16 +409,6 @@ async def main():
         "skipped_meaningless_solution": 0,
         "llm_errors": 0,
     }
-
-    # Инициализация ChromaDB
-    collection = None
-    if CHROMA_AVAILABLE:
-        chroma_path = os.path.join(os.path.dirname(script_dir), "chroma_db")
-        chroma_client = chromadb.PersistentClient(path=chroma_path)
-        collection = chroma_client.get_or_create_collection(name="intraservice_kb")
-        logger.info("Векторное хранилище ChromaDB инициализировано в %s", chroma_path)
-    else:
-        logger.info("ChromaDB не доступна. Запись в векторную БД производиться не будет.")
 
     # Инициализация OpenAI Client (через LiteLLM Proxy)
     llm_client = AsyncOpenAI(api_key=litellm_key, base_url=litellm_base_url) if OPENAI_AVAILABLE else None
@@ -480,11 +473,11 @@ async def main():
                         })
                         continue
                         
-                    # 3. Дополнительная проверка в самой БД Chroma
-                    if collection:
-                        existing = collection.get(ids=[task_id_str])
-                        if existing and existing.get("ids"):
-                            logger.info("Заявка %s уже найдена в ChromaDB. Записываем в чекпоинт.", task_id)
+                    # 3. Дополнительная проверка в самой БД PostgreSQL
+                    async with AsyncSessionLocal() as session:
+                        existing = await session.get(TaskKnowledgeBase, task_id)
+                        if existing:
+                            logger.info("Заявка %s уже найдена в PostgreSQL. Записываем в чекпоинт.", task_id)
                             processed_task_ids.add(task_id)
                             save_checkpoint(checkpoint_path, {
                                 "processed_task_ids": list(processed_task_ids),
@@ -588,27 +581,37 @@ async def main():
                     service_id = int(task.get("ServiceId")) if task.get("ServiceId") is not None else -1
                     service_name = task.get("ServiceName") or ""
                     
-                    metadata = {
-                        "task_id": task_id,
-                        "original_name": task.get("Name") or "",
-                        "equipment_type": kb_entry.classification.equipment_type,
-                        "action_type": kb_entry.classification.action_type,
-                        "tags": ",".join(kb_entry.classification.tags),
-                        "service_name": service_name,
-                        "service_id": service_id,
-                        "status_name": status_name
-                    }
-                    
                     document_text = f"Проблема: {kb_entry.problem}\nРешение: {kb_entry.solution}"
                     
-                    # Сохраняем в ChromaDB
-                    if collection:
-                        collection.add(
-                            documents=[document_text],
-                            metadatas=[metadata],
-                            ids=[task_id_str]
-                        )
-                        logger.info("Заявка %s добавлена в ChromaDB.", task_id)
+                    # Генерируем эмбеддинг для пары Проблема + Решение
+                    try:
+                        emb = await get_embedding(document_text)
+                    except Exception as e:
+                        logger.error("Ошибка при генерации эмбеддинга для заявки %s: %s", task_id, e)
+                        stats["llm_errors"] += 1
+                        continue
+
+                    # Сохраняем в PostgreSQL (pgvector)
+                    try:
+                        async with AsyncSessionLocal() as session:
+                            db_entry = TaskKnowledgeBase(
+                                task_id=task_id,
+                                original_name=task.get("Name") or "",
+                                problem=kb_entry.problem,
+                                solution=kb_entry.solution,
+                                service_id=service_id,
+                                service_name=service_name,
+                                status_name=status_name,
+                                classification_data=kb_entry.classification.model_dump(),
+                                embedding=emb
+                            )
+                            session.add(db_entry)
+                            await session.commit()
+                            logger.info("Заявка %s добавлена в PostgreSQL (pgvector).", task_id)
+                    except Exception as e:
+                        logger.error("Ошибка записи в PostgreSQL для заявки %s: %s", task_id, e)
+                        stats["llm_errors"] += 1
+                        continue
                         
                     # Запись в JSONL лог-файл (резервная копия для быстрой миграции)
                     try:
@@ -640,7 +643,7 @@ async def main():
                     stats["added_to_db"] += 1
                     
                     # Ограничение частоты запросов к LLM
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(4.0)
                     
                 page += 1
                 last_pages[status_str] = page
