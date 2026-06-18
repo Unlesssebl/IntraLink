@@ -94,7 +94,7 @@ async def admin_me(username: str = Depends(verify_admin_jwt)):
 
 class DomainAuthRequest(BaseModel):
     username: str
-    password: str
+    password: str | None = None
 
 
 @router.post("/admin/api/domain-auth", dependencies=[Depends(verify_admin_jwt)])
@@ -103,10 +103,19 @@ async def set_domain_auth(payload: DomainAuthRequest):
     Сохраняет доменную учетную запись (WINRM) в Redis в зашифрованном виде.
     """
     try:
-        from app.services.crypto import encrypt_token
+        from app.services.crypto import encrypt_token, decrypt_token
 
         r = get_redis_client()
-        auth_data = {"username": payload.username, "password": payload.password}
+        password = payload.password
+        if not password:
+            encrypted_auth = await r.get("worker:domain_auth")
+            if encrypted_auth:
+                with contextlib.suppress(Exception):
+                    old_auth_json = decrypt_token(encrypted_auth)
+                    old_auth_data = json.loads(old_auth_json)
+                    password = old_auth_data.get("password")
+
+        auth_data = {"username": payload.username, "password": password or ""}
         auth_json = json.dumps(auth_data)
         encrypted_auth = encrypt_token(auth_json)
         await r.set("worker:domain_auth", encrypted_auth)

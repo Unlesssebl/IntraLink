@@ -142,6 +142,8 @@ services:
       - ./ai-worker/.env
     environment:
       - CORE_API_URL=http://core-api:8000/api/v1
+      - INTRASERVICE_URL=https://servicedesk.corporate.loc/api/
+      - BOT_API_KEY=test_api_key_12345
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
       - REDIS_URL=redis://redis:6379/0
       - LITELLM_BASE_URL=http://litellm:4000/v1

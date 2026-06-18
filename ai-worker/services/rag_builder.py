@@ -231,7 +231,10 @@ def is_meaningful_solution(solution: str) -> bool:
 
 
 async def process_task_with_gemini(
-    client: Any, task: dict, comments: list
+    client: Any,
+    task: dict,
+    comments: list,
+    log_msg: Callable[[str], Coroutine[Any, Any, None]] | None = None,
 ) -> TaskKBEntry | None:
     """Отправляет данные заявки в LLM (через LiteLLM) для очистки и структурирования с повторными попытками."""
     model = task.get("Field1103", "")
@@ -298,20 +301,17 @@ async def process_task_with_gemini(
             return response.choices[0].message.parsed
         except Exception as e:
             if attempt == max_retries:
-                logger.error(
-                    "Все попытки (%d) запроса к LLM для заявки %s завершились сбоем: %s",
-                    max_retries + 1,
-                    task.get("Id"),
-                    e,
-                )
+                msg = f"Все попытки ({max_retries + 1}) запроса к LLM для заявки #{task.get('Id')} завершились сбоем: {e}"
+                logger.error(msg)
+                if log_msg:
+                    await log_msg(f"[ERROR] {msg}")
                 return None
-            logger.warning(
-                "Попытка %d запроса к LLM для заявки %s завершилась сбоем: %s. Повтор через %d сек...",
-                attempt + 1,
-                task.get("Id"),
-                e,
-                delay,
-            )
+            
+            msg = f"Попытка {attempt + 1} запроса к LLM для заявки #{task.get('Id')} завершилась сбоем: {e}. Повтор через {delay} сек..."
+            logger.warning(msg)
+            if log_msg:
+                await log_msg(f"[WARNING] {msg}")
+                
             await asyncio.sleep(delay)
             delay *= backoff_factor
 
@@ -372,6 +372,22 @@ async def build_rag_dataset(
     except Exception as e:
         await log_msg(f"Ошибка при инициализации базы данных: {e}")
         return {"status": "error", "message": f"DB Init failed: {e}"}
+
+    # Загружаем каталог услуг из Redis для определения названий услуг по ID
+    service_names_map = {}
+    try:
+        from services.redis_client import get_redis_client
+        r_client = get_redis_client()
+        catalog_str = await r_client.get("worker:service_catalog")
+        if catalog_str:
+            flat_catalog = json.loads(catalog_str)
+            service_names_map = {
+                item["id"]: item["name"]
+                for item in flat_catalog
+                if "id" in item and "name" in item
+            }
+    except Exception as e:
+        await log_msg(f"Ошибка при получении каталога услуг из Redis: {e}")
 
     # Загружаем чекпоинт (только для skipped_task_ids)
     checkpoint = load_checkpoint(checkpoint_path)
@@ -481,6 +497,10 @@ async def build_rag_dataset(
                     )
 
                     tasks_to_process = []
+                    cnt_already_db = 0
+                    cnt_checkpoint = 0
+                    cnt_non_it = 0
+
                     for task in tasks:
                         stats["total_inspected"] += 1
                         task_id = task.get("Id")
@@ -490,14 +510,12 @@ async def build_rag_dataset(
                         async with AsyncSessionLocal() as db_session:
                             db_task = await db_session.get(TaskKnowledgeBase, task_id)
                             if db_task:
-                                if db_task.is_blacklisted:
-                                    continue
-                                else:
-                                    # Уже в базе, не трогаем
-                                    continue
+                                cnt_already_db += 1
+                                continue
 
                         # 2. Проверяем чекпоинт пропущенных
                         if task_id_str in skipped_task_ids:
+                            cnt_checkpoint += 1
                             continue
 
                         # 3. Фильтруем non-IT разделы
@@ -508,13 +526,22 @@ async def build_rag_dataset(
                             save_checkpoint(
                                 checkpoint_path, {"skipped_task_ids": skipped_task_ids}
                             )
+                            cnt_non_it += 1
                             continue
 
                         tasks_to_process.append(task)
 
                     if not tasks_to_process:
+                        await log_msg(
+                            f"Все {len(tasks)} заявок на странице {page} отфильтрованы (Уже в БД: {cnt_already_db}, В чекпоинте: {cnt_checkpoint}, Не-IT: {cnt_non_it}). Переходим на страницу {page + 1}."
+                        )
                         page += 1
                         continue
+
+                    await log_msg(
+                        f"Страница {page}: отфильтровано (Уже в БД: {cnt_already_db}, В чекпоинте: {cnt_checkpoint}, Не-IT: {cnt_non_it}). "
+                        f"Осталось проверить: {len(tasks_to_process)} заявок. Запрашиваем историю комментариев..."
+                    )
 
                     # Параллельно опрашиваем комментарии
                     comments_semaphore = asyncio.Semaphore(5)
@@ -527,6 +554,8 @@ async def build_rag_dataset(
                         ]
                     )
                     comments_map = {tid: c for tid, c in comments_results}
+                    
+                    await log_msg(f"История комментариев получена для {len(comments_results)} заявок.")
 
                     for task in tasks_to_process:
                         if added_for_combo >= needed:
@@ -534,6 +563,9 @@ async def build_rag_dataset(
 
                         task_id = task.get("Id")
                         task_id_str = str(task_id)
+                        
+                        await log_msg(f"Начало обработки заявки #{task_id}: '{task.get('Name') or 'Без названия'}'")
+                        
                         comments = comments_map.get(task_id) or []
 
                         valid_comments = []
@@ -549,6 +581,7 @@ async def build_rag_dataset(
                                     valid_comments.append(item)
 
                         if not valid_comments:
+                            await log_msg(f"Заявка #{task_id} пропущена: нет содержательных комментариев.")
                             skipped_task_ids[task_id_str] = "no_comments"
                             stats["skipped_no_comments"] += 1
                             save_checkpoint(
@@ -557,6 +590,7 @@ async def build_rag_dataset(
                             continue
 
                         if not has_engineer_comment(task, valid_comments):
+                            await log_msg(f"Заявка #{task_id} пропущена: нет комментариев от инженера поддержки.")
                             skipped_task_ids[task_id_str] = "no_engineer_comments"
                             stats["skipped_no_engineer_comments"] += 1
                             save_checkpoint(
@@ -565,16 +599,20 @@ async def build_rag_dataset(
                             continue
 
                         # LLM анализ
+                        await log_msg(f"Заявка #{task_id}: отправка запроса в LLM ({settings.GEMINI_MODEL}) для анализа переписки...")
                         kb_entry = await process_task_with_gemini(
-                            llm_client, task, valid_comments
+                            llm_client, task, valid_comments, log_msg
                         )
                         if not kb_entry:
+                            await log_msg(f"[ERROR] Заявка #{task_id}: ошибка при анализе через LLM.")
                             stats["llm_errors"] += 1
                             continue
 
+                        await log_msg(f"Заявка #{task_id}: анализ LLM завершен. Решение: '{kb_entry.solution[:60]}...'")
+
                         if not is_meaningful_solution(kb_entry.solution):
                             await log_msg(
-                                f"Заявка #{task_id} отклонена: неинформативное решение."
+                                f"Заявка #{task_id} отклонена: неинформативное решение ('{kb_entry.solution[:60]}...')."
                             )
                             skipped_task_ids[task_id_str] = (
                                 f"meaningless_solution: {kb_entry.solution[:50]}..."
@@ -586,17 +624,19 @@ async def build_rag_dataset(
                             continue
 
                         # Генерируем эмбеддинг
+                        await log_msg(f"Заявка #{task_id}: генерация векторного эмбеддинга...")
                         document_text = f"Проблема: {kb_entry.problem}\nРешение: {kb_entry.solution}"
                         try:
                             emb = await get_embedding(document_text)
                         except Exception as e:
                             await log_msg(
-                                f"Ошибка при генерации эмбеддинга для заявки #{task_id}: {e}"
+                                f"[ERROR] Ошибка при генерации эмбеддинга для заявки #{task_id}: {e}"
                             )
                             stats["llm_errors"] += 1
                             continue
 
                         # Семантическая дедупликация
+                        await log_msg(f"Заявка #{task_id}: проверка на семантический дубликат в RAG-базе...")
                         is_duplicate = False
                         try:
                             async with AsyncSessionLocal() as db_session:
@@ -628,7 +668,7 @@ async def build_rag_dataset(
                                     existing_entry, similarity = row
                                     if similarity > 0.95:
                                         await log_msg(
-                                            f"Заявка #{task_id} отклонена: семантический дубликат заявки #{existing_entry.task_id} (похожесть {similarity:.3f})"
+                                            f"Заявка #{task_id} отклонена: семантический дубликат заявки #{existing_entry.task_id} (сходство {similarity:.3f})"
                                         )
                                         skipped_task_ids[task_id_str] = (
                                             f"semantic_duplicate_of_{existing_entry.task_id}"
@@ -641,7 +681,7 @@ async def build_rag_dataset(
                                         is_duplicate = True
                         except Exception as e:
                             await log_msg(
-                                f"Ошибка при проверке дубликатов для заявки #{task_id}: {e}"
+                                f"[ERROR] Ошибка при проверке дубликатов для заявки #{task_id}: {e}"
                             )
 
                         if is_duplicate:
@@ -649,7 +689,7 @@ async def build_rag_dataset(
 
                         # Сохраняем в БД
                         try:
-                            service_name = task.get("ServiceName") or ""
+                            service_name = service_names_map.get(service_id) or task.get("ServiceName") or ""
                             async with AsyncSessionLocal() as db_session:
                                 db_entry = TaskKnowledgeBase(
                                     task_id=task_id,
@@ -666,19 +706,20 @@ async def build_rag_dataset(
                                 db_session.add(db_entry)
                                 await db_session.commit()
                                 await log_msg(
-                                    f"Заявка #{task_id} успешно добавлена в векторную БД."
+                                    f"Заявка #{task_id} успешно сохранена в RAG-базу."
                                 )
 
                                 added_for_combo += 1
                                 stats["added_to_db"] += 1
                         except Exception as e:
                             await log_msg(
-                                f"Ошибка записи в БД для заявки #{task_id}: {e}"
+                                f"[ERROR] Ошибка записи в БД для заявки #{task_id}: {e}"
                             )
                             stats["llm_errors"] += 1
                             continue
 
                         # Небольшая задержка, чтобы не нагружать Rate Limiting API/LLM
+                        await log_msg(f"Ожидание 4.0 сек для соблюдения лимитов API...")
                         await asyncio.sleep(4.0)
 
                     page += 1

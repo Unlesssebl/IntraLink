@@ -313,6 +313,39 @@ async def get_rag_examples(
         result = await db.execute(query)
         examples = result.scalars().all()
 
+        # Получаем каталог услуг из Redis для обогащения service_name
+        service_names_map = {}
+        try:
+            r = get_redis_client()
+            catalog_str = await r.get("worker:service_catalog")
+            if catalog_str:
+                flat_catalog = json.loads(catalog_str)
+                service_names_map = {
+                    item["id"]: item["name"]
+                    for item in flat_catalog
+                    if "id" in item and "name" in item
+                }
+        except Exception as e_redis:
+            logger.error("Ошибка при получении каталога услуг из Redis: %s", e_redis)
+
+        # Если есть примеры с пустым service_name, обновим их в БД в фоновом режиме
+        empty_service_examples = [e for e in examples if not e.service_name and e.service_id in service_names_map]
+        if empty_service_examples:
+            from app.database.db import AsyncSessionLocal
+            async def update_db_rows():
+                try:
+                    async with AsyncSessionLocal() as session:
+                        for e in empty_service_examples:
+                            stmt = select(TaskKnowledgeBase).where(TaskKnowledgeBase.task_id == e.task_id)
+                            res = await session.execute(stmt)
+                            db_item = res.scalar_one_or_none()
+                            if db_item:
+                                db_item.service_name = service_names_map[e.service_id]
+                        await session.commit()
+                except Exception as e_db:
+                    logger.error("Ошибка при обновлении пустых service_name в БД: %s", e_db)
+            asyncio.create_task(update_db_rows())
+
         return {
             "total": total,
             "page": page,
@@ -324,7 +357,7 @@ async def get_rag_examples(
                     "problem": e.problem,
                     "solution": e.solution,
                     "service_id": e.service_id,
-                    "service_name": e.service_name,
+                    "service_name": e.service_name or service_names_map.get(e.service_id) or "",
                     "status_name": e.status_name,
                 }
                 for e in examples

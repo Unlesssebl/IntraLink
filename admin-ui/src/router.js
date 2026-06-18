@@ -1,7 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router';
 import HistoryView from './views/HistoryView.vue';
-import InstallView from './views/InstallView.vue';
-import KnowledgeBaseView from './views/KnowledgeBaseView.vue';
+import PrinterWorkerView from './views/PrinterWorkerView.vue';
 import AIWorkerView from './views/AIWorkerView.vue';
 import SettingsView from './views/SettingsView.vue';
 
@@ -17,16 +16,10 @@ const routes = [
         meta: { title: 'Журнал операций' }
     },
     {
-        path: '/install',
-        name: 'install',
-        component: InstallView,
-        meta: { title: 'Установка принтера' }
-    },
-    {
-        path: '/kb',
-        name: 'kb',
-        component: KnowledgeBaseView,
-        meta: { title: 'Поддерживаемые модели' }
+        path: '/printer-worker',
+        name: 'printer-worker',
+        component: PrinterWorkerView,
+        meta: { title: 'Printer Worker' }
     },
     {
         path: '/ai-worker',
@@ -50,3 +43,4 @@ export const router = createRouter({
     history: createWebHashHistory(),
     routes
 });
+
