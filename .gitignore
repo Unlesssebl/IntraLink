@@ -156,11 +156,13 @@ intrabot.db-journal
 core_api.db
 core_api.db-journal
 /core-api-data/
+core-api/chroma_db/
 *.log
 .secrets/
 
 # Node.js
 node_modules/
-core-api/admin-ui/dist/
+admin-ui/dist/
+
 
 

@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [vue(), viteSingleFile()],
   base: '/admin/',
   build: {
-    outDir: '../app/static/admin',
+    outDir: '../core-api/app/static/admin',
     emptyOutDir: true
   },
   server: {
