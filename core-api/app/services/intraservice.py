@@ -269,4 +269,3 @@ async def update_task_custom_fields(
         json_data={"CustomFieldValues": custom_field_values},
     )
     return res is not None
-

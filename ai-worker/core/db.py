@@ -41,15 +41,17 @@ class TaskKnowledgeBase(Base):
     original_name: Mapped[str] = mapped_column(String, nullable=False)
     problem: Mapped[str] = mapped_column(String, nullable=False)
     solution: Mapped[str] = mapped_column(String, nullable=False)
-    
+
     service_id: Mapped[int] = mapped_column(Integer, nullable=False)
     service_name: Mapped[str] = mapped_column(String, nullable=False)
     status_name: Mapped[str] = mapped_column(String, nullable=False)
-    
+
     classification_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    
+
     # Колонка вектора эмбеддингов (nullable для заблокированных записей)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(settings.EMBEDDING_DIMENSION), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(settings.EMBEDDING_DIMENSION), nullable=True
+    )
 
     # Черный список (удаленные задачи)
     is_blacklisted: Mapped[bool] = mapped_column(default=False, server_default="false")
@@ -70,10 +72,14 @@ async def init_db() -> None:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
         await conn.run_sync(Base.metadata.create_all)
         # Гарантируем наличие колонки is_blacklisted в случае обновления схемы существующей БД
-        await conn.execute(text(
-            "ALTER TABLE task_knowledge_base ADD COLUMN IF NOT EXISTS is_blacklisted BOOLEAN NOT NULL DEFAULT false;"
-        ))
+        await conn.execute(
+            text(
+                "ALTER TABLE task_knowledge_base ADD COLUMN IF NOT EXISTS is_blacklisted BOOLEAN NOT NULL DEFAULT false;"
+            )
+        )
         # Гарантируем, что колонка embedding может принимать NULL значения
-        await conn.execute(text(
-            "ALTER TABLE task_knowledge_base ALTER COLUMN embedding DROP NOT NULL;"
-        ))
+        await conn.execute(
+            text(
+                "ALTER TABLE task_knowledge_base ALTER COLUMN embedding DROP NOT NULL;"
+            )
+        )

@@ -1,19 +1,17 @@
 import asyncio
 import os
 import sys
-import json
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.config import settings
 from app.services import intraservice
-from app.services.crypto import decrypt_token
 from app.services.worker import get_redis_client
+
 
 async def main():
     redis = get_redis_client()
     encrypted_auth = await redis.get("worker:service_auth_b64")
-    
+
     auth_b64 = None
     if encrypted_auth:
         if isinstance(encrypted_auth, bytes):
@@ -26,9 +24,15 @@ async def main():
 
     await intraservice.init_session()
     try:
-        services_default = await intraservice._make_request(endpoint="service", auth_b64=auth_b64)
-        services_filter = await intraservice._make_request(endpoint="service?for=filtertasks", auth_b64=auth_b64)
-        services_create = await intraservice._make_request(endpoint="service?for=createtask", auth_b64=auth_b64)
+        services_default = await intraservice._make_request(
+            endpoint="service", auth_b64=auth_b64
+        )
+        services_filter = await intraservice._make_request(
+            endpoint="service?for=filtertasks", auth_b64=auth_b64
+        )
+        services_create = await intraservice._make_request(
+            endpoint="service?for=createtask", auth_b64=auth_b64
+        )
 
         print(f"Default count: {services_default.get('Paginator', {}).get('Count')}")
         print(f"Filtertasks count: {services_filter.get('Paginator', {}).get('Count')}")
@@ -49,6 +53,7 @@ async def main():
                 print("Sample item:", services_default[0])
     finally:
         await intraservice.close_session()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

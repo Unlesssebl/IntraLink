@@ -1,8 +1,6 @@
-import asyncio
 import os
 import json
 import logging
-from typing import Any
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 from sqlalchemy import select
@@ -14,13 +12,26 @@ from services.embeddings import get_embedding
 
 logger = logging.getLogger(__name__)
 
+
 class ClassifierResult(BaseModel):
-    action: str = Field(description="Действие: 'none' (если заявка создана в правильном разделе и ее не нужно отменять), 'redirect' (если заявка создана в явно неверном разделе и ее нужно отменить и перенаправить)")
-    confidence: float = Field(description="Уверенность в решении от 0.0 до 1.0. При перенаправлении (redirect) должна быть не ниже 0.8, иначе выбери 'none'.")
-    correct_service_id: int = Field(description="ID правильного сервиса (раздела) из каталога услуг, куда нужно перенаправить заявку. Если перенаправление не требуется, укажи -1")
-    correct_service_name: str = Field(description="Точное название правильного сервиса (раздела) из каталога услуг. Если перенаправление не требуется, укажи пустую строку")
-    comment_text: str = Field(description="Текст комментария для пользователя на русском языке с вежливым объяснением, почему заявка отменяется и в каком разделе ее нужно пересоздать. Не используй приветствия и подписи, пиши строго по делу.")
-    reason: str = Field(description="Краткое обоснование принятого решения (для логирования)")
+    action: str = Field(
+        description="Действие: 'none' (если заявка создана в правильном разделе и ее не нужно отменять), 'redirect' (если заявка создана в явно неверном разделе и ее нужно отменить и перенаправить)"
+    )
+    confidence: float = Field(
+        description="Уверенность в решении от 0.0 до 1.0. При перенаправлении (redirect) должна быть не ниже 0.8, иначе выбери 'none'."
+    )
+    correct_service_id: int = Field(
+        description="ID правильного сервиса (раздела) из каталога услуг, куда нужно перенаправить заявку. Если перенаправление не требуется, укажи -1"
+    )
+    correct_service_name: str = Field(
+        description="Точное название правильного сервиса (раздела) из каталога услуг. Если перенаправление не требуется, укажи пустую строку"
+    )
+    comment_text: str = Field(
+        description="Текст комментария для пользователя на русском языке с вежливым объяснением, почему заявка отменяется и в каком разделе ее нужно пересоздать. Не используй приветствия и подписи, пиши строго по делу."
+    )
+    reason: str = Field(
+        description="Краткое обоснование принятого решения (для логирования)"
+    )
 
 
 class AIClassifier:
@@ -28,14 +39,18 @@ class AIClassifier:
         self.litellm_key = settings.LITELLM_API_KEY
         self.litellm_base_url = settings.LITELLM_BASE_URL
         self.model_name = settings.GEMINI_MODEL
-        
+
         # Порог косинусного расстояния для RAG (по умолчанию 0.4, настраивается через env)
         # Чем меньше значение, тем жестче отбор (0.0 - идеальное сходство, 1.0 - ортогональные векторы)
         self.distance_threshold = float(os.getenv("RAG_DISTANCE_THRESHOLD", "0.4"))
-        
-        self.llm_client = AsyncOpenAI(api_key=self.litellm_key, base_url=self.litellm_base_url)
 
-    async def get_similar_cases(self, name: str, description: str, limit: int = 3) -> str:
+        self.llm_client = AsyncOpenAI(
+            api_key=self.litellm_key, base_url=self.litellm_base_url
+        )
+
+    async def get_similar_cases(
+        self, name: str, description: str, limit: int = 3
+    ) -> str:
         """
         Ищет похожие заявки в PostgreSQL (pgvector) по косинусному сходству и форматирует их для промпта.
         """
@@ -43,10 +58,12 @@ class AIClassifier:
         try:
             # Генерация вектора запроса
             query_vector = await get_embedding(query_text)
-            
+
             # Поиск в базе по косинусному расстоянию
             async with AsyncSessionLocal() as session:
-                distance_expr = TaskKnowledgeBase.embedding.cosine_distance(query_vector)
+                distance_expr = TaskKnowledgeBase.embedding.cosine_distance(
+                    query_vector
+                )
                 stmt = (
                     select(TaskKnowledgeBase, distance_expr.label("distance"))
                     .order_by("distance")
@@ -54,34 +71,39 @@ class AIClassifier:
                 )
                 result = await session.execute(stmt)
                 rows = result.all()
-                
+
             if not rows:
                 return "Похожих кейсов не найдено в базе знаний."
-                
+
             formatted_cases = []
             for row in rows:
                 case: TaskKnowledgeBase = row[0]
                 distance: float = row[1]
-                
+
                 # Фильтруем нерелевантные кейсы (если расстояние больше порогового)
                 if distance > self.distance_threshold:
-                    logger.info("Кейс #%s отсечен по расстоянию: %.4f > %.4f", case.task_id, distance, self.distance_threshold)
+                    logger.info(
+                        "Кейс #%s отсечен по расстоянию: %.4f > %.4f",
+                        case.task_id,
+                        distance,
+                        self.distance_threshold,
+                    )
                     continue
-                    
+
                 equipment = case.classification_data.get("equipment_type", "Unknown")
                 action = case.classification_data.get("action_type", "Unknown")
                 tags = case.classification_data.get("tags", [])
-                
+
                 formatted_cases.append(
                     f"Кейс #{case.task_id} (Раздел: {case.service_name}, Статус: {case.status_name}, Расстояние: {distance:.4f}):\n"
                     f"Проблема: {case.problem}\n"
                     f"Решение: {case.solution}\n"
                     f"Классификация: Оборудование={equipment}, Действие={action}, Теги={tags}\n"
                 )
-                
+
             if not formatted_cases:
                 return "Похожих кейсов высокой релевантности не найдено в базе знаний."
-                
+
             return "\n".join(formatted_cases)
         except Exception as e:
             logger.error("Ошибка при поиске похожих кейсов в pgvector: %s", e)
@@ -96,7 +118,7 @@ class AIClassifier:
         description = task.get("Description", "")
         service_name = task.get("ServiceName", "")
         service_id = task.get("ServiceId")
-        
+
         # 1. Получаем каталог услуг из Redis и строим иерархическое дерево
         redis = get_redis_client()
         catalog_str = ""
@@ -128,7 +150,9 @@ class AIClassifier:
                     catalog_lines.append(f"- ID: {svc['id']} | Путь: {full_path}")
                 catalog_str = "\n".join(catalog_lines)
             else:
-                logger.warning("Каталог услуг отсутствует в Redis. Запускаем классификацию без полного каталога.")
+                logger.warning(
+                    "Каталог услуг отсутствует в Redis. Запускаем классификацию без полного каталога."
+                )
         except Exception as e:
             logger.error("Ошибка при получении каталога услуг из Redis: %s", e)
 
@@ -141,7 +165,7 @@ class AIClassifier:
 Твоя единственная задача — определить, создана ли заявка в ЯВНО НЕПРАВИЛЬНОМ разделе.
 
 Текущая заявка:
-- ID: {task.get('Id')}
+- ID: {task.get("Id")}
 - Тема: {name}
 - Описание: {description}
 - Выбранный раздел: "{full_service_path}" (ID: {service_id})
@@ -192,22 +216,23 @@ If confidence < 0.8 — ОБЯЗАТЕЛЬНО выбирай action = "none".
             # Вызов LLM для структурированного вывода
             response = await self.llm_client.beta.chat.completions.parse(
                 model=self.model_name,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
+                messages=[{"role": "user", "content": prompt}],
                 response_format=ClassifierResult,
                 temperature=0.0,
             )
-            
+
             result = response.choices[0].message.parsed
             if result is None:
-                raise ValueError("Не удалось распарсить ответ LLM в формат ClassifierResult")
+                raise ValueError(
+                    "Не удалось распарсить ответ LLM в формат ClassifierResult"
+                )
 
             # Применяем порог уверенности: redirect только при confidence >= 0.8
             if result.action == "redirect" and result.confidence < 0.8:
                 logger.info(
                     "Заявка #%s: понижена с redirect до none (confidence=%.2f < 0.8)",
-                    task.get("Id"), result.confidence
+                    task.get("Id"),
+                    result.confidence,
                 )
                 result.action = "none"
                 result.correct_service_id = -1
@@ -216,12 +241,17 @@ If confidence < 0.8 — ОБЯЗАТЕЛЬНО выбирай action = "none".
 
             logger.info(
                 "Результат классификации заявки #%s: %s (confidence=%.2f, Reason: %s)",
-                task.get("Id"), result.action, result.confidence, result.reason
+                task.get("Id"),
+                result.action,
+                result.confidence,
+                result.reason,
             )
             return result
-            
+
         except Exception as e:
-            logger.error("Ошибка при классификации заявки #%s через LLM: %s", task.get("Id"), e)
+            logger.error(
+                "Ошибка при классификации заявки #%s через LLM: %s", task.get("Id"), e
+            )
             # В случае ошибки возвращаем безопасный результат "none"
             return ClassifierResult(
                 action="none",
@@ -229,5 +259,5 @@ If confidence < 0.8 — ОБЯЗАТЕЛЬНО выбирай action = "none".
                 correct_service_id=-1,
                 correct_service_name="",
                 comment_text="",
-                reason=f"Ошибка классификации: {e}"
+                reason=f"Ошибка классификации: {e}",
             )

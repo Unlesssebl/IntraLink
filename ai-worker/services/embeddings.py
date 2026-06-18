@@ -6,9 +6,9 @@ logger = logging.getLogger(__name__)
 
 # Инициализируем асинхронного клиента OpenAI для работы с LiteLLM Proxy
 client = AsyncOpenAI(
-    api_key=settings.LITELLM_API_KEY,
-    base_url=settings.LITELLM_BASE_URL
+    api_key=settings.LITELLM_API_KEY, base_url=settings.LITELLM_BASE_URL
 )
+
 
 async def get_embedding(text: str, model: str = None) -> list[float]:
     """
@@ -17,17 +17,15 @@ async def get_embedding(text: str, model: str = None) -> list[float]:
     """
     if not text:
         return []
-        
+
     embedding_model = model or settings.EMBEDDING_MODEL
     try:
-        response = await client.embeddings.create(
-            input=[text],
-            model=embedding_model
-        )
+        response = await client.embeddings.create(input=[text], model=embedding_model)
         return response.data[0].embedding
     except Exception as e:
         logger.error(
             "Ошибка при генерации эмбеддингов для текста через LiteLLM: %s. Модель: %s",
-            e, embedding_model
+            e,
+            embedding_model,
         )
         raise e

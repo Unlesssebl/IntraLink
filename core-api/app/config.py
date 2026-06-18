@@ -15,7 +15,9 @@ def read_secret_file(file_path_env: str) -> str | None:
             with open(path, "r", encoding="utf-8") as f:
                 return f.read().strip()
         except Exception as e:
-            logger.error("Ошибка чтения файла секрета %s (%s): %s", file_path_env, path, e)
+            logger.error(
+                "Ошибка чтения файла секрета %s (%s): %s", file_path_env, path, e
+            )
     return None
 
 
@@ -57,12 +59,8 @@ class Settings(BaseSettings):
     PRINTER_IP_CUSTOM_FIELD_ID: int = Field(
         1103, description="ID кастомного поля 'МФУ/IP-адрес'"
     )
-    STATUS_OPEN_ID: int = Field(
-        31, description="ID статуса 'Открыта'"
-    )
-    STATUS_WAITING_ID: int = Field(
-        35, description="ID статуса 'Требует уточнения'"
-    )
+    STATUS_OPEN_ID: int = Field(31, description="ID статуса 'Открыта'")
+    STATUS_WAITING_ID: int = Field(35, description="ID статуса 'Требует уточнения'")
 
     # Параметры сервисного аккаунта и JWT
     INTRASERVICE_SERVICE_LOGIN: str | None = Field(
@@ -80,7 +78,8 @@ class Settings(BaseSettings):
 
     # Параметры LiteLLM и эмбеддингов
     LITELLM_API_KEY: str = Field(
-        "sk-intraservice-master-key", description="API-ключ для авторизации в LiteLLM Proxy"
+        "sk-intraservice-master-key",
+        description="API-ключ для авторизации в LiteLLM Proxy",
     )
     LITELLM_BASE_URL: str = Field(
         "http://localhost:4000/v1", description="Базовый URL для LiteLLM Proxy"
@@ -99,15 +98,17 @@ class Settings(BaseSettings):
         default=[], description="ID разделов IntraService для автоматических AI-ответов"
     )
     AUTO_REPLY_MODE: str = Field(
-        "comment_only", description="Режим автоответа: comment_only | comment_and_wait | comment_and_resolve"
+        "comment_only",
+        description="Режим автоответа: comment_only | comment_and_wait | comment_and_resolve",
     )
     PRINTER_SERVICE_IDS: list[int] = Field(
-        default=[], description="ID разделов IntraService, которые обслуживаются printer-worker'ом"
+        default=[],
+        description="ID разделов IntraService, которые обслуживаются printer-worker'ом",
     )
-    
+
     EXCLUDED_SERVICE_IDS: list[int] = Field(
         default=[173, 174, 72, 125, 136, 189, 188],
-        description="ID разделов IntraService, которые глобально исключаются из системы"
+        description="ID разделов IntraService, которые глобально исключаются из системы",
     )
 
     model_config = SettingsConfigDict(
@@ -116,7 +117,7 @@ class Settings(BaseSettings):
 
     def __init__(self, **values):
         super().__init__(**values)
-        
+
         # Попытка прочитать секреты из примонтированных файлов (Docker Secrets)
         if not self.ENCRYPTION_KEY:
             if key := read_secret_file("ENCRYPTION_KEY_FILE"):
@@ -153,4 +154,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

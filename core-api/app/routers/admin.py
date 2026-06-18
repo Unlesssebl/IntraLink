@@ -46,19 +46,21 @@ async def admin_login(payload: LoginRequest, response: Response):
     # Сохраняем учетные данные администратора как сервисный аккаунт в Redis
     try:
         from app.services.crypto import encrypt_token
+
         r = get_redis_client()
         encrypted_auth = encrypt_token(auth_b64)
         await r.set("worker:service_auth_b64", encrypted_auth)
-        logger.info("Учетные данные администратора '%s' сохранены в Redis для фонового воркера", payload.username)
+        logger.info(
+            "Учетные данные администратора '%s' сохранены в Redis для фонового воркера",
+            payload.username,
+        )
     except Exception as e:
-        logger.error("Не удалось сохранить учетные данные администратора в Redis: %s", e)
+        logger.error(
+            "Не удалось сохранить учетные данные администратора в Redis: %s", e
+        )
 
     expire = datetime.now(UTC) + timedelta(hours=12)
-    token_data = {
-        "sub": payload.username,
-        "user_id": user_id,
-        "exp": expire
-    }
+    token_data = {"sub": payload.username, "user_id": user_id, "exp": expire}
     token = jwt.encode(token_data, settings.JWT_SECRET or "", algorithm="HS256")
 
     response.set_cookie(
@@ -94,6 +96,7 @@ class DomainAuthRequest(BaseModel):
     username: str
     password: str
 
+
 @router.post("/admin/api/domain-auth", dependencies=[Depends(verify_admin_jwt)])
 async def set_domain_auth(payload: DomainAuthRequest):
     """
@@ -101,11 +104,9 @@ async def set_domain_auth(payload: DomainAuthRequest):
     """
     try:
         from app.services.crypto import encrypt_token
+
         r = get_redis_client()
-        auth_data = {
-            "username": payload.username,
-            "password": payload.password
-        }
+        auth_data = {"username": payload.username, "password": payload.password}
         auth_json = json.dumps(auth_data)
         encrypted_auth = encrypt_token(auth_json)
         await r.set("worker:domain_auth", encrypted_auth)
@@ -127,11 +128,12 @@ async def get_domain_auth_status():
     """
     try:
         from app.services.crypto import decrypt_token
+
         r = get_redis_client()
         encrypted_auth = await r.get("worker:domain_auth")
         if not encrypted_auth:
             return {"is_configured": False, "username": None}
-            
+
         auth_json = decrypt_token(encrypted_auth)
         auth_data = json.loads(auth_json)
         return {"is_configured": True, "username": auth_data.get("username")}
@@ -163,7 +165,7 @@ async def get_system_config():
 
         return {
             "printer_service_ids": printer_service_ids,
-            "rag_filter_id": rag_filter_id
+            "rag_filter_id": rag_filter_id,
         }
     except Exception as e:
         logger.exception("Ошибка получения системной конфигурации: %s", e)
@@ -180,11 +182,16 @@ async def update_system_config(payload: SystemConfigUpdate):
     """
     try:
         r = get_redis_client()
-        await r.set("config:printer_service_ids", json.dumps(payload.printer_service_ids))
+        await r.set(
+            "config:printer_service_ids", json.dumps(payload.printer_service_ids)
+        )
         await r.set("config:rag_filter_id", str(payload.rag_filter_id))
-        
-        logger.info("Системная конфигурация обновлена: printer_services=%s, rag_filter_id=%s",
-                    payload.printer_service_ids, payload.rag_filter_id)
+
+        logger.info(
+            "Системная конфигурация обновлена: printer_services=%s, rag_filter_id=%s",
+            payload.printer_service_ids,
+            payload.rag_filter_id,
+        )
         return {"status": "success"}
     except Exception as e:
         logger.exception("Ошибка сохранения системной конфигурации: %s", e)
@@ -219,13 +226,7 @@ KB_PATH = Path(
 )
 
 # Путь к файлу шаблона админ-панели
-HTML_PATH = (
-    Path(__file__).resolve().parent
-    / ".."
-    / "static"
-    / "admin"
-    / "index.html"
-)
+HTML_PATH = Path(__file__).resolve().parent / ".." / "static" / "admin" / "index.html"
 
 
 @router.get("/admin", response_class=HTMLResponse)
@@ -375,7 +376,8 @@ async def handle_job_action(task_id: int, payload: JobActionRequest):
             "tg_user_id": 0,  # 0 означает запуск из веб-панели
         }
         await r.publish("printer_actions", json.dumps(event))
-        logger.info("Отправлено действие '%s' для задачи #%d из веб-панели",
+        logger.info(
+            "Отправлено действие '%s' для задачи #%d из веб-панели",
             payload.action,
             task_id,
         )
@@ -403,7 +405,7 @@ async def delete_print_job(task_id: int):
         await r.delete(f"printer_job:{task_id}")
         # Удаляем историю логов задачи
         await r.delete(f"printer_job_logs_history:{task_id}")
-        
+
         logger.info("Задача #%d удалена из Redis через веб-панель", task_id)
         return {"status": "success", "task_id": task_id}
     except Exception as e:
@@ -412,7 +414,6 @@ async def delete_print_job(task_id: int):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка Redis: {e}",
         ) from e
-
 
 
 async def _get_historical_logs(r, job_id: int) -> list[str]:

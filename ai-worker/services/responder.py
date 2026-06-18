@@ -1,5 +1,4 @@
 import logging
-import json
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 
@@ -10,7 +9,8 @@ from services.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
-STATUS_RESOLVED = 29     # Выполнена
+STATUS_RESOLVED = 29  # Выполнена
+
 
 class ResponderResult(BaseModel):
     reply_text: str = Field(
@@ -35,7 +35,9 @@ class AIResponder:
         self.litellm_key = settings.LITELLM_API_KEY
         self.litellm_base_url = settings.LITELLM_BASE_URL
         self.model_name = settings.GEMINI_MODEL
-        self.llm_client = AsyncOpenAI(api_key=self.litellm_key, base_url=self.litellm_base_url)
+        self.llm_client = AsyncOpenAI(
+            api_key=self.litellm_key, base_url=self.litellm_base_url
+        )
         self._classifier = AIClassifier()
 
     async def should_auto_reply(self, task: dict, redis_client) -> bool:
@@ -56,12 +58,18 @@ class AIResponder:
 
         # 3. Проверяем, не была ли задача уже обработана автоответчиком
         if await redis_client.get(f"ai_replied:{task_id}"):
-            logger.info("Заявка #%s уже обработана автоответчиком (найден ключ в Redis)", task_id)
+            logger.info(
+                "Заявка #%s уже обработана автоответчиком (найден ключ в Redis)",
+                task_id,
+            )
             return False
 
         # 4. Проверяем, не передана ли задача какому-либо исполнителю (например, printer-worker)
         if await redis_client.get(f"dispatched:{task_id}"):
-            logger.info("Заявка #%s находится в обработке у специализированного воркера (dispatched)", task_id)
+            logger.info(
+                "Заявка #%s находится в обработке у специализированного воркера (dispatched)",
+                task_id,
+            )
             return False
 
         return True
@@ -83,7 +91,7 @@ class AIResponder:
 Твоя задача — проанализировать заявку пользователя и составить вежливый, технически грамотный и исчерпывающий ответ на русском языке.
 
 Текущая заявка:
-- ID: {task.get('Id')}
+- ID: {task.get("Id")}
 - Тема: {name}
 - Описание: {description}
 - Раздел: "{service_name}" (ID: {service_id})
@@ -104,29 +112,37 @@ class AIResponder:
         try:
             response = await self.llm_client.beta.chat.completions.parse(
                 model=self.model_name,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
+                messages=[{"role": "user", "content": prompt}],
                 response_format=ResponderResult,
                 temperature=0.0,
             )
             parsed = response.choices[0].message.parsed
             if parsed is None:
-                raise ValueError("Не удалось распарсить ответ LLM в формат ResponderResult")
+                raise ValueError(
+                    "Не удалось распарсить ответ LLM в формат ResponderResult"
+                )
             result: ResponderResult = parsed
             logger.info(
                 "Сгенерирован AI-ответ для заявки #%s (confidence=%.2f, can_resolve=%s, needs_clarify=%s). Причина: %s",
-                task.get("Id"), result.confidence, result.can_resolve, result.needs_clarification, result.reason
+                task.get("Id"),
+                result.confidence,
+                result.can_resolve,
+                result.needs_clarification,
+                result.reason,
             )
             return result
         except Exception as e:
-            logger.error("Ошибка при генерации AI-ответа для заявки #%s через LLM: %s", task.get("Id"), e)
+            logger.error(
+                "Ошибка при генерации AI-ответа для заявки #%s через LLM: %s",
+                task.get("Id"),
+                e,
+            )
             return ResponderResult(
                 reply_text="Здравствуйте!\n\nВаша заявка принята в работу. Специалист свяжется с вами в ближайшее время.\n\nПо всем вопросам вы можете обратиться по телефону 49-87.",
                 confidence=0.0,
                 can_resolve=False,
                 needs_clarification=False,
-                reason=f"Сбой LLM генерации: {e}"
+                reason=f"Сбой LLM генерации: {e}",
             )
 
     async def process_new_task(self, task: dict) -> bool:
@@ -151,28 +167,50 @@ class AIResponder:
 
             # Если уверенность слишком низкая и это не дефолтный ответ, то не отвечаем автоматически
             if result.confidence < 0.6 and "Сбой LLM генерации" not in result.reason:
-                logger.info("Уверенность автоответа для заявки #%s слишком низкая (%.2f < 0.6), автоответ отменен.", task_id, result.confidence)
+                logger.info(
+                    "Уверенность автоответа для заявки #%s слишком низкая (%.2f < 0.6), автоответ отменен.",
+                    task_id,
+                    result.confidence,
+                )
                 return False
 
             # 3. Отправляем комментарий в IntraService
             comment_ok = await add_task_comment(task_id, result.reply_text)
             if not comment_ok:
-                logger.error("Не удалось отправить комментарий с автоответом в заявку #%s", task_id)
+                logger.error(
+                    "Не удалось отправить комментарий с автоответом в заявку #%s",
+                    task_id,
+                )
                 return False
 
             # 4. Обновляем статус в соответствии с конфигурацией и результатом генерации
             new_status_id = None
-            if settings.AUTO_REPLY_MODE == "comment_and_wait" and result.needs_clarification:
+            if (
+                settings.AUTO_REPLY_MODE == "comment_and_wait"
+                and result.needs_clarification
+            ):
                 new_status_id = settings.STATUS_WAITING_ID  # 35 (Требует уточнения)
-            elif settings.AUTO_REPLY_MODE == "comment_and_resolve" and result.can_resolve and result.confidence >= 0.85:
+            elif (
+                settings.AUTO_REPLY_MODE == "comment_and_resolve"
+                and result.can_resolve
+                and result.confidence >= 0.85
+            ):
                 new_status_id = STATUS_RESOLVED  # 29 (Выполнена)
 
             if new_status_id:
                 status_ok = await update_task_status(task_id, new_status_id)
                 if status_ok:
-                    logger.info("Статус заявки #%s успешно изменен на %s", task_id, new_status_id)
+                    logger.info(
+                        "Статус заявки #%s успешно изменен на %s",
+                        task_id,
+                        new_status_id,
+                    )
                 else:
-                    logger.error("Не удалось обновить статус заявки #%s на %s", task_id, new_status_id)
+                    logger.error(
+                        "Не удалось обновить статус заявки #%s на %s",
+                        task_id,
+                        new_status_id,
+                    )
 
             # 5. Помечаем задачу как отвеченную в Redis на 7 дней
             await redis_client.set(f"ai_replied:{task_id}", "1", ex=604800)
@@ -183,10 +221,14 @@ class AIResponder:
                 await redis_client.hincrby("ai:stats", "total", 1)
                 await redis_client.set("ai:stats:last_reply_time", str(task_id))
             except Exception as e_stats:
-                logger.error("Не удалось обновить статистику автоответов в Redis: %s", e_stats)
+                logger.error(
+                    "Не удалось обновить статистику автоответов в Redis: %s", e_stats
+                )
 
             return True
 
         except Exception as e:
-            logger.exception("Критическая ошибка в процессе автоответа на заявку #%s: %s", task_id, e)
+            logger.exception(
+                "Критическая ошибка в процессе автоответа на заявку #%s: %s", task_id, e
+            )
             return False

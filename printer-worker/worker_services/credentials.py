@@ -3,6 +3,7 @@ from worker_services.redis_listener import get_redis
 from worker_services.crypto import decrypt_token
 import worker_config as config
 
+
 async def get_domain_credentials() -> tuple[str, str, str]:
     """
     Возвращает кортеж (domain, username, password) для WinRM/SMB.
@@ -22,7 +23,7 @@ async def get_domain_credentials() -> tuple[str, str, str]:
                 domain, username = raw_username.split("\\", 1)
             else:
                 username = raw_username
-            
+
             if username and password:
                 return domain, username, password
         except Exception:

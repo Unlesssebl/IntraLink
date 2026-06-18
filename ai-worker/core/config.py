@@ -1,6 +1,5 @@
 import logging
 import os
-import secrets
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,14 +14,22 @@ def read_secret_file(file_path_env: str) -> str | None:
             with open(path, "r", encoding="utf-8") as f:
                 return f.read().strip()
         except Exception as e:
-            logger.error("Ошибка чтения файла секрета %s (%s): %s", file_path_env, path, e)
+            logger.error(
+                "Ошибка чтения файла секрета %s (%s): %s", file_path_env, path, e
+            )
     return None
 
 
 class Settings(BaseSettings):
-    CORE_API_URL: str = Field("http://localhost:8000/api/v1", description="URL-адрес API Core Gateway")
-    BOT_API_KEY: str | None = Field(None, description="Предоставленный API-ключ для авторизации бота")
-    INTRASERVICE_URL: str = Field("http://localhost:8000/api/", description="URL-адрес API IntraService")
+    CORE_API_URL: str = Field(
+        "http://localhost:8000/api/v1", description="URL-адрес API Core Gateway"
+    )
+    BOT_API_KEY: str | None = Field(
+        None, description="Предоставленный API-ключ для авторизации бота"
+    )
+    INTRASERVICE_URL: str = Field(
+        "http://localhost:8000/api/", description="URL-адрес API IntraService"
+    )
     DATABASE_URL: str = Field(
         "postgresql+asyncpg://postgres:postgres@localhost:5432/intraservice",
         description="Строка подключения к базе данных",
@@ -39,12 +46,8 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_REQUESTS: int = Field(
         10, description="Лимит одновременных подключений к IntraService"
     )
-    STATUS_OPEN_ID: int = Field(
-        31, description="ID статуса 'Открыта'"
-    )
-    STATUS_WAITING_ID: int = Field(
-        35, description="ID статуса 'Требует уточнения'"
-    )
+    STATUS_OPEN_ID: int = Field(31, description="ID статуса 'Открыта'")
+    STATUS_WAITING_ID: int = Field(35, description="ID статуса 'Требует уточнения'")
 
     # Параметры сервисного аккаунта
     INTRASERVICE_SERVICE_LOGIN: str | None = Field(
@@ -59,7 +62,8 @@ class Settings(BaseSettings):
 
     # Параметры LiteLLM и эмбеддингов
     LITELLM_API_KEY: str = Field(
-        "sk-intraservice-master-key", description="API-ключ для авторизации в LiteLLM Proxy"
+        "sk-intraservice-master-key",
+        description="API-ключ для авторизации в LiteLLM Proxy",
     )
     LITELLM_BASE_URL: str = Field(
         "http://localhost:4000/v1", description="Базовый URL для LiteLLM Proxy"
@@ -78,7 +82,8 @@ class Settings(BaseSettings):
         default=[], description="ID разделов IntraService для автоматических AI-ответов"
     )
     AUTO_REPLY_MODE: str = Field(
-        "comment_only", description="Режим автоответа: comment_only | comment_and_wait | comment_and_resolve"
+        "comment_only",
+        description="Режим автоответа: comment_only | comment_and_wait | comment_and_resolve",
     )
 
     ENCRYPTION_KEY: str | None = Field(
@@ -91,7 +96,7 @@ class Settings(BaseSettings):
 
     def __init__(self, **values):
         super().__init__(**values)
-        
+
         # Попытка прочитать секреты из примонтированных файлов (Docker Secrets)
         if not self.INTRASERVICE_SERVICE_PASSWORD:
             if pwd := read_secret_file("INTRASERVICE_SERVICE_PASSWORD_FILE"):

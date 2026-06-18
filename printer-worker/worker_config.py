@@ -1,9 +1,9 @@
 import os
 from dotenv import load_dotenv
-from dotenv import load_dotenv
 
 # Загрузка переменных окружения
 load_dotenv()
+
 
 def read_secret_file(env_var_name: str) -> str | None:
     path = os.getenv(env_var_name)
@@ -11,6 +11,7 @@ def read_secret_file(env_var_name: str) -> str | None:
         with open(path, "r", encoding="utf-8") as f:
             return f.read().strip()
     return None
+
 
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY") or read_secret_file("ENCRYPTION_KEY_FILE")
 

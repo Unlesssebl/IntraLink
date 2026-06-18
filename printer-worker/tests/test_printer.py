@@ -181,8 +181,12 @@ async def test_wmi_executor_read_bootstrap_log_success():
     ):
         result = executor._read_bootstrap_log_sync()
         assert result == "Test log output"
-        mock_register.assert_called_once_with("127.0.0.1", username="user", password="pass")
-        mock_open.assert_called_once_with("\\\\127.0.0.1\\C$\\Windows\\Temp\\wmi_bootstrap.log", mode="rb")
+        mock_register.assert_called_once_with(
+            "127.0.0.1", username="user", password="pass"
+        )
+        mock_open.assert_called_once_with(
+            "\\\\127.0.0.1\\C$\\Windows\\Temp\\wmi_bootstrap.log", mode="rb"
+        )
 
 
 async def test_wmi_executor_read_bootstrap_log_failure():
@@ -203,7 +207,9 @@ async def test_wmi_executor_enable_winrm_timeout_with_log():
     with (
         patch.object(executor, "execute", new_callable=AsyncMock) as mock_execute,
         patch.object(executor, "_wait_for_port", new_callable=AsyncMock) as mock_wait,
-        patch.object(executor, "_read_bootstrap_log_sync", return_value="Some error in bootstrap") as mock_read_log,
+        patch.object(
+            executor, "_read_bootstrap_log_sync", return_value="Some error in bootstrap"
+        ) as mock_read_log,
     ):
         mock_wait.return_value = False
 

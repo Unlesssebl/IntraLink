@@ -20,13 +20,13 @@ from app.services.intraservice import (
     update_task_custom_fields,
     update_task_status,
     get_services,
-    add_task_comment,
 )
 
 logger = logging.getLogger(__name__)
 
 redis_client = None
 scheduler = AsyncIOScheduler()
+
 
 class VirtualServiceUser:
     def __init__(self, is_user_id: int, is_login: str, last_task_id: int = 0):
@@ -42,11 +42,13 @@ def get_redis_client():
         redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
     return redis_client
 
+
 async def close_redis():
     global redis_client  # noqa: PLW0603
     if redis_client is not None:
         await redis_client.close()
         redis_client = None
+
 
 async def _check_new_tasks_global(
     new_tasks: list[dict],
@@ -63,9 +65,7 @@ async def _check_new_tasks_global(
             continue
         executor_ids_str = str(task.get("ExecutorIds") or "")
         executor_ids = [
-            eid.strip()
-            for eid in executor_ids_str.split(",")
-            if eid.strip()
+            eid.strip() for eid in executor_ids_str.split(",") if eid.strip()
         ]
         for exec_id in executor_ids:
             if exec_id in users_by_is_id:
@@ -188,7 +188,9 @@ def _process_lifetime_event(  # noqa: PLR0913
             "task_id": task["Id"],
             "task_name": task["Name"],
             "text": message_text,
-            "status_id": int(task.get("StatusId")) if task.get("StatusId") is not None else None,
+            "status_id": int(task.get("StatusId"))
+            if task.get("StatusId") is not None
+            else None,
             "task_data": task,
         }
 
@@ -213,9 +215,7 @@ async def _check_task_updates_global(  # noqa: PLR0913
     for task in updated_tasks:
         executor_ids_str = str(task.get("ExecutorIds") or "")
         executor_ids = [
-            eid.strip()
-            for eid in executor_ids_str.split(",")
-            if eid.strip()
+            eid.strip() for eid in executor_ids_str.split(",") if eid.strip()
         ]
         has_our_executors = any(exec_id in users_by_is_id for exec_id in executor_ids)
         if has_our_executors:
@@ -287,7 +287,9 @@ async def process_user(
         if not user.last_check_time:
             user.last_check_time = current_time_utc.strftime("%Y-%m-%d %H:%M:%S")
             await db.commit()
-            logger.info("Для пользователя %s инициализировано время последней проверки", user_id)
+            logger.info(
+                "Для пользователя %s инициализировано время последней проверки", user_id
+            )
             return
 
         last_check_time_naive = parse_api_date(user.last_check_time)
@@ -295,25 +297,37 @@ async def process_user(
             last_check_time_naive = current_time_utc
 
         # Переводим во временную зону IntraService
-        last_check_time_local = last_check_time_naive.replace(tzinfo=UTC).astimezone(intraservice_tz)
+        last_check_time_local = last_check_time_naive.replace(tzinfo=UTC).astimezone(
+            intraservice_tz
+        )
         api_filter_time = last_check_time_local.strftime("%Y-%m-%d %H:%M")
 
         # 1. Запрос новых заявок
         new_tasks_data = await get_tasks(
             user.is_password_b64,
-            {"CreatedMoreThan": api_filter_time, "include": "executorids,status,customfields"},
+            {
+                "CreatedMoreThan": api_filter_time,
+                "include": "executorids,status,customfields",
+            },
         )
         if new_tasks_data is None:
-            logger.warning("Не удалось получить новые заявки для пользователя %s", user_id)
+            logger.warning(
+                "Не удалось получить новые заявки для пользователя %s", user_id
+            )
             return
 
         # 2. Запрос измененных заявок
         updated_tasks_data = await get_tasks(
             user.is_password_b64,
-            {"ChangedMoreThan": api_filter_time, "include": "executorids,status,customfields"},
+            {
+                "ChangedMoreThan": api_filter_time,
+                "include": "executorids,status,customfields",
+            },
         )
         if updated_tasks_data is None:
-            logger.warning("Не удалось получить обновленные заявки для пользователя %s", user_id)
+            logger.warning(
+                "Не удалось получить обновленные заявки для пользователя %s", user_id
+            )
             return
 
         # Парсим новые задачи
@@ -365,7 +379,9 @@ async def process_user(
         if pending_notifications:
             for payload in pending_notifications:
                 try:
-                    await redis_client.publish("intraservice_events", json.dumps(payload))
+                    await redis_client.publish(
+                        "intraservice_events", json.dumps(payload)
+                    )
                 except Exception as pub_err:
                     logger.error(
                         "Ошибка отправки уведомления в Redis для пользователя %s: %s",
@@ -387,10 +403,10 @@ async def check_waiting_printer_tasks(
     """
     import re
 
-    IP_PATTERN = re.compile(r'\b(10\.(?:244|245)\.\d{1,3}\.\d{1,3})\b')
+    IP_PATTERN = re.compile(r"\b(10\.(?:244|245)\.\d{1,3}\.\d{1,3})\b")
     PC_PREFIXES = r"(?:[KК][ZЗ][MМ]|[KК][MМ][KК]|[TТ][LЛ][KК]|[TТ][KК][TТ]|[TТ][NН][TТ]|[IИ][TТ][TТ]|[TТ][NН][MМ]|[GГ][KК][TТ])"
-    PC_NAME_PATTERN = re.compile(rf'\b({PC_PREFIXES}\d{{4}})\b', re.IGNORECASE)
-    PRINTER_NAME_PATTERN = re.compile(rf'\b({PC_PREFIXES}[PП]\d{{4}})\b', re.IGNORECASE)
+    PC_NAME_PATTERN = re.compile(rf"\b({PC_PREFIXES}\d{{4}})\b", re.IGNORECASE)
+    PRINTER_NAME_PATTERN = re.compile(rf"\b({PC_PREFIXES}[PП]\d{{4}})\b", re.IGNORECASE)
 
     def normalize_device_name(name: str) -> str:
         trans_map = str.maketrans("КЗМПТЛНИГкзмптлниг", "KZMPTLNIGkzmptlnig")
@@ -401,20 +417,24 @@ async def check_waiting_printer_tasks(
         ip_match = IP_PATTERN.search(comment_text)
         if ip_match:
             result["printer_address"] = ip_match.group(1)
-            
+
         printer_name_match = PRINTER_NAME_PATTERN.search(comment_text)
         if printer_name_match:
-            result["printer_address"] = normalize_device_name(printer_name_match.group(1))
-            
+            result["printer_address"] = normalize_device_name(
+                printer_name_match.group(1)
+            )
+
         pc_match = PC_NAME_PATTERN.search(comment_text)
         if pc_match:
             result["target_pc"] = normalize_device_name(pc_match.group(1))
-            
+
         return result
 
     # 1. Загружаем задачи в статусе 35
     async with semaphore:
-        tasks_data = await get_tasks_by_status(service_auth_b64, settings.STATUS_WAITING_ID)
+        tasks_data = await get_tasks_by_status(
+            service_auth_b64, settings.STATUS_WAITING_ID
+        )
 
     if not tasks_data:
         return
@@ -432,7 +452,9 @@ async def check_waiting_printer_tasks(
 
         # Проверяем, назначена ли задача на наших пользователей (включая воркера)
         executor_ids_str = str(task.get("ExecutorIds") or "")
-        executor_ids = [eid.strip() for eid in executor_ids_str.split(",") if eid.strip()]
+        executor_ids = [
+            eid.strip() for eid in executor_ids_str.split(",") if eid.strip()
+        ]
         has_our_executors = any(exec_id in users_by_is_id for exec_id in executor_ids)
         if not has_our_executors:
             continue
@@ -471,9 +493,15 @@ async def check_waiting_printer_tasks(
         editor_name = last_comment_event.get("Editor") or ""
 
         is_service_comment = False
-        if settings.INTRASERVICE_SERVICE_USER_ID and editor_id == settings.INTRASERVICE_SERVICE_USER_ID:
+        if (
+            settings.INTRASERVICE_SERVICE_USER_ID
+            and editor_id == settings.INTRASERVICE_SERVICE_USER_ID
+        ):
             is_service_comment = True
-        elif settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_LOGIN.lower() in editor_name.lower():
+        elif (
+            settings.INTRASERVICE_SERVICE_LOGIN
+            and settings.INTRASERVICE_SERVICE_LOGIN.lower() in editor_name.lower()
+        ):
             is_service_comment = True
 
         if is_service_comment:
@@ -494,19 +522,25 @@ async def check_waiting_printer_tasks(
         # 3. Формируем поля для обновления
         fields_to_update = []
         if "printer_address" in extracted:
-            fields_to_update.append({
-                "FieldId": settings.PRINTER_IP_CUSTOM_FIELD_ID,
-                "Value": extracted["printer_address"]
-            })
+            fields_to_update.append(
+                {
+                    "FieldId": settings.PRINTER_IP_CUSTOM_FIELD_ID,
+                    "Value": extracted["printer_address"],
+                }
+            )
         if "target_pc" in extracted:
-            fields_to_update.append({
-                "FieldId": settings.PRINTER_PC_CUSTOM_FIELD_ID,
-                "Value": extracted["target_pc"]
-            })
+            fields_to_update.append(
+                {
+                    "FieldId": settings.PRINTER_PC_CUSTOM_FIELD_ID,
+                    "Value": extracted["target_pc"],
+                }
+            )
 
         # Обновляем поля
         async with semaphore:
-            fields_ok = await update_task_custom_fields(service_auth_b64, task_id, fields_to_update)
+            fields_ok = await update_task_custom_fields(
+                service_auth_b64, task_id, fields_to_update
+            )
 
         if not fields_ok:
             logger.error("Не удалось обновить кастомные поля для задачи #%d", task_id)
@@ -514,7 +548,9 @@ async def check_waiting_printer_tasks(
 
         # 4. Переводим задачу в статус "Открыта"
         async with semaphore:
-            status_ok = await update_task_status(service_auth_b64, task_id, settings.STATUS_OPEN_ID)
+            status_ok = await update_task_status(
+                service_auth_b64, task_id, settings.STATUS_OPEN_ID
+            )
 
         if not status_ok:
             logger.error("Не удалось изменить статус задачи #%d на 'Открыта'", task_id)
@@ -522,7 +558,10 @@ async def check_waiting_printer_tasks(
 
         # 5. Сохраняем в Redis, чтобы избежать бесконечного цикла
         await redis.set(redis_key, str(datetime.now(UTC)), ex=86400)
-        logger.info("Задача #%d успешно переведена в статус 'Открыта' с новыми параметрами", task_id)
+        logger.info(
+            "Задача #%d успешно переведена в статус 'Открыта' с новыми параметрами",
+            task_id,
+        )
 
 
 async def sync_service_catalog() -> None:
@@ -531,11 +570,11 @@ async def sync_service_catalog() -> None:
     """
     logger.info("Синхронизация каталога услуг...")
     redis = get_redis_client()
-    
+
     # Получаем учетные данные сервисного аккаунта
     import base64
     from app.services.crypto import encrypt_token
-    
+
     raw_auth = None
     if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
         auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
@@ -543,32 +582,34 @@ async def sync_service_catalog() -> None:
         raw_auth = encrypt_token(plain_b64)
     else:
         raw_auth = await redis.get("worker:service_auth_b64")
-        
+
     if not raw_auth:
-        logger.warning("Не удалось выполнить синхронизацию каталога услуг: отсутствуют учетные данные.")
+        logger.warning(
+            "Не удалось выполнить синхронизацию каталога услуг: отсутствуют учетные данные."
+        )
         return
-        
+
     if isinstance(raw_auth, bytes):
         service_auth_b64: str = raw_auth.decode()
     else:
         service_auth_b64: str = raw_auth
-        
+
     try:
         services = await get_services(service_auth_b64)
         if not services:
             logger.warning("Каталог услуг пуст или не удалось его получить.")
             return
-            
+
         services_list = []
         if isinstance(services, dict):
             services_list = services.get("Services") or []
         elif isinstance(services, list):
             services_list = services
-            
+
         # Формируем плоский список услуг с ID, Name, ParentId
         flat_catalog = []
         excluded_ids = set(settings.EXCLUDED_SERVICE_IDS)
-        
+
         # Функция для проверки, нужно ли исключить сервис (включая дочерние)
         # Если сервис или любой из его родителей в исключенных - пропускаем
         def is_excluded(svc_id: int) -> bool:
@@ -577,7 +618,9 @@ async def sync_service_catalog() -> None:
                 if current_id in excluded_ids:
                     return True
                 # Найти родителя
-                parent = next((s for s in services_list if s.get("Id") == current_id), None)
+                parent = next(
+                    (s for s in services_list if s.get("Id") == current_id), None
+                )
                 if not parent:
                     break
                 current_id = parent.get("ParentId")
@@ -586,16 +629,25 @@ async def sync_service_catalog() -> None:
         for svc in services_list:
             if is_excluded(svc.get("Id")):
                 continue
-            flat_catalog.append({
-                "id": svc.get("Id"),
-                "name": svc.get("Name"),
-                "parent_id": svc.get("ParentId"),
-                "path": svc.get("Path")
-            })
-            
+            flat_catalog.append(
+                {
+                    "id": svc.get("Id"),
+                    "name": svc.get("Name"),
+                    "parent_id": svc.get("ParentId"),
+                    "path": svc.get("Path"),
+                }
+            )
+
         # Сохраняем в Redis с TTL 24 часа
-        await redis.set("worker:service_catalog", json.dumps(flat_catalog, ensure_ascii=False), ex=86400)
-        logger.info("Каталог услуг успешно синхронизирован в Redis (%d элементов).", len(flat_catalog))
+        await redis.set(
+            "worker:service_catalog",
+            json.dumps(flat_catalog, ensure_ascii=False),
+            ex=86400,
+        )
+        logger.info(
+            "Каталог услуг успешно синхронизирован в Redis (%d элементов).",
+            len(flat_catalog),
+        )
     except Exception as e:
         logger.exception("Ошибка при синхронизации каталога услуг: %s", e)
 
@@ -644,7 +696,11 @@ async def check_updates():
     # 1. Получаем время последней проверки из Redis
     raw_last_check = await redis.get("worker:last_check_time")
     if raw_last_check:
-        last_check_time_str = raw_last_check.decode() if isinstance(raw_last_check, bytes) else raw_last_check
+        last_check_time_str = (
+            raw_last_check.decode()
+            if isinstance(raw_last_check, bytes)
+            else raw_last_check
+        )
         last_check_time_utc = parse_api_date(last_check_time_str)
         if last_check_time_utc:
             if last_check_time_utc.tzinfo is None:
@@ -653,8 +709,13 @@ async def check_updates():
             last_check_time_utc = current_time_utc
     else:
         last_check_time_utc = current_time_utc
-        await redis.set("worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S"))
-        logger.info("Первичный запуск. Время последней проверки инициализировано: %s", current_time_utc)
+        await redis.set(
+            "worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S")
+        )
+        logger.info(
+            "Первичный запуск. Время последней проверки инициализировано: %s",
+            current_time_utc,
+        )
         return
 
     last_check_time_local = last_check_time_utc.astimezone(intraservice_tz)
@@ -667,37 +728,54 @@ async def check_updates():
             result = await db.execute(query)
             users = result.scalars().all()
 
-            users_by_is_id: dict[str, Any] = {str(u.is_user_id): u for u in users if u.is_user_id}
+            users_by_is_id: dict[str, Any] = {
+                str(u.is_user_id): u for u in users if u.is_user_id
+            }
 
             service_user = None
             if settings.INTRASERVICE_SERVICE_USER_ID:
-                service_last_task_id_str = await redis.get("worker:service_last_task_id")
+                service_last_task_id_str = await redis.get(
+                    "worker:service_last_task_id"
+                )
                 try:
-                    service_last_task_id = int(service_last_task_id_str) if service_last_task_id_str else 0
+                    service_last_task_id = (
+                        int(service_last_task_id_str) if service_last_task_id_str else 0
+                    )
                 except ValueError:
                     service_last_task_id = 0
 
                 service_user = VirtualServiceUser(
                     is_user_id=settings.INTRASERVICE_SERVICE_USER_ID,
                     is_login=settings.INTRASERVICE_SERVICE_LOGIN or "service",
-                    last_task_id=service_last_task_id
+                    last_task_id=service_last_task_id,
                 )
-                users_by_is_id[str(settings.INTRASERVICE_SERVICE_USER_ID)] = service_user
+                users_by_is_id[str(settings.INTRASERVICE_SERVICE_USER_ID)] = (
+                    service_user
+                )
 
             if not users_by_is_id:
                 # Нет зарегистрированных пользователей и не задан сервисный аккаунт
-                await redis.set("worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S"))
+                await redis.set(
+                    "worker:last_check_time",
+                    current_time_utc.strftime("%Y-%m-%d %H:%M:%S"),
+                )
                 return
 
             # 3. Запросы к IntraService от имени сервисного аккаунта
             new_tasks_data = await get_tasks(
                 service_auth_b64,
-                {"CreatedMoreThan": api_filter_time, "include": "executorids,status,customfields"},
+                {
+                    "CreatedMoreThan": api_filter_time,
+                    "include": "executorids,status,customfields",
+                },
             )
 
             updated_tasks_data = await get_tasks(
                 service_auth_b64,
-                {"ChangedMoreThan": api_filter_time, "include": "executorids,status,customfields"},
+                {
+                    "ChangedMoreThan": api_filter_time,
+                    "include": "executorids,status,customfields",
+                },
             )
 
             # Парсим новые задачи
@@ -746,16 +824,24 @@ async def check_updates():
 
             # Проверяем зависшие принтерные задачи
             try:
-                await check_waiting_printer_tasks(service_auth_b64, redis, semaphore, users_by_is_id)
+                await check_waiting_printer_tasks(
+                    service_auth_b64, redis, semaphore, users_by_is_id
+                )
             except Exception as e_waiting:
-                logger.exception("Ошибка при обработке зависших принтерных задач: %s", e_waiting)
+                logger.exception(
+                    "Ошибка при обработке зависших принтерных задач: %s", e_waiting
+                )
 
             # Сохраняем last_task_id сервисного аккаунта в Redis
             if service_user:
-                await redis.set("worker:service_last_task_id", service_user.last_task_id)
+                await redis.set(
+                    "worker:service_last_task_id", service_user.last_task_id
+                )
 
             # Обновляем время последней проверки в Redis
-            await redis.set("worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S"))
+            await redis.set(
+                "worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S")
+            )
 
             # Публикуем уведомления в Redis
             if pending_notifications:
@@ -770,6 +856,7 @@ async def check_updates():
                         )
         except Exception as e:
             logger.exception("Критическая ошибка в check_updates: %s", e)
+
 
 async def start_worker():
     """
@@ -796,7 +883,7 @@ async def start_worker():
         max_instances=1,
         coalesce=True,
     )
-    
+
     # Ежедневная синхронизация каталога услуг
     scheduler.add_job(
         sync_service_catalog,
@@ -807,9 +894,10 @@ async def start_worker():
         max_instances=1,
         coalesce=True,
     )
-    
+
     scheduler.start()
     logger.info("Фоновый воркер запущен с интервалом %d секунд.", polling_interval)
+
 
 async def stop_worker():
     """

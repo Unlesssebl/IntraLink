@@ -71,7 +71,9 @@ class WinRMExecutor:
                     )
                     return -1, "", str(e)
             except Exception as e:
-                logger.error("Критический сбой WinRM подключения к %s: %s", target_pc, e)
+                logger.error(
+                    "Критический сбой WinRM подключения к %s: %s", target_pc, e
+                )
                 return -1, "", str(e)
 
     async def run_powershell(

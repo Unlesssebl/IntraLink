@@ -9,8 +9,8 @@ from executors.smb_executor import smb_executor
 logger = logging.getLogger(__name__)
 
 # Параметры ожидания PnP-обнаружения принтера Windows
-_PNP_POLL_INTERVAL = 2.0   # секунды между попытками проверки
-_PNP_POLL_TIMEOUT  = 30.0  # максимальное суммарное время ожидания
+_PNP_POLL_INTERVAL = 2.0  # секунды между попытками проверки
+_PNP_POLL_TIMEOUT = 30.0  # максимальное суммарное время ожидания
 
 
 async def _wait_for_printer_pnp(target_pc: str, driver_name: str) -> bool:
@@ -27,7 +27,9 @@ async def _wait_for_printer_pnp(target_pc: str, driver_name: str) -> bool:
     )
     elapsed = 0.0
     while elapsed < _PNP_POLL_TIMEOUT:
-        status, stdout, stderr = await winrm_executor.run_powershell(target_pc, verify_script)
+        status, stdout, stderr = await winrm_executor.run_powershell(
+            target_pc, verify_script
+        )
         if status == 0 and stdout.strip():
             return True
         await asyncio.sleep(_PNP_POLL_INTERVAL)
@@ -70,6 +72,7 @@ class UsbDiscoveryStrategy(PrinterStrategy):
 
         if not self.kb:
             from worker_main import get_kb
+
             self.kb = get_kb()
 
         driver = self.kb.find_by_hw_id(pnp_id)
@@ -106,7 +109,6 @@ class UsbDiscoveryStrategy(PrinterStrategy):
         assert job.driver_info is not None
 
         driver_name = job.driver_info.driver_name
-        driver_name_esc = escape_ps(driver_name)
         inf_path = job.driver_info.driver_inf_path
 
         _, dest_subdir, inf_filename = smb_executor.parse_driver_path(inf_path)
@@ -157,7 +159,8 @@ class UsbDiscoveryStrategy(PrinterStrategy):
         await save_job_state(job)
         logger.info(
             "Ожидание PnP-обнаружения принтера на ПК %s (до %.0f сек)...",
-            job.target_pc, _PNP_POLL_TIMEOUT,
+            job.target_pc,
+            _PNP_POLL_TIMEOUT,
         )
         found = await _wait_for_printer_pnp(job.target_pc, driver_name)
 

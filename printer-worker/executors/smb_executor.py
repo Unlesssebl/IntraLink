@@ -4,7 +4,7 @@ import ntpath
 import stat as stat_mod
 import urllib.parse
 from typing import Tuple
-from smbclient import register_session, mkdir, stat
+from smbclient import register_session, stat
 from worker_config import WINRM_USERNAME, WINRM_PASSWORD
 
 logger = logging.getLogger(__name__)
@@ -48,11 +48,17 @@ class SMBExecutor:
                         with open_file(dest_item, mode="wb") as f_dst:
                             while chunk := f_src.read(4 * 1024 * 1024):
                                 f_dst.write(chunk)
-                    
+
                     src_size = stat(src_item).st_size
                     dst_size = stat(dest_item).st_size
                     if src_size != dst_size:
-                        logger.error("SMB: размер файла не совпадает после копирования %s -> %s (%s != %s)", src_item, dest_item, src_size, dst_size)
+                        logger.error(
+                            "SMB: размер файла не совпадает после копирования %s -> %s (%s != %s)",
+                            src_item,
+                            dest_item,
+                            src_size,
+                            dst_size,
+                        )
                         raise Exception(f"File size mismatch: {src_size} != {dst_size}")
             except Exception as e:
                 logger.error(f"Ошибка копирования элемента {src_item}: {e}")
@@ -86,14 +92,22 @@ class SMBExecutor:
                     src_host, username=self.username, password=self.password
                 )
             except Exception as e:
-                logger.debug("SMB: регистрация сессии для %s не удалась (возможно, уже зарегистрирована): %s", src_host, e)
+                logger.debug(
+                    "SMB: регистрация сессии для %s не удалась (возможно, уже зарегистрирована): %s",
+                    src_host,
+                    e,
+                )
 
             try:
                 register_session(
                     dest_host, username=self.username, password=self.password
                 )
             except Exception as e:
-                logger.debug("SMB: регистрация сессии для %s не удалась (возможно, уже зарегистрирована): %s", dest_host, e)
+                logger.debug(
+                    "SMB: регистрация сессии для %s не удалась (возможно, уже зарегистрирована): %s",
+                    dest_host,
+                    e,
+                )
 
             unc_dest_dir = (
                 f"\\\\{dest_host}\\{dest_path}\\printer_drivers\\{dest_subdir}"
@@ -131,22 +145,25 @@ class SMBExecutor:
             )
             return False
 
-
     async def check_source_accessible(self, src: str) -> bool:
         """
         Асинхронная проверка доступности UNC-пути источника перед копированием.
         Сетевой вызов stat() выполняется в потоке, чтобы не блокировать event loop.
         """
+
         def _check_sync() -> bool:
             try:
                 src_dir, _, _ = self.parse_driver_path(src)
                 src_host = self._extract_smb_host(src_dir)
                 try:
-                    register_session(src_host, username=self.username, password=self.password)
+                    register_session(
+                        src_host, username=self.username, password=self.password
+                    )
                 except Exception as e:
                     logger.debug(
                         "SMB: регистрация сессии для %s не удалась (возможно, уже зарегистрирована): %s",
-                        src_host, e,
+                        src_host,
+                        e,
                     )
                 stat(src_dir)
                 return True
@@ -158,4 +175,3 @@ class SMBExecutor:
 
 
 smb_executor = SMBExecutor()
-

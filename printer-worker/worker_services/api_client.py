@@ -65,7 +65,9 @@ async def _make_request(
         return None
 
 
-async def get_task_details(tg_user_id: Optional[int], task_id: int) -> Optional[Dict[str, Any]]:
+async def get_task_details(
+    tg_user_id: Optional[int], task_id: int
+) -> Optional[Dict[str, Any]]:
     """
     Получает детальную информацию по конкретной задаче включая кастомные поля
     через сервисный эндпоинт Core API.
@@ -73,7 +75,9 @@ async def get_task_details(tg_user_id: Optional[int], task_id: int) -> Optional[
     return await _make_request(endpoint=f"service/tasks/{task_id}", method="GET")
 
 
-async def add_task_comment(tg_user_id: Optional[int], task_id: int, comment: str) -> bool:
+async def add_task_comment(
+    tg_user_id: Optional[int], task_id: int, comment: str
+) -> bool:
     """
     Добавляет комментарий в задачу через сервисный эндпоинт Core API.
     """
@@ -89,7 +93,9 @@ async def add_task_comment(tg_user_id: Optional[int], task_id: int, comment: str
     return res is not None
 
 
-async def update_task_status(tg_user_id: Optional[int], task_id: int, status_id: int) -> bool:
+async def update_task_status(
+    tg_user_id: Optional[int], task_id: int, status_id: int
+) -> bool:
     """
     Обновляет статус задачи через сервисный эндпоинт Core API.
     """
@@ -105,7 +111,9 @@ async def update_task_status(tg_user_id: Optional[int], task_id: int, status_id:
     return res is not None
 
 
-async def add_task_expenses(tg_user_id: Optional[int], task_id: int, minutes: int) -> bool:
+async def add_task_expenses(
+    tg_user_id: Optional[int], task_id: int, minutes: int
+) -> bool:
     """
     Добавляет трудозатраты в задачу через сервисный эндпоинт Core API.
     """
@@ -134,7 +142,8 @@ async def update_task_custom_fields(
     )
     payload = {"custom_field_values": custom_field_values}
     res = await _make_request(
-        endpoint=f"service/tasks/{task_id}/custom-fields", method="PUT", json_data=payload
+        endpoint=f"service/tasks/{task_id}/custom-fields",
+        method="PUT",
+        json_data=payload,
     )
     return res is not None
-

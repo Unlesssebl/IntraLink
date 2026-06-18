@@ -1,4 +1,3 @@
-import base64
 import logging
 from datetime import datetime
 from http import HTTPStatus
@@ -73,7 +72,7 @@ async def _make_direct_request(
     """
     url = f"{settings.INTRASERVICE_URL.rstrip('/')}/{endpoint.lstrip('/')}"
     headers = {"Content-Type": "application/json"}
-    
+
     if auth_b64:
         decrypted_auth = decrypt_token(auth_b64)
         headers["Authorization"] = f"Basic {decrypted_auth}"
@@ -95,7 +94,9 @@ async def _make_direct_request(
             if response.status == HTTPStatus.OK:
                 return await response.json()
             text = await response.text()
-            logger.error("Ошибка direct API [%d] для %s: %s", response.status, endpoint, text)
+            logger.error(
+                "Ошибка direct API [%d] для %s: %s", response.status, endpoint, text
+            )
             return None
     except Exception as e:
         logger.exception("Сетевая ошибка при direct запросе к API %s: %s", endpoint, e)
@@ -145,6 +146,7 @@ async def _make_core_request(
 
 # --- Методы для работы через Core API (поведение шлюза, для автоответов и классификатора) ---
 
+
 async def get_single_task(task_id: int) -> Optional[Dict[str, Any]]:
     return await _make_core_request(endpoint=f"service/tasks/{task_id}", method="GET")
 
@@ -165,24 +167,33 @@ async def update_task_status(task_id: int, status_id: int) -> bool:
     return res is not None
 
 
-async def update_task_custom_fields(task_id: int, custom_field_values: List[Dict[str, Any]]) -> bool:
+async def update_task_custom_fields(
+    task_id: int, custom_field_values: List[Dict[str, Any]]
+) -> bool:
     payload = {"custom_field_values": custom_field_values}
     res = await _make_core_request(
-        endpoint=f"service/tasks/{task_id}/custom-fields", method="PUT", json_data=payload
+        endpoint=f"service/tasks/{task_id}/custom-fields",
+        method="PUT",
+        json_data=payload,
     )
     return res is not None
 
 
 # --- Прямые методы IntraService (для RAG билдера, которому нужны массовые выборки) ---
 
+
 async def get_tasks(auth_b64: str, filters: Optional[Dict[str, Any]] = None) -> Any:
     params = {"include": "status"}
     if filters:
         params.update(filters)
-    return await _make_direct_request(endpoint="task", method="GET", auth_b64=auth_b64, params=params)
+    return await _make_direct_request(
+        endpoint="task", method="GET", auth_b64=auth_b64, params=params
+    )
 
 
-async def get_task_lifetime(auth_b64: str, task_id: int) -> Optional[List[Dict[str, Any]] | Dict[str, Any]]:
+async def get_task_lifetime(
+    auth_b64: str, task_id: int
+) -> Optional[List[Dict[str, Any]] | Dict[str, Any]]:
     return await _make_direct_request(
         endpoint="tasklifetime",
         method="GET",
@@ -214,5 +225,7 @@ async def get_tasks_by_status(
     )
 
 
-async def get_task_comments(auth_b64: str, task_id: int) -> Optional[List[Dict[str, Any]] | Dict[str, Any]]:
+async def get_task_comments(
+    auth_b64: str, task_id: int
+) -> Optional[List[Dict[str, Any]] | Dict[str, Any]]:
     return await get_task_lifetime(auth_b64, task_id)

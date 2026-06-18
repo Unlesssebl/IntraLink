@@ -1,6 +1,5 @@
 import logging
 import contextvars
-import asyncio
 from .schemas import PrintJob, JobState, KnowledgeBase, ErrorType
 from .router import JobRouter
 from strategies import get_strategy
@@ -45,7 +44,6 @@ class PrinterOrchestrator:
             await add_task_expenses(job.tg_user_id, job.task_id, minutes)
 
     async def run(self, job: PrintJob) -> None:
-        from worker_services.redis_listener import save_job_state
 
         token = current_task_id.set(job.task_id)
         _failure_handled = False
@@ -90,38 +88,49 @@ class PrinterOrchestrator:
                 # 2.4.1 Проверка доступности целевых узлов (параллельно)
                 from orchestrator.snmp import is_host_reachable
                 import asyncio
-                
-                logger.info("Проверка доступности целевых узлов по сети (ПК: %s, МФУ: %s)", 
-                            job.target_pc, job.printer_address if job.connection_type == "tcpip" else "N/A")
+
+                logger.info(
+                    "Проверка доступности целевых узлов по сети (ПК: %s, МФУ: %s)",
+                    job.target_pc,
+                    job.printer_address if job.connection_type == "tcpip" else "N/A",
+                )
                 job.state = JobState.PROBING
                 await save_job_state(job)
-                
+
                 pc_task = asyncio.create_task(is_host_reachable(job.target_pc))
                 printer_task = None
-                
+
                 if job.connection_type == "tcpip" and job.printer_address:
-                    printer_task = asyncio.create_task(is_host_reachable(job.printer_address))
-                
+                    printer_task = asyncio.create_task(
+                        is_host_reachable(job.printer_address)
+                    )
+
                 is_pc_reachable = await pc_task
                 is_printer_reachable = await printer_task if printer_task else True
-                
+
                 errors = []
                 if not is_pc_reachable:
-                    logger.warning("Целевой ПК %s недоступен (ping failed)", job.target_pc)
+                    logger.warning(
+                        "Целевой ПК %s недоступен (ping failed)", job.target_pc
+                    )
                     errors.append("компьютер")
-                    
+
                 if printer_task and not is_printer_reachable:
-                    logger.warning("МФУ %s недоступно (ping failed)", job.printer_address)
+                    logger.warning(
+                        "МФУ %s недоступно (ping failed)", job.printer_address
+                    )
                     errors.append("принтер")
-                    
+
                 if errors:
                     if len(errors) == 2:
                         error_msg = f"ping failed: both (PC: {job.target_pc}, Printer: {job.printer_address})"
                     elif not is_pc_reachable:
                         error_msg = f"ping failed: pc (PC: {job.target_pc})"
                     else:
-                        error_msg = f"ping failed: printer (Printer: {job.printer_address})"
-                        
+                        error_msg = (
+                            f"ping failed: printer (Printer: {job.printer_address})"
+                        )
+
                     job.error_type = ErrorType.USER
                     await fail(job, error_msg)
                     return
@@ -186,7 +195,9 @@ class PrinterOrchestrator:
                             "Задача #%d переведена в режим ожидания (USB кабель не подключен)",
                             job.task_id,
                         )
-                        await execute_action("on_usb_disconnected", job, job.error_message or "")
+                        await execute_action(
+                            "on_usb_disconnected", job, job.error_message or ""
+                        )
                         await save_job_state(job)
                         return
 

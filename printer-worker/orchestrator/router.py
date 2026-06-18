@@ -103,7 +103,7 @@ class JobRouter:
                     if not job.printer_address:
                         logger.warning(
                             "Fast-Track: не найден IP/DNS для сетевого принтера %s (tcpip). Переход в FAILED.",
-                            driver.model_key
+                            driver.model_key,
                         )
                         job.state = JobState.FAILED
                         job.error_message = "Для сетевого принтера не удалось определить IP-адрес или DNS-имя."

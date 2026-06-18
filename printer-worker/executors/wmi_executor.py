@@ -92,7 +92,9 @@ class WMIExecutor:
                     f"Ошибка выполнения WMI команды, код: {return_code}"
                 )
 
-            logger.info(f"[{self.target_ip}] Процесс WMI успешно запущен, PID: {process_id}")
+            logger.info(
+                f"[{self.target_ip}] Процесс WMI успешно запущен, PID: {process_id}"
+            )
             return return_code
 
         except Exception as e:
@@ -142,7 +144,9 @@ class WMIExecutor:
         logger.warning(f"[{self.target_ip}] Превышен таймаут ожидания порта {port}.")
         return False
 
-    def _read_bootstrap_log_sync(self, retries: int = 5, retry_delay: float = 1.5) -> str | None:
+    def _read_bootstrap_log_sync(
+        self, retries: int = 5, retry_delay: float = 1.5
+    ) -> str | None:
         """
         Синхронно читает wmi_bootstrap.log с удаленного ПК через SMB.
 
@@ -153,7 +157,9 @@ class WMIExecutor:
         from smbclient import register_session, open_file
 
         unc_path = f"\\\\{self.target_ip}\\C$\\Windows\\Temp\\wmi_bootstrap.log"
-        logger.debug(f"[{self.target_ip}] Попытка прочитать лог {unc_path} через SMB...")
+        logger.debug(
+            f"[{self.target_ip}] Попытка прочитать лог {unc_path} через SMB..."
+        )
 
         # Регистрируем SMB-сессию один раз перед ретраями
         try:
@@ -239,7 +245,8 @@ class WMIExecutor:
 
         logger.warning(
             "[SECURITY] [%s] WinRM настраивается с AllowUnencrypted=true и Basic Auth. "
-            "Допустимо только в изолированном VLAN!", self.target_ip
+            "Допустимо только в изолированном VLAN!",
+            self.target_ip,
         )
         logger.info(f"[{self.target_ip}] Инициализация включения WinRM через WMI...")
         # Таймаут передаётся напрямую в execute(), который сам оборачивает вызов в asyncio.wait_for.

@@ -1,6 +1,11 @@
 import pytest
 from unittest.mock import patch, AsyncMock
-from app.routers.admin import get_worker_status, trigger_manual_job, ManualJobRequest, delete_print_job
+from app.routers.admin import (
+    get_worker_status,
+    trigger_manual_job,
+    ManualJobRequest,
+    delete_print_job,
+)
 
 
 @pytest.mark.asyncio

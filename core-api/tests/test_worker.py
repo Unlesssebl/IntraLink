@@ -768,7 +768,9 @@ class TestProcessUserExecutorAssigned:
         mock_db_cm.__aexit__ = AsyncMock(return_value=False)
 
         tasks_response_empty = {"Tasks": [], "Statuses": []}
-        updated_task = make_task(task_id=5, executor_ids="42", status_name="Открыта", status_id=31)
+        updated_task = make_task(
+            task_id=5, executor_ids="42", status_name="Открыта", status_id=31
+        )
         updated_response = {"Tasks": [updated_task], "Statuses": []}
 
         # lifetime: событие смены исполнителя (Executors)
@@ -1118,7 +1120,7 @@ class TestCheckUpdatesServiceUser:
         new_task = make_task(task_id=105, executor_ids="9999", name="Сервисный принтер")
         mock_get_tasks.side_effect = [
             {"Tasks": [new_task], "Statuses": []},  # new tasks
-            {"Tasks": [], "Statuses": []},          # updated tasks
+            {"Tasks": [], "Statuses": []},  # updated tasks
         ]
 
         with (
@@ -1158,13 +1160,15 @@ class TestCheckWaitingPrinterTasks:
     async def test_no_tasks(self, mock_get_tasks):
         """Если API вернул пустой список задач — ничего не делаем."""
         import app.services.worker as worker_module
-        
+
         mock_get_tasks.return_value = []
         redis = AsyncMock()
         semaphore = asyncio.Semaphore(5)
         users_by_is_id = {"9999": worker_module.VirtualServiceUser(9999, "intratest")}
 
-        await worker_module.check_waiting_printer_tasks("mock_auth", redis, semaphore, users_by_is_id)
+        await worker_module.check_waiting_printer_tasks(
+            "mock_auth", redis, semaphore, users_by_is_id
+        )
 
         mock_get_tasks.assert_awaited_once_with("mock_auth", 35)
         redis.get.assert_not_awaited()
@@ -1174,16 +1178,18 @@ class TestCheckWaitingPrinterTasks:
     async def test_already_processed(self, mock_get_tasks):
         """Если задача уже обработана (есть в Redis) — пропускаем."""
         import app.services.worker as worker_module
-        
+
         task = make_task(task_id=123, executor_ids="9999")
         mock_get_tasks.return_value = [task]
-        
+
         redis = AsyncMock()
         redis.get = AsyncMock(return_value="2026-06-17 12:00:00")
         semaphore = asyncio.Semaphore(5)
         users_by_is_id = {"9999": worker_module.VirtualServiceUser(9999, "intratest")}
 
-        await worker_module.check_waiting_printer_tasks("mock_auth", redis, semaphore, users_by_is_id)
+        await worker_module.check_waiting_printer_tasks(
+            "mock_auth", redis, semaphore, users_by_is_id
+        )
 
         redis.get.assert_awaited_once_with("printer_resumed:123")
         redis.set.assert_not_awaited()
@@ -1193,30 +1199,38 @@ class TestCheckWaitingPrinterTasks:
     async def test_last_comment_by_service(self, mock_get_tasks):
         """Если последний комментарий оставлен сервисным аккаунтом — пропускаем."""
         import app.services.worker as worker_module
-        
+
         task = make_task(task_id=123, executor_ids="9999")
         mock_get_tasks.return_value = [task]
-        
+
         redis = AsyncMock()
         redis.get = AsyncMock(return_value=None)
-        
+
         # Последний комментарий от сервисного аккаунта (EditorId = 9891)
-        lifetime_event = make_lifetime_event(date="2026-06-17 12:00:00", comments="Не вижу компьютер")
+        lifetime_event = make_lifetime_event(
+            date="2026-06-17 12:00:00", comments="Не вижу компьютер"
+        )
         lifetime_event["EditorId"] = 9891  # settings.INTRASERVICE_SERVICE_USER_ID
         lifetime_event["Editor"] = "intratest"
-        
+
         semaphore = asyncio.Semaphore(5)
         users_by_is_id = {"9999": worker_module.VirtualServiceUser(9999, "intratest")}
 
         with (
-            patch("app.services.worker.get_task_comments", new_callable=AsyncMock, return_value={"TaskLifetimes": [lifetime_event]}),
+            patch(
+                "app.services.worker.get_task_comments",
+                new_callable=AsyncMock,
+                return_value={"TaskLifetimes": [lifetime_event]},
+            ),
             patch("app.services.worker.settings") as mock_settings,
         ):
             mock_settings.INTRASERVICE_SERVICE_USER_ID = 9891
             mock_settings.INTRASERVICE_SERVICE_LOGIN = "intratest"
             mock_settings.STATUS_WAITING_ID = 35
-            
-            await worker_module.check_waiting_printer_tasks("mock_auth", redis, semaphore, users_by_is_id)
+
+            await worker_module.check_waiting_printer_tasks(
+                "mock_auth", redis, semaphore, users_by_is_id
+            )
 
         redis.get.assert_awaited_once_with("printer_resumed:123")
         redis.set.assert_not_awaited()
@@ -1226,25 +1240,40 @@ class TestCheckWaitingPrinterTasks:
     async def test_success_with_ip_and_pc(self, mock_get_tasks):
         """Если пользователь написал IP и имя ПК (смешанный язык/кириллица) — обновляем поля и статус."""
         import app.services.worker as worker_module
-        
+
         task = make_task(task_id=123, executor_ids="9999")
         mock_get_tasks.return_value = [task]
-        
+
         redis = AsyncMock()
         redis.get = AsyncMock(return_value=None)
-        
+
         # Комментарий пользователя с кириллицей и IP
-        lifetime_event = make_lifetime_event(date="2026-06-17 12:00:00", comments="Компьютер КЗМ1234, а айпи принтера 10.244.15.55")
+        lifetime_event = make_lifetime_event(
+            date="2026-06-17 12:00:00",
+            comments="Компьютер КЗМ1234, а айпи принтера 10.244.15.55",
+        )
         lifetime_event["EditorId"] = 1111  # обычный пользователь
         lifetime_event["Editor"] = "Иванов Иван"
-        
+
         semaphore = asyncio.Semaphore(5)
         users_by_is_id = {"9999": worker_module.VirtualServiceUser(9999, "intratest")}
 
         with (
-            patch("app.services.worker.get_task_comments", new_callable=AsyncMock, return_value={"TaskLifetimes": [lifetime_event]}),
-            patch("app.services.worker.update_task_custom_fields", new_callable=AsyncMock, return_value=True) as mock_update_fields,
-            patch("app.services.worker.update_task_status", new_callable=AsyncMock, return_value=True) as mock_update_status,
+            patch(
+                "app.services.worker.get_task_comments",
+                new_callable=AsyncMock,
+                return_value={"TaskLifetimes": [lifetime_event]},
+            ),
+            patch(
+                "app.services.worker.update_task_custom_fields",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_update_fields,
+            patch(
+                "app.services.worker.update_task_status",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_update_status,
             patch("app.services.worker.settings") as mock_settings,
         ):
             mock_settings.INTRASERVICE_SERVICE_USER_ID = 9891
@@ -1253,8 +1282,10 @@ class TestCheckWaitingPrinterTasks:
             mock_settings.STATUS_OPEN_ID = 31
             mock_settings.PRINTER_PC_CUSTOM_FIELD_ID = 1112
             mock_settings.PRINTER_IP_CUSTOM_FIELD_ID = 1103
-            
-            await worker_module.check_waiting_printer_tasks("mock_auth", redis, semaphore, users_by_is_id)
+
+            await worker_module.check_waiting_printer_tasks(
+                "mock_auth", redis, semaphore, users_by_is_id
+            )
 
         # Проверяем, что поля извлечены и транслитерированы (КЗМ1234 -> KZM1234)
         mock_update_fields.assert_awaited_once_with(
@@ -1263,10 +1294,8 @@ class TestCheckWaitingPrinterTasks:
             [
                 {"FieldId": 1103, "Value": "10.244.15.55"},
                 {"FieldId": 1112, "Value": "KZM1234"},
-            ]
+            ],
         )
         mock_update_status.assert_awaited_once_with("mock_auth", 123, 31)
         redis.set.assert_awaited_once()
         assert "printer_resumed:123" in redis.set.call_args[0][0]
-
-

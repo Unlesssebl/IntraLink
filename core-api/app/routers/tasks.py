@@ -36,9 +36,7 @@ async def get_tasks(request: Request, user: User = Depends(get_user_by_tg_id)):
     """
     # Собираем все query-параметры, кроме tg_user_id
     filters = {
-        key: value
-        for key, value in request.query_params.items()
-        if key != "tg_user_id"
+        key: value for key, value in request.query_params.items() if key != "tg_user_id"
     }
 
     tasks = await intraservice.get_tasks(user.is_password_b64, filters)

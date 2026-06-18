@@ -1,3 +1,4 @@
+import platform
 import socket
 import asyncio
 import logging
@@ -135,21 +136,21 @@ async def resolve_hostname(hostname: str, timeout: float = 1.0) -> Optional[str]
         return None
 
 
-import platform
-
 async def is_host_reachable(host: str, timeout: int = 5) -> bool:
     try:
         # Determine the OS
-        param = '-n' if platform.system().lower() == 'windows' else '-c'
-        timeout_param = '-w' if platform.system().lower() == 'windows' else '-W'
+        param = "-n" if platform.system().lower() == "windows" else "-c"
+        timeout_param = "-w" if platform.system().lower() == "windows" else "-W"
         # Windows ping timeout is in milliseconds, Linux in seconds
-        timeout_val = str(timeout * 1000) if platform.system().lower() == 'windows' else str(timeout)
+        timeout_val = (
+            str(timeout * 1000)
+            if platform.system().lower() == "windows"
+            else str(timeout)
+        )
 
-        command = ['ping', param, '1', timeout_param, timeout_val, host]
+        command = ["ping", param, "1", timeout_param, timeout_val, host]
         process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         await process.communicate()
         return process.returncode == 0
@@ -159,7 +160,12 @@ async def is_host_reachable(host: str, timeout: int = 5) -> bool:
 
 
 def query_snmp_oid_sync(
-    ip: str, oid: str, port: int = 161, community: str = "public", timeout: float = 1.5, retries: int = 2
+    ip: str,
+    oid: str,
+    port: int = 161,
+    community: str = "public",
+    timeout: float = 1.5,
+    retries: int = 2,
 ) -> Optional[str]:
     request_data = build_snmp_get_request(oid, community)
     for attempt in range(retries + 1):
@@ -184,7 +190,12 @@ def query_snmp_oid_sync(
 
 
 async def query_snmp_oid(
-    ip: str, oid: str, port: int = 161, community: str = "public", timeout: float = 1.5, retries: int = 2
+    ip: str,
+    oid: str,
+    port: int = 161,
+    community: str = "public",
+    timeout: float = 1.5,
+    retries: int = 2,
 ) -> Optional[str]:
     return await asyncio.to_thread(
         query_snmp_oid_sync, ip, oid, port, community, timeout, retries

@@ -30,7 +30,9 @@ class ServiceTaskCustomFieldsRequest(BaseModel):
 
 
 @router.get("/tasks/{task_id}", response_model=Any, status_code=status.HTTP_200_OK)
-async def get_task_by_id(task_id: int, service_auth_b64: str = Depends(get_service_auth_b64)):
+async def get_task_by_id(
+    task_id: int, service_auth_b64: str = Depends(get_service_auth_b64)
+):
     """
     Получить детальную информацию по конкретной задаче с кастомными полями
     от имени сервисного аккаунта.
@@ -122,4 +124,3 @@ async def update_task_custom_fields(
             detail=f"Не удалось обновить кастомные поля задачи {task_id}.",
         )
     return {"status": "success"}
-

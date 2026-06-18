@@ -40,7 +40,9 @@ async def test_get_task_by_id_failure(mock_get_task):
 
 
 @pytest.mark.asyncio
-@patch("app.routers.service_tasks.intraservice.add_task_comment", new_callable=AsyncMock)
+@patch(
+    "app.routers.service_tasks.intraservice.add_task_comment", new_callable=AsyncMock
+)
 async def test_add_task_comment_success(mock_add_comment):
     mock_add_comment.return_value = True
 
@@ -54,7 +56,9 @@ async def test_add_task_comment_success(mock_add_comment):
 
 
 @pytest.mark.asyncio
-@patch("app.routers.service_tasks.intraservice.add_task_comment", new_callable=AsyncMock)
+@patch(
+    "app.routers.service_tasks.intraservice.add_task_comment", new_callable=AsyncMock
+)
 async def test_add_task_comment_failure(mock_add_comment):
     mock_add_comment.return_value = False
 
@@ -68,7 +72,9 @@ async def test_add_task_comment_failure(mock_add_comment):
 
 
 @pytest.mark.asyncio
-@patch("app.routers.service_tasks.intraservice.update_task_status", new_callable=AsyncMock)
+@patch(
+    "app.routers.service_tasks.intraservice.update_task_status", new_callable=AsyncMock
+)
 async def test_update_task_status_success(mock_update_status):
     mock_update_status.return_value = True
 
@@ -82,7 +88,9 @@ async def test_update_task_status_success(mock_update_status):
 
 
 @pytest.mark.asyncio
-@patch("app.routers.service_tasks.intraservice.add_task_expenses", new_callable=AsyncMock)
+@patch(
+    "app.routers.service_tasks.intraservice.add_task_expenses", new_callable=AsyncMock
+)
 async def test_add_task_expenses_success(mock_add_expenses):
     mock_add_expenses.return_value = True
 
@@ -96,29 +104,40 @@ async def test_add_task_expenses_success(mock_add_expenses):
 
 
 @pytest.mark.asyncio
-@patch("app.routers.service_tasks.intraservice.update_task_custom_fields", new_callable=AsyncMock)
+@patch(
+    "app.routers.service_tasks.intraservice.update_task_custom_fields",
+    new_callable=AsyncMock,
+)
 async def test_update_task_custom_fields_success(mock_update_fields):
     mock_update_fields.return_value = True
 
-    payload = ServiceTaskCustomFieldsRequest(custom_field_values=[{"FieldId": 1112, "Value": "KZM1234"}])
+    payload = ServiceTaskCustomFieldsRequest(
+        custom_field_values=[{"FieldId": 1112, "Value": "KZM1234"}]
+    )
     response = await update_task_custom_fields(
         task_id=123, payload=payload, service_auth_b64="mocked_auth"
     )
 
     assert response == {"status": "success"}
-    mock_update_fields.assert_awaited_once_with("mocked_auth", 123, [{"FieldId": 1112, "Value": "KZM1234"}])
+    mock_update_fields.assert_awaited_once_with(
+        "mocked_auth", 123, [{"FieldId": 1112, "Value": "KZM1234"}]
+    )
 
 
 @pytest.mark.asyncio
-@patch("app.routers.service_tasks.intraservice.update_task_custom_fields", new_callable=AsyncMock)
+@patch(
+    "app.routers.service_tasks.intraservice.update_task_custom_fields",
+    new_callable=AsyncMock,
+)
 async def test_update_task_custom_fields_failure(mock_update_fields):
     mock_update_fields.return_value = False
 
-    payload = ServiceTaskCustomFieldsRequest(custom_field_values=[{"FieldId": 1112, "Value": "KZM1234"}])
+    payload = ServiceTaskCustomFieldsRequest(
+        custom_field_values=[{"FieldId": 1112, "Value": "KZM1234"}]
+    )
     with pytest.raises(HTTPException) as exc_info:
         await update_task_custom_fields(
             task_id=123, payload=payload, service_auth_b64="mocked_auth"
         )
 
     assert exc_info.value.status_code == 502
-

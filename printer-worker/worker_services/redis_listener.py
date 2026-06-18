@@ -9,7 +9,6 @@ from worker_config import REDIS_URL, MAX_CONCURRENT_JOBS
 from orchestrator.schemas import PrintJob, JobState
 from worker_services.api_client import (
     get_task_details,
-    update_task_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -266,15 +265,18 @@ async def _process_event(payload: dict) -> None:
 
             # Предварительная проверка наличия кастомных полей в payload
             has_custom_fields = task_data and (
-                task_data.get("Field1112") or 
-                task_data.get("Field1103") or 
-                task_data.get("Data") or 
-                task_data.get("CreatorComments")
+                task_data.get("Field1112")
+                or task_data.get("Field1103")
+                or task_data.get("Data")
+                or task_data.get("CreatorComments")
             )
 
             # Если нужных полей нет (IntraService не вернул их в списке), делаем fallback запрос
             if not task_data or not has_custom_fields:
-                logger.info("Кастомные поля отсутствуют в событии. Выполняю fallback-запрос get_task_details для задачи #%d", task_id)
+                logger.info(
+                    "Кастомные поля отсутствуют в событии. Выполняю fallback-запрос get_task_details для задачи #%d",
+                    task_id,
+                )
                 raw_response = await get_task_details(tg_user_id, task_id)
                 if not raw_response:
                     logger.error(
@@ -365,7 +367,6 @@ async def _recover_orphan_jobs() -> None:
     # Локальные импорты для избежания циклических ссылок
     from executors.wmi_executor import WMIExecutor
     from worker_services.credentials import get_domain_credentials
-    from orchestrator.orchestrator import STATUS_WAITING
 
     try:
         async for key in r.scan_iter("printer_job:*"):
@@ -421,6 +422,7 @@ async def _recover_orphan_jobs() -> None:
                     if not job.is_manual:
                         try:
                             from worker_services.action_executor import execute_action
+
                             await execute_action("on_orphan_recovered", job)
                         except Exception as ex:
                             logger.error(
@@ -441,6 +443,7 @@ async def _recover_orphan_jobs() -> None:
                     if not job.is_manual:
                         try:
                             from worker_services.action_executor import execute_action
+
                             await execute_action("on_orphan_recovered", job)
                         except Exception as ex:
                             logger.error(
@@ -513,7 +516,11 @@ async def start_redis_listener():
                         continue
 
                     # Фильтруем события IntraService
-                    if event_type not in ("new_task", "status_change", "executor_assigned"):
+                    if event_type not in (
+                        "new_task",
+                        "status_change",
+                        "executor_assigned",
+                    ):
                         continue
 
                     # Если это изменение статуса или назначение исполнителя, реагируем только на статус "Открыта" (ID: 31)
