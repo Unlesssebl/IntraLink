@@ -52,6 +52,7 @@ async def test_worker_ai_classifier_integration():
     
     mock_response = ClassifierResult(
         action="redirect",
+        confidence=1.0,
         correct_service_id=70,
         correct_service_name="Разблокировка электронной почты",
         comment_text="Заявка отменена, пересоздайте в Разблокировка электронной почты.",

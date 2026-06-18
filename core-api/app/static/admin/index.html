@@ -1126,6 +1126,14 @@
                 </svg>
                 Поддерживаемые модели
             </button>
+            <button class="nav-item" id="nav-ai" onclick="goTo('ai')">
+                <svg viewBox="0 0 24 24">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                    <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                </svg>
+                AI Воркер
+            </button>
             <button class="nav-item" id="nav-settings" onclick="goTo('settings')">
                 <svg viewBox="0 0 24 24">
                     <path stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
@@ -1378,6 +1386,158 @@
                 </div>
             </section>
 
+            <!-- ─────── SCREEN: AI Worker ──────────────────────── -->
+            <section id="screen-ai" class="screen">
+                <!-- Метрики AI -->
+                <div class="stats-row">
+                    <div class="stat-card">
+                        <div class="stat-icon blue">
+                            <svg viewBox="0 0 24 24">
+                                <circle cx="12" cy="12" r="10" />
+                                <line x1="12" y1="16" x2="12" y2="12" />
+                                <line x1="12" y1="8" x2="12.01" y2="8" />
+                            </svg>
+                        </div>
+                        <div class="stat-body">
+                            <div class="stat-num" id="stat-ai-classifications">—</div>
+                            <div class="stat-desc">Классификаций</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon green">
+                            <svg viewBox="0 0 24 24">
+                                <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                        </div>
+                        <div class="stat-body">
+                            <div class="stat-num" id="stat-ai-replies">—</div>
+                            <div class="stat-desc">Автоответов отправлено</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon red">
+                            <svg viewBox="0 0 24 24">
+                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                                <polyline points="9 17 9 12 15 12 15 17"></polyline>
+                            </svg>
+                        </div>
+                        <div class="stat-body">
+                            <div class="stat-num" id="stat-ai-redirects">—</div>
+                            <div class="stat-desc">Перенаправлено (отменено)</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Настройки автоматизации AI</div>
+                            <div class="card-subtitle">Конфигурация разделов и режима автоответов воркера</div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <form id="ai-config-form" onsubmit="submitAIConfig(event)" novalidate>
+                            <div class="form-section">
+                                <div class="form-grid-2">
+                                    <div class="form-group">
+                                        <label class="form-label" for="f-ai-mode">Режим автоответа</label>
+                                        <select id="f-ai-mode" class="form-control" required>
+                                            <option value="comment_only">Только комментарий (Безопасный)</option>
+                                            <option value="comment_and_wait">Комментарий + статус "Требует уточнения"</option>
+                                            <option value="comment_and_resolve">Комментарий + статус "Выполнена" (при высоком confidence)</option>
+                                        </select>
+                                        <span class="form-hint">Что делать при генерации автоответа в IntraService.</span>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="f-ai-services">Разделы для автоответов (через запятую)</label>
+                                        <input type="text" id="f-ai-services" class="form-control" placeholder="Например: 10,24,42" autocomplete="off" />
+                                        <span class="form-hint">ID разделов каталога услуг IntraService, на которые AI будет автоматически отвечать.</span>
+                                    </div>
+                                </div>
+                                <div class="form-grid-2" style="margin-top:1rem;">
+                                    <div class="form-group">
+                                        <label class="form-label" for="f-printer-services">Разделы принтеров для диспетчера (через запятую)</label>
+                                        <input type="text" id="f-printer-services" class="form-control" placeholder="Например: 12,15" autocomplete="off" />
+                                        <span class="form-hint">ID разделов, которые обрабатываются printer-worker'ом. AI Responder их пропустит.</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div id="ai-config-alert" style="display:none;"></div>
+                            
+                            <button type="submit" class="btn btn-primary" id="btn-save-ai-config">
+                                Сохранить настройки AI
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="form-grid-2">
+                    <!-- RAG База знаний -->
+                    <div class="card">
+                        <div class="card-header">
+                            <div>
+                                <div class="card-title">База знаний RAG (pgvector)</div>
+                                <div class="card-subtitle">Загрузка и перестроение векторного индекса по закрытым задачам</div>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-group" style="margin-bottom: 1rem;">
+                                <label class="form-label" for="f-rag-limit">Лимит импортируемых задач</label>
+                                <input type="number" id="f-rag-limit" class="form-control" value="50" min="1" max="500" />
+                                <span class="form-hint">Сколько закрытых задач обработать за один запуск перестроения.</span>
+                            </div>
+                            <button class="btn btn-outline" id="btn-rag-build" onclick="triggerRAGBuild()">
+                                Запустить перестроение RAG
+                            </button>
+                            
+                            <!-- RAG Terminal log -->
+                            <div id="rag-terminal" class="terminal" style="margin-top: 1.5rem;">
+                                <div class="terminal-bar">
+                                    <div class="term-dots">
+                                        <div class="term-dot"></div>
+                                        <div class="term-dot"></div>
+                                        <div class="term-dot"></div>
+                                    </div>
+                                    <span class="term-title">Лог перестроения RAG</span>
+                                </div>
+                                <div id="rag-term-body" class="term-body" style="min-height: 150px; max-height: 250px;"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Тестирование автоответа -->
+                    <div class="card">
+                        <div class="card-header">
+                            <div>
+                                <div class="card-title">Тестирование AI-ответа</div>
+                                <div class="card-subtitle">Сгенерировать пробный автоответ для существующей задачи</div>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-group" style="margin-bottom: 1rem;">
+                                <label class="form-label" for="f-test-task-id">ID задачи</label>
+                                <input type="number" id="f-test-task-id" class="form-control" placeholder="Введите ID задачи из IntraService..." required />
+                            </div>
+                            <button class="btn btn-outline" id="btn-test-reply" onclick="triggerTestReply()">
+                                Протестировать генерацию
+                            </button>
+
+                            <div id="test-reply-result" style="display:none; margin-top: 1.5rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1rem;">
+                                <div style="font-size: 0.8rem; color: var(--text-2); margin-bottom: 0.5rem;">
+                                    <strong>Раздел:</strong> <span id="test-reply-service"></span><br>
+                                    <strong>Уверенность:</strong> <span id="test-reply-confidence"></span> | 
+                                    <strong>Решение?</strong> <span id="test-reply-can-resolve"></span> | 
+                                    <strong>Уточнение?</strong> <span id="test-reply-needs-clarify"></span>
+                                </div>
+                                <div style="font-size: 0.72rem; color: var(--text-3); font-style: italic; margin-bottom: 0.5rem;" id="test-reply-reason"></div>
+                                <div style="font-family: inherit; font-size: 0.85rem; white-space: pre-wrap; padding: 0.5rem; background: rgba(0,0,0,0.25); border-radius: 4px; border: 1px solid var(--border);" id="test-reply-text"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
         </div><!-- /content -->
     </div><!-- /main -->
 
@@ -1393,6 +1553,7 @@
             history: 'Журнал операций',
             install: 'Установка принтера',
             kb: 'Поддерживаемые модели',
+            ai: 'AI Воркер',
             settings: 'Настройки'
         };
 
@@ -1514,6 +1675,7 @@
             if (screen === 'history') loadHistory();
             else if (screen === 'install') loadInstallOptions();
             else if (screen === 'kb') loadKB();
+            else if (screen === 'ai') loadAIWorker();
             else if (screen === 'settings') loadSettings();
         }
 
@@ -2009,6 +2171,180 @@
                     </svg>
                     Сохранить настройки
                 `;
+            }
+        }
+        // ─────────────────────── AI Worker ────────────────────────────────
+        let activeRagSse = null;
+
+        async function loadAIWorker() {
+            try {
+                const res = await apiFetch('/admin/api/ai-worker/status');
+                const data = await res.json();
+                
+                // Заполняем метрики
+                document.getElementById('stat-ai-classifications').textContent = data.metrics.classifications;
+                document.getElementById('stat-ai-replies').textContent = data.metrics.replied;
+                document.getElementById('stat-ai-redirects').textContent = data.metrics.redirected;
+                
+                // Заполняем конфигурацию
+                document.getElementById('f-ai-mode').value = data.config.auto_reply_mode;
+                document.getElementById('f-ai-services').value = data.config.auto_reply_service_ids.join(',');
+                document.getElementById('f-printer-services').value = data.config.printer_service_ids.join(',');
+                
+                // Если сборщик RAG запущен, открываем SSE-лог
+                if (data.rag_running) {
+                    openRAGTerminal();
+                } else {
+                    document.getElementById('rag-terminal').classList.remove('active');
+                }
+            } catch (e) {
+                console.error('AI status load error:', e);
+            }
+        }
+
+        async function submitAIConfig(e) {
+            e.preventDefault();
+            const btn = document.getElementById('btn-save-ai-config');
+            const alertEl = document.getElementById('ai-config-alert');
+            
+            const mode = document.getElementById('f-ai-mode').value;
+            const servicesStr = document.getElementById('f-ai-services').value.trim();
+            const printerStr = document.getElementById('f-printer-services').value.trim();
+            
+            const auto_reply_service_ids = servicesStr ? servicesStr.split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x)) : [];
+            const printer_service_ids = printerStr ? printerStr.split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x)) : [];
+            
+            alertEl.style.display = 'none';
+            btn.disabled = true;
+            btn.innerHTML = '<div class="spinner"></div> Сохранение...';
+            
+            try {
+                const res = await apiFetch('/admin/api/ai-worker/config', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        auto_reply_service_ids,
+                        auto_reply_mode: mode,
+                        printer_service_ids
+                    })
+                });
+                
+                if (res.ok) {
+                    alertEl.className = 'alert alert-success';
+                    alertEl.innerHTML = `
+                        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                        Конфигурация AI успешно сохранена
+                    `;
+                    alertEl.style.display = 'flex';
+                    loadAIWorker();
+                } else {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Ошибка сохранения');
+                }
+            } catch (err) {
+                alertEl.className = 'alert alert-error';
+                alertEl.innerHTML = `
+                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                    ${esc(err.message)}
+                `;
+                alertEl.style.display = 'flex';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Сохранить настройки AI';
+            }
+        }
+
+        async function triggerRAGBuild() {
+            const limit = parseInt(document.getElementById('f-rag-limit').value) || 50;
+            const btn = document.getElementById('btn-rag-build');
+            
+            btn.disabled = true;
+            btn.textContent = 'Запуск...';
+            
+            try {
+                const res = await apiFetch(`/admin/api/ai-worker/rag/build?limit=${limit}`, { method: 'POST' });
+                const data = await res.json();
+                
+                if (res.ok) {
+                    openRAGTerminal();
+                } else {
+                    alert('Ошибка: ' + (data.detail || 'Неизвестная ошибка'));
+                }
+            } catch (e) {
+                alert('Ошибка соединения: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Запустить перестроение RAG';
+            }
+        }
+
+        function openRAGTerminal() {
+            const term = document.getElementById('rag-terminal');
+            const body = document.getElementById('rag-term-body');
+            
+            term.classList.add('active');
+            body.textContent = '';
+            
+            if (activeRagSse) activeRagSse.close();
+            
+            activeRagSse = new EventSource('/admin/api/ai-worker/rag/logs');
+            
+            activeRagSse.onmessage = e => {
+                const line = e.data;
+                const span = document.createElement('span');
+                span.textContent = line + '\n';
+                
+                if (line.includes('[ERROR]') || line.includes('FAIL')) span.className = 'term-line-err';
+                else if (line.includes('[OK]') || line.includes('успешно') || line.includes('ЗАВЕРШЕНО')) span.className = 'term-line-ok';
+                else if (line.includes('[WARN]')) span.className = 'term-line-warn';
+                else if (line.includes('[SYSTEM]')) span.className = 'term-line-sys';
+                else span.className = 'term-line-info';
+                
+                body.appendChild(span);
+                body.scrollTop = body.scrollHeight;
+            };
+            
+            activeRagSse.onerror = () => {
+                const span = document.createElement('span');
+                span.className = 'term-line-sys';
+                span.textContent = '\n[SYSTEM] Подключение к логам RAG завершено.\n';
+                body.appendChild(span);
+                activeRagSse.close();
+                activeRagSse = null;
+            };
+        }
+
+        async function triggerTestReply() {
+            const taskId = parseInt(document.getElementById('f-test-task-id').value);
+            const btn = document.getElementById('btn-test-reply');
+            const resultBox = document.getElementById('test-reply-result');
+            
+            if (!taskId || isNaN(taskId)) return alert('Введите корректный ID задачи');
+            
+            btn.disabled = true;
+            btn.textContent = 'Генерация...';
+            resultBox.style.display = 'none';
+            
+            try {
+                const res = await apiFetch(`/admin/api/ai-worker/test-reply/${taskId}`, { method: 'POST' });
+                const data = await res.json();
+                
+                if (res.ok) {
+                    document.getElementById('test-reply-service').textContent = `${data.service_name} (ID: ${data.service_id})`;
+                    document.getElementById('test-reply-confidence').textContent = data.confidence.toFixed(2);
+                    document.getElementById('test-reply-can-resolve').textContent = data.can_resolve ? 'Да' : 'Нет';
+                    document.getElementById('test-reply-needs-clarify').textContent = data.needs_clarification ? 'Да' : 'Нет';
+                    document.getElementById('test-reply-reason').textContent = 'Причина: ' + data.reason;
+                    document.getElementById('test-reply-text').textContent = data.generated_reply;
+                    
+                    resultBox.style.display = 'block';
+                } else {
+                    alert('Ошибка генерации: ' + (data.detail || 'Неизвестная ошибка'));
+                }
+            } catch (e) {
+                alert('Ошибка соединения с сервером: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Протестировать генерацию';
             }
         }
     </script>

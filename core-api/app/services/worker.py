@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from typing import Any
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -26,6 +27,34 @@ logger = logging.getLogger(__name__)
 
 redis_client = None
 scheduler = AsyncIOScheduler()
+
+_ai_classifier = None
+_task_dispatcher = None
+_ai_responder = None
+
+
+def get_ai_classifier():
+    global _ai_classifier
+    if _ai_classifier is None:
+        from app.services.ai_classifier import AIClassifier
+        _ai_classifier = AIClassifier()
+    return _ai_classifier
+
+
+def get_task_dispatcher():
+    global _task_dispatcher
+    if _task_dispatcher is None:
+        from app.services.task_dispatcher import TaskDispatcher
+        _task_dispatcher = TaskDispatcher()
+    return _task_dispatcher
+
+
+def get_ai_responder():
+    global _ai_responder
+    if _ai_responder is None:
+        from app.services.ai_responder import AIResponder
+        _ai_responder = AIResponder()
+    return _ai_responder
 
 
 class VirtualServiceUser:
@@ -536,17 +565,22 @@ async def sync_service_catalog() -> None:
     import base64
     from app.services.crypto import encrypt_token
     
-    service_auth_b64 = None
+    raw_auth = None
     if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
         auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
         plain_b64 = base64.b64encode(auth_str.encode()).decode()
-        service_auth_b64 = encrypt_token(plain_b64)
+        raw_auth = encrypt_token(plain_b64)
     else:
-        service_auth_b64 = await redis.get("worker:service_auth_b64")
+        raw_auth = await redis.get("worker:service_auth_b64")
         
-    if not service_auth_b64:
+    if not raw_auth:
         logger.warning("Не удалось выполнить синхронизацию каталога услуг: отсутствуют учетные данные.")
         return
+        
+    if isinstance(raw_auth, bytes):
+        service_auth_b64: str = raw_auth.decode()
+    else:
+        service_auth_b64: str = raw_auth
         
     try:
         services = await get_services(service_auth_b64)
@@ -590,22 +624,27 @@ async def check_updates():
     redis = get_redis_client()
 
     # Сначала пытаемся взять данные из настроек (переменных окружения)
-    service_auth_b64 = None
+    raw_auth = None
     if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
         auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
         plain_b64 = base64.b64encode(auth_str.encode()).decode()
-        service_auth_b64 = encrypt_token(plain_b64)
+        raw_auth = encrypt_token(plain_b64)
     else:
         # Пытаемся получить сохраненные учетные данные администратора из Redis
-        service_auth_b64 = await redis.get("worker:service_auth_b64")
+        raw_auth = await redis.get("worker:service_auth_b64")
 
-    if not service_auth_b64:
+    if not raw_auth:
         logger.warning(
             "Сервисный аккаунт IntraService не настроен! "
             "Пожалуйста, авторизуйтесь в веб-панели или задайте "
             "INTRASERVICE_SERVICE_LOGIN и INTRASERVICE_SERVICE_PASSWORD в .env."
         )
         return
+
+    if isinstance(raw_auth, bytes):
+        service_auth_b64: str = raw_auth.decode()
+    else:
+        service_auth_b64: str = raw_auth
 
     base_web_url = settings.INTRASERVICE_URL.replace("/api/", "")
 
@@ -614,8 +653,9 @@ async def check_updates():
     current_time_utc = datetime.now(UTC)
 
     # 1. Получаем время последней проверки из Redis
-    last_check_time_str = await redis.get("worker:last_check_time")
-    if last_check_time_str:
+    raw_last_check = await redis.get("worker:last_check_time")
+    if raw_last_check:
+        last_check_time_str = raw_last_check.decode() if isinstance(raw_last_check, bytes) else raw_last_check
         last_check_time_utc = parse_api_date(last_check_time_str)
         if last_check_time_utc:
             if last_check_time_utc.tzinfo is None:
@@ -638,7 +678,7 @@ async def check_updates():
             result = await db.execute(query)
             users = result.scalars().all()
 
-            users_by_is_id = {str(u.is_user_id): u for u in users if u.is_user_id}
+            users_by_is_id: dict[str, Any] = {str(u.is_user_id): u for u in users if u.is_user_id}
 
             service_user = None
             if settings.INTRASERVICE_SERVICE_USER_ID:
@@ -693,49 +733,79 @@ async def check_updates():
                 elif isinstance(updated_tasks_data, list):
                     updated_tasks = updated_tasks_data
 
-            # 3a. Запускаем AI-классификатор для проверки новых задач
+            # 3a. Запускаем AI-классификатор, диспетчер и автоответчик для новых задач
             if new_tasks:
                 try:
-                    from app.services.ai_classifier import AIClassifier
-                    ai_classifier = AIClassifier()
+                    ai_classifier = get_ai_classifier()
+                    dispatcher = get_task_dispatcher()
+                    responder = get_ai_responder()
+
                     for task in new_tasks:
+                        task_id = task.get("Id")
+                        if not task_id:
+                            continue
+
                         # Фильтруем заведомо не-IT сервисы
                         service_name = (task.get("ServiceName") or "").lower()
                         exclude_keywords = ["ахо", "хозяйствен", "канцеляри", "клининг", "охрана"]
                         if any(kw in service_name for kw in exclude_keywords):
                             continue
-                            
-                        task_id = task.get("Id")
-                        redis_key = f"ai_classified:{task_id}"
-                        if await redis.get(redis_key):
-                            continue
-                            
-                        classification = await ai_classifier.classify_task(task)
-                        if classification.action == "redirect":
-                            logger.info(
-                                "AI-классификатор перенаправляет заявку #%d из '%s' в '%s'. Причина: %s",
-                                task_id,
-                                task.get("ServiceName"),
-                                classification.correct_service_name,
-                                classification.reason
-                            )
-                            # 1. Добавляем публичный комментарий
-                            comment_ok = await add_task_comment(
-                                service_auth_b64, task_id, classification.comment_text
-                            )
-                            # 2. Переводим заявку в статус 30 (Отменена)
-                            if comment_ok:
-                                status_ok = await update_task_status(
-                                    service_auth_b64, task_id, 30
+
+                        # 1. Сначала запускаем классификатор (если ещё не классифицировали)
+                        classified_key = f"ai_classified:{task_id}"
+                        is_redirected = False
+                        
+                        if not await redis.get(classified_key):
+                            classification = await ai_classifier.classify_task(task)
+                            # Инкрементируем метрику классификаций
+                            try:
+                                await redis.hincrby("ai:stats", "classifications", 1)
+                            except Exception:
+                                pass
+
+                            if classification.action == "redirect":
+                                logger.info(
+                                    "AI-классификатор перенаправляет заявку #%d из '%s' в '%s'. Причина: %s",
+                                    task_id,
+                                    task.get("ServiceName"),
+                                    classification.correct_service_name,
+                                    classification.reason
                                 )
-                                if status_ok:
-                                    logger.info("AI-классификатор: заявка #%d успешно отменена.", task_id)
-                                    task["_is_redirected"] = True
-                                    
-                        # Помечаем заявку как обработанную классификатором на 7 дней
-                        await redis.set(redis_key, "1", ex=604800)
-                except Exception as e_class:
-                    logger.error("Ошибка при работе AI-классификатора: %s", e_class)
+                                # Добавляем публичный комментарий
+                                comment_ok = await add_task_comment(
+                                    service_auth_b64, task_id, classification.comment_text
+                                )
+                                # Переводим заявку в статус 30 (Отменена)
+                                if comment_ok:
+                                    status_ok = await update_task_status(
+                                        service_auth_b64, task_id, 30
+                                    )
+                                    if status_ok:
+                                        logger.info("AI-классификатор: заявка #%d успешно отменена.", task_id)
+                                        task["_is_redirected"] = True
+                                        is_redirected = True
+                                        try:
+                                            await redis.hincrby("ai:stats", "redirected", 1)
+                                            await redis.hincrby("ai:stats", "total", 1)
+                                        except Exception:
+                                            pass
+
+                            # Помечаем заявку как обработанную классификатором на 7 дней
+                            await redis.set(classified_key, "1", ex=604800)
+
+                        if is_redirected or task.get("_is_redirected"):
+                            continue
+
+                        # 2. Диспетчеризация задач по специализированным воркерам
+                        is_dispatched = await dispatcher.dispatch(task, redis)
+                        if is_dispatched:
+                            continue
+
+                        # 3. AI-автоответчик для оставшихся задач
+                        await responder.process_new_task(task, service_auth_b64, redis)
+
+                except Exception as e_ai:
+                    logger.error("Ошибка при работе AI-модулей в цикле задач: %s", e_ai)
 
             # 4. Проверяем новые
             new_notifications = await _check_new_tasks_global(

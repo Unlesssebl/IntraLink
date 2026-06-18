@@ -95,6 +95,16 @@ class Settings(BaseSettings):
         3072, description="Размерность векторов модели эмбеддингов"
     )
 
+    AUTO_REPLY_SERVICE_IDS: list[int] = Field(
+        default=[], description="ID разделов IntraService для автоматических AI-ответов"
+    )
+    AUTO_REPLY_MODE: str = Field(
+        "comment_only", description="Режим автоответа: comment_only | comment_and_wait | comment_and_resolve"
+    )
+    PRINTER_SERVICE_IDS: list[int] = Field(
+        default=[], description="ID разделов IntraService, которые обслуживаются printer-worker'ом"
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )

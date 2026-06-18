@@ -255,3 +255,101 @@
   }
   ```
 
+---
+
+## 4. Управление AI-воркером (требуют активной JWT-сессии)
+
+### 4.1. Статус и настройки AI
+Возвращает текущие метрики работы AI и конфигурацию из Redis.
+
+- **URL:** `/admin/api/ai-worker/status`
+- **Метод:** `GET`
+- **Ответ (200 OK):**
+  ```json
+  {
+    "metrics": {
+      "classifications": 12,
+      "redirected": 3,
+      "replied": 5,
+      "total": 8,
+      "last_reply_task_id": "12345"
+    },
+    "config": {
+      "auto_reply_service_ids": [12, 15],
+      "auto_reply_mode": "comment_and_wait",
+      "printer_service_ids": [20, 21]
+    },
+    "rag_running": false
+  }
+  ```
+
+### 4.2. Обновление настроек AI
+Сохраняет новые настройки AI-воркера в Redis.
+
+- **URL:** `/admin/api/ai-worker/config`
+- **Метод:** `POST`
+- **Тело запроса (JSON):**
+  ```json
+  {
+    "auto_reply_service_ids": [12, 15],
+    "auto_reply_mode": "comment_and_wait", // comment_only | comment_and_wait | comment_and_resolve
+    "printer_service_ids": [20, 21]
+  }
+  ```
+- **Ответ (200 OK):**
+  ```json
+  {
+    "status": "success"
+  }
+  ```
+
+### 4.3. Тестирование автоответа
+Генерирует тестовый автоответ для конкретной задачи без реальной отправки в IntraService.
+
+- **URL:** `/admin/api/ai-worker/test-reply/{task_id}`
+- **Метод:** `POST`
+- **Ответ (200 OK):**
+  ```json
+  {
+    "task_id": 12345,
+    "task_name": "Не работает принтер",
+    "task_description": "Не печатает Kyocera ECOSYS M2040dn на ПК itt1024",
+    "service_name": "Подключение принтера",
+    "service_id": 20,
+    "generated_reply": "Здравствуйте! Ваша заявка принята в работу...",
+    "confidence": 0.95,
+    "can_resolve": false,
+    "needs_clarification": false,
+    "reason": "Заявка по принтеру Kyocera на ПК itt1024."
+  }
+  ```
+
+### 4.4. Запуск перестроения базы RAG
+Запускает асинхронный процесс извлечения закрытых задач и построения векторных эмбеддингов для RAG.
+
+- **URL:** `/admin/api/ai-worker/rag/build`
+- **Метод:** `POST`
+- **Параметры запроса:** `limit` (int, по умолчанию 50) — лимит задач для обработки.
+- **Ответ (200 OK):**
+  ```json
+  {
+    "status": "success",
+    "message": "Процесс перестроения базы RAG запущен в фоновом режиме."
+  }
+  ```
+
+### 4.5. Поток логов сборщика RAG (SSE)
+SSE эндпоинт для прослушивания логов фонового процесса сборщика RAG в реальном времени.
+
+- **URL:** `/admin/api/ai-worker/rag/logs`
+- **Метод:** `GET`
+- **Заголовки ответа:** `Content-Type: text/event-stream`
+- **Пример ответа:**
+  ```text
+  event: message
+  data: [SYSTEM] Подключение к потоку логов RAG...
+
+  event: message
+  data: [INFO] Начинаем сборку RAG датасета (лимит: 50 заявок)...
+  ```
+

@@ -44,5 +44,6 @@ dev = [
 project-excludes = [
     "**/__pyrefly_virtual__/**",
 ]
+search_path = ["core-api", "bot", "printer-worker"]
 
 

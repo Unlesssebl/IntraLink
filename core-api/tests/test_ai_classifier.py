@@ -8,6 +8,7 @@ async def test_ai_classifier_none_action():
     mock_response = MagicMock()
     mock_parsed = ClassifierResult(
         action="none",
+        confidence=1.0,
         correct_service_id=-1,
         correct_service_name="",
         comment_text="",
@@ -51,6 +52,7 @@ async def test_ai_classifier_redirect_action():
     mock_response = MagicMock()
     mock_parsed = ClassifierResult(
         action="redirect",
+        confidence=1.0,
         correct_service_id=70,
         correct_service_name="Разблокировка электронной почты",
         comment_text="Заявка отменена, так как создана в неверном разделе. Пересоздайте в Разблокировка электронной почты.",
