@@ -25,7 +25,9 @@ dependencies = [
 ]
 
 [tool.pyright]
-extraPaths = ["bot", "core-api", "printer-worker"]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["bot", "core-api", "printer-worker", "ai-worker"]
 exclude = ["**/__pyrefly_virtual__"]
 
 [tool.pytest.ini_options]
@@ -44,6 +46,6 @@ dev = [
 project-excludes = [
     "**/__pyrefly_virtual__/**",
 ]
-search_path = ["core-api", "bot", "printer-worker"]
+search_path = ["core-api", "bot", "printer-worker", "ai-worker"]
 
 

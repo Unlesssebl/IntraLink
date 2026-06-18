@@ -158,4 +158,9 @@ core_api.db-journal
 /core-api-data/
 *.log
 .secrets/
+
+# Node.js
+node_modules/
+core-api/admin-ui/dist/
+
 

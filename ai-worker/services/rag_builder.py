@@ -6,12 +6,13 @@ import time
 from typing import Any, Callable, Coroutine
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
+from sqlalchemy import select, func
 
-from app.config import settings
-from app.services import intraservice
-from app.services.worker import get_redis_client
-from app.database.db import AsyncSessionLocal, TaskKnowledgeBase, init_db
-from app.services.embeddings import get_embedding
+from core.config import settings
+from services import is_client as intraservice
+from services.redis_client import get_redis_client
+from core.db import AsyncSessionLocal, TaskKnowledgeBase, init_db
+from services.embeddings import get_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -300,27 +301,30 @@ async def fetch_task_comments_safe(auth_b64: str, task_id: int, semaphore: async
 
 
 async def build_rag_dataset(
-    limit_tasks: int,
+    filter_id: int,
+    global_quotas: dict,
+    service_quotas: dict,
+    service_ids: list[int],
     auth_b64: str,
     progress_callback: Callable[[str], Coroutine[Any, Any, None]] | None = None
 ) -> dict:
     """
-    Асинхронно перестраивает базу знаний RAG, импортируя закрытые/отмененные заявки.
+    Асинхронно добирает примеры в базу знаний RAG до заполнения квот по услугам и статусам.
     """
     async def log_msg(msg: str):
         logger.info(msg)
         if progress_callback:
             await progress_callback(msg)
 
-    await log_msg(f"Запуск процесса перестроения RAG-базы. Лимит задач: {limit_tasks}")
+    await log_msg(f"Запуск процесса перестроения RAG-базы. Фильтр 1-й линии: {filter_id}")
+    await log_msg(f"Целевые услуги для проверки: {service_ids}")
 
     # Инициализация путей
-    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     scripts_dir = os.path.join(base_dir, "scripts")
     os.makedirs(scripts_dir, exist_ok=True)
     
     checkpoint_path = os.path.join(scripts_dir, "rag_checkpoint.json")
-    jsonl_path = os.path.join(scripts_dir, "rag_dataset.jsonl")
 
     # Инициализация БД
     try:
@@ -330,29 +334,39 @@ async def build_rag_dataset(
         await log_msg(f"Ошибка при инициализации базы данных: {e}")
         return {"status": "error", "message": f"DB Init failed: {e}"}
 
-    # Загружаем чекпоинт
+    # Загружаем чекпоинт (только для skipped_task_ids)
     checkpoint = load_checkpoint(checkpoint_path)
-    processed_task_ids = set(checkpoint.get("processed_task_ids", []))
     skipped_task_ids = checkpoint.get("skipped_task_ids", {})
-    
-    statuses = [28, 30] # 28 - Выполнена, 30 - Отменена
-    last_pages = checkpoint.get("last_pages", {})
-    if not isinstance(last_pages, dict):
-        last_pages = {}
-        
-    for status in statuses:
-        status_str = str(status)
-        if status_str not in last_pages:
-            last_pages[status_str] = 1
+
+    # Считаем текущее наполнение квот в БД
+    db_counts = {}
+    try:
+        async with AsyncSessionLocal() as session:
+            query = select(
+                TaskKnowledgeBase.service_id,
+                TaskKnowledgeBase.status_name,
+                func.count(TaskKnowledgeBase.task_id)
+            ).where(TaskKnowledgeBase.is_blacklisted == False).group_by(
+                TaskKnowledgeBase.service_id,
+                TaskKnowledgeBase.status_name
+            )
+            res = await session.execute(query)
+            for s_id, status_name, cnt in res.all():
+                if s_id not in db_counts:
+                    db_counts[s_id] = {}
+                db_counts[s_id][status_name] = cnt
+    except Exception as e:
+        await log_msg(f"Ошибка при чтении текущей статистики из БД: {e}")
+        return {"status": "error", "message": f"DB read failed: {e}"}
 
     stats = {
         "total_inspected": 0,
         "added_to_db": 0,
-        "already_in_checkpoint": 0,
         "skipped_non_it": 0,
         "skipped_no_comments": 0,
         "skipped_no_engineer_comments": 0,
         "skipped_meaningless_solution": 0,
+        "skipped_duplicates": 0,
         "llm_errors": 0,
     }
 
@@ -362,211 +376,212 @@ async def build_rag_dataset(
     # Инициализируем aiohttp сессию
     await intraservice.init_session()
     
-    new_processed_count = 0
     try:
-        for status in statuses:
-            status_str = str(status)
-            page = last_pages.get(status_str, 1)
-            await log_msg(f"Статус {status}: опрашиваем страницу {page}...")
-            
-            while new_processed_count < limit_tasks:
-                tasks_data = await intraservice.get_tasks_by_status(
-                    auth_b64=auth_b64, status_id=status, page=page, page_size=50
-                )
+        for service_id in service_ids:
+            for status_id in [28, 30]:
+                status_name = "Закрыта" if status_id == 28 else "Отменена"
                 
-                if not tasks_data or "Tasks" not in tasks_data:
-                    await log_msg(f"Больше нет заявок для статуса {status}.")
-                    break
-                    
-                tasks = tasks_data["Tasks"]
-                if not tasks:
-                    await log_msg(f"Страница {page} для статуса {status} пуста. Переходим к следующему статусу.")
-                    break
-                    
-                await log_msg(f"Получено {len(tasks)} заявок на странице {page} для статуса {status}")
+                # Вычисляем квоту для данной услуги и статуса
+                quota = service_quotas.get(str(service_id), {}).get(str(status_id))
+                if quota is None:
+                    quota = global_quotas.get(str(status_id))
+                if quota is None:
+                    quota = 10 if status_id == 28 else 5
                 
-                tasks_to_process = []
-                for task in tasks:
-                    stats["total_inspected"] += 1
-                    task_id = task.get("Id")
-                    task_id_str = str(task_id)
-                    
-                    if task_id in processed_task_ids or task_id_str in skipped_task_ids:
-                        stats["already_in_checkpoint"] += 1
-                        continue
-                        
-                    should_skip, reason = should_skip_task_by_service_type(task)
-                    if should_skip:
-                        skipped_task_ids[task_id_str] = f"non_it_service: {reason}"
-                        stats["skipped_non_it"] += 1
-                        save_checkpoint(checkpoint_path, {
-                            "processed_task_ids": list(processed_task_ids),
-                            "skipped_task_ids": skipped_task_ids,
-                            "last_pages": last_pages
-                        })
-                        continue
-                        
-                    async with AsyncSessionLocal() as session:
-                        existing = await session.get(TaskKnowledgeBase, task_id)
-                        if existing:
-                            processed_task_ids.add(task_id)
-                            save_checkpoint(checkpoint_path, {
-                                "processed_task_ids": list(processed_task_ids),
-                                "skipped_task_ids": skipped_task_ids,
-                                "last_pages": last_pages
-                            })
-                            continue
-                            
-                    tasks_to_process.append(task)
-                    
-                if not tasks_to_process:
-                    page += 1
-                    last_pages[status_str] = page
-                    save_checkpoint(checkpoint_path, {
-                        "processed_task_ids": list(processed_task_ids),
-                        "skipped_task_ids": skipped_task_ids,
-                        "last_pages": last_pages
-                    })
+                current_count = db_counts.get(service_id, {}).get(status_name, 0)
+                
+                if current_count >= quota:
+                    await log_msg(f"Услуга ID {service_id}, статус '{status_name}': квота уже заполнена ({current_count}/{quota}).")
                     continue
-                    
-                # Параллельно опрашиваем комментарии
-                comments_semaphore = asyncio.Semaphore(5)
-                comments_results = await asyncio.gather(*[
-                    fetch_task_comments_safe(auth_b64, task.get("Id"), comments_semaphore)
-                    for task in tasks_to_process
-                ])
-                comments_map = {tid: c for tid, c in comments_results}
                 
-                for task in tasks_to_process:
-                    if new_processed_count >= limit_tasks:
+                needed = quota - current_count
+                await log_msg(f"Услуга ID {service_id}, статус '{status_name}': требуется собрать {needed} примеров (уже собрано {current_count}, квота {quota}).")
+                
+                page = 1
+                added_for_combo = 0
+                
+                while added_for_combo < needed:
+                    # Точечный запрос по фильтру, разделу и статусу
+                    params = {
+                        "include": "status,customfields,service",
+                        "ServiceIds": str(service_id),
+                        "StatusIds": str(status_id),
+                        "page": page,
+                        "pageSize": 50
+                    }
+                    if filter_id > 0:
+                        params["filterId"] = str(filter_id)
+                    tasks_data = await intraservice.get_tasks(auth_b64, params)
+                    
+                    if not tasks_data or "Tasks" not in tasks_data:
+                        await log_msg(f"Больше нет заявок для услуги ID {service_id} и статуса '{status_name}'.")
                         break
                         
-                    task_id = task.get("Id")
-                    task_id_str = str(task_id)
-                    comments = comments_map.get(task_id) or []
+                    tasks = tasks_data["Tasks"]
+                    if not tasks:
+                        await log_msg(f"Страница {page} пуста для услуги ID {service_id} и статуса '{status_name}'. Закончили сбор.")
+                        break
+                        
+                    await log_msg(f"Получено {len(tasks)} заявок на странице {page} для услуги ID {service_id} и статуса '{status_name}'.")
                     
-                    valid_comments = []
-                    for item in comments:
-                        comment_text = item.get("Comments") or item.get("Comment")
-                        if comment_text:
-                            comment_text_str = str(comment_text).strip()
-                            if comment_text_str and "автоматически переведена в статус" not in comment_text_str:
-                                valid_comments.append(item)
+                    tasks_to_process = []
+                    for task in tasks:
+                        stats["total_inspected"] += 1
+                        task_id = task.get("Id")
+                        task_id_str = str(task_id)
+                        
+                        # 1. Проверяем в БД: не в черном ли списке и не собран ли уже?
+                        async with AsyncSessionLocal() as db_session:
+                            db_task = await db_session.get(TaskKnowledgeBase, task_id)
+                            if db_task:
+                                if db_task.is_blacklisted:
+                                    continue
+                                else:
+                                    # Уже в базе, не трогаем
+                                    continue
+                                    
+                        # 2. Проверяем чекпоинт пропущенных
+                        if task_id_str in skipped_task_ids:
+                            continue
+                            
+                        # 3. Фильтруем non-IT разделы
+                        should_skip, reason = should_skip_task_by_service_type(task)
+                        if should_skip:
+                            skipped_task_ids[task_id_str] = f"non_it_service: {reason}"
+                            stats["skipped_non_it"] += 1
+                            save_checkpoint(checkpoint_path, {"skipped_task_ids": skipped_task_ids})
+                            continue
+                            
+                        tasks_to_process.append(task)
+                        
+                    if not tasks_to_process:
+                        page += 1
+                        continue
+                        
+                    # Параллельно опрашиваем комментарии
+                    comments_semaphore = asyncio.Semaphore(5)
+                    comments_results = await asyncio.gather(*[
+                        fetch_task_comments_safe(auth_b64, task.get("Id"), comments_semaphore)
+                        for task in tasks_to_process
+                    ])
+                    comments_map = {tid: c for tid, c in comments_results}
+                    
+                    for task in tasks_to_process:
+                        if added_for_combo >= needed:
+                            break
+                            
+                        task_id = task.get("Id")
+                        task_id_str = str(task_id)
+                        comments = comments_map.get(task_id) or []
+                        
+                        valid_comments = []
+                        for item in comments:
+                            comment_text = item.get("Comments") or item.get("Comment")
+                            if comment_text:
+                                comment_text_str = str(comment_text).strip()
+                                if comment_text_str and "автоматически переведена в статус" not in comment_text_str:
+                                    valid_comments.append(item)
+                                    
+                        if not valid_comments:
+                            skipped_task_ids[task_id_str] = "no_comments"
+                            stats["skipped_no_comments"] += 1
+                            save_checkpoint(checkpoint_path, {"skipped_task_ids": skipped_task_ids})
+                            continue
+                            
+                        if not has_engineer_comment(task, valid_comments):
+                            skipped_task_ids[task_id_str] = "no_engineer_comments"
+                            stats["skipped_no_engineer_comments"] += 1
+                            save_checkpoint(checkpoint_path, {"skipped_task_ids": skipped_task_ids})
+                            continue
+                            
+                        # LLM анализ
+                        kb_entry = await process_task_with_gemini(llm_client, task, valid_comments)
+                        if not kb_entry:
+                            stats["llm_errors"] += 1
+                            continue
+                            
+                        if not is_meaningful_solution(kb_entry.solution):
+                            await log_msg(f"Заявка #{task_id} отклонена: неинформативное решение.")
+                            skipped_task_ids[task_id_str] = f"meaningless_solution: {kb_entry.solution[:50]}..."
+                            stats["skipped_meaningless_solution"] += 1
+                            save_checkpoint(checkpoint_path, {"skipped_task_ids": skipped_task_ids})
+                            continue
+                            
+                        # Генерируем эмбеддинг
+                        document_text = f"Проблема: {kb_entry.problem}\nРешение: {kb_entry.solution}"
+                        try:
+                            emb = await get_embedding(document_text)
+                        except Exception as e:
+                            await log_msg(f"Ошибка при генерации эмбеддинга для заявки #{task_id}: {e}")
+                            stats["llm_errors"] += 1
+                            continue
+                            
+                        # Семантическая дедупликация
+                        is_duplicate = False
+                        try:
+                            async with AsyncSessionLocal() as db_session:
+                                # Используем pgvector косинусное расстояние
+                                query = select(
+                                    TaskKnowledgeBase,
+                                    (1.0 - TaskKnowledgeBase.embedding.cosine_distance(emb)).label("similarity")
+                                ).where(
+                                    TaskKnowledgeBase.service_id == service_id,
+                                    TaskKnowledgeBase.is_blacklisted == False,
+                                    TaskKnowledgeBase.embedding.is_not(None)
+                                ).order_by(
+                                    TaskKnowledgeBase.embedding.cosine_distance(emb)
+                                ).limit(1)
                                 
-                    if not valid_comments:
-                        skipped_task_ids[task_id_str] = "no_comments"
-                        stats["skipped_no_comments"] += 1
-                        save_checkpoint(checkpoint_path, {
-                            "processed_task_ids": list(processed_task_ids),
-                            "skipped_task_ids": skipped_task_ids,
-                            "last_pages": last_pages
-                        })
-                        continue
+                                res_dup = await db_session.execute(query)
+                                row = res_dup.first()
+                                if row:
+                                    existing_entry, similarity = row
+                                    if similarity > 0.95:
+                                        await log_msg(f"Заявка #{task_id} отклонена: семантический дубликат заявки #{existing_entry.task_id} (похожесть {similarity:.3f})")
+                                        skipped_task_ids[task_id_str] = f"semantic_duplicate_of_{existing_entry.task_id}"
+                                        save_checkpoint(checkpoint_path, {"skipped_task_ids": skipped_task_ids})
+                                        stats["skipped_duplicates"] += 1
+                                        is_duplicate = True
+                        except Exception as e:
+                            await log_msg(f"Ошибка при проверке дубликатов для заявки #{task_id}: {e}")
+                            
+                        if is_duplicate:
+                            continue
+                            
+                        # Сохраняем в БД
+                        try:
+                            service_name = task.get("ServiceName") or ""
+                            async with AsyncSessionLocal() as db_session:
+                                db_entry = TaskKnowledgeBase(
+                                    task_id=task_id,
+                                    original_name=task.get("Name") or "",
+                                    problem=kb_entry.problem,
+                                    solution=kb_entry.solution,
+                                    service_id=service_id,
+                                    service_name=service_name,
+                                    status_name=status_name,
+                                    classification_data=kb_entry.classification.model_dump(),
+                                    embedding=emb,
+                                    is_blacklisted=False
+                                )
+                                db_session.add(db_entry)
+                                await db_session.commit()
+                                await log_msg(f"Заявка #{task_id} успешно добавлена в векторную БД.")
+                                
+                                added_for_combo += 1
+                                stats["added_to_db"] += 1
+                        except Exception as e:
+                            await log_msg(f"Ошибка записи в БД для заявки #{task_id}: {e}")
+                            stats["llm_errors"] += 1
+                            continue
+                            
+                        # Небольшая задержка, чтобы не нагружать Rate Limiting API/LLM
+                        await asyncio.sleep(4.0)
                         
-                    if not has_engineer_comment(task, valid_comments):
-                        skipped_task_ids[task_id_str] = "no_engineer_comments"
-                        stats["skipped_no_engineer_comments"] += 1
-                        save_checkpoint(checkpoint_path, {
-                            "processed_task_ids": list(processed_task_ids),
-                            "skipped_task_ids": skipped_task_ids,
-                            "last_pages": last_pages
-                        })
-                        continue
-                        
-                    kb_entry = await process_task_with_gemini(llm_client, task, valid_comments)
-                    if not kb_entry:
-                        stats["llm_errors"] += 1
-                        continue
-                        
-                    if not is_meaningful_solution(kb_entry.solution):
-                        await log_msg(f"Заявка #{task_id} отклонена: неинформативное решение.")
-                        skipped_task_ids[task_id_str] = f"meaningless_solution: {kb_entry.solution[:50]}..."
-                        stats["skipped_meaningless_solution"] += 1
-                        save_checkpoint(checkpoint_path, {
-                            "processed_task_ids": list(processed_task_ids),
-                            "skipped_task_ids": skipped_task_ids,
-                            "last_pages": last_pages
-                        })
-                        continue
-                        
-                    # Генерируем эмбеддинг
-                    document_text = f"Проблема: {kb_entry.problem}\nРешение: {kb_entry.solution}"
-                    try:
-                        emb = await get_embedding(document_text)
-                    except Exception as e:
-                        await log_msg(f"Ошибка при генерации эмбеддинга для заявки #{task_id}: {e}")
-                        stats["llm_errors"] += 1
-                        continue
-
-                    # Сохраняем в БД
-                    try:
-                        status_id = task.get("StatusId")
-                        status_name = "Закрыта" if status_id == 28 else ("Отменена" if status_id == 30 else (task.get("StatusName") or str(status_id)))
-                        service_id = int(task.get("ServiceId")) if task.get("ServiceId") is not None else -1
-                        service_name = task.get("ServiceName") or ""
-
-                        async with AsyncSessionLocal() as session:
-                            db_entry = TaskKnowledgeBase(
-                                task_id=task_id,
-                                original_name=task.get("Name") or "",
-                                problem=kb_entry.problem,
-                                solution=kb_entry.solution,
-                                service_id=service_id,
-                                service_name=service_name,
-                                status_name=status_name,
-                                classification_data=kb_entry.classification.model_dump(),
-                                embedding=emb
-                            )
-                            session.add(db_entry)
-                            await session.commit()
-                            await log_msg(f"Заявка #{task_id} успешно добавлена в векторную БД.")
-                    except Exception as e:
-                        await log_msg(f"Ошибка записи в БД для заявки #{task_id}: {e}")
-                        stats["llm_errors"] += 1
-                        continue
-                        
-                    # Сохранение в JSONL
-                    try:
-                        with open(jsonl_path, "a", encoding="utf-8") as f:
-                            record = {
-                                "task_id": task_id,
-                                "original_name": task.get("Name") or "",
-                                "service_name": service_name,
-                                "service_id": service_id,
-                                "status_name": status_name,
-                                "problem": kb_entry.problem,
-                                "solution": kb_entry.solution,
-                                "classification": kb_entry.classification.model_dump(),
-                                "timestamp": time.time()
-                            }
-                            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    except Exception as e:
-                        logger.error("Ошибка записи в JSONL: %s", e)
-
-                    processed_task_ids.add(task_id)
-                    save_checkpoint(checkpoint_path, {
-                        "processed_task_ids": list(processed_task_ids),
-                        "skipped_task_ids": skipped_task_ids,
-                        "last_pages": last_pages
-                    })
+                    page += 1
                     
-                    new_processed_count += 1
-                    stats["added_to_db"] += 1
-                    
-                    # Делаем паузу перед следующим запросом к LLM
-                    await asyncio.sleep(4.0)
-                    
-                page += 1
-                last_pages[status_str] = page
-                
-            save_checkpoint(checkpoint_path, {
-                "processed_task_ids": list(processed_task_ids),
-                "skipped_task_ids": skipped_task_ids,
-                "last_pages": last_pages
-            })
-            
         await log_msg("=== ПЕРЕСТРОЕНИЕ RAG БАЗЫ ЗАВЕРШЕНО ===")
-        await log_msg(f"Проверено: {stats['total_inspected']}, Добавлено: {stats['added_to_db']}")
+        await log_msg(f"Проверено: {stats['total_inspected']}, Добавлено: {stats['added_to_db']}, Пропущено дублей: {stats.get('skipped_duplicates', 0)}")
         
     finally:
         await intraservice.close_session()

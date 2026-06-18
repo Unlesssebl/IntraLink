@@ -140,6 +140,60 @@ async def get_domain_auth_status():
         return {"is_configured": False, "username": None}
 
 
+class SystemConfigUpdate(BaseModel):
+    printer_service_ids: list[int]
+    rag_filter_id: int
+
+
+@router.get("/admin/api/system-config", dependencies=[Depends(verify_admin_jwt)])
+async def get_system_config():
+    """
+    Возвращает общие системные настройки из Redis (фильтр RAG, принтеры и т.д.).
+    """
+    try:
+        r = get_redis_client()
+        printer_services_str = await r.get("config:printer_service_ids")
+        if printer_services_str:
+            printer_service_ids = json.loads(printer_services_str)
+        else:
+            printer_service_ids = settings.PRINTER_SERVICE_IDS
+
+        filter_id_str = await r.get("config:rag_filter_id")
+        rag_filter_id = int(filter_id_str) if filter_id_str else 0
+
+        return {
+            "printer_service_ids": printer_service_ids,
+            "rag_filter_id": rag_filter_id
+        }
+    except Exception as e:
+        logger.exception("Ошибка получения системной конфигурации: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка сервера: {e}",
+        )
+
+
+@router.post("/admin/api/system-config", dependencies=[Depends(verify_admin_jwt)])
+async def update_system_config(payload: SystemConfigUpdate):
+    """
+    Сохраняет общие системные настройки в Redis.
+    """
+    try:
+        r = get_redis_client()
+        await r.set("config:printer_service_ids", json.dumps(payload.printer_service_ids))
+        await r.set("config:rag_filter_id", str(payload.rag_filter_id))
+        
+        logger.info("Системная конфигурация обновлена: printer_services=%s, rag_filter_id=%s",
+                    payload.printer_service_ids, payload.rag_filter_id)
+        return {"status": "success"}
+    except Exception as e:
+        logger.exception("Ошибка сохранения системной конфигурации: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось сохранить: {e}",
+        )
+
+
 # Вспомогательный класс для ручного запуска задачи
 class ManualJobRequest(BaseModel):
     target_pc: str

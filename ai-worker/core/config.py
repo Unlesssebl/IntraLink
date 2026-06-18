@@ -20,13 +20,12 @@ def read_secret_file(file_path_env: str) -> str | None:
 
 
 class Settings(BaseSettings):
-    INTRASERVICE_URL: str = Field(..., description="URL-адрес API IntraService")
+    CORE_API_URL: str = Field("http://localhost:8000/api/v1", description="URL-адрес API Core Gateway")
+    BOT_API_KEY: str | None = Field(None, description="Предоставленный API-ключ для авторизации бота")
+    INTRASERVICE_URL: str = Field("http://localhost:8000/api/", description="URL-адрес API IntraService")
     DATABASE_URL: str = Field(
         "postgresql+asyncpg://postgres:postgres@localhost:5432/intraservice",
         description="Строка подключения к базе данных",
-    )
-    BOT_API_KEY: str | None = Field(
-        None, description="Предоставленный API-ключ для авторизации бота"
     )
     SSL_VERIFY: bool = Field(
         False, description="Проверка SSL-сертификатов при запросах к IntraService"
@@ -34,28 +33,11 @@ class Settings(BaseSettings):
     REDIS_URL: str = Field(
         "redis://localhost:6379/0", description="URL-адрес для подключения к Redis"
     )
-    POLLING_INTERVAL: int = Field(
-        30, description="Интервал периодического опроса в секундах"
-    )
-    ENCRYPTION_KEY: str | None = Field(
-        None,
-        description=(
-            "Ключ для шифрования токенов в БД. Сгенерировать: "
-            'python -c "from cryptography.fernet import Fernet; '
-            'print(Fernet.generate_key().decode())"'
-        ),
-    )
     INTRASERVICE_TZ: str = Field(
         "Europe/Moscow", description="Часовой пояс системы IntraService"
     )
     MAX_CONCURRENT_REQUESTS: int = Field(
         10, description="Лимит одновременных подключений к IntraService"
-    )
-    PRINTER_PC_CUSTOM_FIELD_ID: int = Field(
-        1112, description="ID кастомного поля 'Имя ПК'"
-    )
-    PRINTER_IP_CUSTOM_FIELD_ID: int = Field(
-        1103, description="ID кастомного поля 'МФУ/IP-адрес'"
     )
     STATUS_OPEN_ID: int = Field(
         31, description="ID статуса 'Открыта'"
@@ -64,7 +46,7 @@ class Settings(BaseSettings):
         35, description="ID статуса 'Требует уточнения'"
     )
 
-    # Параметры сервисного аккаунта и JWT
+    # Параметры сервисного аккаунта
     INTRASERVICE_SERVICE_LOGIN: str | None = Field(
         None, description="Логин сервисного аккаунта IntraService для фонового воркера"
     )
@@ -73,9 +55,6 @@ class Settings(BaseSettings):
     )
     INTRASERVICE_SERVICE_USER_ID: int | None = Field(
         None, description="ID сервисного аккаунта в IntraService"
-    )
-    JWT_SECRET: str | None = Field(
-        None, description="Секрет для подписи сессионных JWT токенов администратора"
     )
 
     # Параметры LiteLLM и эмбеддингов
@@ -101,13 +80,9 @@ class Settings(BaseSettings):
     AUTO_REPLY_MODE: str = Field(
         "comment_only", description="Режим автоответа: comment_only | comment_and_wait | comment_and_resolve"
     )
-    PRINTER_SERVICE_IDS: list[int] = Field(
-        default=[], description="ID разделов IntraService, которые обслуживаются printer-worker'ом"
-    )
-    
-    EXCLUDED_SERVICE_IDS: list[int] = Field(
-        default=[173, 174, 72, 125, 136, 189, 188],
-        description="ID разделов IntraService, которые глобально исключаются из системы"
+
+    ENCRYPTION_KEY: str | None = Field(
+        None, description="Ключ для шифрования токенов в БД"
     )
 
     model_config = SettingsConfigDict(
@@ -118,39 +93,13 @@ class Settings(BaseSettings):
         super().__init__(**values)
         
         # Попытка прочитать секреты из примонтированных файлов (Docker Secrets)
-        if not self.ENCRYPTION_KEY:
-            if key := read_secret_file("ENCRYPTION_KEY_FILE"):
-                self.ENCRYPTION_KEY = key
-
         if not self.INTRASERVICE_SERVICE_PASSWORD:
             if pwd := read_secret_file("INTRASERVICE_SERVICE_PASSWORD_FILE"):
                 self.INTRASERVICE_SERVICE_PASSWORD = pwd
 
-        if not self.JWT_SECRET:
-            if secret := read_secret_file("JWT_SECRET_FILE"):
-                self.JWT_SECRET = secret
-            else:
-                generated_jwt_secret = secrets.token_hex(32)
-                logger.warning(
-                    "JWT_SECRET не задан! Сгенерирован временный случайный ключ. "
-                    "Сессии веб-панели будут сброшены при перезапуске."
-                )
-                self.JWT_SECRET = generated_jwt_secret
-
-        if not self.BOT_API_KEY:
-            # TODO(security): В продакшене обязательно настроить BOT_API_KEY
-            # в переменных окружения.
-            # Для разработки сгенерируем временный ключ, чтобы сервис запустился,
-            # но выдадим предупреждение.
-            generated_key = secrets.token_hex(32)
-            logger.warning(
-                "ВНИМАНИЕ: BOT_API_KEY не задан в окружении! "
-                "Сгенерирован временный случайный ключ: %s. "
-                "Этот ключ будет сбрасываться при каждом перезапуске сервиса.",
-                generated_key,
-            )
-            self.BOT_API_KEY = generated_key
+        if not self.ENCRYPTION_KEY:
+            if key := read_secret_file("ENCRYPTION_KEY_FILE"):
+                self.ENCRYPTION_KEY = key
 
 
 settings = Settings()
-

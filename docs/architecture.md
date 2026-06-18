@@ -10,9 +10,10 @@
 
 | Сервис | Технологии | Роль |
 |---|---|---|
-| **Core API** | FastAPI, SQLAlchemy 2.0, APScheduler, pgvector, LiteLLM | Шлюз к IntraService API, управление БД, фоновый мониторинг, классификация заявок RAG, автоматические ответы, диспетчеризация задач |
+| **Core API** | FastAPI, SQLAlchemy 2.0, APScheduler | Шлюз к IntraService API, управление БД, фоновый мониторинг, диспетчеризация задач, API для веб-панели |
 | **Telegram Bot** | aiogram 3.x, aiohttp | Пользовательский интерфейс, доставка уведомлений |
 | **Printer Worker** | Pydantic, aioredis, pywinrm | Автоматическое подключение сетевых/локальных принтеров |
+| **AI Worker** | Python, pgvector, LiteLLM, aioredis | Автоматическая классификация новых заявок с помощью RAG и LLM, отправка автоответов и перенаправление задач |
 
 Для асинхронной связи между сервисами используются два канала:
 - **HTTP REST** с заголовком `X-Bot-Api-Key` — для синхронных запросов от Бота к Core API.
@@ -68,6 +69,14 @@ flowchart TB
         PW_Strategies["strategies/<br/>(WinRM/SMB)"]:::dbStyle
     end
 
+    subgraph AI_Worker_Service ["AI Worker Service"]
+        direction TB
+        AIW_Main["🚀 worker_main.py"]:::serviceStyle
+        AIW_Classifier["classifier.py<br/>(AI Классификатор)"]:::serviceStyle
+        AIW_Responder["responder.py<br/>(AI Автоответчик)"]:::serviceStyle
+        AIW_RAG["rag_builder.py<br/>(Построение RAG)"]:::dbStyle
+    end
+
     subgraph Core_API_Service ["Core API Service (Python / FastAPI)"]
         direction TB
         API_Main["🚀 main.py"]:::serviceStyle
@@ -83,7 +92,6 @@ flowchart TB
         subgraph API_Services ["Службы & База данных"]
             IS_Client["intraservice.py<br/>(aiohttp клиент)"]:::serviceStyle
             Worker["worker.py<br/>(APScheduler + Redis Publisher)"]:::serviceStyle
-            AI_Classifier["ai_classifier.py<br/>(AI Классификатор)"]:::serviceStyle
             DB_Module["db.py<br/>(SQLAlchemy async)"]:::dbStyle
         end
     end
@@ -117,9 +125,15 @@ flowchart TB
     Worker -->|Чтение пользователей & стейта| DB_Module
     Worker -->|Запрос обновлений| IS_Client
     Worker -->|Публикация событий| Redis_Broker
-    Worker -->|Классификация новых заявок| AI_Classifier
-    AI_Classifier -->|Поиск похожих кейсов| Postgres_DB
-    AI_Classifier -->|REST HTTP Basic| LiteLLM_API
+    
+    %% AI-Worker -> БД, Redis, IntraService и LiteLLM
+    Redis_Broker -->|События new_task / команды RAG| AIW_Main
+    AIW_Main -->|Классификация заявок| AIW_Classifier
+    AIW_Main -->|Генерация автоответов| AIW_Responder
+    AIW_Main -->|Сборка базы| AIW_RAG
+    AIW_Classifier & AIW_RAG -->|Поиск / Запись RAG кейсов| Postgres_DB
+    AIW_Classifier & AIW_Responder -->|Запросы генерации (Gemini)| LiteLLM_API
+    AIW_Classifier & AIW_Responder -->|Действия по задачам| IS_Client
     
     %% Redis -> Бот и Printer Worker
     Redis_Broker -->|Доставка событий| Redis_Listener
@@ -159,11 +173,21 @@ flowchart TB
 *   **`worker_services/`** — Клиент Core API и подписчик Redis. Включает механизм целевой ранней фильтрации задач по ID исполнителя (`PRINTER_EXECUTOR_IS_USER_ID`) или логину (`PRINTER_EXECUTOR_LOGIN`), защищающий воркер от холостых HTTP-запросов и обработки чужих заявок.
 *   **`worker_config.py`** — Настройки и конфигурация микросервиса.
 
-### ⚡ В. Core API (`core-api/app/`)
+### 🧠 В. AI Worker (`ai-worker/`)
+
+*   **`worker_main.py`** — Точка запуска. Инициализирует Redis-подписчика, клиентов баз данных и запускает фоновые обработчики событий.
+*   **`core/`** — Конфигурация приложения (`config.py`) и утилиты шифрования.
+*   **`services/`** — Бизнес-логика:
+    *   **`classifier.py`** — AI-классификатор, определяющий соответствие разделов с помощью RAG и LLM.
+    *   **`responder.py`** — AI-автоответчик для заявок на основе базы знаний RAG.
+    *   **`rag_builder.py`** — Сборщик данных и наполнитель векторной базы (pgvector).
+    *   **`is_client.py`** — Клиент взаимодействия с IntraService API.
+
+### ⚡ Г. Core API (`core-api/app/`)
 
 *   **`main.py`** — Точка запуска FastAPI. Управляет жизненным циклом (lifespan): инициализирует БД, HTTP-сессию IntraService и фоновый Worker.
 *   **`config.py`** — Конфигурация на базе Pydantic Settings.
-*   **`database/db.py`** — Настройка SQLAlchemy Async. Содержит декларативную ORM-модель `User`.
+*   **`database/db.py`** — Настройка SQLAlchemy Async. Содержит ORM-модели.
 *   **`models/schemas.py`** — Схемы Pydantic для валидации входных/выходных данных API.
 *   **`routers/`** — Контроллеры (endpoints):
     *   **`auth.py`** — `/auth/login`, `/auth/logout` (API для Telegram-бота).
@@ -171,15 +195,11 @@ flowchart TB
     *   **`ai_worker.py`** — `/admin/api/ai-worker/...` (управление AI-воркером, настройки, запуск RAG, тестирование ответов).
     *   **`tasks.py`** — `/tasks`, `/tasks/{id}/lifetime`, `/statuses`.
     *   **`users.py`** — `/users/{tg_user_id}`.
-    *   **`deps.py`** — Зависимости FastAPI: проверка `X-Bot-Api-Key` (через `secrets.compare_digest`) для бота, а также проверка JWT в HttpOnly куках `verify_admin_jwt` для администратора.
+    *   **`deps.py`** — Зависимости FastAPI (проверка токенов и JWT).
 *   **`services/`** — Бизнес-логика:
     *   **`intraservice.py`** — Низкоуровневый aiohttp-клиент для REST API IntraService.
-    *   **`worker.py`** — Воркер фонового опроса (APScheduler + Redis Publisher + Автомаршрутизация + Диспетчеризация).
+    *   **`worker.py`** — Воркер фонового опроса (APScheduler + Redis Publisher + Автомаршрутизация).
     *   **`crypto.py`** — Симметричное шифрование паролей пользователей (Fernet).
-    *   **`ai_classifier.py`** — Компонент AI-классификации и автоотмены/перенаправления ошибочно созданных заявок на основе RAG (PostgreSQL + pgvector) и LLM.
-    *   **`ai_responder.py`** — Компонент автоответов пользователям от лица инженера техподдержки на базе RAG и Gemini.
-    *   **`task_dispatcher.py`** — Маршрутизатор задач для специализированных воркеров с защитой от гонок.
-    *   **`rag_builder.py`** — Фоновый сборщик и индексатор закрытых заявок в векторную базу pgvector.
 
 ---
 

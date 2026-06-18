@@ -1,12 +1,11 @@
 from collections.abc import AsyncGenerator
-
 from sqlalchemy import BigInteger, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 
-from app.config import settings
+from core.config import settings
 
 # Настройка асинхронного движка SQLAlchemy
 engine = create_async_engine(settings.DATABASE_URL, echo=False)
@@ -21,7 +20,7 @@ class Base(DeclarativeBase):
     pass
 
 
-# Модель пользователя
+# Модель пользователя (для совместимости/информации)
 class User(Base):
     __tablename__ = "users"
 
@@ -31,9 +30,7 @@ class User(Base):
     is_user_id: Mapped[int] = mapped_column(Integer, nullable=True)
     last_task_id: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     last_comment_id: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    last_check_time: Mapped[str] = mapped_column(
-        String, nullable=True
-    )  # Храним в виде строки ISO, как было в боте
+    last_check_time: Mapped[str] = mapped_column(String, nullable=True)
 
 
 # Модель базы знаний RAG (датасета заявок)
@@ -58,7 +55,7 @@ class TaskKnowledgeBase(Base):
     is_blacklisted: Mapped[bool] = mapped_column(default=False, server_default="false")
 
 
-# Зависимость (dependency) для получения сессии базы данных в FastAPI
+# Зависимость для получения сессии базы данных
 async def get_db() -> AsyncGenerator[AsyncSession]:
     async with AsyncSessionLocal() as session:
         try:
@@ -67,7 +64,7 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
             await session.close()
 
 
-# Функция инициализации БД (создание таблиц)
+# Функция инициализации БД (создание таблиц и расширения vector)
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))

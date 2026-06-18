@@ -3,9 +3,10 @@ import json
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 
-from app.config import settings
-from app.services.ai_classifier import AIClassifier
-from app.services.intraservice import add_task_comment, update_task_status
+from core.config import settings
+from services.classifier import AIClassifier
+from services.is_client import add_task_comment, update_task_status
+from services.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class AIResponder:
         similar_cases = await self._classifier.get_similar_cases(name, description)
 
         prompt = f"""
-Ты — опытный инженер первой линии технической поддержки (AI Responder).
+Ты — — опытный инженер первой линии технической поддержки (AI Responder).
 Твоя задача — проанализировать заявку пользователя и составить вежливый, технически грамотный и исчерпывающий ответ на русском языке.
 
 Текущая заявка:
@@ -128,7 +129,7 @@ class AIResponder:
                 reason=f"Сбой LLM генерации: {e}"
             )
 
-    async def process_new_task(self, task: dict, auth_b64: str, redis_client) -> bool:
+    async def process_new_task(self, task: dict) -> bool:
         """
         Полный жизненный цикл обработки новой задачи: проверка -> генерация ответа -> отправка в IntraService.
         """
@@ -137,6 +138,7 @@ class AIResponder:
             logger.warning("Задача без ID пропущена.")
             return False
         task_id = int(raw_id)
+        redis_client = get_redis_client()
         try:
             # 1. Проверяем необходимость ответа
             if not await self.should_auto_reply(task, redis_client):
@@ -153,7 +155,7 @@ class AIResponder:
                 return False
 
             # 3. Отправляем комментарий в IntraService
-            comment_ok = await add_task_comment(auth_b64, task_id, result.reply_text)
+            comment_ok = await add_task_comment(task_id, result.reply_text)
             if not comment_ok:
                 logger.error("Не удалось отправить комментарий с автоответом в заявку #%s", task_id)
                 return False
@@ -166,7 +168,7 @@ class AIResponder:
                 new_status_id = STATUS_RESOLVED  # 29 (Выполнена)
 
             if new_status_id:
-                status_ok = await update_task_status(auth_b64, task_id, new_status_id)
+                status_ok = await update_task_status(task_id, new_status_id)
                 if status_ok:
                     logger.info("Статус заявки #%s успешно изменен на %s", task_id, new_status_id)
                 else:

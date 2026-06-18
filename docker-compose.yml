@@ -132,6 +132,39 @@ services:
       - core-api
       - redis
 
+  ai-worker:
+    build:
+      context: ./ai-worker
+      dockerfile: Dockerfile
+    container_name: intraservice_ai_worker
+    restart: always
+    env_file:
+      - ./ai-worker/.env
+    environment:
+      - CORE_API_URL=http://core-api:8000/api/v1
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
+      - REDIS_URL=redis://redis:6379/0
+      - LITELLM_BASE_URL=http://litellm:4000/v1
+      - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
+      - INTRASERVICE_SERVICE_PASSWORD_FILE=/run/secrets/service_password
+    secrets:
+      - service_password
+      - encryption_key
+    dns:
+      - 10.244.0.11
+      - 172.18.128.50
+      - 8.8.8.8
+    dns_opt:
+      - timeout:1
+      - attempts:1
+    dns_search:
+      - corporate.loc
+    depends_on:
+      - core-api
+      - redis
+      - postgres
+      - litellm
+
 volumes:
   postgres_data:
   redis_data:

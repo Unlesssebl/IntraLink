@@ -7,10 +7,10 @@ from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 from sqlalchemy import select
 
-from app.config import settings
-from app.services.worker import get_redis_client
-from app.database.db import AsyncSessionLocal, TaskKnowledgeBase
-from app.services.embeddings import get_embedding
+from core.config import settings
+from services.redis_client import get_redis_client
+from core.db import AsyncSessionLocal, TaskKnowledgeBase
+from services.embeddings import get_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ class AIClassifier:
 
 ПРАВИЛО 4 — УВЕРЕННОСТЬ.
 Устанавливай confidence >= 0.8 ТОЛЬКО если ты абсолютно уверен в очевидной ошибке.
-Если confidence < 0.8 — ОБЯЗАТЕЛЬНО выбирай action = "none".
+If confidence < 0.8 — ОБЯЗАТЕЛЬНО выбирай action = "none".
 
 Если action = "none":
   - correct_service_id = -1
@@ -200,6 +200,8 @@ class AIClassifier:
             )
             
             result = response.choices[0].message.parsed
+            if result is None:
+                raise ValueError("Не удалось распарсить ответ LLM в формат ClassifierResult")
 
             # Применяем порог уверенности: redirect только при confidence >= 0.8
             if result.action == "redirect" and result.confidence < 0.8:
