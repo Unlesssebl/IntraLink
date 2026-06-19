@@ -199,7 +199,12 @@ async def handle_test_reply(
                 "message": f"Задача #{task_id} не найдена в IntraService.",
             }
         else:
-            reply_result = await responder.generate_reply(task_data)
+            # Извлекаем саму задачу из ключа "Task"
+            task_details = task_data.get("Task") if isinstance(task_data, dict) else None
+            if not task_details:
+                task_details = task_data
+
+            reply_result = await responder.generate_reply(task_details)
             result = {
                 "status": "success",
                 "generated_reply": reply_result.reply_text,
@@ -212,8 +217,8 @@ async def handle_test_reply(
         logger.exception("Ошибка генерации тестового ответа: %s", e)
         result = {"status": "error", "message": str(e)}
 
-    # Записываем результат в Redis с TTL 60 сек
-    await redis.set(f"ai:test_reply:{req_id}", json.dumps(result), ex=60)
+    # Публикуем результат в Redis Pub/Sub канал
+    await redis.publish(f"ai:test_reply_chan:{req_id}", json.dumps(result))
 
 
 async def start_redis_listener():

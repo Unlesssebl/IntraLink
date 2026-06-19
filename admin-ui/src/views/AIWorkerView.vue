@@ -18,36 +18,7 @@
             </select>
           </div>
 
-          <!-- Квоты RAG по умолчанию -->
-          <div class="form-group">
-            <label class="form-label">Квоты по умолчанию</label>
-            <div style="display: flex; gap: 0.5rem;">
-              <div style="flex: 1;">
-                <span style="font-size: 0.7rem; color: var(--text-2);">Выполнена:</span>
-                <input 
-                  v-model.number="globalClosed" 
-                  type="number" 
-                  class="form-control" 
-                  placeholder="Выполнена" 
-                  title="Квота для статуса Выполнена" 
-                  style="padding: 0.45rem; margin-top: 0.2rem;" 
-                  :disabled="savingConfig"
-                />
-              </div>
-              <div style="flex: 1;">
-                <span style="font-size: 0.7rem; color: var(--text-2);">Отменена:</span>
-                <input 
-                  v-model.number="globalCancelled" 
-                  type="number" 
-                  class="form-control" 
-                  placeholder="Отменена" 
-                  title="Квота для статуса Отменена" 
-                  style="padding: 0.45rem; margin-top: 0.2rem;" 
-                  :disabled="savingConfig"
-                />
-              </div>
-            </div>
-          </div>
+
 
           <!-- Дерево разделов -->
           <div class="form-group">
@@ -313,8 +284,6 @@ const statsItems = computed(() => [
 // Конфигурация AI
 const aiMode = ref('comment_only');
 const aiServiceIds = ref([]);
-const globalClosed = ref(10);
-const globalCancelled = ref(5);
 const ragFilterId = ref(0);
 
 const savingConfig = ref(false);
@@ -438,9 +407,6 @@ const fetchRAGQuotasAndStats = async () => {
       ragFilterId.value = qData.filter_id || 0;
       ragGlobalQuotas.value = qData.global_quotas || { "28": 10, "30": 5 };
       ragServiceQuotas.value = qData.service_quotas || {};
-      
-      globalClosed.value = ragGlobalQuotas.value["28"] || 10;
-      globalCancelled.value = ragGlobalQuotas.value["30"] || 5;
     } catch (e) {
       console.error('Ошибка загрузки RAG квот:', e);
     }
@@ -452,6 +418,18 @@ const fetchRAGQuotasAndStats = async () => {
       console.error('Ошибка загрузки RAG статистики:', e);
     }
   } catch (e) {}
+};
+
+// Вспомогательная функция для сохранения RAG-квот на бэкенде
+const saveRAGQuotasApi = async (filterId, globalQuotas, serviceQuotas) => {
+  await apiFetch('/admin/api/ai-worker/rag/quotas', {
+    method: 'POST',
+    body: JSON.stringify({
+      filter_id: filterId,
+      global_quotas: globalQuotas,
+      service_quotas: serviceQuotas
+    })
+  });
 };
 
 // Сохранение общей формы конфигурации AI (Включая квоты по умолчанию)
@@ -470,15 +448,12 @@ const saveAIConfig = async () => {
           auto_reply_mode: aiMode.value
         })
       }),
-      // 2. Квоты RAG
-      apiFetch('/admin/api/ai-worker/rag/quotas', {
-        method: 'POST',
-        body: JSON.stringify({
-          filter_id: ragFilterId.value,
-          global_quotas: { "28": globalClosed.value, "30": globalCancelled.value },
-          service_quotas: ragServiceQuotas.value
-        })
-      })
+      // 2. Квоты RAG (используем общую функцию)
+      saveRAGQuotasApi(
+        ragFilterId.value,
+        ragGlobalQuotas.value,
+        ragServiceQuotas.value
+      )
     ]);
     
     configAlertType.value = 'success';
@@ -637,14 +612,11 @@ const saveIndividualQuota = async ({ serviceId, closed, cancelled }) => {
   ragServiceQuotas.value[serviceId] = { "28": closed, "30": cancelled };
   
   try {
-    await apiFetch('/admin/api/ai-worker/rag/quotas', {
-      method: 'POST',
-      body: JSON.stringify({
-        filter_id: ragFilterId.value,
-        global_quotas: ragGlobalQuotas.value,
-        service_quotas: ragServiceQuotas.value
-      })
-    });
+    await saveRAGQuotasApi(
+      ragFilterId.value,
+      ragGlobalQuotas.value,
+      ragServiceQuotas.value
+    );
     closeQuotaSettings();
     await fetchRAGQuotasAndStats();
   } catch (err) {

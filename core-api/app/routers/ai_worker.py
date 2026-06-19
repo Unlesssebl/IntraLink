@@ -166,6 +166,7 @@ async def update_ai_config(payload: AIConfigUpdate):
 async def generate_test_reply(task_id: int):
     """
     Генерирует тестовый автоответ для задачи, пересылая команду в ai-worker по Redis.
+    Ожидание ответа реализовано асинхронно через Redis Pub/Sub канал.
     """
     import secrets
 
@@ -176,22 +177,33 @@ async def generate_test_reply(task_id: int):
     payload = {"event_type": "test_reply", "task_id": task_id, "req_id": req_id}
 
     try:
+        pubsub = r.pubsub()
+        await pubsub.subscribe(f"ai:test_reply_chan:{req_id}")
+
         await r.publish("ai_actions", json.dumps(payload))
 
-        # Ждем ответ в Redis в течение 7 секунд
-        for _ in range(70):
-            await asyncio.sleep(0.1)
-            response_data = await r.get(f"ai:test_reply:{req_id}")
-            if response_data:
-                result = json.loads(response_data)
-                await r.delete(f"ai:test_reply:{req_id}")
+        # Ждем ответ в Redis в течение 30 секунд через Pub/Sub
+        start_time = time.time()
+        try:
+            while time.time() - start_time < 30.0:
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
+                if message and message.get("type") == "message":
+                    response_data = message.get("data")
+                    if isinstance(response_data, bytes):
+                        response_data = response_data.decode("utf-8")
+                    result = json.loads(response_data)
 
-                if result.get("status") == "error":
-                    raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail=result.get("message"),
-                    )
-                return result
+                    if result.get("status") == "error":
+                        raise HTTPException(
+                            status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=result.get("message"),
+                        )
+                    return result
+        finally:
+            await pubsub.unsubscribe(f"ai:test_reply_chan:{req_id}")
+            await pubsub.close()
 
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
