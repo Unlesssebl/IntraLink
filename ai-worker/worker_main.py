@@ -292,6 +292,13 @@ async def main():
     # Инициализация сессии API-клиента
     await is_client.init_session()
 
+    # Сброс возможных зависших флагов после перезапуска контейнера
+    try:
+        r = get_redis_client()
+        await r.set("rag_build:running", "false")
+    except Exception as e:
+        logger.error("Не удалось сбросить флаг rag_build:running при запуске: %s", e)
+
     # Запуск фонового подписчика Redis
     listener_task = asyncio.create_task(start_redis_listener())
 

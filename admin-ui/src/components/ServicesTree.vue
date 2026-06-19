@@ -3,6 +3,7 @@
     <div v-for="node in nodes" :key="node.id" class="tree-node">
       <div class="tree-node-content" style="gap: 0.35rem;">
         <input 
+          v-if="showCheckboxes"
           type="checkbox" 
           :id="`${prefix}-chk-${node.id}`" 
           :value="node.id" 
@@ -12,7 +13,7 @@
         />
         <span 
           class="tree-node-title" 
-          :class="{ selected: selectedId === node.id }"
+          :class="{ selected: selectedId === node.id, 'is-folder': node.children && node.children.length > 0 }"
           @click="selectNode(node)"
         >
           {{ node.name }}{{ getProgressText(node) }}
@@ -30,6 +31,7 @@
           :progress-data="progressData"
           :service-quotas="serviceQuotas"
           :global-quotas="globalQuotas"
+          :show-checkboxes="showCheckboxes"
           @update:model-value="$emit('update:modelValue', $event)"
           @select-node="$emit('select-node', $event)"
         />
@@ -61,6 +63,10 @@ const props = defineProps({
   showProgress: {
     type: Boolean,
     default: false
+  },
+  showCheckboxes: {
+    type: Boolean,
+    default: true
   },
   progressData: {
     type: Object,
@@ -143,6 +149,8 @@ const getProgressText = (node) => {
   width: 100%;
 }
 .tree-node-children {
-  margin-left: 1.25rem;
+  margin-left: 0.5rem;
+  padding-left: 0.75rem;
+  border-left: 1px dashed rgba(255, 255, 255, 0.08);
 }
 </style>

@@ -3,7 +3,7 @@ import json
 import logging
 import time
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Body
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["AI Control"])
 
 PING_INTERVAL = 15.0
+
+# Маркер финального сообщения от ai-worker, означающий завершение сборки RAG.
+# Используется для штатного закрытия SSE-соединения с серверной стороны.
+_RAG_DONE_MARKER = "[SYSTEM] Процесс перестроения базы RAG завершен."
 
 
 def build_tree(flat_services: list[dict]) -> list[dict]:
@@ -191,6 +195,8 @@ async def generate_test_reply(task_id: int):
                 )
                 if message and message.get("type") == "message":
                     response_data = message.get("data")
+                    if response_data is None:
+                        continue
                     if isinstance(response_data, bytes):
                         response_data = response_data.decode("utf-8")
                     result = json.loads(response_data)
@@ -232,7 +238,7 @@ class RAGQuotasUpdate(BaseModel):
 
 
 @router.post("/admin/api/ai-worker/rag/build", dependencies=[Depends(verify_admin_jwt)])
-async def trigger_rag_build(service_ids: list[int] | None = None):
+async def trigger_rag_build(service_ids: list[int] | None = Body(None)):
     """
     Запускает фоновый процесс перестроения базы знаний RAG, публикуя команду для ai-worker.
     Передает список услуг, которые нужно перестроить (или None для всех выбранных в AI Config).
@@ -258,12 +264,16 @@ async def trigger_rag_build(service_ids: list[int] | None = None):
     service_quotas_str = await r.get("config:rag_service_quotas")
     service_quotas = json.loads(service_quotas_str) if service_quotas_str else {}
 
-    # Если service_ids не передан, берем те, что отмечены в auto_reply_service_ids
+    # Если service_ids не передан (глобальный сбор), берем ВСЕ услуги из каталога.
+    # Это критически важно, так как AIClassifier ищет похожие заявки по всей RAG базе.
+    # Если собрать только для услуг с автоответами, классификатор никогда не найдет остальные разделы.
     if service_ids is None:
-        auto_reply_services_str = await r.get("config:auto_reply_service_ids")
-        service_ids = (
-            json.loads(auto_reply_services_str) if auto_reply_services_str else []
-        )
+        catalog_str = await r.get("worker:service_catalog")
+        if catalog_str:
+            catalog = json.loads(catalog_str)
+            service_ids = [item.get("id") for item in catalog if item.get("id")]
+        else:
+            service_ids = []
 
     # Публикуем команду для ai-worker
     payload = {
@@ -511,41 +521,75 @@ async def update_rag_quotas(payload: RAGQuotasUpdate):
         )
 
 
-async def rag_log_generator():
+async def rag_log_generator(request: Request):
     """
     Генератор SSE для вывода логов перестроения RAG.
+
+    Жизненный цикл соединения:
+    - При подключении (или переподключении) сначала отдаётся вся накопленная
+      история из Redis, затем генератор переходит в режим live-подписки.
+    - Если история уже содержит финальное сообщение (_RAG_DONE_MARKER),
+      генератор немедленно отправляет typed event 'done' и завершается.
+    - В live-режиме: при получении _RAG_DONE_MARKER отправляется typed event
+      'done' и цикл прерывается — соединение закрывается штатно.
+    - При отключении браузера (is_disconnected) цикл прерывается, чтобы
+      не оставлять висящих pubsub-подписок.
     """
     r = get_redis_client()
     pubsub = r.pubsub()
+    # Подписываемся ДО чтения истории, чтобы не пропустить сообщения
+    # между чтением истории и началом live-слушания.
     await pubsub.subscribe("rag_build_logs")
 
     yield "event: message\ndata: [SYSTEM] Подключение к потоку логов RAG...\n\n"
 
-    # Отдаем накопившиеся строки логов
+    # Отдаём накопившиеся строки; если процесс уже завершён — сигнализируем
     try:
         history = await r.lrange("rag_build_logs_history", 0, -1)
         if history:
-            for line in history:
+            for raw_line in history:
+                line = raw_line.decode() if isinstance(raw_line, bytes) else raw_line
                 yield f"event: message\ndata: {line}\n\n"
+                if line == _RAG_DONE_MARKER:
+                    yield "event: done\ndata: finished\n\n"
+                    return
     except Exception as e:
         logger.error("Ошибка при получении истории логов RAG: %s", e)
+
+    # Защита от зависания UI: если процесс был прерван/упал, маркер не сохранился, но процесс уже не запущен.
+    is_running = await r.get("rag_build:running")
+    if is_running != b"true" and is_running != "true":
+        yield "event: done\ndata: finished\n\n"
+        await pubsub.unsubscribe("rag_build_logs")
+        await pubsub.close()
+        return
 
     last_msg_time = time.monotonic()
     try:
         while True:
+            # Корректно прекращаем работу, если клиент закрыл вкладку
+            if await request.is_disconnected():
+                logger.info("SSE-клиент отключился, завершаем генератор логов RAG.")
+                break
+
             message = await pubsub.get_message(
                 ignore_subscribe_messages=True, timeout=1.0
             )
             if message:
                 log_line = message.get("data")
                 if log_line:
+                    if isinstance(log_line, bytes):
+                        log_line = log_line.decode()
                     yield f"event: message\ndata: {log_line}\n\n"
                     last_msg_time = time.monotonic()
+                    # Финальное сообщение — закрываем соединение штатно
+                    if log_line == _RAG_DONE_MARKER:
+                        yield "event: done\ndata: finished\n\n"
+                        break
             else:
                 if time.monotonic() - last_msg_time > PING_INTERVAL:
                     yield ": ping\n\n"
                     last_msg_time = time.monotonic()
-                await asyncio.sleep(0.5)
     except asyncio.CancelledError:
         pass
     finally:
@@ -554,12 +598,13 @@ async def rag_log_generator():
 
 
 @router.get("/admin/api/ai-worker/rag/logs", dependencies=[Depends(verify_admin_jwt)])
-async def stream_rag_logs():
+async def stream_rag_logs(request: Request):
     """
     SSE эндпоинт для логов сборщика RAG в реальном времени.
+    Принимает Request для корректного обнаружения отключения клиента.
     """
     return StreamingResponse(
-        rag_log_generator(),
+        rag_log_generator(request),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
