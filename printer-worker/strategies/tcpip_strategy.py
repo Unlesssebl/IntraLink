@@ -45,6 +45,9 @@ class TcpIpPortStrategy(PrinterStrategy):
         Выполняет установку TCP/IP-принтера.
         Предполагает, что probe() уже был вызван оркестратором — job.driver_installed установлен.
         Повторный вызов probe() здесь намеренно отсутствует.
+
+        Имя устанавливаемого принтера формируется по шаблону: "{display_name} ({suffix})",
+        где suffix — это 3-й и 4-й октеты IP-адреса (если адрес в формате IPv4) или полный hostname МФУ.
         """
         from worker_services.redis_listener import save_job_state
 
@@ -134,7 +137,14 @@ class TcpIpPortStrategy(PrinterStrategy):
             return job
 
         # 3. Добавление или обновление принтера
-        printer_name = job.driver_info.display_name
+        import re
+        address = job.printer_address
+        if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", address):
+            suffix = ".".join(address.split(".")[2:])
+        else:
+            suffix = address
+
+        printer_name = f"{job.driver_info.display_name} ({suffix})"
         printer_name_esc = escape_ps(printer_name)
         logger.info(
             "Создание или обновление свойств принтера '%s' на ПК %s",
