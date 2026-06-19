@@ -161,10 +161,12 @@ class WMIExecutor:
             f"[{self.target_ip}] Попытка прочитать лог {unc_path} через SMB..."
         )
 
+        from worker_services.credentials import format_smb_username
+        formatted_user = format_smb_username(self.target_ip, self.domain, self.username)
         # Регистрируем SMB-сессию один раз перед ретраями
         try:
             register_session(
-                self.target_ip, username=self.username, password=self.password
+                self.target_ip, username=formatted_user, password=self.password
             )
         except Exception as e:
             logger.debug(

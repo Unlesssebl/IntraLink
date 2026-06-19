@@ -59,7 +59,7 @@ async def test_router_parsing():
         tg_user_id=456,
         raw_text="Установить принтер ittp0024 на компьютер PC-ADMIN",
         target_pc="PC-ADMIN",
-        model_key="kyocera_ecosys_m2040dn",
+        model_key="kyocera_kx_upd",
     )
 
     routed_job = await router.route(job)
@@ -72,7 +72,7 @@ async def test_router_parsing():
         f"Неверный printer_address: {routed_job.printer_address}"
     )
     assert routed_job.driver_info is not None, "Драйвер не найден"
-    assert routed_job.driver_info.model_key == "kyocera_ecosys_m2040dn", (
+    assert routed_job.driver_info.model_key == "kyocera_kx_upd", (
         "Неверный драйвер"
     )
 
@@ -101,14 +101,14 @@ async def test_router_parsing():
         print(f"  connection_type: {routed_job_snmp.connection_type}")
         print(f"  printer_address: {routed_job_snmp.printer_address}")
 
-        assert routed_job_snmp.model_key == "kyocera_ecosys_m2040dn", (
+        assert routed_job_snmp.model_key == "kyocera_kx_upd", (
             f"Неверная модель: {routed_job_snmp.model_key}"
         )
         assert routed_job_snmp.connection_type == "tcpip", (
             f"Неверный тип подключения: {routed_job_snmp.connection_type}"
         )
         assert routed_job_snmp.driver_info is not None, "Драйвер должен быть найден"
-        assert routed_job_snmp.driver_info.model_key == "kyocera_ecosys_m2040dn"
+        assert routed_job_snmp.driver_info.model_key == "kyocera_kx_upd"
 
     print("=== Тестирование Приоритета SNMP над Fast-Track ===")
     job_priority = PrintJob(
@@ -128,10 +128,10 @@ async def test_router_parsing():
 
         print("Результат теста приоритета:")
         print(
-            f"  model_key (должен быть kyocera_ecosys_m2040dn): {routed_job_priority.model_key}"
+            f"  model_key (должен быть kyocera_kx_upd): {routed_job_priority.model_key}"
         )
 
-        assert routed_job_priority.model_key == "kyocera_ecosys_m2040dn", (
+        assert routed_job_priority.model_key == "kyocera_kx_upd", (
             f"SNMP должен был переопределить модель! Получено: {routed_job_priority.model_key}"
         )
 

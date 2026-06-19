@@ -21,7 +21,7 @@ import worker_config as config  # noqa: E402
 
 async def test_install():
     target_pc = "itt0024"
-    model_key = "kyocera_ecosys_m2040dn"  # ключ из KB
+    model_key = "kyocera_kx_upd"  # ключ из KB
 
     logger.info("Загрузка базы знаний...")
     import json
@@ -92,7 +92,7 @@ async def test_install():
             (0, "Driver installed", ""),  # pnputil
             (0, "Port added", ""),  # Add-PrinterPort
             (0, "Printer added", ""),  # Add-Printer
-            (0, driver_info.display_name, ""),  # Get-Printer (Verification)
+            (0, f"{driver_info.display_name} (ittp0000)", ""),  # Get-Printer (Verification)
         ]
 
         mock_copy_smb.return_value = True
@@ -176,6 +176,7 @@ async def test_wmi_executor_read_bootstrap_log_success():
     mock_file.__enter__.return_value = mock_file
 
     with (
+        patch("socket.getfqdn", return_value="127.0.0.1"),
         patch("smbclient.register_session") as mock_register,
         patch("smbclient.open_file", return_value=mock_file) as mock_open,
     ):

@@ -244,6 +244,28 @@ async def get_knowledge_base():
         ) from e
 
 
+@router.post("/admin/api/printers/rebuild-index", dependencies=[Depends(verify_admin_jwt)])
+async def trigger_rebuild_index():
+    """
+    Публикует событие в Redis для запуска синхронизации и индексации драйверов на воркере.
+    """
+    try:
+        r = get_redis_client()
+        event = {
+            "event_type": "rebuild_index",
+            "tg_user_id": 0,
+        }
+        await r.publish("printer_actions", json.dumps(event))
+        logger.info("Отправлена команда на перестройку индекса драйверов из веб-панели")
+        return {"status": "success", "message": "Процесс индексации драйверов запущен в фоновом режиме."}
+    except Exception as e:
+        logger.exception("Ошибка публикации команды rebuild_index в Redis: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось запустить индексацию: {e}",
+        ) from e
+
+
 @router.get("/admin/api/print-jobs", dependencies=[Depends(verify_admin_jwt)])
 async def get_print_jobs():
     """

@@ -1,27 +1,28 @@
 {
-  "printer_name_prefixes": ["ittp", "kzmp", "kmkp"],
+  "printer_name_prefixes": [
+    "ittp",
+    "kzmp",
+    "kmkp"
+  ],
   "printers": [
     {
-      "model_key": "hp_lj_m428",
-      "display_name": "HP LaserJet MFP M428",
-      "driver_name": "HP LaserJet MFP M428-M429 PCL 6",
-      "driver_inf_path": "\\\\corp-share\\drivers\\hp_m428\\hpbuio200l.inf",
+      "model_key": "hp_aggregated_bundle",
+      "display_name": "HP Auto-Resolved Driver",
+      "driver_name": "HP Universal Printing PCL 6",
+      "driver_bundle": "hp_aggregated_bundle",
+      "driver_inf_path": "\\\\truenas\\Drivers\\printer\\Hp",
       "vendor": "hp",
-      "supported_hw_ids": [
-        "USBPRINT\\HEWLETT-PACKARDHP_LA6721",
-        "USBPRINT\\HP_LaserJet_MFP_M428"
-      ],
+      "supported_hw_ids": [],
       "connection_type": "tcpip"
     },
     {
-      "model_key": "kyocera_ecosys_m2040dn",
-      "display_name": "Kyocera ECOSYS M2040dn",
+      "model_key": "kyocera_kx_upd",
+      "display_name": "Kyocera KX Universal",
       "driver_name": "KX DRIVER for Universal Printing",
-      "driver_inf_path": "\\\\truenas\\Drivers\\printer\\Kyocera\\M8124cidn\\64bit",
+      "driver_bundle": "kyocera_kx_upd",
+      "driver_inf_path": "\\\\truenas\\Drivers\\printer\\Kyocera\\KX_UPD\\64bit\\OEMSETUP.INF",
       "vendor": "kyocera",
-      "supported_hw_ids": [
-        "USBPRINT\\KYOCERAECOSYS_M2040D36B1"
-      ],
+      "supported_hw_ids": [],
       "connection_type": "tcpip"
     },
     {

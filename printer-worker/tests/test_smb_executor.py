@@ -102,8 +102,9 @@ async def test_copy_driver_to_temp_success():
 async def test_copy_driver_to_temp_failure():
     executor = SMBExecutor()
 
-    with patch(
-        "executors.smb_executor.register_session", side_effect=Exception("Auth error")
+    with (
+        patch("executors.smb_executor.register_session", side_effect=Exception("Auth error")),
+        patch.object(executor, "_copy_dir_smb", side_effect=Exception("Auth error")),
     ):
         res = await executor.copy_driver_to_temp(
             src="\\\\srv\\drivers\\model\\driver.inf", dest_host="target-pc"
@@ -131,9 +132,9 @@ async def test_check_source_accessible_success():
 async def test_check_source_accessible_failure():
     executor = SMBExecutor()
 
-    with patch(
-        "executors.smb_executor.register_session",
-        side_effect=Exception("Host unreachable"),
+    with (
+        patch("executors.smb_executor.register_session", side_effect=Exception("Host unreachable")),
+        patch("executors.smb_executor.stat", side_effect=Exception("Stat failed")),
     ):
         res = await executor.check_source_accessible(
             "\\\\srv\\drivers\\model\\driver.inf"

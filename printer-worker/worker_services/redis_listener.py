@@ -514,6 +514,12 @@ async def start_redis_listener():
                     if event_type == "manual_trigger":
                         asyncio.create_task(_process_manual_trigger(payload))
                         continue
+                        
+                    # Обработка запуска индексации драйверов
+                    if event_type == "rebuild_index":
+                        from worker_services.indexer_service import auto_extract_and_index
+                        asyncio.create_task(auto_extract_and_index())
+                        continue
 
                     # Фильтруем события IntraService
                     if event_type not in (

@@ -16,9 +16,10 @@ class SMBExecutor:
     Копирование файлов выполняется в потоке с использованием asyncio.to_thread.
     """
 
-    def __init__(self, username: str | None = None, password: str | None = None):
+    def __init__(self, username: str | None = None, password: str | None = None, domain: str | None = None):
         self.username = username or WINRM_USERNAME
         self.password = password or WINRM_PASSWORD
+        self.domain = domain or ""
 
     @staticmethod
     def _extract_smb_host(unc_path: str) -> str:
@@ -87,9 +88,12 @@ class SMBExecutor:
             src_dir, dest_subdir, _ = self.parse_driver_path(src)
 
             src_host = self._extract_smb_host(src_dir)
+            from worker_services.credentials import format_smb_username
+            
+            formatted_src_user = format_smb_username(src_host, self.domain, self.username)
             try:
                 register_session(
-                    src_host, username=self.username, password=self.password
+                    src_host, username=formatted_src_user, password=self.password
                 )
             except Exception as e:
                 logger.debug(
@@ -98,9 +102,10 @@ class SMBExecutor:
                     e,
                 )
 
+            formatted_dest_user = format_smb_username(dest_host, self.domain, self.username)
             try:
                 register_session(
-                    dest_host, username=self.username, password=self.password
+                    dest_host, username=formatted_dest_user, password=self.password
                 )
             except Exception as e:
                 logger.debug(
@@ -155,9 +160,11 @@ class SMBExecutor:
             try:
                 src_dir, _, _ = self.parse_driver_path(src)
                 src_host = self._extract_smb_host(src_dir)
+                from worker_services.credentials import format_smb_username
+                formatted_src_user = format_smb_username(src_host, self.domain, self.username)
                 try:
                     register_session(
-                        src_host, username=self.username, password=self.password
+                        src_host, username=formatted_src_user, password=self.password
                     )
                 except Exception as e:
                     logger.debug(

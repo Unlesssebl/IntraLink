@@ -11,6 +11,7 @@ from worker_services.action_executor import execute_action
 from worker_services.redis_listener import save_job_state, get_redis
 import worker_config as config
 from executors.wmi_executor import WMIExecutor
+from executors.smb_executor import smb_executor
 from worker_services.credentials import get_domain_credentials
 
 logger = logging.getLogger(__name__)
@@ -160,6 +161,11 @@ class PrinterOrchestrator:
 
             # Разбор домена и пользователя
             domain, username, password = await get_domain_credentials()
+
+            # Инициализация SMBExecutor динамическими учетными данными
+            smb_executor.username = username
+            smb_executor.password = password
+            smb_executor.domain = domain
 
             wmi_exec = WMIExecutor(
                 target_ip=job.target_pc,

@@ -35,6 +35,7 @@ class PrinterDriverInfo(BaseModel):
     model_key: str
     display_name: str
     driver_name: str
+    driver_bundle: Optional[str] = None
     driver_inf_path: str
     vendor: str
     supported_hw_ids: List[str] = Field(default_factory=list)

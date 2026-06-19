@@ -129,6 +129,13 @@ async def main():
     # Инициализация сессии API-клиента
     await init_session()
 
+    # Синхронизация индексов с сетевой шары
+    try:
+        from worker_services.indexer_service import download_indexes_from_smb
+        await download_indexes_from_smb()
+    except Exception as e:
+        logger.error("Ошибка при первоначальной загрузке индексов: %s", e)
+
     # Прогрев Базы Знаний
     get_kb()
 
