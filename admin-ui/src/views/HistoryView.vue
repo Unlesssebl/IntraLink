@@ -44,6 +44,30 @@
                   <div v-if="job.error_message" style="font-size: 0.72rem; color: var(--red); margin-top: 0.25rem;">
                     {{ job.error_message }}
                   </div>
+                  
+                  <!-- Запрос на установку универсального драйвера -->
+                  <div v-if="job.state === 'failed' && isMissingDriverError(job.error_message) && !dismissedPrompts[job.task_id]" 
+                       style="margin-top: 0.5rem; padding: 0.65rem 0.85rem; background: var(--surface-2); border-radius: var(--radius-sm); border: 1px dashed var(--yellow);">
+                    <div style="font-size: 0.78rem; color: var(--yellow); font-weight: 500; margin-bottom: 0.4rem; white-space: normal;">
+                      Для МФУ не найден драйвер. Установить универсальный драйвер HP?
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                      <button 
+                        class="btn btn-outline btn-sm" 
+                        style="color: var(--green); border-color: var(--green); padding: 0.2rem 0.6rem;"
+                        @click="restartJob(job.task_id, 'hp_universal_upd')"
+                      >
+                        Да
+                      </button>
+                      <button 
+                        class="btn btn-outline btn-sm" 
+                        style="color: var(--text-2); border-color: var(--border); padding: 0.2rem 0.6rem;"
+                        @click="dismissPrompt(job.task_id)"
+                      >
+                        Нет
+                      </button>
+                    </div>
+                  </div>
                 </td>
                 <td style="white-space: nowrap;">
                   <!-- Действия для задач, ожидающих подтверждения -->
@@ -74,6 +98,14 @@
                       @click="toggleLogs(job.task_id)"
                     >
                       {{ openLogs[job.task_id] ? 'Закрыть' : 'Логи' }}
+                    </button>
+                    <button 
+                      class="btn btn-outline btn-sm" 
+                      style="margin-right: 4px"
+                      @click="restartJob(job.task_id)"
+                      title="Перезапустить установку повторно"
+                    >
+                      Рестарт
                     </button>
                     <button 
                       class="btn btn-outline btn-sm" 
@@ -121,6 +153,16 @@ const loading = ref(true);
 const openLogs = ref({});
 const logLines = ref({});
 const logSources = {}; // Хранилище EventSource объектов
+
+const dismissedPrompts = ref({});
+const dismissPrompt = (taskId) => {
+  dismissedPrompts.value[taskId] = true;
+};
+
+const isMissingDriverError = (errorMsg) => {
+  if (!errorMsg) return false;
+  return errorMsg.toLowerCase().includes('универсальный драйвер');
+};
 
 const counts = ref({ done: 0, active: 0, failed: 0 });
 
@@ -185,6 +227,28 @@ const sendJobAction = async (taskId, action) => {
     await fetchHistory();
   } catch (err) {
     alert('Ошибка: ' + err.message);
+  }
+};
+
+// Перезапуск задачи
+const restartJob = async (taskId, modelKey = null) => {
+  let confirmMsg = `Вы действительно хотите запустить установку для задачи #${taskId} повторно?`;
+  if (modelKey) {
+    confirmMsg = `Вы действительно хотите установить универсальный драйвер HP для задачи #${taskId}?`;
+  }
+  if (!confirm(confirmMsg)) return;
+  
+  try {
+    let url = `/admin/api/print-jobs/${taskId}/restart`;
+    if (modelKey) {
+      url += `?model_key=${encodeURIComponent(modelKey)}`;
+    }
+    await apiFetch(url, {
+      method: 'POST'
+    });
+    await fetchHistory();
+  } catch (err) {
+    alert('Ошибка при перезапуске: ' + err.message);
   }
 };
 

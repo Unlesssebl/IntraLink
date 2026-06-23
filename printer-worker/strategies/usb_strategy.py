@@ -54,6 +54,14 @@ class UsbDiscoveryStrategy(PrinterStrategy):
             job.target_pc, script
         )
 
+        if status == -1:
+            logger.warning(
+                "Не удалось подключиться к ПК %s через WinRM: %s", job.target_pc, stderr or "timeout"
+            )
+            job.state = JobState.FAILED
+            job.error_message = f"Не удалось инициализировать подключение WinRM к ПК {job.target_pc}: {stderr or 'Таймаут подключения'}"
+            return job
+
         if status != 0 or not stdout.strip():
             logger.warning(
                 "USB-принтеры не обнаружены на ПК %s (кабель отключен или принтер выключен)",
@@ -111,6 +119,15 @@ class UsbDiscoveryStrategy(PrinterStrategy):
         driver_name = job.driver_info.driver_name
         inf_path = job.driver_info.driver_inf_path
 
+        if not inf_path or not inf_path.lower().endswith(".inf"):
+            job.state = JobState.FAILED
+            job.error_message = (
+                f"Некорректный путь к драйверу: '{inf_path}'. "
+                f"Путь должен указывать на конкретный файл .inf, а не на директорию."
+            )
+            await save_job_state(job)
+            return job
+
         _, dest_subdir, inf_filename = smb_executor.parse_driver_path(inf_path)
         remote_temp_path = (
             f"C:\\Windows\\Temp\\printer_drivers\\{dest_subdir}\\{inf_filename}"
@@ -143,7 +160,26 @@ class UsbDiscoveryStrategy(PrinterStrategy):
         logger.info(
             "Регистрация USB-драйвера в ОС через pnputil на ПК %s", job.target_pc
         )
-        install_script = f"pnputil /add-driver '{remote_temp_path_esc}' /install"
+        
+        # Извлечение и импорт сертификата подписи драйвера в доверенные издатели (TrustedPublisher).
+        # Это устраняет ошибку "The publisher of an Authenticode(tm) signed catalog has not yet been established as trusted."
+        cat_path = remote_temp_path.replace(".inf", ".cat")
+        cat_path_esc = escape_ps(cat_path)
+        
+        install_script = (
+            f"$catPath = '{cat_path_esc}'; "
+            f"if (Test-Path $catPath) {{ "
+            f"  $sig = Get-AuthenticodeSignature $catPath; "
+            f"  $cert = $sig.SignerCertificate; "
+            f"  if ($cert) {{ "
+            f"    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher', 'LocalMachine'); "
+            f"    $store.Open('ReadWrite'); "
+            f"    $store.Add($cert); "
+            f"    $store.Close(); "
+            f"  }} "
+            f"}}; "
+            f"pnputil /add-driver '{remote_temp_path_esc}' /install"
+        )
         status, stdout, stderr = await winrm_executor.run_powershell(
             job.target_pc, install_script
         )

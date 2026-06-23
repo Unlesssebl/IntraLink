@@ -81,8 +81,8 @@
           <svg v-else viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
           {{ indexAlertMsg }}
         </div>
-        <button @click="triggerRebuildIndex" class="btn btn-primary" :disabled="rebuildingIndex">
-          <template v-if="rebuildingIndex">
+        <button @click="triggerRebuildIndex" class="btn btn-secondary" :disabled="rebuildingIndex" style="margin-right: 8px;">
+          <template v-if="rebuildingIndex && !fastReindexing">
             <div class="spinner"></div> Запуск...
           </template>
           <template v-else>
@@ -91,11 +91,56 @@
               <polyline points="1 20 1 14 7 14"></polyline>
               <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
             </svg>
-            Синхронизировать драйверы
+            Полная синхронизация
+          </template>
+        </button>
+        <button @click="triggerFastReindex" class="btn btn-primary" :disabled="rebuildingIndex">
+          <template v-if="rebuildingIndex && fastReindexing">
+            <div class="spinner"></div> Запуск...
+          </template>
+          <template v-else>
+            <svg viewBox="0 0 24 24">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+            </svg>
+            Быстрая переиндексация
           </template>
         </button>
         <div class="form-hint" style="margin-top: 12px;">
-          Процесс выполняется в фоновом режиме на сервере воркера. Это может занять несколько минут.
+          <template v-if="indexerStatus.is_running">
+            <span style="color: var(--blue); display: inline-flex; align-items: center; gap: 6px;">
+              <div class="spinner" style="width: 12px; height: 12px; border-width: 2px;"></div>
+              {{ fastReindexing ? 'Быстрая переиндексация...' : 'Полная синхронизация... (это займёт несколько минут)' }}
+            </span>
+          </template>
+          <template v-else-if="indexerStatus.last_run">
+            <template v-if="indexerStatus.last_result?.status === 'error'">
+              <span style="color: var(--red);">
+                ⚠ Ошибка при последней синхронизации ({{ formatLastRun(indexerStatus.last_run) }}):
+                {{ indexerStatus.last_result.error }}
+              </span>
+            </template>
+            <template v-else>
+              <span style="color: var(--green);">
+                <template v-if="indexerStatus.last_result?.mode === 'fast'">⚡</template>
+                <template v-else>✓</template>
+                <template v-if="indexerStatus.last_result?.mode === 'fast'">Быстрая переиндексация</template>
+                <template v-else>Синхронизация</template>
+                {{ formatLastRun(indexerStatus.last_run) }}
+                <template v-if="indexerStatus.last_result">
+                  — {{ indexerStatus.last_result.indexed }} моделей
+                  <template v-if="indexerStatus.last_result.mode !== 'fast'">,
+                    {{ indexerStatus.last_result.copied }} папок скопировано,
+                    {{ indexerStatus.last_result.extracted }} архивов распаковано
+                  </template>
+                  ({{ indexerStatus.last_result.duration_sec }}с)
+                </template>
+              </span>
+            </template>
+          </template>
+          <template v-else>
+            <b>Быстрая переиндексация</b> — только читает <code>extracted-drv-inf</code>, занимает секунды. Используйте после ручного добавления папки с драйвером.<br>
+            <b>Полная синхронизация</b> — обходит всю шару, копирует новые папки и распаковывает архивы. Занимает несколько минут.
+          </template>
         </div>
       </div>
     </div>
@@ -160,39 +205,80 @@ const saveDomainAuth = async () => {
   }
 };
 
-// Секция 2: Синхронизация индексов
+// Секция 2: Синхронизация индексов драйверов
 const rebuildingIndex = ref(false);
+const fastReindexing = ref(false); // true = запущена быстрая, false = полная
 const indexAlertMsg = ref('');
 const indexAlertType = ref('success');
+const indexerStatus = ref({ is_running: false, last_run: null });
+let indexerPollInterval = null;
 
-const triggerRebuildIndex = async () => {
-  rebuildingIndex.value = true;
-  indexAlertMsg.value = '';
-  
+const checkIndexerStatus = async () => {
   try {
-    const res = await apiFetch('/admin/api/printers/rebuild-index', {
-      method: 'POST'
-    });
-    indexAlertType.value = 'success';
-    indexAlertMsg.value = res.message || 'Процесс запущен';
+    const data = await apiFetch('/admin/api/printers/index-status');
+    indexerStatus.value = data;
+    if (data.is_running) {
+      rebuildingIndex.value = true;
+    } else {
+      rebuildingIndex.value = false;
+    }
   } catch (err) {
-    indexAlertType.value = 'error';
-    indexAlertMsg.value = err.message || 'Ошибка запуска синхронизации';
-  } finally {
-    rebuildingIndex.value = false;
+    console.error('Ошибка проверки статуса индексатора:', err);
   }
 };
 
-// Регистрация обновления в Topbar
+const formatLastRun = (ts) => {
+  if (!ts) return '';
+  const date = new Date(ts * 1000);
+  return date.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+};
+
+const triggerRebuildIndex = async () => {
+  rebuildingIndex.value = true;
+  fastReindexing.value = false;
+  indexAlertMsg.value = '';
+  
+  try {
+    await apiFetch('/admin/api/printers/rebuild-index', { method: 'POST' });
+    indexAlertType.value = 'success';
+    indexAlertMsg.value = 'Задача успешно отправлена воркеру';
+    checkIndexerStatus();
+  } catch (err) {
+    rebuildingIndex.value = false;
+    indexAlertType.value = 'error';
+    indexAlertMsg.value = err.message || 'Ошибка запуска синхронизации';
+  }
+};
+
+const triggerFastReindex = async () => {
+  rebuildingIndex.value = true;
+  fastReindexing.value = true;
+  indexAlertMsg.value = '';
+  
+  try {
+    await apiFetch('/admin/api/printers/fast-reindex', { method: 'POST' });
+    indexAlertType.value = 'success';
+    indexAlertMsg.value = 'Быстрая переиндексация запущена';
+    checkIndexerStatus();
+  } catch (err) {
+    rebuildingIndex.value = false;
+    fastReindexing.value = false;
+    indexAlertType.value = 'error';
+    indexAlertMsg.value = err.message || 'Ошибка запуска быстрой переиндексации';
+  }
+};
+
 const registerRefresh = inject('registerRefresh');
 let unregisterRefresh = null;
 
 const refreshAll = () => {
   fetchDomainAuthStatus();
+  checkIndexerStatus();
 };
 
 onMounted(() => {
   refreshAll();
+  indexerPollInterval = setInterval(checkIndexerStatus, 5000);
   
   if (registerRefresh) {
     unregisterRefresh = registerRefresh(refreshAll);
@@ -200,6 +286,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (indexerPollInterval) clearInterval(indexerPollInterval);
   if (unregisterRefresh) unregisterRefresh();
 });
 </script>

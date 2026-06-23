@@ -1,7 +1,7 @@
 import re
 import logging
 from typing import Optional
-from .schemas import PrintJob, JobState, KnowledgeBase
+from .schemas import PrintJob, JobState, KnowledgeBase, ErrorType
 from llm import get_provider
 
 logger = logging.getLogger(__name__)
@@ -14,10 +14,11 @@ class JobRouter:
         self.kb = kb
 
     def _parse_printer_address(self, text: str) -> Optional[str]:
-        # 1. Поиск IPv4 адреса
-        ip_match = re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", text)
+        # 1. Поиск IPv4 адреса (с учетом возможных опечаток: пробелы, запятые вместо точек)
+        ip_match = re.search(r"\b\d{1,3}[., ]+\d{1,3}[., ]+\d{1,3}[., ]+\d{1,3}\b", text)
         if ip_match:
-            return ip_match.group(0)
+            matched_str = ip_match.group(0)
+            return re.sub(r"[., ]+", ".", matched_str)
 
         # 2. Поиск имени принтера по префиксам из Базы Знаний
         prefixes = self.kb.printer_name_prefixes
@@ -63,7 +64,7 @@ class JobRouter:
                 for key, val in models.items():
                     if key.lower() == model_name.lower():
                         d_name, d_suffix = parse_entry(val)
-                        return self._build_resolved_update(driver, d_name, d_suffix)
+                        return self._build_resolved_update(driver, d_name, d_suffix, model_name)
                 
                 # Нечёткий поиск (вхождение токенов)
                 import re
@@ -90,17 +91,21 @@ class JobRouter:
                 if best_match_val:
                     d_name, d_suffix = parse_entry(best_match_val)
                     logger.info("Авто-подбор бандла %s: модель '%s' -> '%s'", driver.driver_bundle, model_name, d_name)
-                    return self._build_resolved_update(driver, d_name, d_suffix)
+                    return self._build_resolved_update(driver, d_name, d_suffix, model_name)
             except Exception as e:
                 logger.error("Ошибка чтения %s: %s", index_filename, e)
                 
         logger.warning("Не удалось найти точный драйвер в бандле %s для модели '%s', fallback: %s", driver.driver_bundle, model_name, driver.driver_name)
         return None
 
-    def _build_resolved_update(self, driver: 'PrinterDriverInfo', exact_driver_name: str, inf_path_suffix: Optional[str]) -> dict:
+    def _build_resolved_update(self, driver: 'PrinterDriverInfo', exact_driver_name: str, inf_path_suffix: Optional[str], model_name: Optional[str] = None) -> dict:
         updates = {}
         if exact_driver_name and exact_driver_name != driver.driver_name:
             updates["driver_name"] = exact_driver_name
+            
+        if model_name:
+            updates["model_key"] = model_name
+            updates["display_name"] = model_name
             
         if inf_path_suffix:
             # Склеиваем корневой путь (указан в БД) и относительный путь к INF-файлу
@@ -111,8 +116,25 @@ class JobRouter:
             
         return updates if updates else None
 
+    def _validate_driver_inf(self, job: PrintJob, raw_model_name: str) -> bool:
+        if job.driver_info and job.driver_info.driver_bundle:
+            inf_path = job.driver_info.driver_inf_path
+            if not inf_path or not inf_path.lower().endswith(".inf"):
+                job.state = JobState.FAILED
+                job.error_type = ErrorType.USER
+                job.error_message = (
+                    f"Не удалось подобрать драйвер для модели МФУ '{raw_model_name}'. "
+                    f"Пожалуйста, добавьте драйвер в индекс или выберите Универсальный драйвер (HP Universal Printing PCL 6) вручную в веб-панели."
+                )
+                return False
+        return True
     async def route(self, job: PrintJob) -> PrintJob:
         logger.info("Маршрутизация задачи #%d", job.task_id)
+
+        # Очистка имени ПК, если это просто номер кабинета (состоит только из цифр)
+        if job.target_pc and job.target_pc.replace(" ", "").isdigit():
+            logger.info("Очистка target_pc: значение '%s' является номером кабинета", job.target_pc)
+            job.target_pc = ""
 
         # 1. Извлечение адреса принтера (IP или Хостнейм) из текста, если он не задан
         if not job.printer_address:
@@ -157,6 +179,8 @@ class JobRouter:
 
                     # Если уже есть целевой ПК, маршрутизация завершена
                     if job.target_pc:
+                        if not self._validate_driver_inf(job, discovered_model):
+                            return job
                         logger.info(
                             "SNMP Auto-Discovery успешно завершил маршрутизацию для задачи #%d",
                             job.task_id,
@@ -215,14 +239,9 @@ class JobRouter:
                 if driver.connection_type == "tcpip":
                     if not job.printer_address:
                         job.printer_address = self._parse_printer_address(job.raw_text)
-                    if not job.printer_address:
-                        logger.warning(
-                            "Fast-Track: не найден IP/DNS для сетевого принтера %s (tcpip). Переход в FAILED.",
-                            driver.model_key,
-                        )
-                        job.state = JobState.FAILED
-                        job.error_message = "Для сетевого принтера не удалось определить IP-адрес или DNS-имя."
-                        return job
+
+                if not self._validate_driver_inf(job, job.model_key):
+                    return job
 
                 logger.info("Fast-Track успешно пройден для задачи #%d", job.task_id)
                 return job
@@ -247,12 +266,20 @@ class JobRouter:
                     CONFIDENCE_THRESHOLD,
                 )
                 job.state = JobState.FAILED
+                job.error_type = ErrorType.USER
                 job.error_message = (
                     f"Не удалось распознать параметры заявки автоматически "
                     f"(уверенность модели: {result.confidence:.2f} < {CONFIDENCE_THRESHOLD}). "
                     f"Пожалуйста, уточните имя компьютера и модель принтера."
                 )
                 return job
+
+            # Очистка model_key от LLM (на случай, если ИИ вернул с русскими буквами)
+            if result.model_key:
+                cyrillic = 'ОСАЕРХМТКВ'
+                latin    = 'OCAEPXMTKB'
+                tr_map = str.maketrans(cyrillic + cyrillic.lower(), latin + latin.lower())
+                result.model_key = result.model_key.translate(tr_map).strip()
 
             # Валидация модели по нашей БЗ (если не определена ранее по SNMP)
             if not job.driver_info:
@@ -277,6 +304,7 @@ class JobRouter:
                         "Модель '%s' из ответа LLM не найдена в БЗ и бандлах", result.model_key
                     )
                     job.state = JobState.FAILED
+                    job.error_type = ErrorType.USER
                     job.error_message = f"Модель принтера '{result.model_key}', определенная моделью ИИ, не зарегистрирована в Базе Знаний."
                     return job
                 
@@ -288,6 +316,11 @@ class JobRouter:
                 job.connection_type = driver.connection_type
 
             job.target_pc = result.target_pc or job.target_pc
+            if job.target_pc:
+                cyrillic = 'ОСАЕРХМТКВ'
+                latin    = 'OCAEPXMTKB'
+                tr_map = str.maketrans(cyrillic + cyrillic.lower(), latin + latin.lower())
+                job.target_pc = job.target_pc.translate(tr_map).replace(" ", "").upper()
             if not job.connection_type:
                 job.connection_type = (
                     result.connection_type or job.driver_info.connection_type
@@ -299,10 +332,9 @@ class JobRouter:
                     or result.printer_address
                     or self._parse_printer_address(job.raw_text)
                 )
-                if not job.printer_address:
-                    job.state = JobState.FAILED
-                    job.error_message = "Для сетевого принтера (tcpip) не удалось определить IP-адрес или DNS-имя."
-                    return job
+
+            if not self._validate_driver_inf(job, result.model_key):
+                return job
 
             logger.info("Smart-Track успешно завершен для задачи #%d", job.task_id)
             job.state = JobState.ROUTING

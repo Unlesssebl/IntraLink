@@ -296,8 +296,10 @@ async def _process_event(payload: dict) -> None:
                 logger.error("Пустой ответ по задаче #%d", task_id)
                 return
 
-            # Текст заявки собираем из Name + Description
+            # Текст заявки собираем из Name + Description + CreatorComments
             raw_text = f"{task_data.get('Name', '')} {task_data.get('Description', '')}"
+            if task_data.get("CreatorComments"):
+                raw_text += f" {task_data['CreatorComments']}"
 
             # --- Извлечение кастомных полей ---
             # IS возвращает кастомные поля в виде плоских полей FieldXXXX
@@ -321,6 +323,34 @@ async def _process_event(payload: dict) -> None:
                     m = re.search(r'<field id="1103">([^<]+)</field>', data_xml)
                     if m:
                         model_key = m.group(1).strip() or None
+
+            # Эвристика: если имя ПК всё ещё не определено, или состоит только из цифр, ищем стандартный префикс в тексте
+            if not target_pc or re.fullmatch(r"\d{3,4}", target_pc.strip()):
+                m_pc = re.search(r"\b(?:NTMW|TNT|TKT|NTEMW|16-)\s*\d{2,4}\b", raw_text, re.IGNORECASE)
+                if m_pc:
+                    target_pc = m_pc.group(0).upper()
+                    logger.info("PC name extracted via regex: %s", target_pc)
+
+            # Очистка target_pc
+            if target_pc:
+                cyrillic = 'ОСАЕРХМТКВ'
+                latin    = 'OCAEPXMTKB'
+                tr_map = str.maketrans(cyrillic + cyrillic.lower(), latin + latin.lower())
+                target_pc = target_pc.translate(tr_map).replace(" ", "").upper()
+
+            # Очистка model_key
+            if model_key:
+                # Замена русских букв-омоглифов на английские
+                cyrillic = 'ОСАЕРХМТКВ'
+                latin    = 'OCAEPXMTKB'
+                tr_map = str.maketrans(cyrillic + cyrillic.lower(), latin + latin.lower())
+                model_key = model_key.translate(tr_map)
+                
+                # Удаление IP-адресов из названия модели (например: 'ECОSYS M2135dn 10.244.16.25')
+                model_key = re.sub(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', '', model_key)
+                model_key = model_key.strip()
+                if not model_key:
+                    model_key = None
 
             # Добавляем все значения полей в raw_text
             if target_pc:
@@ -518,7 +548,98 @@ async def start_redis_listener():
                     # Обработка запуска индексации драйверов
                     if event_type == "rebuild_index":
                         from worker_services.indexer_service import auto_extract_and_index
-                        asyncio.create_task(auto_extract_and_index())
+
+                        # Защита от повторного запуска
+                        already_running = await redis.get("indexer:status")
+                        if already_running == "running":
+                            logger.warning(
+                                "Индексация уже выполняется. Повторный запуск отклонён."
+                            )
+                            continue
+
+                        async def run_indexing():
+                            started_at = time.time()
+                            try:
+                                await redis.setex("indexer:status", 3600, "running")
+                                stats = await auto_extract_and_index()
+                                duration = time.time() - started_at
+                                result = {
+                                    "status": "ok",
+                                    "indexed": stats.get("indexed", 0) if stats else 0,
+                                    "copied": stats.get("copied", 0) if stats else 0,
+                                    "extracted": stats.get("extracted", 0) if stats else 0,
+                                    "skipped": stats.get("skipped", 0) if stats else 0,
+                                    "duration_sec": round(duration),
+                                }
+                                await redis.set("indexer:last_result", json.dumps(result))
+                                logger.info(
+                                    "Индексация завершена за %dс. Моделей: %d, скопировано: %d, распаковано: %d, пропущено: %d",
+                                    round(duration),
+                                    result["indexed"], result["copied"],
+                                    result["extracted"], result["skipped"],
+                                )
+                            except Exception as exc:
+                                duration = time.time() - started_at
+                                result = {
+                                    "status": "error",
+                                    "error": str(exc),
+                                    "duration_sec": round(duration),
+                                }
+                                await redis.set("indexer:last_result", json.dumps(result))
+                                logger.error("Критическая ошибка индексации: %s", exc)
+                            finally:
+                                await redis.delete("indexer:status")
+                                await redis.set("indexer:last_run", time.time())
+
+                        asyncio.create_task(run_indexing())
+                        continue
+
+                    # Быстрая переиндексация (только extracted-drv-inf, без обхода шары)
+                    if event_type == "fast_reindex":
+                        from worker_services.indexer_service import rebuild_index_only
+
+                        already_running = await redis.get("indexer:status")
+                        if already_running == "running":
+                            logger.warning(
+                                "Индексация уже выполняется. Быстрый перезапуск отклонён."
+                            )
+                            continue
+
+                        async def run_fast_reindex():
+                            started_at = time.time()
+                            try:
+                                await redis.setex("indexer:status", 600, "running")
+                                stats = await rebuild_index_only()
+                                duration = time.time() - started_at
+                                result = {
+                                    "status": "ok",
+                                    "mode": "fast",
+                                    "indexed": stats.get("indexed", 0) if stats else 0,
+                                    "copied": 0,
+                                    "extracted": 0,
+                                    "skipped": 0,
+                                    "duration_sec": round(duration),
+                                }
+                                await redis.set("indexer:last_result", json.dumps(result))
+                                logger.info(
+                                    "Быстрая переиндексация завершена за %dс. Моделей: %d",
+                                    round(duration), result["indexed"],
+                                )
+                            except Exception as exc:
+                                duration = time.time() - started_at
+                                result = {
+                                    "status": "error",
+                                    "mode": "fast",
+                                    "error": str(exc),
+                                    "duration_sec": round(duration),
+                                }
+                                await redis.set("indexer:last_result", json.dumps(result))
+                                logger.error("Критическая ошибка быстрой переиндексации: %s", exc)
+                            finally:
+                                await redis.delete("indexer:status")
+                                await redis.set("indexer:last_run", time.time())
+
+                        asyncio.create_task(run_fast_reindex())
                         continue
 
                     # Фильтруем события IntraService

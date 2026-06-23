@@ -112,7 +112,7 @@ class LLMParseResult(BaseModel):
             return None
         if isinstance(v, str):
             v_lower = v.strip().lower()
-            if v_lower in ("", "null", "none"):
+            if v_lower in ("", "null", "none", "unknown"):
                 return None
         return v
 

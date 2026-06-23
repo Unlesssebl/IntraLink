@@ -102,8 +102,14 @@ async def _make_request(  # noqa: PLR0913
             json=json_data,
             timeout=aiohttp.ClientTimeout(total=30),
         ) as response:
-            if response.status == HTTPStatus.OK:
-                return await response.json()
+            if response.status in (HTTPStatus.OK, HTTPStatus.CREATED):
+                try:
+                    return await response.json()
+                except Exception:
+                    return {}
+            elif response.status == HTTPStatus.NO_CONTENT:
+                return {}
+            
             text = await response.text()
             logger.error("Ошибка API [%d] для %s: %s", response.status, endpoint, text)
             return None
@@ -201,7 +207,7 @@ async def add_task_comment(auth_b64: str, task_id: int, comment: str) -> bool:
         endpoint=f"task/{task_id}",
         method="PUT",
         auth_b64=auth_b64,
-        json_data={"Comment": comment, "IsPrivateComment": False},
+        json_data={"Id": task_id, "Comment": comment, "IsPrivateComment": False},
     )
     return res is not None
 
@@ -214,7 +220,7 @@ async def update_task_status(auth_b64: str, task_id: int, status_id: int) -> boo
         endpoint=f"task/{task_id}",
         method="PUT",
         auth_b64=auth_b64,
-        json_data={"StatusId": status_id},
+        json_data={"Id": task_id, "StatusId": status_id},
     )
     return res is not None
 
@@ -266,6 +272,6 @@ async def update_task_custom_fields(
         endpoint=f"task/{task_id}",
         method="PUT",
         auth_b64=auth_b64,
-        json_data={"CustomFieldValues": custom_field_values},
+        json_data={"Id": task_id, "CustomFieldValues": custom_field_values},
     )
     return res is not None

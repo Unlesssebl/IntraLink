@@ -12,7 +12,9 @@ from worker_services.redis_listener import save_job_state, get_redis
 import worker_config as config
 from executors.wmi_executor import WMIExecutor
 from executors.smb_executor import smb_executor
-from worker_services.credentials import get_domain_credentials
+from executors.winrm_executor import winrm_executor
+from executors.smb_bootstrap import SMBBootstrapExecutor
+from worker_services.credentials import get_domain_credentials, format_smb_username
 
 logger = logging.getLogger(__name__)
 
@@ -71,67 +73,71 @@ class PrinterOrchestrator:
                 job = await self.router.route(job)
                 await save_job_state(job)
 
-                if job.state == JobState.FAILED:
-                    await fail(job, job.error_message or "Маршрутизация не удалась")
-                    return
-
-                # 2.4 Валидация наличия всех необходимых данных (до запроса подтверждения)
-                if not job.connection_type:
-                    await fail(job, "Тип подключения принтера не определен")
-                    return
-                if not job.target_pc:
-                    await fail(job, "Целевой ПК не определен")
-                    return
-                if not job.driver_info:
-                    await fail(job, "Драйвер принтера не определен")
-                    return
-
-                # 2.4.1 Проверка доступности целевых узлов (параллельно)
+                # 2.4 Валидация и проверка доступности целевых узлов (параллельно)
                 from orchestrator.snmp import is_host_reachable
                 import asyncio
 
                 logger.info(
-                    "Проверка доступности целевых узлов по сети (ПК: %s, МФУ: %s)",
-                    job.target_pc,
-                    job.printer_address if job.connection_type == "tcpip" else "N/A",
+                    "Валидация данных и проверка доступности узлов (ПК: %s, МФУ: %s)",
+                    job.target_pc or "не указан",
+                    job.printer_address if getattr(job, 'connection_type', None) == "tcpip" else "N/A",
                 )
-                job.state = JobState.PROBING
-                await save_job_state(job)
+                
+                # Сохраняем состояние PROBING, даже если были ошибки в роутере
+                if job.state != JobState.FAILED:
+                    job.state = JobState.PROBING
+                    await save_job_state(job)
 
-                pc_task = asyncio.create_task(is_host_reachable(job.target_pc))
+                pc_task = None
                 printer_task = None
 
-                if job.connection_type == "tcpip" and job.printer_address:
-                    printer_task = asyncio.create_task(
-                        is_host_reachable(job.printer_address)
-                    )
+                if job.target_pc:
+                    pc_task = asyncio.create_task(is_host_reachable(job.target_pc))
+                
+                if getattr(job, 'connection_type', None) == "tcpip" and job.printer_address:
+                    printer_task = asyncio.create_task(is_host_reachable(job.printer_address))
 
-                is_pc_reachable = await pc_task
-                is_printer_reachable = await printer_task if printer_task else True
+                is_pc_reachable = await pc_task if pc_task else False
+                is_printer_reachable = await printer_task if printer_task else False
 
+                pc_ok = bool(job.target_pc) and is_pc_reachable
+                printer_ok = True
+                if getattr(job, 'connection_type', None) == "tcpip":
+                    printer_ok = bool(job.printer_address) and is_printer_reachable
+
+                # Собираем все ошибки в один список
                 errors = []
-                if not is_pc_reachable:
-                    logger.warning(
-                        "Целевой ПК %s недоступен (ping failed)", job.target_pc
-                    )
-                    errors.append("компьютер")
+                
+                # 1. Сбор ошибок связи с ПК и МФУ (главное требование)
+                if not pc_ok and not printer_ok and getattr(job, 'connection_type', None) == "tcpip":
+                    # Оба узла недоступны или не указаны
+                    errors.append(f"ping failed: both (PC: {job.target_pc or 'не указан'}, Printer: {job.printer_address or 'не указан'})")
+                elif not pc_ok:
+                    if not job.target_pc:
+                        errors.append("Целевой компьютер не указан")
+                    else:
+                        errors.append(f"ping failed: pc (PC: {job.target_pc})")
+                elif not printer_ok and getattr(job, 'connection_type', None) == "tcpip":
+                    if not job.printer_address:
+                        errors.append("не удалось определить IP-адрес")
+                    else:
+                        errors.append(f"ping failed: printer (Printer: {job.printer_address})")
 
-                if printer_task and not is_printer_reachable:
-                    logger.warning(
-                        "МФУ %s недоступно (ping failed)", job.printer_address
-                    )
-                    errors.append("принтер")
+                # 2. Сбор ошибок данных
+                if not getattr(job, 'connection_type', None):
+                    errors.append("Тип подключения принтера не определен")
+                if not getattr(job, 'driver_info', None):
+                    errors.append("Драйвер принтера не определен")
+                    
+                # 3. Учет ошибок от роутера (например, "Не удалось подобрать драйвер...")
+                if job.state == JobState.FAILED and job.error_message and job.error_message not in errors:
+                    errors.append(job.error_message)
 
                 if errors:
-                    if len(errors) == 2:
-                        error_msg = f"ping failed: both (PC: {job.target_pc}, Printer: {job.printer_address})"
-                    elif not is_pc_reachable:
-                        error_msg = f"ping failed: pc (PC: {job.target_pc})"
-                    else:
-                        error_msg = (
-                            f"ping failed: printer (Printer: {job.printer_address})"
-                        )
-
+                    # Если есть ошибка 'ping failed: both', она перекроет всё в action_config
+                    # Иначе отправляем первую/основную ошибку (или склеиваем)
+                    error_msg = "\n".join(errors) if len(errors) > 1 else errors[0]
+                    # Но чтобы шаблоны в action_config сработали, лучше передать строку, содержащую ключевые слова
                     job.error_type = ErrorType.USER
                     await fail(job, error_msg)
                     return
@@ -167,7 +173,18 @@ class PrinterOrchestrator:
             smb_executor.password = password
             smb_executor.domain = domain
 
+            # Инициализация WinRM динамическими учетными данными
+            full_username = format_smb_username(job.target_pc, domain, username)
+            winrm_executor.username = full_username
+            winrm_executor.password = password
+
             wmi_exec = WMIExecutor(
+                target_ip=job.target_pc,
+                username=username,
+                password=password,
+                domain=domain,
+            )
+            smb_bootstrap_exec = SMBBootstrapExecutor(
                 target_ip=job.target_pc,
                 username=username,
                 password=password,
@@ -175,7 +192,7 @@ class PrinterOrchestrator:
             )
 
             # Включение WinRM и блокировка выполнения
-            winrm_enabled_successfully = False
+            active_bootstrap_exec = None
             r = get_redis()
             async with r.lock(f"printer_pc_lock:{job.target_pc}", timeout=3600):
                 try:
@@ -183,13 +200,21 @@ class PrinterOrchestrator:
                     await save_job_state(job)
                     try:
                         await wmi_exec.enable_winrm()
-                        winrm_enabled_successfully = True
+                        active_bootstrap_exec = wmi_exec
                     except Exception as e:
-                        await fail(
-                            job,
-                            f"Не удалось инициализировать подключение (WMI Bootstrap): {e}",
+                        logger.warning(
+                            "WMI Bootstrap не удался для %s: %s. Переход на SMB Fallback...",
+                            job.target_pc, e
                         )
-                        return
+                        try:
+                            await smb_bootstrap_exec.enable_winrm()
+                            active_bootstrap_exec = smb_bootstrap_exec
+                        except Exception as fallback_e:
+                            await fail(
+                                job,
+                                f"Не удалось инициализировать подключение ни по WMI, ни по SMB (Fallback): {fallback_e}",
+                            )
+                            return
 
                     # 4. Проверка готовности (WinRM Probe / USB detection)
                     job = await strategy.probe(job)
@@ -217,11 +242,11 @@ class PrinterOrchestrator:
                     await save_job_state(job)
 
                 finally:
-                    if winrm_enabled_successfully:
+                    if active_bootstrap_exec:
                         # Всегда отключаем WinRM после завершения установки (успешной или нет)
                         logger.info("Отключение WinRM на %s...", job.target_pc)
                         try:
-                            await wmi_exec.disable_winrm()
+                            await active_bootstrap_exec.disable_winrm()
                         except Exception as e:
                             logger.warning(
                                 "Не удалось отключить WinRM на %s: %s", job.target_pc, e

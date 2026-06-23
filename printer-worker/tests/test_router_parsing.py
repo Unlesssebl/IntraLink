@@ -41,6 +41,9 @@ async def test_router_parsing():
         ("Неизвестный префикс abcd1234", None),
         ("Просто текст без принтеров и IP", None),
         ("В тексте есть PC-1234, но нет принтера", None),
+        ("В заявке указан ip адрес 10.244.17 226 (забыли указать точку)", "10.244.17.226"),
+        ("Установите принтер на 192,168,1,50 пожалуйста", "192.168.1.50"),
+        ("Принтер 10 244 1 100", "10.244.1.100"),
     ]
 
     for text, expected in test_cases:
@@ -101,14 +104,14 @@ async def test_router_parsing():
         print(f"  connection_type: {routed_job_snmp.connection_type}")
         print(f"  printer_address: {routed_job_snmp.printer_address}")
 
-        assert routed_job_snmp.model_key == "kyocera_kx_upd", (
+        assert routed_job_snmp.model_key == "Kyocera ECOSYS M2040dn", (
             f"Неверная модель: {routed_job_snmp.model_key}"
         )
         assert routed_job_snmp.connection_type == "tcpip", (
             f"Неверный тип подключения: {routed_job_snmp.connection_type}"
         )
         assert routed_job_snmp.driver_info is not None, "Драйвер должен быть найден"
-        assert routed_job_snmp.driver_info.model_key == "kyocera_kx_upd"
+        assert routed_job_snmp.driver_info.model_key == "Kyocera ECOSYS M2040dn"
 
     print("=== Тестирование Приоритета SNMP над Fast-Track ===")
     job_priority = PrintJob(
@@ -131,7 +134,7 @@ async def test_router_parsing():
             f"  model_key (должен быть kyocera_kx_upd): {routed_job_priority.model_key}"
         )
 
-        assert routed_job_priority.model_key == "kyocera_kx_upd", (
+        assert routed_job_priority.model_key == "Kyocera ECOSYS M2040dn", (
             f"SNMP должен был переопределить модель! Получено: {routed_job_priority.model_key}"
         )
 

@@ -29,6 +29,14 @@ class TcpIpPortStrategy(PrinterStrategy):
             job.target_pc, script
         )
 
+        if status == -1:
+            logger.warning(
+                "Не удалось подключиться к ПК %s через WinRM: %s", job.target_pc, stderr or "timeout"
+            )
+            job.state = JobState.FAILED
+            job.error_message = f"Не удалось инициализировать подключение WinRM к ПК {job.target_pc}: {stderr or 'Таймаут подключения'}"
+            return job
+
         if status == 0 and driver_name in stdout:
             logger.info(
                 "Драйвер '%s' уже установлен на ПК %s", driver_name, job.target_pc
@@ -67,6 +75,15 @@ class TcpIpPortStrategy(PrinterStrategy):
         driver_name_esc = escape_ps(driver_name)
         inf_path = job.driver_info.driver_inf_path
 
+        if not inf_path or not inf_path.lower().endswith(".inf"):
+            job.state = JobState.FAILED
+            job.error_message = (
+                f"Некорректный путь к драйверу: '{inf_path}'. "
+                f"Путь должен указывать на конкретный файл .inf, а не на директорию."
+            )
+            await save_job_state(job)
+            return job
+
         _, dest_subdir, inf_filename = smb_executor.parse_driver_path(inf_path)
         remote_temp_path = (
             f"C:\\Windows\\Temp\\printer_drivers\\{dest_subdir}\\{inf_filename}"
@@ -98,7 +115,24 @@ class TcpIpPortStrategy(PrinterStrategy):
             job.state = JobState.INSTALLING
             await save_job_state(job)
             logger.info("Установка драйвера '%s' на ПК %s", driver_name, job.target_pc)
+            
+            # Извлечение и импорт сертификата подписи драйвера в доверенные издатели (TrustedPublisher).
+            # Это устраняет ошибку "The publisher of an Authenticode(tm) signed catalog has not yet been established as trusted."
+            cat_path = remote_temp_path.replace(".inf", ".cat")
+            cat_path_esc = escape_ps(cat_path)
+            
             install_driver_script = (
+                f"$catPath = '{cat_path_esc}'; "
+                f"if (Test-Path $catPath) {{ "
+                f"  $sig = Get-AuthenticodeSignature $catPath; "
+                f"  $cert = $sig.SignerCertificate; "
+                f"  if ($cert) {{ "
+                f"    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher', 'LocalMachine'); "
+                f"    $store.Open('ReadWrite'); "
+                f"    $store.Add($cert); "
+                f"    $store.Close(); "
+                f"  }} "
+                f"}}; "
                 f"pnputil /add-driver '{remote_temp_path_esc}' /install ; "
                 f"Add-PrinterDriver -Name '{driver_name_esc}'"
             )

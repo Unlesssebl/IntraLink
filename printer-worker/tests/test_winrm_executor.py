@@ -81,7 +81,7 @@ async def test_winrm_run_powershell_failure_all_attempts():
         )
         assert status == -1
         assert "Connection timeout" in stderr
-        assert mock_sleep.call_count == 2
+        assert mock_sleep.call_count == 1
 
 
 @pytest.mark.asyncio

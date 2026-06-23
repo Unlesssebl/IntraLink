@@ -43,26 +43,35 @@ async def _make_request(
 
     assert _session is not None
 
-    try:
-        async with _session.request(
-            method=method,
-            url=url,
-            headers=headers,
-            params=params,
-            json=json_data,
-            timeout=aiohttp.ClientTimeout(total=20),
-        ) as response:
-            if response.status in (200, 201):
-                return await response.json()
-            else:
-                text = await response.text()
-                logger.error(
-                    "Ошибка Core API [%d] для %s: %s", response.status, endpoint, text
-                )
+    import asyncio
+    import aiohttp
+
+    for attempt in range(1, 4):
+        try:
+            async with _session.request(
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                json=json_data,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as response:
+                if response.status in (200, 201):
+                    return await response.json()
+                else:
+                    text = await response.text()
+                    logger.error(
+                        "Ошибка Core API [%d] для %s: %s", response.status, endpoint, text
+                    )
+                    return None
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if attempt == 3:
+                logger.exception("Сетевая ошибка при запросе к Core API %s после 3 попыток:", endpoint)
                 return None
-    except Exception as e:
-        logger.exception("Сетевая ошибка при запросе к Core API %s: %s", endpoint, e)
-        return None
+            logger.warning("Сетевая ошибка к %s, попытка %d/3. Ожидание 2с...", endpoint, attempt)
+            await asyncio.sleep(2)
 
 
 async def get_task_details(

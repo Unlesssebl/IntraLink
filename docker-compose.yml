@@ -108,6 +108,8 @@ services:
       dockerfile: Dockerfile
     container_name: intraservice_printer_worker
     restart: always
+    volumes:
+      - ./printer-worker:/app
     env_file:
       - ./printer-worker/.env
     environment:

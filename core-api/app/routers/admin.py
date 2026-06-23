@@ -266,6 +266,50 @@ async def trigger_rebuild_index():
         ) from e
 
 
+@router.post("/admin/api/printers/fast-reindex", dependencies=[Depends(verify_admin_jwt)])
+async def trigger_fast_reindex():
+    """
+    Быстрая переиндексация: читает только extracted-drv-inf (секунды).
+    Использовать после ручного добавления папки с драйвером в extracted-drv-inf.
+    """
+    try:
+        r = get_redis_client()
+        event = {
+            "event_type": "fast_reindex",
+            "tg_user_id": 0,
+        }
+        await r.publish("printer_actions", json.dumps(event))
+        logger.info("Отправлена команда на быструю переиндексацию из веб-панели")
+        return {"status": "success", "message": "Быстрая переиндексация запущена в фоновом режиме."}
+    except Exception as e:
+        logger.exception("Ошибка публикации команды fast_reindex в Redis: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось запустить быструю переиндексацию: {e}",
+        ) from e
+
+
+@router.get("/admin/api/printers/index-status", dependencies=[Depends(verify_admin_jwt)])
+async def get_index_status():
+    """
+    Возвращает статус фонового процесса индексации драйверов.
+    """
+    try:
+        r = get_redis_client()
+        status_val = await r.get("indexer:status")
+        last_run = await r.get("indexer:last_run")
+        last_result_raw = await r.get("indexer:last_result")
+        last_result = json.loads(last_result_raw) if last_result_raw else None
+        return {
+            "is_running": status_val == "running",
+            "last_run": float(last_run) if last_run else None,
+            "last_result": last_result,
+        }
+    except Exception as e:
+        logger.error("Ошибка при получении статуса индексатора: %s", e)
+        return {"is_running": False, "last_run": None, "last_result": None}
+
+
 @router.get("/admin/api/print-jobs", dependencies=[Depends(verify_admin_jwt)])
 async def get_print_jobs():
     """
@@ -362,6 +406,76 @@ async def handle_job_action(task_id: int, payload: JobActionRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Не удалось отправить действие: {e}",
+        ) from e
+
+
+@router.post(
+    "/admin/api/print-jobs/{task_id}/restart", dependencies=[Depends(verify_admin_jwt)]
+)
+async def restart_print_job(task_id: int, model_key: str | None = None):
+    """
+    Повторно запускает существующую задачу из истории.
+    """
+    try:
+        r = get_redis_client()
+        job_data_str = await r.get(f"printer_job:{task_id}")
+        if not job_data_str:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Задача #{task_id} не найдена в кэше."
+            )
+            
+        job_data = json.loads(job_data_str)
+        
+        # Если передан model_key, обновляем параметры задачи в кэше
+        if model_key:
+            job_data["model_key"] = model_key
+            # Сбрасываем старый driver_info, чтобы воркер переопределил его по новому model_key
+            job_data.pop("driver_info", None)
+            # Принудительно ставим ручной режим, чтобы воркер сразу устанавливал с этим ключом
+            job_data["is_manual"] = True
+            
+        is_manual = job_data.get("is_manual", False)
+        
+        if is_manual:
+            event = {
+                "event_type": "manual_trigger",
+                "task_id": task_id,
+                "tg_user_id": job_data.get("tg_user_id", 0),
+                "target_pc": job_data.get("target_pc"),
+                "model_key": job_data.get("model_key"),
+                "connection_type": job_data.get("connection_type"),
+                "printer_address": job_data.get("printer_address"),
+            }
+        else:
+            # Для автоматической заявки эмулируем получение события из ИС
+            event = {
+                "event_type": "new_task",
+                "task_id": task_id,
+                "tg_user_id": job_data.get("tg_user_id", 0),
+                "is_user_id": 0,
+                "is_login": "", 
+            }
+            
+        # Удаляем старый статус завершенности (failed/done), чтобы UI увидел процесс
+        job_data["state"] = "probing"
+        job_data["error_message"] = ""
+        await r.set(f"printer_job:{task_id}", json.dumps(job_data))
+            
+        await r.publish("printer_actions", json.dumps(event))
+        logger.info(
+            "Задача #%d отправлена на перезапуск из веб-панели (model_key=%s)",
+            task_id,
+            model_key,
+        )
+        return {"status": "success", "task_id": task_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Ошибка перезапуска задачи: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось перезапустить задачу: {e}",
         ) from e
 
 

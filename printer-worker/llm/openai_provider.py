@@ -20,7 +20,7 @@ class OpenAIProvider(LLMProvider):
             "You are a Service Desk assistant. Parse the user request to install a printer.\n"
             "Respond ONLY with a JSON object conforming to the schema:\n"
             "{\n"
-            '  "target_pc": "computer hostname or IP address (e.g. PC-ADMIN, 192.168.1.50)",\n'
+            '  "target_pc": "computer hostname or IP address (e.g. PC-ADMIN, 192.168.1.50). Do NOT extract room numbers (digits only).",\n'
             '  "model_key": "one of: hp_lj_m428, kyocera_ecosys_m2040dn, xerox_b210",\n'
             '  "connection_type": "tcpip or usb",\n'
             '  "printer_address": "IP address or network name of the printer, if applicable (otherwise null)",\n'

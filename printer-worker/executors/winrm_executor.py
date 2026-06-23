@@ -28,18 +28,18 @@ class WinRMExecutor:
             auth=(self.username, self.password),
             transport=self.transport,
             server_cert_validation="ignore",
-            # operation_timeout_sec (60) < asyncio.wait_for timeout (90):
+            # operation_timeout_sec (25) < asyncio.wait_for timeout (90):
             # pywinrm завершается первым с кодом ошибки, а не бросает TimeoutError
             # из asyncio — это намеренная расстановка таймаутов.
-            read_timeout_sec=70,
-            operation_timeout_sec=60,
+            read_timeout_sec=30,
+            operation_timeout_sec=25,
         )
 
     def _run_ps_sync(self, target_pc: str, script: str) -> Tuple[int, str, str]:
         UTF8_PREFIX = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
         full_script = UTF8_PREFIX + script
 
-        retries = 2
+        retries = 1
         for attempt in range(retries + 1):
             try:
                 session = self._get_session(target_pc)

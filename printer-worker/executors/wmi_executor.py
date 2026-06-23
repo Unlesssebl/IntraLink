@@ -216,6 +216,12 @@ class WMIExecutor:
         - НЕ трогаем LocalAccountTokenFilterPolicy — нужен только для локальных учёток,
           мы работаем через доменную учётную запись.
         """
+        # Pre-check: Возможно WinRM уже включен (через GPO или ранее)
+        is_already_open = await self._wait_for_port(5985, timeout=3.0)
+        if is_already_open:
+            logger.info(f"[{self.target_ip}] Порт 5985 уже доступен. Пропуск инициализации через WMI.")
+            return
+
         ps_script = (
             "$ErrorActionPreference = 'Continue'; "
             "Start-Transcript -Path 'C:\\Windows\\Temp\\wmi_bootstrap.log' -Force; "

@@ -221,7 +221,9 @@ async def test_wmi_executor_enable_winrm_timeout_with_log():
             assert "Не удалось дождаться открытия порта WinRM" in str(e)
 
         mock_execute.assert_called_once()
-        mock_wait.assert_called_once_with(5985, timeout=120.0)
+        assert mock_wait.call_count == 2
+        mock_wait.assert_any_call(5985, timeout=3.0)
+        mock_wait.assert_any_call(5985, timeout=120.0)
         mock_read_log.assert_called_once()
 
 
