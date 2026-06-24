@@ -85,8 +85,12 @@ async def process_intraservice_event(
     responder: AIResponder,
 ):
     event_type = payload.get("event_type")
-    if event_type != "new_task":
+    if event_type not in ("new_task", "executor_assigned"):
         return
+
+    # При ручном назначении сервисной учетки (или другого бота) маршрутизируем как новую задачу
+    if event_type == "executor_assigned":
+        payload["event_type"] = "new_task"
 
     task_data = payload.get("task_data")
     if not task_data:

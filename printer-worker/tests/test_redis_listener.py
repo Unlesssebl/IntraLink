@@ -304,30 +304,7 @@ async def test_start_redis_listener_shutdown():
         )
 
 
-@pytest.mark.asyncio
-async def test_process_event_early_filtering(mock_redis):
-    # Тест ранней фильтрации по PRINTER_EXECUTOR_IS_USER_ID и PRINTER_EXECUTOR_LOGIN
-    payload = {
-        "event_type": "new_task",
-        "task_id": 111,
-        "tg_user_id": 222,
-        "is_user_id": 99999,  # чужой ID
-        "is_login": "other_user",  # чужой логин
-        "task_data": {
-            "Name": "Install printer",
-            "Field1112": "PC-TEST-111",
-            "Field1103": "kyocera_ecosys_m2040dn",
-        },
-    }
-    mock_orch = AsyncMock()
-    with (
-        patch("worker_main.get_orchestrator", return_value=mock_orch),
-        patch("worker_config.PRINTER_EXECUTOR_IS_USER_ID", 12345),
-        patch("worker_config.PRINTER_EXECUTOR_LOGIN", "my_login"),
-    ):
-        await _process_event(payload)
-        # Так как ID не совпадает с ожидаемым 12345, orchestrator.run не должен быть вызван
-        mock_orch.run.assert_not_called()
+
 
 
 @pytest.mark.asyncio

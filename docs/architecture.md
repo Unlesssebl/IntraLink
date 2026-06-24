@@ -172,7 +172,7 @@ flowchart TB
 *   **`llm/`** — Взаимодействие с LLM (Ollama/OpenAI) для разбора неструктурированных заявок.
 *   **`strategies/`** — Реестр стратегий (Strategy Pattern) для различных типов принтеров (`TcpIpPortStrategy`, `UsbDiscoveryStrategy`).
 *   **`executors/`** — Низкоуровневые классы для работы с WinRM, SMB и WMI (`wmi_executor.py` для динамического включения WinRM).
-*   **`worker_services/`** — Клиент Core API и подписчик Redis. Включает механизм целевой ранней фильтрации задач по ID исполнителя (`PRINTER_EXECUTOR_IS_USER_ID`) или логину (`PRINTER_EXECUTOR_LOGIN`), защищающий воркер от холостых HTTP-запросов и обработки чужих заявок.
+*   **`worker_services/`** — Клиент Core API и подписчик Redis. Включает механизм подписки на канал `ai_validated_events` для приема задач, прошедших централизованную AI-классификацию и фильтрацию, избавляя воркер от холостых HTTP-запросов к API и локальной фильтрации исполнителей.
 *   **`worker_config.py`** — Настройки и конфигурация микросервиса.
 
 ### 🧠 В. AI Worker (`ai-worker/`)
@@ -368,48 +368,52 @@ sequenceDiagram
 
 ### 3.6. Автоматическая классификация и перенаправление заявок (AI Classifier & RAG)
 
-При обнаружении новых заявок воркер пропускает их через модуль `AIClassifier` для проверки корректности выбранного раздела. Алгоритм использует базу знаний RAG на основе PostgreSQL (расширение pgvector) и LLM (`gemini-2.5-flash` через LiteLLM Proxy):
+При обнаружении новых заявок (`new_task`) или назначении исполнителя (`executor_assigned`) в канале `intraservice_events` сервис `ai-worker` запускает процесс проверки корректности выбранного раздела. Алгоритм использует базу знаний RAG на основе PostgreSQL (расширение pgvector) и LLM (`gemini-2.5-flash` через LiteLLM Proxy):
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Work as worker.py
+    participant CoreWorker as worker.py (Core API)
+    participant Redis as Redis (Pub/Sub)
+    participant AIWorker as worker_main.py (AI Worker)
     participant AIC as ai_classifier.py
-    participant Redis as Redis (service_catalog)
-    participant PG as PostgreSQL (pgvector)
+    participant DB as PostgreSQL (pgvector)
     participant LiteLLM as LiteLLM (Gemini)
     participant IS as IntraService API
 
-    Work->>IS: get_tasks (CreatedMoreThan)
-    IS-->>Work: Новые заявки
-    loop Для каждой новой заявки
-        Work->>AIC: classify_task(task)
-        AIC->>Redis: get("worker:service_catalog")
-        Redis-->>AIC: Список всех разделов
-        AIC->>PG: SQL (cosine_distance)
-        PG-->>AIC: Похожие исторические кейсы
-        AIC->>LiteLLM: parse (Промпт + Заявка + Кейсы + Каталог)
-        LiteLLM-->>AIC: ClassifierResult (action, correct_service_name, comment_text, reason)
-        AIC-->>Work: ClassifierResult
-        alt action == "redirect"
-            Work->>IS: add_task_comment(comment_text)
-            Work->>IS: update_task_status(task_id, 30 [Отменена])
-        end
+    CoreWorker->>IS: get_tasks / get_task_lifetime (polling)
+    IS-->>CoreWorker: Новые/измененные задачи
+    CoreWorker->>Redis: Publish ("intraservice_events", "new_task" / "executor_assigned" payload)
+    
+    Redis->>AIWorker: Событие (payload)
+    AIWorker->>AIC: classify_task(task)
+    AIC->>DB: SQL (cosine_distance RAG)
+    DB-->>AIC: Похожие исторические кейсы
+    AIC->>LiteLLM: parse (Промпт + Заявка + Кейсы)
+    LiteLLM-->>AIC: ClassifierResult (action, correct_service, comment_text, reason)
+    AIC-->>AIWorker: ClassifierResult
+    
+    alt action == "redirect"
+        AIWorker->>IS: add_task_comment(comment_text)
+        AIWorker->>IS: update_task_status(task_id, 30 [Отменена])
+    else action == "proceed" (успешная классификация)
+        AIWorker->>Redis: Publish ("ai_validated_events", "new_task" payload)
     end
+```
 
 ---
 
-### 3.7. Автоматические ответы и диспетчеризация задач (AI Responder & Task Dispatcher)
+### 3.7. Автоматические ответы и авто-выполнение (AI Responder & Task Dispatcher)
 
-После классификации (если заявка не была отменена) она проходит через диспетчер задач `TaskDispatcher` и AI-автоответчик `AIResponder`:
+После классификации (если заявка не была отменена):
 
-1. **Диспетчеризация задач (TaskDispatcher)**:
-   * Проверяет ID услуги (`ServiceId`). Если услуга соответствует специализированному воркеру (например, подключение принтера), задача диспетчеризуется.
-   * Во избежание гонок и повторной обработки, диспетчер проверяет и устанавливает guard-ключ `dispatched:{task_id}` в Redis.
-   * Событие о задаче публикуется в соответствующий канал Redis Pub/Sub (например, `printer_actions`), откуда его забирает специализированный воркер.
+1. **Реактивный триггер авто-выполнения**:
+   * Одобренное событие публикуется в канале `ai_validated_events` в виде типа `new_task`.
+   * Специализированные воркеры (например, `printer-worker`), подписанные на данный канал, немедленно перехватывают его для старта оркестратора.
 
 2. **Автоматический ответ (AIResponder)**:
-   * Если задача не была перехвачена специализированным воркером, она передается в `AIResponder`.
+   * Параллельно для задач запускается `AIResponder.process_new_task(task_data)`.
+   * Он проверяет ID услуги (`ServiceId`). Автоответ генерируется только для разрешенных разделов из `settings.AUTO_REPLY_SERVICE_IDS` и только если задача не была ранее обработана автоответчиком (проверка по ключу `ai_replied:{task_id}` в Redis).
    * Выполняется семантический RAG-поиск по PostgreSQL (`pgvector`) для поиска схожих закрытых задач.
    * Текст заявки и найденные кейсы отправляются в LLM (Gemini 2.5 Flash).
    * Если LLM уверена в решении (confidence >= 0.6) и не требует уточнения данных от пользователя, формируется автоответ.

@@ -216,34 +216,6 @@ async def _process_event(payload: dict, channel: str = "ai_validated_events") ->
             logger.error("Отсутствует task_id в событии: %s", payload)
             return
 
-        # Ранняя фильтрация: отбрасываем чужие заявки до HTTP-запроса
-        from worker_config import PRINTER_EXECUTOR_IS_USER_ID, PRINTER_EXECUTOR_LOGIN
-
-        if PRINTER_EXECUTOR_IS_USER_ID is not None:
-            event_is_user_id = payload.get("is_user_id")
-            if (
-                event_is_user_id
-                and int(event_is_user_id) != PRINTER_EXECUTOR_IS_USER_ID
-            ):
-                logger.debug(
-                    "Ранняя фильтрация: событие для задачи #%d пропущено (is_user_id=%s, ожидается=%d)",
-                    task_id,
-                    event_is_user_id,
-                    PRINTER_EXECUTOR_IS_USER_ID,
-                )
-                return
-
-        if PRINTER_EXECUTOR_LOGIN:
-            event_login = payload.get("is_login")
-            if event_login and event_login.lower() != PRINTER_EXECUTOR_LOGIN.lower():
-                logger.debug(
-                    "Ранняя фильтрация: событие для задачи #%d пропущено (is_login='%s', ожидается='%s')",
-                    task_id,
-                    event_login,
-                    PRINTER_EXECUTOR_LOGIN,
-                )
-                return
-
         # Дедупликация: пропускаем задачу если она уже обрабатывается
         if task_id in _active_tasks:
             logger.info(
@@ -635,24 +607,8 @@ async def start_redis_listener():
                         continue
 
                     # Фильтруем события IntraService
-                    if event_type not in (
-                        "new_task",
-                        "status_change",
-                        "executor_assigned",
-                    ):
+                    if event_type != "new_task":
                         continue
-
-                    # Если это изменение статуса или назначение исполнителя, реагируем только на статус "Открыта" (ID: 31)
-                    if event_type in ("status_change", "executor_assigned"):
-                        status_id = payload.get("status_id")
-                        if status_id != 31:
-                            logger.debug(
-                                "Событие %s для задачи #%d пропущено: статус %s не является стартовым",
-                                event_type,
-                                payload.get("task_id"),
-                                status_id,
-                            )
-                            continue
 
                     # Запускаем обработку события асинхронно
                     asyncio.create_task(_process_event(payload, channel))
