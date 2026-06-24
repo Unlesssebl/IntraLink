@@ -300,7 +300,7 @@ async def test_start_redis_listener_shutdown():
             pytest.fail("start_redis_listener hung and timed out")
         mock_recover.assert_called_once()
         mock_pubsub.subscribe.assert_called_once_with(
-            "intraservice_events", "printer_actions", "ai_validated_events"
+            "printer_actions", "ai_validated_events"
         )
 
 

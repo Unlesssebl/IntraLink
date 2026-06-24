@@ -456,7 +456,7 @@ async def start_redis_listener():
     Фоновый процесс подписки на Redis Pub/Sub для прослушивания событий IntraService.
     """
     logger.info(
-        "Запуск фонового подписчика Redis Pub/Sub на канале 'intraservice_events'..."
+        "Запуск фонового подписчика Redis Pub/Sub..."
     )
     try:
         await _recover_orphan_jobs()
@@ -467,9 +467,9 @@ async def start_redis_listener():
         try:
             redis = aioredis.from_url(REDIS_URL, decode_responses=True)
             async with redis.pubsub() as pubsub:
-                await pubsub.subscribe("intraservice_events", "printer_actions", "ai_validated_events")
+                await pubsub.subscribe("printer_actions", "ai_validated_events")
                 logger.info(
-                    "Подписка на Redis Pub/Sub каналы 'intraservice_events', 'ai_validated_events' и 'printer_actions' успешно оформлена."
+                    "Подписка на Redis Pub/Sub каналы 'ai_validated_events' и 'printer_actions' успешно оформлена."
                 )
 
                 while True:

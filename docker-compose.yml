@@ -10,7 +10,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
 
   redis:
     image: redis:7-alpine
@@ -20,14 +20,14 @@ services:
     volumes:
       - redis_data:/data
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
 
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
     container_name: intraservice_litellm
     restart: always
     ports:
-      - "4000:4000"
+      - "${LITELLM_PORT:-4000}:4000"
     volumes:
       - ./litellm/config.yaml:/app/config.yaml
     command: --config /app/config.yaml
@@ -43,7 +43,7 @@ services:
     container_name: intraservice_core_api
     restart: always
     ports:
-      - "8000:8000"
+      - "${CORE_API_PORT:-8000}:8000"
     env_file:
       - ./core-api/.env
     volumes:
