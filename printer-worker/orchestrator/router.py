@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 
 from orchestrator.device_normalizer import normalize_pc_name, normalize_printer_address
-from .schemas import PrintJob, JobState, KnowledgeBase, ErrorType
+from .schemas import PrintJob, JobState, KnowledgeBase, ErrorType, PrinterDriverInfo
 from llm import get_provider
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ class JobRouter:
 
         return None
 
-    def _resolve_bundle_driver(self, driver: 'PrinterDriverInfo', model_name: str) -> Optional[dict]:
+    def _resolve_bundle_driver(self, driver: PrinterDriverInfo, model_name: str) -> Optional[dict]:
         if not driver.driver_bundle or not model_name:
             return None
             
@@ -101,7 +101,7 @@ class JobRouter:
         logger.warning("Не удалось найти точный драйвер в бандле %s для модели '%s', fallback: %s", driver.driver_bundle, model_name, driver.driver_name)
         return None
 
-    def _build_resolved_update(self, driver: 'PrinterDriverInfo', exact_driver_name: str, inf_path_suffix: Optional[str], model_name: Optional[str] = None) -> dict:
+    def _build_resolved_update(self, driver: PrinterDriverInfo, exact_driver_name: Optional[str], inf_path_suffix: Optional[str], model_name: Optional[str] = None) -> Optional[dict]:
         updates = {}
         if exact_driver_name and exact_driver_name != driver.driver_name:
             updates["driver_name"] = exact_driver_name
