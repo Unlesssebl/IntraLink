@@ -5,6 +5,7 @@ import re
 import time
 import redis.asyncio as aioredis
 from typing import Optional
+from orchestrator.device_normalizer import normalize_pc_name, normalize_printer_address
 from worker_config import REDIS_URL, MAX_CONCURRENT_JOBS
 from orchestrator.schemas import PrintJob, JobState
 from worker_services.api_client import (
@@ -194,7 +195,7 @@ async def _process_manual_trigger(payload: dict) -> None:
         logger.debug("Задача #%d (manual_trigger) удалена из активных", task_id)
 
 
-async def _process_event(payload: dict) -> None:
+async def _process_event(payload: dict, channel: str) -> None:
     async with _semaphore:
         tg_user_id_raw = payload.get("tg_user_id")
         task_id_raw = payload.get("task_id")
@@ -254,11 +255,23 @@ async def _process_event(payload: dict) -> None:
 
         _active_tasks.add(task_id)
         logger.info(
-            "Обработка события '%s' для задачи #%d (пользователь %s)",
+            "Обработка события '%s' (канал: %s) для задачи #%d (пользователь %s)",
             event_type,
+            channel,
             task_id,
             str(tg_user_id) if tg_user_id is not None else "Service Account",
         )
+
+        # ЖЁСТКОЕ ПРАВИЛО МАРШРУТИЗАЦИИ:
+        # Сырые события new_task игнорируем, ждем их из ai_validated_events
+        if event_type == "new_task" and channel != "ai_validated_events":
+            logger.debug(
+                "Событие new_task для задачи #%d проигнорировано в канале %s (ожидается из ai_validated_events)",
+                task_id,
+                channel
+            )
+            _active_tasks.discard(task_id)
+            return
 
         try:
             task_data = payload.get("task_data")
@@ -308,10 +321,6 @@ async def _process_event(payload: dict) -> None:
             target_pc = task_data.get("Field1112") or None
             model_key = task_data.get("Field1103") or None
 
-            # Fallback: CreatorComments иногда содержит имя ПК
-            if not target_pc and task_data.get("CreatorComments"):
-                target_pc = task_data.get("CreatorComments")
-
             # Fallback: XML-поле Data (если плоские поля пусты)
             if (not target_pc or not model_key) and task_data.get("Data"):
                 data_xml = task_data["Data"]
@@ -324,19 +333,8 @@ async def _process_event(payload: dict) -> None:
                     if m:
                         model_key = m.group(1).strip() or None
 
-            # Эвристика: если имя ПК всё ещё не определено, или состоит только из цифр, ищем стандартный префикс в тексте
-            if not target_pc or re.fullmatch(r"\d{3,4}", target_pc.strip()):
-                m_pc = re.search(r"\b(?:NTMW|TNT|TKT|NTEMW|16-)\s*\d{2,4}\b", raw_text, re.IGNORECASE)
-                if m_pc:
-                    target_pc = m_pc.group(0).upper()
-                    logger.info("PC name extracted via regex: %s", target_pc)
-
-            # Очистка target_pc
-            if target_pc:
-                cyrillic = 'ОСАЕРХМТКВ'
-                latin    = 'OCAEPXMTKB'
-                tr_map = str.maketrans(cyrillic + cyrillic.lower(), latin + latin.lower())
-                target_pc = target_pc.translate(tr_map).replace(" ", "").upper()
+            # Нормализация target_pc: транслитерация + исправление опечаток в префиксе
+            target_pc = normalize_pc_name(target_pc)
 
             # Очистка model_key
             if model_key:
@@ -346,27 +344,20 @@ async def _process_event(payload: dict) -> None:
                 tr_map = str.maketrans(cyrillic + cyrillic.lower(), latin + latin.lower())
                 model_key = model_key.translate(tr_map)
                 
-                # Удаление IP-адресов из названия модели (например: 'ECОSYS M2135dn 10.244.16.25')
+                # Удаление IP-адресов из названия модели
                 model_key = re.sub(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', '', model_key)
                 model_key = model_key.strip()
                 if not model_key:
                     model_key = None
 
-            # Добавляем все значения полей в raw_text
-            if target_pc:
-                raw_text += f" {target_pc}"
-            if model_key:
-                raw_text += f" {model_key}"
-
             logger.info(
-                "Параметры задачи #%d: target_pc=%s, model_key=%s, raw_text='%s'",
+                "Параметры задачи #%d из IS: target_pc=%s, model_key=%s",
                 task_id,
                 target_pc,
                 model_key,
-                raw_text,
             )
 
-            # Создаем контекст выполнения PrintJob
+            # Создаем контекст выполнения PrintJob (raw_text передается чистым для LLM)
             job = PrintJob(
                 task_id=task_id,
                 tg_user_id=tg_user_id,
@@ -504,9 +495,9 @@ async def start_redis_listener():
         try:
             redis = aioredis.from_url(REDIS_URL, decode_responses=True)
             async with redis.pubsub() as pubsub:
-                await pubsub.subscribe("intraservice_events", "printer_actions")
+                await pubsub.subscribe("intraservice_events", "printer_actions", "ai_validated_events")
                 logger.info(
-                    "Подписка на Redis Pub/Sub каналы 'intraservice_events' и 'printer_actions' успешно оформлена."
+                    "Подписка на Redis Pub/Sub каналы 'intraservice_events', 'ai_validated_events' и 'printer_actions' успешно оформлена."
                 )
 
                 while True:
@@ -534,6 +525,7 @@ async def start_redis_listener():
                         continue
 
                     event_type = payload.get("event_type")
+                    channel = message.get("channel")
 
                     # Обработка ответов от бота
                     if event_type == "approval_response":
@@ -663,7 +655,7 @@ async def start_redis_listener():
                             continue
 
                     # Запускаем обработку события асинхронно
-                    asyncio.create_task(_process_event(payload))
+                    asyncio.create_task(_process_event(payload, channel))
 
         except asyncio.CancelledError:
             logger.info("Слушатель Redis Pub/Sub остановлен.")

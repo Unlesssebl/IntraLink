@@ -163,7 +163,16 @@ async def process_intraservice_event(
                         except Exception:
                             pass
 
-            await redis.set(classified_key, "1", ex=604800)
+            if not is_redirected:
+                # 1. Защита от повторной классификации (идемпотентность)
+                await redis.set(classified_key, "1", ex=604800)
+                
+                # 2. Мгновенный реактивный триггер для printer-worker (и других)
+                try:
+                    await redis.publish("ai_validated_events", json.dumps(payload))
+                    logger.info("Заявка #%d прошла валидацию AI и отправлена в ai_validated_events", task_id)
+                except Exception as e:
+                    logger.error("Ошибка при публикации в ai_validated_events для заявки #%d: %s", task_id, e)
 
         if is_redirected:
             return

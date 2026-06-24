@@ -1,6 +1,9 @@
+import asyncio
 import re
 import logging
 from typing import Optional
+
+from orchestrator.device_normalizer import normalize_pc_name, normalize_printer_address
 from .schemas import PrintJob, JobState, KnowledgeBase, ErrorType
 from llm import get_provider
 
@@ -129,16 +132,14 @@ class JobRouter:
                 return False
         return True
     async def route(self, job: PrintJob) -> PrintJob:
-        logger.info("Маршрутизация задачи #%d", job.task_id)
-
-        # Очистка имени ПК, если это просто номер кабинета (состоит только из цифр)
-        if job.target_pc and job.target_pc.replace(" ", "").isdigit():
-            logger.info("Очистка target_pc: значение '%s' является номером кабинета", job.target_pc)
-            job.target_pc = ""
+        if job.printer_address:
+            job.printer_address = normalize_printer_address(job.printer_address)
+        if job.target_pc:
+            job.target_pc = normalize_pc_name(job.target_pc)
 
         # 1. Извлечение адреса принтера (IP или Хостнейм) из текста, если он не задан
         if not job.printer_address:
-            job.printer_address = self._parse_printer_address(job.raw_text)
+            job.printer_address = normalize_printer_address(self._parse_printer_address(job.raw_text))
 
         # 2. Попытка SNMP-автоопределения модели (Высший приоритет)
         # Пробуем определить модель по сети, если адрес известен.
@@ -237,8 +238,9 @@ class JobRouter:
                 job.connection_type = driver.connection_type
                 # Если сетевой принтер, проверяем наличие IP/DNS
                 if driver.connection_type == "tcpip":
-                    if not job.printer_address:
-                        job.printer_address = self._parse_printer_address(job.raw_text)
+                    job.printer_address = normalize_printer_address(
+                        job.printer_address or self._parse_printer_address(job.raw_text)
+                    )
 
                 if not self._validate_driver_inf(job, job.model_key):
                     return job
@@ -268,9 +270,10 @@ class JobRouter:
                 job.state = JobState.FAILED
                 job.error_type = ErrorType.USER
                 job.error_message = (
-                    f"Не удалось распознать параметры заявки автоматически "
-                    f"(уверенность модели: {result.confidence:.2f} < {CONFIDENCE_THRESHOLD}). "
-                    f"Пожалуйста, уточните имя компьютера и модель принтера."
+                    f"Не удалось автоматически определить параметры установки "
+                    f"(уверенность модели: {result.confidence:.0%}). "
+                    "Пожалуйста, уточните в комментарии: системное имя компьютера (например, NTEMW0123) "
+                    "и модель принтера."
                 )
                 return job
 
@@ -315,19 +318,14 @@ class JobRouter:
                 job.driver_info = driver
                 job.connection_type = driver.connection_type
 
-            job.target_pc = result.target_pc or job.target_pc
-            if job.target_pc:
-                cyrillic = 'ОСАЕРХМТКВ'
-                latin    = 'OCAEPXMTKB'
-                tr_map = str.maketrans(cyrillic + cyrillic.lower(), latin + latin.lower())
-                job.target_pc = job.target_pc.translate(tr_map).replace(" ", "").upper()
+            job.target_pc = normalize_pc_name(result.target_pc or job.target_pc)
             if not job.connection_type:
                 job.connection_type = (
                     result.connection_type or job.driver_info.connection_type
                 )
 
             if job.driver_info.connection_type == "tcpip":
-                job.printer_address = (
+                job.printer_address = normalize_printer_address(
                     job.printer_address
                     or result.printer_address
                     or self._parse_printer_address(job.raw_text)
