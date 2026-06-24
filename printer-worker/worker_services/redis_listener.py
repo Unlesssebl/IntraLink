@@ -195,7 +195,7 @@ async def _process_manual_trigger(payload: dict) -> None:
         logger.debug("Задача #%d (manual_trigger) удалена из активных", task_id)
 
 
-async def _process_event(payload: dict, channel: str) -> None:
+async def _process_event(payload: dict, channel: str = "ai_validated_events") -> None:
     async with _semaphore:
         tg_user_id_raw = payload.get("tg_user_id")
         task_id_raw = payload.get("task_id")
@@ -525,7 +525,7 @@ async def start_redis_listener():
                         continue
 
                     event_type = payload.get("event_type")
-                    channel = message.get("channel")
+                    channel = message.get("channel") or ""
 
                     # Обработка ответов от бота
                     if event_type == "approval_response":

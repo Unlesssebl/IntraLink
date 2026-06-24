@@ -300,7 +300,7 @@ async def test_start_redis_listener_shutdown():
             pytest.fail("start_redis_listener hung and timed out")
         mock_recover.assert_called_once()
         mock_pubsub.subscribe.assert_called_once_with(
-            "intraservice_events", "printer_actions"
+            "intraservice_events", "printer_actions", "ai_validated_events"
         )
 
 
@@ -592,3 +592,29 @@ def test_get_redis_initialization():
             mock_from_url.assert_called_once()
     finally:
         rl._redis_client = orig_client
+
+
+@pytest.mark.asyncio
+async def test_process_event_new_task_routing(mock_redis):
+    from worker_services.redis_listener import _process_event
+    payload = {
+        "event_type": "new_task",
+        "task_id": 123,
+        "tg_user_id": 456,
+        "task_data": {
+            "Name": "Install printer",
+            "Field1112": "PC-123",
+            "Field1103": "kyocera_ecosys_m2040dn"
+        }
+    }
+    
+    mock_orch = AsyncMock()
+    with patch("worker_main.get_orchestrator", return_value=mock_orch):
+        # 1. Сырое событие из общего канала -> Игнорируется
+        await _process_event(payload, channel="intraservice_events")
+        mock_orch.run.assert_not_called()
+        
+        # 2. Проверенное событие из валидированного канала -> Обрабатывается
+        await _process_event(payload, channel="ai_validated_events")
+        mock_orch.run.assert_called_once()
+
