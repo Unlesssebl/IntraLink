@@ -101,9 +101,11 @@
 │   └── requirements.txt
 │
 ├── debug_tools/               # Набор CLI-утилит для ручной диагностики и тестирования микросервисов
-│   ├── cli.py                 # Единая точка входа (ai, printer, approve)
-│   ├── ai_debugger.py         # Отладка AI-классификатора и RAG
-│   └── printer_debugger.py    # Отладка парсинга заявок и стратегий установки
+│   ├── cli.py                 # Единая точка входа (команды: ai, printer, approve, redis, stuck, fix)
+│   ├── ai_debugger.py         # Отладка AI-классификатора и RAG-поиска (вывод top-5 совпадений pgvector)
+│   ├── printer_debugger.py    # Отладка парсинга заявок, SNMP, Fast-Track, Smart-Track
+│   ├── batch_runner.py        # Батч-тестирование на выборке заявок с расчетом Accuracy
+│   └── core.py                # Загрузка данных заявок с автоматическим fallback на кэш Redis
 │
 ├── printer-worker/            # Микросервис автоустановки принтеров (WMI + WinRM + SMB)
 │   ├── executors/             # Низкоуровневые исполнители (WMI, WinRM, SMB)
@@ -231,6 +233,35 @@ POLLING_INTERVAL=10
    uv pip install -r requirements.txt
    uv run main.py
    ```
+
+
+---
+
+## 🛠 Инструменты отладки (CLI-дебаггер)
+
+Для удобной автономной диагностики и проверки логики воркеров (подход LLM-as-judge) в репозитории подготовлен CLI-инструментарий в папке `debug_tools`.
+
+Запуск осуществляется с помощью единой точки входа:
+```bash
+# Тестирование классификатора AI-worker на конкретной заявке (с выводом топ-5 RAG-кейсов)
+python -m debug_tools.cli ai --task-id <id>
+
+# Тестирование роутера принтеров (показывает отработку SNMP, Fast-Track, Smart-Track и логи перехвата)
+python -m debug_tools.cli printer --task-id <id>
+
+# Запуск батч-тестирования для оценки качества на выборке заявок (выводит агрегированный JSON-отчет)
+python -m debug_tools.cli printer --batch 133609,141205,145001
+python -m debug_tools.cli ai --batch-file ids.txt
+
+# Оффлайн-режим (загрузка заявки напрямую из Redis-кэша, минуя Core API)
+python -m debug_tools.cli printer --task-id <id> --from-redis
+
+# Дополнительные диагностические команды:
+python -m debug_tools.cli redis    # Анализ состояния и подключений Redis
+python -m debug_tools.cli stuck    # Поиск зависших заявок в системе
+python -m debug_tools.cli fix      # Попытка автоматического исправления проблемных состояний воркеров
+python -m debug_tools.cli approve --task-id <id> --action approve  # Эмуляция подтверждения установки пользователем
+```
 
 ---
 
