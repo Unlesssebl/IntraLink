@@ -100,6 +100,11 @@
 │   │   └── test_worker.py     # Тесты фонового воркера (process_user и др.)
 │   └── requirements.txt
 │
+├── debug_tools/               # Набор CLI-утилит для ручной диагностики и тестирования микросервисов
+│   ├── cli.py                 # Единая точка входа (ai, printer, approve)
+│   ├── ai_debugger.py         # Отладка AI-классификатора и RAG
+│   └── printer_debugger.py    # Отладка парсинга заявок и стратегий установки
+│
 ├── printer-worker/            # Микросервис автоустановки принтеров (WMI + WinRM + SMB)
 │   ├── executors/             # Низкоуровневые исполнители (WMI, WinRM, SMB)
 │   ├── knowledge_base/        # База знаний принтеров (JSON)
