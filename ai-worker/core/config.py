@@ -85,6 +85,10 @@ class Settings(BaseSettings):
         "comment_only",
         description="Режим автоответа: comment_only | comment_and_wait | comment_and_resolve",
     )
+    RAG_EXECUTOR_ID: int | None = Field(
+        8664,
+        description="ID исполнителя для извлечения RAG-знаний (по умолчанию Беликов Ален: 8664)",
+    )
 
     ENCRYPTION_KEY: str | None = Field(
         None, description="Ключ для шифрования токенов в БД"

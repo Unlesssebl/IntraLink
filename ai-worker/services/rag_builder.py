@@ -256,8 +256,8 @@ async def process_task_with_gemini(
 
     prompt = f"""
 Проанализируй закрытую или отмененную заявку технической поддержки и извлеки из нее структурированную базу знаний (Проблема -> Решение).
-КРИТИЧЕСКОЕ ПРАВИЛО: При формировании поля solution (Решение) используй СТРОГО те действия и факты, которые описал инженер технической поддержки в истории переписки. 
-Твоя задача — отфильтровать мусор (приветствия, эмоции "СРОЧНО", "ПОМОГИТЕ", "ПК можете забирать", системные уведомления), а не придумывать абстрактно правильный ответ или додумывать шаги.
+КРИТИЧЕСКОЕ ПРАВИЛО: При формировании поля solution (Решение) используй СТРОГО те действия, факты и формулировки, которые описал инженер технической поддержки (особенно если автор комментариев — Беликов Ален).
+Твоя задача — сохранить оригинальную суть и лаконичные формулировки специалиста, отсеяв только мусор (эмоции, системные логи, приветствия). Не придумывай шаги от себя.
 Решение должно быть оригинальным ответом техподдержки, просто очищенным от воды.
 
 ОСОБОЕ ВНИМАНИЕ КЕЙСАМ ОТМЕНЫ (STATUS "ОТМЕНЕНА"): 
@@ -342,10 +342,12 @@ async def build_rag_dataset(
     service_quotas: dict,
     service_ids: list[int],
     auth_b64: str,
+    executor_id: int | None = None,
     progress_callback: Callable[[str], Coroutine[Any, Any, None]] | None = None,
 ) -> dict:
     """
     Асинхронно добирает примеры в базу знаний RAG до заполнения квот по услугам и статусам.
+    Приоритетно извлекает закрытые заявки указанного инженера (по умолчанию Беликов Ален).
     """
 
     async def log_msg(msg: str):
@@ -353,8 +355,9 @@ async def build_rag_dataset(
         if progress_callback:
             await progress_callback(msg)
 
+    target_executor_id = executor_id if executor_id is not None else settings.RAG_EXECUTOR_ID
     await log_msg(
-        f"Запуск процесса перестроения RAG-базы. Фильтр 1-й линии: {filter_id}"
+        f"Запуск процесса перестроения RAG-базы. Фильтр: {filter_id}, Исполнитель ID: {target_executor_id or 'Все'}"
     )
     await log_msg(f"Целевые услуги для проверки: {service_ids}")
 
@@ -477,6 +480,8 @@ async def build_rag_dataset(
                     }
                     if filter_id > 0:
                         params["filterId"] = str(filter_id)
+                    if target_executor_id:
+                        params["ExecutorIds"] = str(target_executor_id)
                     tasks_data = await intraservice.get_tasks(auth_b64, params)
 
                     if not tasks_data or "Tasks" not in tasks_data:

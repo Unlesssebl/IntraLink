@@ -164,5 +164,5 @@ core-api/chroma_db/
 node_modules/
 admin-ui/dist/
 
-
-
+# Codegraph / Agent artifacts
+.codegraph/
