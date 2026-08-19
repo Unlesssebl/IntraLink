@@ -16,6 +16,7 @@
 | **Telegram Bot** | aiogram 3.x, aiohttp | Пользовательский интерфейс, доставка уведомлений |
 | **Printer Worker** | Pydantic, aioredis, pywinrm | Автоматическое подключение сетевых/локальных принтеров |
 | **AI Worker** | Python, pgvector, LiteLLM, aioredis | Автоматическая классификация новых заявок с помощью RAG и LLM, отправка автоответов и перенаправление задач |
+| **Helpdesk Agent** | Python, FastEmbed, pgvector, aiohttp | Инструменты I/O, сетевая диагностика и семантический RAG-поиск для оператора в среде Antigravity (AGY) |
 
 Для асинхронной связи между сервисами используются два канала:
 - **HTTP REST** с заголовком `X-Bot-Api-Key` — для синхронных запросов от Бота к Core API.
