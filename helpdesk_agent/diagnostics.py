@@ -8,14 +8,29 @@ from typing import Any
 
 logger = logging.getLogger("helpdesk_agent.diagnostics")
 
+# Кириллические омоглифы -> латиница для имен ПК
+CYRILLIC_HOMOGLYPHS = {
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M",
+    "Н": "H", "О": "O", "Р": "P", "С": "C", "Т": "T",
+    "Х": "X", "а": "a", "е": "e", "о": "o", "р": "p",
+    "с": "c", "у": "y", "х": "x",
+}
+
 # Регулярные выражения для поиска имен хостов и IP-адресов
 PC_NAME_REGEX = re.compile(
-    r"\b([A-Za-z0-9\-_]*(?:TEMPO|WKS|PC|SRV|NOTE|LAPTOP|COMP|DESKTOP)[A-Za-z0-9\-_]*)\b",
+    r"\b([A-Za-zА-Яа-я0-9\-_]*(?:TEMPO|ТЕМПО|WKS|ВКС|PC|РС|SRV|NOTE|LAPTOP|COMP|DESKTOP)[A-Za-zА-Яа-я0-9\-_]*)\b",
     re.IGNORECASE,
 )
 IP_REGEX = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
 )
+
+
+def normalize_host_name(raw_host: str) -> str:
+    """Транслитерирует кириллические омоглифы в латиницу для корректного DNS-резолвинга."""
+    cleaned = raw_host.strip().strip(",;.()[]{}'\"")
+    trans_chars = [CYRILLIC_HOMOGLYPHS.get(ch, ch) for ch in cleaned]
+    return "".join(trans_chars).upper()
 
 
 def extract_potential_hosts(
@@ -28,13 +43,22 @@ def extract_potential_hosts(
     seen: set[str] = set()
 
     def add_host(val: str):
-        cleaned = val.strip().strip(",;.()[]{}'\"")
-        if not cleaned or len(cleaned) < 3 or cleaned.lower() in ("комп", "компьютер", "ноутбук", "пк", "wifi", "интернет", "helpdesk", "windows"):
+        normalized = normalize_host_name(val)
+        if not normalized or len(normalized) < 3:
             return
-        lower = cleaned.lower()
+        # Исключаем чистые числа (телефоны/комнаты), номера телефонов формата XX-XX и общие стоп-слова
+        if (
+            normalized.isdigit()
+            or re.match(r"^\d+[\-_]\d+$", normalized)
+            or normalized.lower() in (
+                "комп", "компьютер", "ноутбук", "пк", "wifi", "интернет", "helpdesk", "windows", "нет номера"
+            )
+        ):
+            return
+        lower = normalized.lower()
         if lower not in seen:
             seen.add(lower)
-            hosts.append(cleaned)
+            hosts.append(normalized)
 
     # 1. Проверяем кастомные поля (наивысший приоритет)
     if custom_fields:
@@ -45,8 +69,6 @@ def extract_potential_hosts(
                 add_host(m)
             for m in IP_REGEX.findall(val):
                 add_host(m)
-            if re.match(r"^[A-Za-z0-9\-_]{3,25}$", val.strip()):
-                add_host(val)
 
     # 2. Проверяем основной текст заявки
     if text:
@@ -78,7 +100,9 @@ async def async_ping(host: str, count: int = 2, timeout_sec: float = 1.5) -> dic
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec * count + 2.0)
         out_text = stdout.decode("cp866" if is_win else "utf-8", errors="ignore")
 
-        is_online = (proc.returncode == 0) and ("TTL=" in out_text.upper() or "BYTES=" in out_text.upper() or "ВРЕМЯ=" in out_text.upper() or "TIME=" in out_text.upper())
+        is_online = (proc.returncode == 0) and (
+            "TTL=" in out_text.upper() or "BYTES=" in out_text.upper() or "ВРЕМЯ=" in out_text.upper() or "TIME=" in out_text.upper()
+        )
         
         rtt_match = re.search(r"(?:Среднее|Average|avg)[ =]+([0-9\.]+)\s*ms", out_text, re.IGNORECASE)
         avg_rtt = f"{rtt_match.group(1)}ms" if rtt_match else None
@@ -95,14 +119,13 @@ async def async_ping(host: str, count: int = 2, timeout_sec: float = 1.5) -> dic
         return {"host": host, "is_online": False, "avg_rtt": None, "error": str(e)}
 
 
-async def check_tcp_port(host: str, port: int, timeout: float = 1.0) -> bool:
+async def check_tcp_port(host: str, port: int, timeout: float = 1.2) -> bool:
     """
-    Проверяет доступность TCP-порта (SMB 445, WinRM 5985, RDP 3389 и т.д.).
+    Проверяет доступность TCP-порта (SMB 445, WinRM 5985, RDP 3389).
     """
     try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=timeout
-        )
+        conn = asyncio.open_connection(host, port)
+        _, writer = await asyncio.wait_for(conn, timeout=timeout)
         writer.close()
         await writer.wait_closed()
         return True
@@ -110,60 +133,60 @@ async def check_tcp_port(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-async def run_host_diagnostics(host: str) -> dict[str, Any]:
-    """
-    Выполняет комплексную сетевую диагностику целевого хоста.
-    """
-    resolved_ip = None
+async def resolve_dns(host: str) -> str | None:
+    """Резолвит DNS имя в IP-адрес."""
     try:
         loop = asyncio.get_running_loop()
-        addr_info = await loop.getaddrinfo(host, None, family=socket.AF_INET)
-        if addr_info and addr_info[0] and addr_info[0][4]:
-            resolved_ip = addr_info[0][4][0]
+        ip = await loop.run_in_executor(None, socket.gethostbyname, host)
+        return ip
     except Exception:
-        pass
+        return None
 
-    target_for_ping = resolved_ip or host
-    ping_res = await async_ping(target_for_ping)
 
-    ports_to_check = {
-        445: "SMB",
-        5985: "WinRM",
-        3389: "RDP",
-    }
-    open_ports = {}
-    if ping_res["is_online"] or resolved_ip:
-        tasks = [
-            check_tcp_port(target_for_ping, port)
-            for port in ports_to_check
-        ]
-        port_results = await asyncio.gather(*tasks, return_exceptions=True)
-        for (port, name), is_open in zip(ports_to_check.items(), port_results):
-            open_ports[name] = bool(is_open) if not isinstance(is_open, Exception) else False
+async def run_host_diagnostics(target: str) -> dict[str, Any]:
+    """
+    Комплексная диагностика хоста: DNS -> ICMP Ping -> SMB 445 -> WinRM 5985.
+    Комбинированная логика: если пинг заблокирован брандмауэром, но порт SMB/WinRM открыт,
+    хост справедливо считается находящимся онлайн.
+    """
+    target = normalize_host_name(target)
+    
+    # 1. DNS Резолвинг
+    ip = await resolve_dns(target) if not re.match(r"^\d+\.\d+\.\d+\.\d+$", target) else target
 
-    is_accessible = ping_res["is_online"] or any(open_ports.values())
+    # 2. Параллельный запуск ICMP Ping и проверок портов
+    ping_task = async_ping(target, count=2)
+    smb_task = check_tcp_port(target, 445)
+    winrm_task = check_tcp_port(target, 5985)
+
+    ping_res, smb_ok, winrm_ok = await asyncio.gather(ping_task, smb_task, winrm_task)
+
+    # 3. Комплексный вывод статуса
+    is_online = ping_res.get("is_online") or smb_ok or winrm_ok
 
     return {
-        "host": host,
-        "resolved_ip": resolved_ip,
-        "is_online": is_accessible,
-        "ping_ok": ping_res["is_online"],
+        "target": target,
+        "resolved_ip": ip,
+        "is_online": is_online,
         "avg_rtt": ping_res.get("avg_rtt"),
-        "open_ports": open_ports,
+        "icmp_ping_ok": ping_res.get("is_online", False),
+        "smb_port_445": smb_ok,
+        "winrm_port_5985": winrm_ok,
     }
 
 
 def format_diagnostics_summary(diag: dict[str, Any]) -> str:
-    """
-    Форматирует результат диагностики в компактную строку.
-    """
-    host = diag.get("host")
-    ip = diag.get("resolved_ip") or "DNS не разрешен"
+    """Форматирует результат диагностики в компактную визуальную строку."""
+    target = diag.get("target", "Unknown")
+    ip = diag.get("resolved_ip")
     is_online = diag.get("is_online", False)
-    rtt = diag.get("avg_rtt") or "—"
-    ports = diag.get("open_ports", {})
-    
-    ports_str = ", ".join(f"{name}: {'✓' if state else '✗'}" for name, state in ports.items()) if ports else "не проверялись"
+    rtt = diag.get("avg_rtt")
+    smb = "SMB:✓" if diag.get("smb_port_445") else "SMB:✗"
 
-    status_icon = "🟢 В СЕТИ" if is_online else "🔴 НЕ В СЕТИ"
-    return f"{status_icon} [{host} -> {ip}] Ping: {rtt} | Порты ({ports_str})"
+    if is_online:
+        ip_info = f" [{ip}]" if ip and ip != target else ""
+        rtt_info = f" RTT: {rtt}" if rtt else ""
+        return f"🟢 В СЕТИ: {target}{ip_info}{rtt_info} | {smb}"
+    else:
+        dns_info = f" (DNS: {ip})" if ip else " (DNS не найден)"
+        return f"🔴 НЕ В СЕТИ: {target}{dns_info} | ICMP и порты не отвечают"

@@ -7,17 +7,44 @@ import aiohttp
 
 logger = logging.getLogger("helpdesk_agent.api")
 
+# Человекочитаемый маппинг известных кастомных полей IntraService
+FIELD_NAME_MAP = {
+    "1087": "Кабинет / Локация",
+    "1088": "Телефон",
+    "1089": "Имя ПК",
+    "1091": "Подразделение",
+    "1092": "ФИО пользователя",
+    "1198": "Должность",
+    "1509": "Доп. инфо",
+}
 
-def parse_custom_fields(data_xml: str | None) -> dict[str, str]:
-    """Парсит XML кастомных полей IntraService в плоский словарь {field_id: value}."""
+
+def parse_custom_fields(data_xml: str | None) -> dict[str, Any]:
+    """
+    Парсит XML кастомных полей IntraService в структурированный словарь
+    с человекочитаемыми именами полей.
+    """
     if not data_xml:
         return {}
-    fields = {}
+    raw_fields = {}
+    friendly_fields = {}
     matches = re.findall(r'<field id="(\d+)">([^<]*)</field>', data_xml)
     for fid, val in matches:
-        if val.strip():
-            fields[fid] = val.strip()
-    return fields
+        v = val.strip()
+        if v:
+            raw_fields[fid] = v
+            f_name = FIELD_NAME_MAP.get(fid, f"Поле_{fid}")
+            friendly_fields[f_name] = v
+
+    return {
+        "raw": raw_fields,
+        "friendly": friendly_fields,
+        "room": raw_fields.get("1087", ""),
+        "phone": raw_fields.get("1088", ""),
+        "pc_name": raw_fields.get("1089", ""),
+        "department": raw_fields.get("1091", ""),
+        "user_name": raw_fields.get("1092", ""),
+    }
 
 
 class IntraServiceClient:
@@ -80,21 +107,21 @@ class IntraServiceClient:
                 elif response.status == 204:
                     return {}
                 else:
-                    text = await response.text()
-                    logger.error(
-                        "Ошибка IntraService API [%s] %s: %s", response.status, url, text[:200]
+                    text_resp = await response.text()
+                    logger.warning(
+                        "Ошибка IntraService API [%s] %s: %s",
+                        response.status,
+                        url,
+                        text_resp[:200],
                     )
                     return None
         except Exception as e:
-            logger.error("Сетевая ошибка при обращении к %s: %s", url, e)
+            logger.error("Сетевой сбой при обращении к IntraService (%s): %s", endpoint, e)
             return None
 
     async def get_service_catalog(self) -> list[dict[str, Any]]:
-        """Загружает официальное дерево каталога услуг."""
-        res = await self._request(
-            "service",
-            params={"include": "parentid", "for": "createtask", "pagesize": "1000"},
-        )
+        """Получает дерево каталога услуг."""
+        res = await self._request("service", params={"for": "createtask", "pagesize": "1000"})
         if isinstance(res, dict):
             return res.get("Services", [])
         elif isinstance(res, list):
@@ -145,14 +172,40 @@ class IntraServiceClient:
         """Получает полную информацию по конкретной заявке с комментариями и кастомными полями."""
         res = await self._request(
             f"task/{task_id}",
-            params={"include": "customfields,status,service,comments"},
+            params={"include": "status,customfields,service,comments,attachments"},
         )
-        if isinstance(res, dict):
-            task = res.get("Task", res)
-            if task:
-                task["_parsed_fields"] = parse_custom_fields(task.get("Data"))
-            return task
-        return None
+        if not res:
+            return None
+
+        # Разворачиваем объект Task, если API вернул обертку
+        if "Task" in res and isinstance(res["Task"], dict):
+            raw_wrapper = res
+            res = raw_wrapper["Task"]
+            for k in ["Priorities", "Services", "Statuses", "Users"]:
+                if k in raw_wrapper:
+                    res[f"_{k}"] = raw_wrapper[k]
+
+        # Обогащаем распарсенными кастомными полями
+        custom_xml = res.get("Data")
+        parsed_fields = parse_custom_fields(custom_xml)
+        res["_parsed_fields"] = parsed_fields.get("friendly", {})
+        res["_field_meta"] = parsed_fields
+
+        # Проверяем вложения
+        raw_att = res.get("Attachments") or res.get("Files") or []
+        if isinstance(raw_att, str):
+            attachments = [{"FileName": x.strip()} for x in raw_att.split(",") if x.strip()]
+        elif isinstance(raw_att, list):
+            attachments = [
+                x if isinstance(x, dict) else {"FileName": str(x)}
+                for x in raw_att
+            ]
+        else:
+            attachments = []
+
+        res["_attachments_list"] = attachments
+        res["_has_attachments"] = len(attachments) > 0
+        return res
 
     async def get_task_history(self, task_id: int) -> list[dict[str, Any]]:
         """Получает историю изменений и комментарии задачи (TaskLifetimes)."""
@@ -167,47 +220,50 @@ class IntraServiceClient:
         return []
 
     async def add_comment(self, task_id: int, comment: str, is_private: bool = False) -> bool:
-        """Добавляет комментарий к заявке в IntraService."""
-        res = await self._request(
-            f"task/{task_id}",
-            method="PUT",
-            json_data={
-                "Id": task_id,
-                "Comment": comment,
-                "IsPrivateComment": is_private,
-            },
-        )
+        """Добавляет комментарий к заявке."""
+        payload = {
+            "Id": task_id,
+            "Comments": comment,
+            "IsPublic": not is_private,
+        }
+        res = await self._request(f"task/{task_id}", method="PUT", json_data=payload)
         return res is not None
 
     async def update_status(self, task_id: int, status_id: int) -> bool:
-        """Обновляет статус заявки (27=В работе, 35=Требует уточнения, 30=Отменена, 29=Выполнена и т.д.)."""
-        res = await self._request(
-            f"task/{task_id}",
-            method="PUT",
-            json_data={
-                "Id": task_id,
-                "StatusId": status_id,
-            },
-        )
+        """Обновляет статус заявки."""
+        payload = {
+            "Id": task_id,
+            "StatusId": status_id,
+        }
+        res = await self._request(f"task/{task_id}", method="PUT", json_data=payload)
         return res is not None
 
-    async def assign_task(self, task_id: int, performer_id: int) -> bool:
-        """Назначает исполнителя заявки."""
-        res = await self._request(
-            f"task/{task_id}",
-            method="PUT",
-            json_data={
-                "Id": task_id,
-                "PerformerId": performer_id,
-            },
-        )
+    async def add_expenses(self, task_id: int, minutes: int) -> bool:
+        """Списывает трудозатраты по заявке в минутах."""
+        hours = round(minutes / 60.0, 2)
+        payload = {
+            "TaskId": task_id,
+            "Hours": hours,
+            "Description": "Автоматическое выполнение в Helpdesk Agent (AGY)",
+        }
+        res = await self._request("taskexpenses", method="POST", json_data=payload)
         return res is not None
 
-    async def add_expenses(self, task_id: int, minutes: int = 15) -> bool:
-        """Списывает трудозатраты (в минутах) на заявку."""
-        res = await self._request(
-            "taskexpenses",
-            method="POST",
-            json_data={"TaskId": task_id, "Minutes": minutes},
-        )
-        return res is not None
+    async def download_attachment_file(self, task_id: int, file_id: int, save_path: str) -> bool:
+        """Скачивает файл вложения из IntraService."""
+        session = await self._get_session()
+        url = f"{self.base_url}/task/{task_id}/attachment/{file_id}"
+        headers = {"Authorization": self.auth_header}
+
+        try:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status == 200:
+                    os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+                    with open(save_path, "wb") as f:
+                        f.write(await resp.read())
+                    return True
+                logger.warning("Не удалось скачать вложение %s для задачи #%s (код %s)", file_id, task_id, resp.status)
+                return False
+        except Exception as e:
+            logger.error("Ошибка скачивания вложения #%s: %s", file_id, e)
+            return False
