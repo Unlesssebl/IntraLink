@@ -2,11 +2,9 @@ import base64
 import logging
 import os
 import re
-import urllib3
 from typing import Any
 import aiohttp
 
-urllib3.disable_warnings()
 logger = logging.getLogger("helpdesk_agent.api")
 
 
