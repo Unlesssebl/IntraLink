@@ -5,12 +5,11 @@ import os
 import sys
 from dotenv import load_dotenv
 
-# Загрузка переменных окружения из .env
+# Загрузка переменных окружения
 load_dotenv()
 
 from intraservice_api import IntraServiceClient
-from agent_brain import HelpdeskAgentBrain, STATUS_IN_PROGRESS, STATUS_NEED_CLARIFICATION, STATUS_RESOLVED, STATUS_CANCELED, STATUS_WAIT_DEVICE
-from diagnostics import run_host_diagnostics, extract_potential_hosts, format_diagnostics_summary
+from diagnostics import run_host_diagnostics, format_diagnostics_summary
 
 
 async def cmd_queue(args):
@@ -74,42 +73,6 @@ async def cmd_diagnose(args):
         print(json.dumps(diag, ensure_ascii=False, indent=2))
     else:
         print(format_diagnostics_summary(diag))
-
-
-async def cmd_suggest(args):
-    client = IntraServiceClient()
-    brain = HelpdeskAgentBrain()
-    try:
-        catalog = await client.get_service_catalog()
-        brain.set_service_catalog(catalog)
-
-        task = await client.get_task_details(args.task_id)
-        if not task:
-            print(f"Заявка #{args.task_id} не найдена.", file=sys.stderr)
-            sys.exit(1)
-
-        decision = await brain.analyze_and_decide(task)
-        res_dict = decision.model_dump()
-        res_dict["task_id"] = args.task_id
-        res_dict["task_name"] = task.get("Name")
-        res_dict["task_creator"] = task.get("Creator")
-        res_dict["task_service"] = task.get("ServiceName")
-
-        if args.json:
-            print(json.dumps(res_dict, ensure_ascii=False, indent=2))
-            return
-
-        print(f"=== Предложенное решение для #{args.task_id} ===")
-        print(f"Целевой статус:  {decision.new_status_name} (ID: {decision.new_status_id})")
-        print(f"Уверенность:     {int(decision.confidence * 100)}%")
-        print(f"Обоснование:     {decision.reason}")
-        if decision.diagnostics_info:
-            print(f"Диагностика:     {decision.diagnostics_info}")
-        if decision.correct_service_name:
-            print(f"Правильный раздел: {decision.correct_service_name} (ID: {decision.correct_service_id})")
-        print(f"\nПредлагаемый комментарий:\n{decision.proposed_comment}")
-    finally:
-        await client.close()
 
 
 async def cmd_apply(args):
@@ -192,7 +155,7 @@ async def cmd_history(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Helpdesk Tool for AGY Agent")
+    parser = argparse.ArgumentParser(description="Helpdesk I/O Tools for AGY Agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # queue
@@ -210,11 +173,6 @@ def main():
     p_d = subparsers.add_parser("diagnose", help="Сетевая диагностика ПК / IP")
     p_d.add_argument("target", type=str, help="Имя хоста или IP")
     p_d.add_argument("--json", action="store_true", help="Вывод в JSON")
-
-    # suggest
-    p_s = subparsers.add_parser("suggest", help="Формирование решения и комментария ИИ")
-    p_s.add_argument("task_id", type=int, help="ID заявки")
-    p_s.add_argument("--json", action="store_true", help="Вывод в JSON")
 
     # apply
     p_a = subparsers.add_parser("apply", help="Применение решения к заявке")
@@ -240,7 +198,6 @@ def main():
         "queue": cmd_queue,
         "task": cmd_task,
         "diagnose": cmd_diagnose,
-        "suggest": cmd_suggest,
         "apply": cmd_apply,
         "catalog": cmd_catalog,
         "history": cmd_history,
