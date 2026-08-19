@@ -1,19 +1,21 @@
 # IntraLink
 
-Современный асинхронный Телеграм-бот и API-шлюз для мониторинга, уведомлений и управления заявками в Helpdesk-системе **IntraService**. 
+Современный асинхронный Телеграм-бот, API-шлюз и инструменты автономной автоматизации для мониторинга, уведомлений и управления заявками в Helpdesk-системе **IntraService**. 
 
-Проект построен на базе микросервисной архитектуры, разделяющей слой представления (Telegram-бот) и слой бизнес-логики/хранения данных (FastAPI Gateway).
+Проект построен на базе микросервисной архитектуры, объединяющей интерфейсные слои (Telegram-бот, веб-панель администратора, AI-ассистент в AGY) и сервисы автоматизации (FastAPI Gateway, AI Worker, Printer Worker, Helpdesk Agent).
 
 ---
 
 ## 🏗 Архитектура системы
 
-Система построена на событийно-ориентированном подходе и состоит из пяти основных компонентов, разворачиваемых в единой сети:
+Система построена на событийно-ориентированном подходе и состоит из основных компонентов, разворачиваемых в единой сети:
 1. **PostgreSQL** — реляционная база данных для хранения учетных данных пользователей IntraService (в зашифрованном виде), состояния опроса (`last_task_id`, `last_check_time`) и базы знаний RAG (с поддержкой pgvector).
 2. **Redis** — шина сообщений (Pub/Sub). Обеспечивает асинхронную доставку уведомлений к Telegram-боту, а также передает задачи и команды к фоновым воркерам.
 3. **Core API (FastAPI)** — защищенный микросервис-шлюз. Он управляет базой данных, предоставляет веб-панель администратора, взаимодействует с IntraService API, а также запускает фоновый **Worker** (`APScheduler`), который опрашивает IntraService и публикует новые события в Redis Pub/Sub.
 4. **Telegram Bot (aiogram 3.x)** — легкий интерфейсный сервис, который принимает команды пользователей и запускает фоновый **Redis Listener** для получения событий из шины Redis и мгновенной отправки уведомлений в Telegram.
 5. **AI Worker** — микросервис для умной классификации новых заявок на основе RAG-поиска по базе знаний в PostgreSQL и генерации автоматических ответов с использованием LLM.
+6. **Printer Worker** — микросервис автоматической установки сетевых и локальных принтеров через WMI/WinRM/SMB.
+7. **Helpdesk Agent (AGY-Native)** — автономный инструментарий и навык для прямого ведения и разбора очереди инцидентов технической поддержки из среды Antigravity в режиме Human-in-the-Loop.
 
 > [!NOTE]
 > Схемы последовательности выполнения запросов (Data Flow) и подробная архитектурная диаграмма компонентов доступны в документе [architecture.md](docs/architecture.md).
@@ -29,12 +31,13 @@
     *   Персональные уведомления о **новых комментариях** и **сменах статусов** для заявок, где пользователь является назначенным исполнителем.
     *   Автоматический трекинг состояния опроса для исключения дублирования.
 *   **📋 Мои заявки**: Просмотр списка активных задач пользователя с поддержкой пагинации прямо в Telegram.
+*   **🤖 Автономный Helpdesk-оператор**: Анализ очереди заявок 1-й линии, сетевая диагностика хостов заявителей (ICMP/DNS/SMB), автоматическая валидация по дереву услуг и подготовка решений в стиле инженера Беликова Алена.
 
 ---
 
 ## 🛠 Технологический стек
 
-### Core API (FastAPI)
+### Core API & Воркеры
 *   **FastAPI** — веб-фреймворк для создания REST API.
 *   **SQLAlchemy 2.0 (Async)** + **asyncpg** + **pgvector** — асинхронная работа с базой данных PostgreSQL и векторным поиском.
 *   **APScheduler** — встроенный планировщик для периодического опроса IntraService.
@@ -94,11 +97,19 @@
 │   │   ├── config.py          # Загрузка и валидация настроек (Pydantic Settings)
 │   │   └── main.py            # Настройка FastAPI приложения и роутеров
 │   ├── tests/                 # Юнит-тесты (pytest)
-│   │   ├── conftest.py        # Настройки тестов и фикстуры
-│   │   ├── test_crypto.py     # Тесты шифрования/дешифрования токенов
-│   │   ├── test_intraservice.py # Тесты интеграционного клиента IntraService
-│   │   └── test_worker.py     # Тесты фонового воркера (process_user и др.)
 │   └── requirements.txt
+│
+├── helpdesk_agent/            # Инструментарий Helpdesk-оператора для среды Antigravity (AGY)
+│   ├── helpdesk_tool.py       # CLI-интерфейс команд для AGY (queue, task, diagnose, suggest, apply)
+│   ├── agent_brain.py         # Правила принятия решений и нормализация дерева услуг
+│   ├── diagnostics.py         # Сетевая диагностика ПК (ICMP, DNS, SMB)
+│   ├── intraservice_api.py    # Асинхронный клиент IntraService API
+│   ├── GEMINI.md              # Системная персона и шаблоны инженера Беликова Алена
+│   ├── pyproject.toml         # Конфигурация uv пакета
+│   └── README.md              # Документация пакета
+│
+├── .agents/skills/            # Навыки Antigravity (AGY)
+│   └── intraservice-helpdesk/ # Навык ведения очереди техподдержки
 │
 ├── debug_tools/               # Набор CLI-утилит для ручной диагностики и тестирования микросервисов
 │   ├── cli.py                 # Единая точка входа (команды: ai, printer, approve, redis, stuck, fix)
@@ -121,16 +132,40 @@
 │
 ├── docs/                      # Документация проекта
 │   ├── architecture.md        # Системная архитектура и Data Flow
-│   ├── services/              # Документация по нашим сервисам
-│   │   ├── core-api/          # Core API: справочник эндпоинтов
-│   │   ├── bot/               # Telegram Bot (в разработке)
-│   │   ├── printer-worker/    # Микросервис автоустановки принтеров
-│   │   └── ai-worker/         # Микросервис классификации и автоответов
+│   ├── services/              # Документация по сервисам
+│   │   ├── core-api/          # Core API
+│   │   ├── bot/               # Telegram Bot
+│   │   ├── printer-worker/    # Printer Worker
+│   │   ├── ai-worker/         # AI Worker
+│   │   └── helpdesk_agent/    # Helpdesk Agent
 │   └── external/              # Справочники внешних систем
 │       └── intraservice_api/  # Документация внешнего API IntraService
 ├── docker-compose.yml         # Оркестрация контейнеров (Postgres, Redis, Core API, Bot, Printer Worker, AI Worker)
 ├── pyproject.toml             # Конфигурация для пакетного менеджера uv
 └── uv.lock                    # Блокировка зависимостей uv
+```
+
+---
+
+## 🤖 Автономный Helpdesk-оператор в Antigravity (AGY)
+
+Для выполнения задач технической поддержки прямо из чата AGY используется утилита `helpdesk_agent/helpdesk_tool.py` и навык `intraservice-helpdesk`:
+
+```bash
+# Получить открытые заявки очереди 1-й линии (фильтр 984):
+uv run python helpdesk_agent/helpdesk_tool.py queue --limit 10
+
+# Детальный просмотр инцидента с кастомными полями:
+uv run python helpdesk_agent/helpdesk_tool.py task 139022
+
+# Сетевая проверка доступности ПК заявителя:
+uv run python helpdesk_agent/helpdesk_tool.py diagnose TEMPO-PC01
+
+# Сформировать проект решения:
+uv run python helpdesk_agent/helpdesk_tool.py suggest 139022
+
+# Применить изменения в IntraService (после подтверждения оператором):
+uv run python helpdesk_agent/helpdesk_tool.py apply 139022 --status 27 --comment "Ваша заявка принята в работу. По вопросам звоните на номер 49-87." --expenses 15
 ```
 
 ---
@@ -185,101 +220,38 @@ POLLING_INTERVAL=10
     docker compose --profile with-bot up --build -d
     ```
 
-Команда автоматически соберет образы, настроит Docker Secrets (монтируя их как защищенные файлы /run/secrets/ в памяти контейнера) и запустит сервисы.
-
----
-
-### Способ 2. Локальный запуск (для разработки)
-
-#### Шаг 1. Настройка Базы Данных
-По умолчанию Core API использует PostgreSQL. Вы можете запустить Postgres локально или использовать SQLite для тестирования:
-* Для использования SQLite измените `DATABASE_URL` в `core-api/.env`:
-  ```env
-  DATABASE_URL=sqlite+aiosqlite:///./core_api.db
-  ```
-
-#### Шаг 2. Запуск Core API (FastAPI)
-Рекомендуется использовать быстрый менеджер пакетов [uv](https://github.com/astral-sh/uv):
-
-1. Перейдите в каталог `core-api`:
-   ```bash
-   cd core-api
-   ```
-2. Создайте файл `.env` на основе `core-api/.env.example`.
-3. Установите зависимости и запустите сервер:
-   ```bash
-   uv venv
-   # Активируйте виртуальное окружение:
-   # На Windows: .venv\Scripts\activate
-   # На macOS/Linux: source .venv/bin/activate
-
-   uv pip install -r requirements.txt
-   uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-   ```
-
-#### Шаг 3. Запуск Telegram Bot
-1. Откройте новый терминал и перейдите в каталог `bot`:
-   ```bash
-   cd bot
-   ```
-2. Создайте файл `.env` на основе `bot/.env.example` (укажите `CORE_API_URL=http://127.0.0.1:8000/api/v1`).
-3. Установите зависимости и запустите бота:
-   ```bash
-   uv venv
-   # Активируйте виртуальное окружение:
-   # На Windows: .venv\Scripts\activate
-   # На macOS/Linux: source .venv/bin/activate
-
-   uv pip install -r requirements.txt
-   uv run main.py
-   ```
-
-
 ---
 
 ## 🛠 Инструменты отладки (CLI-дебаггер)
 
-Для удобной автономной диагностики и проверки логики воркеров (подход LLM-as-judge) в репозитории подготовлен CLI-инструментарий в папке `debug_tools`.
-
-Запуск осуществляется с помощью единой точки входа:
+Для автономной диагностики воркеров (подход LLM-as-judge) в папке `debug_tools` подготовлен инструмент:
 ```bash
 # Тестирование классификатора AI-worker на конкретной заявке (с выводом топ-5 RAG-кейсов)
 python -m debug_tools.cli ai --task-id <id>
 
-# Тестирование роутера принтеров (показывает отработку SNMP, Fast-Track, Smart-Track и логи перехвата)
+# Тестирование роутера принтеров (SNMP, Fast-Track, Smart-Track)
 python -m debug_tools.cli printer --task-id <id>
 
-# Запуск батч-тестирования для оценки качества на выборке заявок (выводит агрегированный JSON-отчет)
+# Батч-тестирование на выборке заявок
 python -m debug_tools.cli printer --batch 133609,141205,145001
-python -m debug_tools.cli ai --batch-file ids.txt
 
-# Оффлайн-режим (загрузка заявки напрямую из Redis-кэша, минуя Core API)
-python -m debug_tools.cli printer --task-id <id> --from-redis
-
-# Дополнительные диагностические команды:
-python -m debug_tools.cli redis    # Анализ состояния и подключений Redis
-python -m debug_tools.cli stuck    # Поиск зависших заявок в системе
-python -m debug_tools.cli fix      # Попытка автоматического исправления проблемных состояний воркеров
-python -m debug_tools.cli approve --task-id <id> --action approve  # Эмуляция подтверждения установки пользователем
+# Диагностические команды:
+python -m debug_tools.cli redis    # Состояние Redis
+python -m debug_tools.cli stuck    # Поиск зависших заявок
+python -m debug_tools.cli fix      # Автоматическое исправление
 ```
 
 ---
 
 ## 🧪 Тестирование
 
-Для запуска юнит-тестов (написанных с использованием `pytest` и `pytest-asyncio`):
-
 ```bash
-# Запустить тесты с детальным выводом
 uv run pytest -v
 ```
-
-Конфигурация тестов автоматически изолирует зависимости (базу данных, Redis и API-вызовы в IntraService).
 
 ---
 
 ## 🔒 Безопасность и API-ключ
 
-*   **`BOT_API_KEY`**: Все запросы от Telegram-бота к Core API защищены заголовком `X-Bot-Api-Key`. При несовпадении ключа Core API возвращает ошибку `401 Unauthorized`.
-*   Если `BOT_API_KEY` не задан в окружении Core API, при запуске генерируется случайный временный ключ безопасности (выводится предупреждение в логах). Рекомендуется всегда задавать статический секретный ключ в файлах `.env`.
-*   Пароли пользователей хранятся в БД в надежно зашифрованном виде (используется Fernet из библиотеки `cryptography`). При авторизации `login:password` конвертируется в Base64 и шифруется с помощью `ENCRYPTION_KEY`, что предотвращает утечку паролей в открытом виде при доступе к БД.
+*   **`BOT_API_KEY`**: Защита внутренних межсервисных запросов.
+*   **Шифрование Fernet**: Пароли пользователей IntraService шифруются в PostgreSQL с помощью ключа из Docker Secret `encryption_key`.
