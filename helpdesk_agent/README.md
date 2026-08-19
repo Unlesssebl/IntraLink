@@ -1,6 +1,6 @@
-# 🛠️ IntraService Helpdesk Tools (I/O & Diagnostics)
+# 🛠️ IntraService Helpdesk Tools (I/O, Diagnostics & RAG)
 
-Набор легковесных инструментов ввода-вывода и сетевой диагностики для выполнения заявок в системе IntraService через AI-агента Antigravity (AGY).
+Набор легковесных инструментов ввода-вывода, сетевой диагностики и семантического RAG-поиска для выполнения заявок в системе IntraService через AI-агента Antigravity (AGY).
 
 Вся логика принятия решений, сопоставления шаблонов и анализ инцидентов выполняется **непосредственно AI-агентом в чате AGY** в соответствии с персональной ролью инженера технической поддержки **Беликова Алена** (ООО «АйТи ТЭМПО», тел. `49-87`, АБК-3, каб. 112).
 
@@ -18,6 +18,12 @@ uv run python helpdesk_tool.py task 139022
 # Сетевая диагностика ПК заявителя (Ping, DNS, SMB):
 uv run python helpdesk_tool.py diagnose TEMPO-PC01
 
+# Семантический поиск по базе знаний RAG:
+uv run python helpdesk_tool.py search-kb "ошибка при входе в 1С"
+
+# Умная синхронизация закрытых заявок в базу знаний:
+uv run python helpdesk_tool.py sync-kb --limit 50
+
 # Применить изменения в IntraService (после подтверждения оператором):
 uv run python helpdesk_tool.py apply 139022 --status 27 --comment "Ваша заявка принята в работу. По вопросам звоните на номер 49-87." --expenses 15
 
@@ -34,10 +40,11 @@ uv run python helpdesk_tool.py history 139022
 
 ```
 helpdesk_agent/
-├── helpdesk_tool.py     # CLI-инструмент ввода-вывода (queue, task, diagnose, apply, catalog, history)
+├── helpdesk_tool.py     # CLI-инструмент ввода-вывода (queue, task, diagnose, search-kb, sync-kb, apply)
+├── kb.py                # Семантический поиск RAG, гибридные эмбеддинги, умный фильтр качества
 ├── diagnostics.py       # Быстрая сетевая диагностика (ICMP/DNS/SMB)
 ├── intraservice_api.py  # Асинхронный клиент к API IntraService
 ├── GEMINI.md            # Системная персона и шаблоны инженера Беликова Алена
-├── pyproject.toml       # Минимальные зависимости (aiohttp, pydantic)
+├── pyproject.toml       # Конфигурация uv пакета
 └── README.md            # Документация пакета
 ```

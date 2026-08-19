@@ -1,3 +1,6 @@
 aiohttp>=3.9.0
+asyncpg>=0.29.0
+pgvector>=0.2.5
 pydantic>=2.5.0
 python-dotenv>=1.0.0
+sqlalchemy>=2.0.0

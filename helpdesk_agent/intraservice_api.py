@@ -120,6 +120,27 @@ class IntraServiceClient:
             return res
         return []
 
+    async def get_tasks_by_status(
+        self, status_ids: list[int], page: int = 1, page_size: int = 50
+    ) -> list[dict[str, Any]]:
+        """Получает список закрытых/отмененных задач по ID статусов (29, 30)."""
+        status_str = ",".join(str(s) for s in status_ids)
+        res = await self._request(
+            "task",
+            params={
+                "statusids": status_str,
+                "statusid": status_str,
+                "include": "status,customfields,service,comments",
+                "pagesize": str(page_size),
+                "page": str(page),
+            },
+        )
+        if isinstance(res, dict):
+            return res.get("Tasks", [])
+        elif isinstance(res, list):
+            return res
+        return []
+
     async def get_task_details(self, task_id: int) -> dict[str, Any] | None:
         """Получает полную информацию по конкретной заявке с комментариями и кастомными полями."""
         res = await self._request(
@@ -134,13 +155,13 @@ class IntraServiceClient:
         return None
 
     async def get_task_history(self, task_id: int) -> list[dict[str, Any]]:
-        """Получает историю изменений заявки."""
+        """Получает историю изменений и комментарии задачи (TaskLifetimes)."""
         res = await self._request(
-            f"taskhistory",
-            params={"taskid": str(task_id), "pagesize": "50"},
+            "tasklifetime",
+            params={"taskid": str(task_id)},
         )
         if isinstance(res, dict):
-            return res.get("TaskHistory", [])
+            return res.get("TaskLifetimes", [])
         elif isinstance(res, list):
             return res
         return []

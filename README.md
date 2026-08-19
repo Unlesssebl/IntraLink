@@ -15,7 +15,7 @@
 4. **Telegram Bot (aiogram 3.x)** — легкий интерфейсный сервис, который принимает команды пользователей и запускает фоновый **Redis Listener** для получения событий из шины Redis и мгновенной отправки уведомлений в Telegram.
 5. **AI Worker** — микросервис для умной классификации новых заявок на основе RAG-поиска по базе знаний в PostgreSQL и генерации автоматических ответов с использованием LLM.
 6. **Printer Worker** — микросервис автоматической установки сетевых и локальных принтеров через WMI/WinRM/SMB.
-7. **Helpdesk Agent (AGY-Native)** — набор быстрых I/O утилит и навык для ведения и разбора очереди инцидентов технической поддержки прямо из среды Antigravity (AGY) в режиме Human-in-the-Loop.
+7. **Helpdesk Agent (AGY-Native + RAG)** — автономный инструментарий и навык для ведения очереди инцидентов техподдержки прямо из среды Antigravity (AGY) с семантическим поиском решений в режиме Human-in-the-Loop.
 
 > [!NOTE]
 > Схемы последовательности выполнения запросов (Data Flow) и подробная архитектурная диаграмма компонентов доступны в документе [architecture.md](docs/architecture.md).
@@ -31,7 +31,7 @@
     *   Персональные уведомления о **новых комментариях** и **сменах статусов** для заявок, где пользователь является назначенным исполнителем.
     *   Автоматический трекинг состояния опроса для исключения дублирования.
 *   **📋 Мои заявки**: Просмотр списка активных задач пользователя с поддержкой пагинации прямо в Telegram.
-*   **🤖 Автономный Helpdesk-оператор в AGY**: Прямой анализ инцидентов 1-й линии моделью Antigravity, сетевая диагностика хостов заявителей (ICMP/DNS/SMB), проверка каталога услуг и формирование ответов в стиле инженера Беликова Алена.
+*   **🤖 Автономный Helpdesk-оператор в AGY с RAG**: Прямой анализ инцидентов 1-й линии, сетевая диагностика хостов (ICMP/DNS/SMB), семантический поиск по историческим решениям компании (`search-kb`), умная синхронизация качества (`sync-kb`) и непрерывное автообучение.
 
 ---
 
@@ -44,6 +44,7 @@
 *   **redis.asyncio** — асинхронная публикация событий в Redis.
 *   **cryptography** — симметричное шифрование учетных данных в БД.
 *   **aiohttp** — асинхронные запросы к REST API IntraService.
+*   **FastEmbed** — локальная ONNX-векторизация текста для мгновенного семантического поиска.
 
 ### Telegram Bot (aiogram)
 *   **aiogram 3.x** — асинхронный фреймворк для Telegram Bot API.
@@ -99,8 +100,9 @@
 │   ├── tests/                 # Юнит-тесты (pytest)
 │   └── requirements.txt
 │
-├── helpdesk_agent/            # Инструменты ввода-вывода Helpdesk для среды Antigravity (AGY)
-│   ├── helpdesk_tool.py       # CLI I/O интерфейс (queue, task, diagnose, apply, catalog, history)
+├── helpdesk_agent/            # Инструменты Helpdesk + RAG для среды Antigravity (AGY)
+│   ├── helpdesk_tool.py       # CLI I/O интерфейс (queue, task, diagnose, search-kb, sync-kb, apply)
+│   ├── kb.py                  # Семантический RAG-поиск, гибридные эмбеддинги, умный фильтр качества
 │   ├── diagnostics.py         # Сетевая диагностика ПК (ICMP, DNS, SMB)
 │   ├── intraservice_api.py    # Асинхронный клиент IntraService API
 │   ├── GEMINI.md              # Системная персона и шаблоны инженера Беликова Алена
@@ -108,7 +110,7 @@
 │   └── README.md              # Документация пакета
 │
 ├── .agents/skills/            # Навыки Antigravity (AGY)
-│   └── intraservice-helpdesk/ # Навык ведения очереди техподдержки
+│   └── intraservice-helpdesk/ # Навык ведения очереди техподдержки с RAG
 │
 ├── debug_tools/               # Набор CLI-утилит для ручной диагностики и тестирования микросервисов
 │   ├── cli.py                 # Единая точка входа (команды: ai, printer, approve, redis, stuck, fix)
@@ -148,7 +150,7 @@
 
 ## 🤖 Helpdesk-инструменты (`helpdesk_agent/helpdesk_tool.py`)
 
-Инструменты I/O и сетевой диагностики, используемые AGY-агентом для работы с IntraService:
+Инструменты I/O, сетевой диагностики и семантического поиска решений:
 
 ```bash
 # Получить открытые заявки очереди 1-й линии (фильтр 984):
@@ -160,8 +162,11 @@ uv run python helpdesk_agent/helpdesk_tool.py task 139022
 # Сетевая проверка доступности ПК заявителя:
 uv run python helpdesk_agent/helpdesk_tool.py diagnose TEMPO-PC01
 
-# Просмотр истории заявки:
-uv run python helpdesk_agent/helpdesk_tool.py history 139022
+# Семантический поиск по проверенным решениям базы знаний:
+uv run python helpdesk_agent/helpdesk_tool.py search-kb "не печатает принтер"
+
+# Умная синхронизация выполненных решений в базу знаний:
+uv run python helpdesk_agent/helpdesk_tool.py sync-kb --limit 50
 
 # Применить изменения в IntraService (после подтверждения оператором):
 uv run python helpdesk_agent/helpdesk_tool.py apply 139022 --status 27 --comment "Ваша заявка принята в работу. По вопросам звоните на номер 49-87." --expenses 15
