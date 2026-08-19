@@ -5,32 +5,19 @@ import re
 import socket
 import subprocess
 from typing import Any
+from normalizer import normalize_pc_name, is_valid_pc_name, KNOWN_PC_PREFIXES
 
 logger = logging.getLogger("helpdesk_agent.diagnostics")
 
-# Кириллические омоглифы -> латиница для имен ПК
-CYRILLIC_HOMOGLYPHS = {
-    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M",
-    "Н": "H", "О": "O", "Р": "P", "С": "C", "Т": "T",
-    "Х": "X", "а": "a", "е": "e", "о": "o", "р": "p",
-    "с": "c", "у": "y", "х": "x",
-}
-
-# Регулярные выражения для поиска имен хостов и IP-адресов
-PC_NAME_REGEX = re.compile(
-    r"\b([A-Za-zА-Яа-я0-9\-_]*(?:TEMPO|ТЕМПО|WKS|ВКС|PC|РС|SRV|NOTE|LAPTOP|COMP|DESKTOP)[A-Za-zА-Яа-я0-9\-_]*)\b",
-    re.IGNORECASE,
-)
 IP_REGEX = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
 )
 
-
-def normalize_host_name(raw_host: str) -> str:
-    """Транслитерирует кириллические омоглифы в латиницу для корректного DNS-резолвинга."""
-    cleaned = raw_host.strip().strip(",;.()[]{}'\"")
-    trans_chars = [CYRILLIC_HOMOGLYPHS.get(ch, ch) for ch in cleaned]
-    return "".join(trans_chars).upper()
+# Паттерн поиска имен ПК по известным префиксам
+PC_PREFIX_PATTERN = re.compile(
+    rf"\b(?:{'|'.join(re.escape(p) for p in KNOWN_PC_PREFIXES)})[A-Za-zА-Яа-я0-9\-_]*\b",
+    re.IGNORECASE,
+)
 
 
 def extract_potential_hosts(
@@ -43,17 +30,17 @@ def extract_potential_hosts(
     seen: set[str] = set()
 
     def add_host(val: str):
-        normalized = normalize_host_name(val)
-        if not normalized or len(normalized) < 3:
+        if not val or "@" in val:
             return
-        # Исключаем чистые числа (телефоны/комнаты), номера телефонов формата XX-XX и общие стоп-слова
-        if (
-            normalized.isdigit()
-            or re.match(r"^\d+[\-_]\d+$", normalized)
-            or normalized.lower() in (
-                "комп", "компьютер", "ноутбук", "пк", "wifi", "интернет", "helpdesk", "windows", "нет номера"
-            )
-        ):
+        cleaned = val.strip()
+        if IP_REGEX.match(cleaned):
+            if cleaned not in seen:
+                seen.add(cleaned)
+                hosts.append(cleaned)
+            return
+
+        normalized = normalize_pc_name(cleaned)
+        if not normalized or not is_valid_pc_name(normalized):
             return
         lower = normalized.lower()
         if lower not in seen:
@@ -65,16 +52,20 @@ def extract_potential_hosts(
         for val in custom_fields.values():
             if not val:
                 continue
-            for m in PC_NAME_REGEX.findall(val):
+            # Если поле целиком является валидным именем ПК (например NTEMW0047)
+            if is_valid_pc_name(val):
+                add_host(val)
+            for m in PC_PREFIX_PATTERN.findall(val):
                 add_host(m)
             for m in IP_REGEX.findall(val):
                 add_host(m)
 
-    # 2. Проверяем основной текст заявки
+    # 2. Проверяем основной текст заявки (предварительно удалив email-адреса)
     if text:
-        for m in PC_NAME_REGEX.findall(text):
+        clean_text = re.sub(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", "", text)
+        for m in PC_PREFIX_PATTERN.findall(clean_text):
             add_host(m)
-        for m in IP_REGEX.findall(text):
+        for m in IP_REGEX.findall(clean_text):
             add_host(m)
 
     return hosts
@@ -146,18 +137,16 @@ async def resolve_dns(host: str) -> str | None:
 async def run_host_diagnostics(target: str) -> dict[str, Any]:
     """
     Комплексная диагностика хоста: DNS -> ICMP Ping -> SMB 445 -> WinRM 5985.
-    Комбинированная логика: если пинг заблокирован брандмауэром, но порт SMB/WinRM открыт,
-    хост справедливо считается находящимся онлайн.
     """
-    target = normalize_host_name(target)
+    normalized_target = normalize_pc_name(target) or target.strip().upper()
     
     # 1. DNS Резолвинг
-    ip = await resolve_dns(target) if not re.match(r"^\d+\.\d+\.\d+\.\d+$", target) else target
+    ip = await resolve_dns(normalized_target) if not re.match(r"^\d+\.\d+\.\d+\.\d+$", normalized_target) else normalized_target
 
     # 2. Параллельный запуск ICMP Ping и проверок портов
-    ping_task = async_ping(target, count=2)
-    smb_task = check_tcp_port(target, 445)
-    winrm_task = check_tcp_port(target, 5985)
+    ping_task = async_ping(normalized_target, count=2)
+    smb_task = check_tcp_port(normalized_target, 445)
+    winrm_task = check_tcp_port(normalized_target, 5985)
 
     ping_res, smb_ok, winrm_ok = await asyncio.gather(ping_task, smb_task, winrm_task)
 
@@ -165,7 +154,7 @@ async def run_host_diagnostics(target: str) -> dict[str, Any]:
     is_online = ping_res.get("is_online") or smb_ok or winrm_ok
 
     return {
-        "target": target,
+        "target": normalized_target,
         "resolved_ip": ip,
         "is_online": is_online,
         "avg_rtt": ping_res.get("avg_rtt"),

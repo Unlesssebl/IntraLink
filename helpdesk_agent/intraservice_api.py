@@ -4,46 +4,110 @@ import os
 import re
 from typing import Any
 import aiohttp
+from normalizer import normalize_pc_name, is_valid_pc_name
 
 logger = logging.getLogger("helpdesk_agent.api")
 
-# Человекочитаемый маппинг известных кастомных полей IntraService
+# Полная таблица маппинга кастомных полей IntraService для всех типов форм
 FIELD_NAME_MAP = {
+    # Форма А (Рабочие станции и оргтехника)
     "1087": "Кабинет / Локация",
     "1088": "Телефон",
     "1089": "Имя ПК",
     "1091": "Подразделение",
     "1092": "ФИО пользователя",
     "1198": "Должность",
-    "1509": "Доп. инфо",
+    
+    # Форма B (Принтеры и МФУ)
+    "1103": "Модель принтера",
+    "1104": "IP принтера",
+    "1112": "Имя ПК",
+    
+    # Форма C (Программное обеспечение, 1С, доступы)
+    "1202": "Телефон",
+    "1203": "Имя ПК",
+    "1206": "Должность / Подразделение",
+    "1494": "Email",
+    
+    # Прочие формы
+    "1509": "Доп. информация",
 }
+
+PHONE_REGEX = re.compile(r"^\+?[0-9\s\-_]{2,15}$")
 
 
 def parse_custom_fields(data_xml: str | None) -> dict[str, Any]:
     """
-    Парсит XML кастомных полей IntraService в структурированный словарь
-    с человекочитаемыми именами полей.
+    Парсит XML кастомных полей IntraService и извлекает стандартизированные
+    сущности (Имя ПК, Телефон, Кабинет, Email, Подразделение) с нормализацией.
     """
     if not data_xml:
-        return {}
+        return {
+            "raw": {},
+            "friendly": {},
+            "room": "",
+            "phone": "",
+            "pc_name": "",
+            "department": "",
+            "user_name": "",
+            "email": "",
+        }
+
     raw_fields = {}
     friendly_fields = {}
     matches = re.findall(r'<field id="(\d+)">([^<]*)</field>', data_xml)
+
+    pc_name = ""
+    phone = ""
+    room = ""
+    department = ""
+    user_name = ""
+    email = ""
+
     for fid, val in matches:
         v = val.strip()
-        if v:
-            raw_fields[fid] = v
-            f_name = FIELD_NAME_MAP.get(fid, f"Поле_{fid}")
-            friendly_fields[f_name] = v
+        if not v:
+            continue
+        raw_fields[fid] = v
+        f_name = FIELD_NAME_MAP.get(fid, f"Поле_{fid}")
+        friendly_fields[f_name] = v
+
+        # 1. Точный маппинг по ID
+        if fid in ("1089", "1112", "1203"):
+            norm_pc = normalize_pc_name(v)
+            if norm_pc:
+                pc_name = norm_pc
+        elif fid in ("1088", "1202"):
+            phone = v
+        elif fid in ("1087",):
+            room = v
+        elif fid in ("1091", "1206"):
+            department = v
+        elif fid in ("1092",):
+            user_name = v
+        elif fid in ("1494",):
+            email = v
+
+    # 2. Интеллектуальный эвристический fallback (если ID не совпал)
+    for fid, v in raw_fields.items():
+        if not pc_name and is_valid_pc_name(v):
+            pc_name = normalize_pc_name(v) or ""
+        if not phone and PHONE_REGEX.match(v) and not is_valid_pc_name(v):
+            phone = v
+        if not email and "@" in v:
+            email = v
+        if not room and any(w in v.lower() for w in ["каб", "комн", "цмк", "абк", "склад", "цех", "аквариум"]):
+            room = v
 
     return {
         "raw": raw_fields,
         "friendly": friendly_fields,
-        "room": raw_fields.get("1087", ""),
-        "phone": raw_fields.get("1088", ""),
-        "pc_name": raw_fields.get("1089", ""),
-        "department": raw_fields.get("1091", ""),
-        "user_name": raw_fields.get("1092", ""),
+        "room": room,
+        "phone": phone,
+        "pc_name": pc_name,
+        "department": department,
+        "user_name": user_name,
+        "email": email,
     }
 
 
