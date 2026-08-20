@@ -20,6 +20,9 @@ logger = logging.getLogger("helpdesk_agent.diagnostics")
 _DIAG_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_TTL_SEC = 180.0  # 3 минуты
 
+# Пул ограничения параллельных сетевых проверок для предотвращения DNS/socket спайков
+_NETWORK_SEMAPHORE = asyncio.Semaphore(6)
+
 IP_REGEX = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
 )
@@ -30,8 +33,8 @@ DEVICE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-
 KNOWN_PHONE_FIELD_IDS = {"1088", "1144", "1207", "1077", "1096", "1188", "1209"}
+DOMAIN_SUFFIX = ".corporate.loc"
 
 
 def extract_potential_hosts(
@@ -104,9 +107,10 @@ def extract_potential_hosts(
     return digit_candidates
 
 
-async def async_ping(host: str, count: int = 1, timeout_sec: float = 0.8) -> dict[str, Any]:
+async def async_ping(host: str, count: int = 2, timeout_sec: float = 1.0) -> dict[str, Any]:
     """
-    Выполняет асинхронный ICMP-пинг хоста в режиме Fail-Fast (адаптировано для Windows и Linux).
+    Выполняет асинхронный ICMP-пинг хоста (адаптировано для Windows и Linux).
+    По умолчанию отправляет 2 пакета для надежного преодоления ARP-задержек.
     """
     is_win = os.name == "nt"
     if is_win:
@@ -122,13 +126,33 @@ async def async_ping(host: str, count: int = 1, timeout_sec: float = 0.8) -> dic
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec * count + 1.5)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec * count + 2.0)
         out_text = stdout.decode("cp866" if is_win else "utf-8", errors="ignore")
+        lower_out = out_text.lower()
 
-        is_online = (proc.returncode == 0) and (
-            "TTL=" in out_text.upper() or "BYTES=" in out_text.upper() or "ВРЕМЯ=" in out_text.upper() or "TIME=" in out_text.upper()
+        # Проверка на ответы маршрутизатора об ошибке или 100% потерю
+        has_unreachable = (
+            "недоступен" in lower_out
+            or "unreachable" in lower_out
+            or "100% потерь" in lower_out
+            or "100% loss" in lower_out
+            or "превышен интервал" in lower_out
+            or "timed out" in lower_out
         )
-        
+
+        has_reply = (
+            "ttl=" in lower_out
+            or "байт=" in lower_out
+            or "bytes=" in lower_out
+            or "время=" in lower_out
+            or "time=" in lower_out
+        )
+
+        is_online = (proc.returncode == 0) and has_reply and not ("100% потерь" in lower_out or "100% loss" in lower_out)
+
+        if has_unreachable and not ("ttl=" in lower_out):
+            is_online = False
+
         rtt_match = re.search(r"(?:Среднее|Average|avg)[ =]+([0-9\.]+)\s*ms", out_text, re.IGNORECASE)
         if not rtt_match:
             rtt_match = re.search(r"(?:время|time)[<=]([0-9\.]+)\s*ms", out_text, re.IGNORECASE)
@@ -158,9 +182,9 @@ async def async_ping(host: str, count: int = 1, timeout_sec: float = 0.8) -> dic
         return {"host": host, "is_online": False, "avg_rtt": None, "error": str(e)}
 
 
-async def check_tcp_port(host: str, port: int, timeout: float = 0.8) -> bool:
+async def check_tcp_port(host: str, port: int, timeout: float = 1.0) -> bool:
     """
-    Проверяет доступность TCP-порта в режиме Fail-Fast (SMB 445, WinRM 5985).
+    Проверяет доступность TCP-порта (SMB 445, WinRM 5985, RPC 135).
     """
     try:
         conn = asyncio.open_connection(host, port)
@@ -175,41 +199,86 @@ async def check_tcp_port(host: str, port: int, timeout: float = 0.8) -> bool:
         return False
 
 
-async def resolve_dns(host: str, timeout: float = 0.8) -> str | None:
-    """Резолвит DNS имя в IP-адрес с таймаутом."""
+async def resolve_dns(host: str, timeout: float = 1.0) -> str | None:
+    """Резолвит DNS имя в IP-адрес с поддержкой доменного суффикса."""
+    if re.match(r"^\d+\.\d+\.\d+\.\d+$", host):
+        return host
+
+    loop = asyncio.get_running_loop()
+
+    def _resolve(h: str) -> str | None:
+        try:
+            return socket.gethostbyname(h)
+        except Exception:
+            if "." not in h:
+                try:
+                    return socket.gethostbyname(f"{h}{DOMAIN_SUFFIX}")
+                except Exception:
+                    pass
+        return None
+
     try:
-        loop = asyncio.get_running_loop()
-        ip = await asyncio.wait_for(loop.run_in_executor(None, socket.gethostbyname, host), timeout=timeout)
+        ip = await asyncio.wait_for(loop.run_in_executor(None, _resolve, host), timeout=timeout)
         return ip
     except Exception:
         return None
 
 
-async def run_single_host_diag(target: str) -> dict[str, Any]:
-    """Диагностика одиночного хоста: DNS -> ICMP -> SMB 445 -> WinRM 5985."""
-    ip = await resolve_dns(target) if not re.match(r"^\d+\.\d+\.\d+\.\d+$", target) else target
-    ping_task = async_ping(target, count=1, timeout_sec=0.8)
-    smb_task = check_tcp_port(target, 445, timeout=0.8)
-    winrm_task = check_tcp_port(target, 5985, timeout=0.8)
-
-    ping_res, smb_ok, winrm_ok = await asyncio.gather(ping_task, smb_task, winrm_task)
-    is_online = ping_res.get("is_online") or smb_ok or winrm_ok
-
-    return {
-        "target": target,
-        "resolved_ip": ip,
-        "is_online": is_online,
-        "avg_rtt": ping_res.get("avg_rtt"),
-        "icmp_ping_ok": ping_res.get("is_online", False),
-        "smb_port_445": smb_ok,
-        "winrm_port_5985": winrm_ok,
-    }
-
-
-async def run_host_diagnostics(target: str, use_cache: bool = True, fallback_candidates: list[str] | None = None) -> dict[str, Any]:
+async def run_single_host_diag(target: str, creator_ip: str | None = None) -> dict[str, Any]:
     """
-    Комплексная диагностика хоста с поддержкой алиасов и TTL-кэшированием.
-    Если основной target оффлайн и переданы кандидаты, проверяет кандидатов.
+    Диагностика одиночного хоста с каскадным опросом:
+    DNS / FQDN -> ICMP (Target + IP) -> SMB 445 -> WinRM 5985 -> RPC 135.
+    """
+    async with _NETWORK_SEMAPHORE:
+        # 1. DNS Резолвинг
+        ip = await resolve_dns(target)
+        target_to_ping = ip or target
+
+        # 2. Параллельная проверка ICMP и портов
+        ping_task = async_ping(target_to_ping, count=2, timeout_sec=1.0)
+        smb_task = check_tcp_port(target_to_ping, 445, timeout=1.0)
+        winrm_task = check_tcp_port(target_to_ping, 5985, timeout=1.0)
+        rpc_task = check_tcp_port(target_to_ping, 135, timeout=1.0)
+
+        ping_res, smb_ok, winrm_ok, rpc_ok = await asyncio.gather(ping_task, smb_task, winrm_task, rpc_task)
+        is_online = ping_res.get("is_online") or smb_ok or winrm_ok or rpc_ok
+
+        # 3. Fallback на CreatorIP, если указан и хост оффлайн
+        if not is_online and creator_ip and IP_REGEX.match(creator_ip.strip()) and creator_ip.strip() != ip:
+            clean_creator_ip = creator_ip.strip()
+            c_ping = await async_ping(clean_creator_ip, count=2, timeout_sec=1.0)
+            c_smb = await check_tcp_port(clean_creator_ip, 445, timeout=1.0)
+            c_winrm = await check_tcp_port(clean_creator_ip, 5985, timeout=1.0)
+            c_rpc = await check_tcp_port(clean_creator_ip, 135, timeout=1.0)
+            if c_ping.get("is_online") or c_smb or c_winrm or c_rpc:
+                is_online = True
+                ip = clean_creator_ip
+                if not ping_res.get("is_online") and c_ping.get("is_online"):
+                    ping_res = c_ping
+                smb_ok = smb_ok or c_smb
+                winrm_ok = winrm_ok or c_winrm
+                rpc_ok = rpc_ok or c_rpc
+
+        return {
+            "target": target,
+            "resolved_ip": ip,
+            "is_online": is_online,
+            "avg_rtt": ping_res.get("avg_rtt"),
+            "icmp_ping_ok": ping_res.get("is_online", False),
+            "smb_port_445": smb_ok,
+            "winrm_port_5985": winrm_ok,
+            "rpc_port_135": rpc_ok,
+        }
+
+
+async def run_host_diagnostics(
+    target: str,
+    use_cache: bool = True,
+    fallback_candidates: list[str] | None = None,
+    creator_ip: str | None = None,
+) -> dict[str, Any]:
+    """
+    Комплексная диагностика хоста с поддержкой алиасов, CreatorIP, fallback-кандидатов и Double-Check.
     """
     normalized_target = normalize_pc_name(target) or target.strip().upper()
     now = time.time()
@@ -219,16 +288,23 @@ async def run_host_diagnostics(target: str, use_cache: bool = True, fallback_can
         if now - cached_time < _CACHE_TTL_SEC:
             return cached_res
 
-    res = await run_single_host_diag(normalized_target)
+    res = await run_single_host_diag(normalized_target, creator_ip=creator_ip)
 
-    # Если оффлайн и есть fallback кандидаты (например, при подборе префикса KZMK1561 vs NTEMW1561)
+    # Если оффлайн и есть fallback кандидаты
     if not res["is_online"] and fallback_candidates:
         other_cands = [c for c in fallback_candidates if c != normalized_target]
         for alt_host in other_cands:
-            alt_res = await run_single_host_diag(alt_host)
+            alt_res = await run_single_host_diag(alt_host, creator_ip=creator_ip)
             if alt_res["is_online"]:
                 res = alt_res
                 break
+
+    # Two-tier double check: если хост все еще оффлайн, делаем еще одну контрольную попытку через 0.3 сек
+    if not res["is_online"]:
+        await asyncio.sleep(0.3)
+        retry_res = await run_single_host_diag(normalized_target, creator_ip=creator_ip)
+        if retry_res["is_online"]:
+            res = retry_res
 
     _DIAG_CACHE[normalized_target] = (now, res)
     return res
@@ -239,12 +315,19 @@ def format_diagnostics_summary(diag: dict[str, Any]) -> str:
     ip = diag.get("resolved_ip")
     is_online = diag.get("is_online", False)
     rtt = diag.get("avg_rtt")
-    smb = "SMB:✓" if diag.get("smb_port_445") else "SMB:✗"
+    ports = []
+    if diag.get("smb_port_445"):
+        ports.append("SMB:✓")
+    if diag.get("winrm_port_5985"):
+        ports.append("WinRM:✓")
+    if diag.get("rpc_port_135"):
+        ports.append("RPC:✓")
+    ports_str = " | " + " ".join(ports) if ports else " | SMB:✗"
 
     if is_online:
         ip_info = f" [{ip}]" if ip and ip != target else ""
         rtt_info = f" RTT: {rtt}" if rtt else ""
-        return f"🟢 В СЕТИ: {target}{ip_info}{rtt_info} | {smb}"
+        return f"🟢 В СЕТИ: {target}{ip_info}{rtt_info}{ports_str}"
     else:
         dns_info = f" (DNS: {ip})" if ip else " (DNS не найден)"
         return f"🔴 НЕ В СЕТИ: {target}{dns_info} | ICMP и порты не отвечают"

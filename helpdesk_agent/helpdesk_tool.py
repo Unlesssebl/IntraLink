@@ -110,8 +110,11 @@ async def cmd_task(args):
             dept=meta_info.get("dept") or task.get("CreatorDepartment", ""),
         )
         diag = None
+        creator_ip = task.get("CreatorIP", "")
         if hosts:
-            diag = await run_host_diagnostics(hosts[0], fallback_candidates=hosts)
+            diag = await run_host_diagnostics(hosts[0], fallback_candidates=hosts, creator_ip=creator_ip)
+        elif creator_ip:
+            diag = await run_host_diagnostics(creator_ip, creator_ip=creator_ip)
 
         # 2. RAG поиск
         task_text = f"{task.get('Name', '')}. {task.get('Description', '')}".strip()
@@ -146,7 +149,7 @@ async def cmd_task(args):
                 print(f"  • {k}: {v}")
 
         if task.get("_has_attachments"):
-            print(f"\n📎 Вложения ({len(task.get('_attachments_list', []))}):")
+            print(f"\n📸 Вложения ({len(task.get('_attachments_list', []))}):")
             for att in task.get("_attachments_list", []):
                 print(f"  • {att.get('FileName', 'файл')} ({att.get('Size', 0)} байт)")
 
@@ -213,8 +216,11 @@ async def process_single_ticket_for_batch(
             dept=meta.get("dept") or full_task.get("CreatorDepartment", ""),
         )
         diag = None
+        creator_ip = full_task.get("CreatorIP", "")
         if hosts:
-            diag = await run_host_diagnostics(hosts[0], fallback_candidates=hosts)
+            diag = await run_host_diagnostics(hosts[0], fallback_candidates=hosts, creator_ip=creator_ip)
+        elif creator_ip:
+            diag = await run_host_diagnostics(creator_ip, creator_ip=creator_ip)
 
         # RAG поиск
         task_text = f"{full_task.get('Name', '')}. {full_task.get('Description', '')}".strip()
@@ -237,7 +243,7 @@ async def process_single_ticket_for_batch(
                 net_badge = f"🔴 Офлайн [{diag.get('target')}]"
 
         att_count = len(full_task.get("_attachments_list", []))
-        att_str = f"📎 {att_count}" if att_count > 0 else "—"
+        att_str = f"📸 {att_count}" if att_count > 0 else "—"
 
         return {
             "index": idx,
