@@ -440,15 +440,16 @@ class IntraServiceClient:
         task_id: int,
         minutes: int,
         comment: str | None = None,
-        user_id: int = 10502,
+        user_id: int = 8664,
     ) -> bool:
-        """Списывает трудозатраты по заявке в минутах."""
-        payload = {
+        """Списывает трудозатраты по заявке в минутах (без комментария по умолчанию)."""
+        payload: dict[str, Any] = {
             "TaskId": task_id,
             "Minutes": int(minutes),
-            "Comments": comment or "Выполнение заявки в Helpdesk Agent (AGY)",
             "UserId": user_id,
         }
+        if comment:
+            payload["Comments"] = comment
         res = await self._request("taskexpenses", method="POST", json_data=payload)
         return res is not None
 

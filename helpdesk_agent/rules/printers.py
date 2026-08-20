@@ -1,3 +1,4 @@
+import re
 from typing import Any
 
 from .base import BaseRule, RuleDecision
@@ -57,8 +58,16 @@ class PrinterRule(BaseRule):
 
         # 2. Если требуется уточнение параметров подключения принтера
         if any(w in user_text for w in ["не печатает", "подключить принтер", "настроить принтер", "ip принтера"]):
-            if diag and diag.get("is_online", False):
-                # ПК в сети, но параметры принтера не ясны
+            # Проверяем, не указан ли уже IP адрес в полях заявки, модели или описании
+            raw_fields = (
+                str(task.get("_parsed_fields") or "") + " " +
+                str(task.get("Data") or "") + " " +
+                desc + " " + name
+            )
+            has_ip = bool(re.search(r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", raw_fields))
+
+            if diag and diag.get("is_online", False) and not has_ip:
+                # ПК в сети, но параметры/IP принтера не указаны
                 return RuleDecision(
                     template_key="printer_ip_clarify",
                     name="Уточнение IP адреса / типа подключения принтера",

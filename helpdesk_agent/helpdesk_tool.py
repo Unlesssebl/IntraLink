@@ -454,12 +454,12 @@ async def cmd_apply(args):
         status_id = args.status
         comment = args.comment
         expenses = args.expenses
-        executor_ids = getattr(args, "executor", None) or "10502"
+        executor_ids = getattr(args, "executor", None) or "8664,10502"
         dry_run = args.dry_run
 
         print(f"=== Применение решения к заявкам: {', '.join(f'#{tid}' for tid in task_ids)} ===")
         print(f"Целевой статус ID: {status_id}")
-        print(f"Исполнитель ID:   {executor_ids} (Беликов Ален_assitant)")
+        print(f"Исполнители ID:   {executor_ids} (Беликов Ален + Беликов Ален_assitant)")
         print(f"Трудозатраты:     {expenses} мин." if expenses else "Трудозатраты: не списываются")
         print(f"Комментарий:\n{comment}\n")
 
@@ -492,15 +492,16 @@ async def cmd_apply(args):
                 executor_ids=executor_ids,
             )
 
-            # 3. Списание трудозатрат
+            # 3. Списание трудозатрат (без комментария)
             exp_ok = True
             if expenses and expenses > 0:
-                exp_comment = comment.split("\n")[0][:100] if comment else "Выполнение заявки в Helpdesk Agent"
+                # Для списания берем ID первого исполнителя (Беликов Ален: 8664)
+                first_exec = executor_ids.split(",")[0].strip() if "," in str(executor_ids) else str(executor_ids)
+                exp_user_id = int(first_exec) if first_exec.isdigit() else 8664
                 exp_ok = await client.add_expenses(
                     task_id=task_id,
                     minutes=expenses,
-                    comment=exp_comment,
-                    user_id=int(executor_ids) if executor_ids.isdigit() else 10502,
+                    user_id=exp_user_id,
                 )
 
             # 3. Автообучение RAG
@@ -793,7 +794,7 @@ def main():
     p_a.add_argument("--status", type=int, required=True, help="Целевой ID статуса")
     p_a.add_argument("--comment", type=str, default="", help="Текст комментария")
     p_a.add_argument("--expenses", type=int, default=0, help="Списание трудозатрат в минутах")
-    p_a.add_argument("--executor", type=str, default="10502", help="ID исполнителя (по умолчанию 10502 - Беликов Ален_assitant)")
+    p_a.add_argument("--executor", type=str, default="8664,10502", help="ID исполнителей через запятую (по умолчанию 8664,10502 - Беликов Ален и Беликов Ален_assitant)")
     p_a.add_argument("--dry-run", action="store_true", help="Режим симуляции")
 
     # skip
