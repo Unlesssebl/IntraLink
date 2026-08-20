@@ -20,6 +20,7 @@ from kb import (
     ensure_db_schema,
 )
 from template_engine import auto_detect_template, render_template, load_templates
+from deduplication import DuplicateDetector
 from session_state import (
     add_skipped_tasks,
     add_applied_tasks,
@@ -380,6 +381,67 @@ async def cmd_redirect(args):
     await cmd_batch(args)
 
 
+async def cmd_duplicates(args):
+    """Поиск и пакетная отмена заявок-дубликатов в очереди 1-й линии."""
+    client = IntraServiceClient()
+    try:
+        fetch_size = max(args.limit * 5, 50)
+        tasks = await client.get_tasks_by_filter(args.filter, page=1, page_size=fetch_size)
+        
+        # Исключаем пропущенные и уже финализированные
+        skipped_ids = get_skipped_task_ids() if not getattr(args, "include_skipped", False) else set()
+        active_tasks = [t for t in tasks if t.get("Id") not in skipped_ids and t.get("StatusId") not in (29, 30)]
+        
+        detector = DuplicateDetector()
+        duplicates = detector.find_duplicates(active_tasks)
+        duplicates = duplicates[:args.limit]
+
+        if args.json:
+            print(json.dumps(duplicates, ensure_ascii=False, indent=2))
+            return
+
+        if not duplicates:
+            print(f"\n=== 🔍 Поиск дубликатов в очереди 1-й линии (Фильтр #{args.filter}) ===")
+            print(f"✅ В проверенных {len(active_tasks)} открытых заявках дубликатов не обнаружено.\n")
+            return
+
+        print(f"\n### 🗑️ Обнаружены заявки-дубликаты в очереди 1-й линии (Найдено: {len(duplicates)})\n")
+        for idx, d in enumerate(duplicates, 1):
+            m_task = d["master_task"]
+            dup_task = d["duplicate_task"]
+            m_id = d["master_task_id"]
+            dup_id = d["duplicate_task_id"]
+            conf = d["confidence"]
+            reason = d["reason"]
+            action = d["action"]
+            
+            creator = dup_task.get("Creator", "—")
+            meta = dup_task.get("_field_meta") or {}
+            phone = meta.get("phone") or dup_task.get("CreatorPhone") or "—"
+            room = meta.get("room") or "—"
+            
+            m_name = m_task.get("Name", "—")
+            m_created = (m_task.get("Created") or "")[:16].replace("T", " ")
+            dup_created = (dup_task.get("Created") or "")[:16].replace("T", " ")
+
+            print(f"### [{idx}] [#{dup_id}](https://servicedesk.corporate.loc/Task/View/{dup_id}) ➔ 🎯 **Отменена (Дубликат)** ⭐ {conf}/10")
+            print(f"- **Заявитель:** {creator} (📍 {room} | 📞 `{phone}`)")
+            print(f"- **Основная заявка:** [#{m_id}](https://servicedesk.corporate.loc/Task/View/{m_id}) от {m_created} (*«{m_name}»*)")
+            print(f"- **Текущая заявка:** #{dup_id} от {dup_created} (*«{dup_task.get('Name', '—')}»*)")
+            print(f"- **Причина:** {reason}")
+            print(f"> 💬 **Ответ заявителю:**")
+            print(f"> *«{action['comment']}»*\n")
+
+        print("---")
+        print("⚡ **Шорткаты для оператора:**")
+        print(f"• `все` или `+` — отменить все обнаруженные дубликаты (1–{len(duplicates)}) со статусом 30")
+        print("• `1, 2` — отменить только выбранные дубликаты")
+        print("• `детали <N>` — открыть полную карточку")
+    finally:
+        await client.close()
+
+
+
 async def cmd_apply(args):
     client = IntraServiceClient()
     try:
@@ -407,6 +469,17 @@ async def cmd_apply(args):
 
         all_ok = True
         for task_id in task_ids:
+            # 0. Защита от перезаписи: проверяем текущий статус заявки в живой базе
+            try:
+                curr = await client.get_task_details(task_id)
+                if curr and curr.get("StatusId") in (29, 30) and status_id not in (29, 30):
+                    curr_name = curr.get("StatusName") or str(curr.get("StatusId"))
+                    print(f"ℹ️ Заявка #{task_id} уже финализирована вручную ({curr_name}). Изменения пропущены.")
+                    add_applied_tasks([task_id], curr.get("StatusId"))
+                    continue
+            except Exception:
+                pass
+
             # 1. Если статус финальный или меняется (29, 30, 35, 48), сначала берем в работу (27) с назначением исполнителя
             if status_id != 27:
                 await client.update_task(task_id=task_id, status_id=27, executor_ids=executor_ids)
@@ -745,6 +818,13 @@ def main():
     p_att = subparsers.add_parser("attachment", help="Скачивание вложений заявки")
     p_att.add_argument("task_id", type=int, help="ID заявки")
 
+    # duplicates / dedup
+    p_dup = subparsers.add_parser("duplicates", aliases=["dedup"], help="Поиск и отмена заявок-дубликатов в очереди 1-й линии")
+    p_dup.add_argument("--filter", type=int, default=int(os.getenv("FILTER_ID", "984")), help="ID фильтра очереди")
+    p_dup.add_argument("--limit", type=int, default=10, help="Максимальное количество дубликатов для вывода")
+    p_dup.add_argument("--include-skipped", action="store_true", help="Включить в выборку ранее пропущенные заявки")
+    p_dup.add_argument("--json", action="store_true", help="Вывод в JSON")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -752,6 +832,8 @@ def main():
         "start-db": cmd_start_db,
         "batch": cmd_batch,
         "redirect": cmd_redirect,
+        "duplicates": cmd_duplicates,
+        "dedup": cmd_duplicates,
         "task": cmd_task,
         "queue": cmd_queue,
         "services": cmd_services,

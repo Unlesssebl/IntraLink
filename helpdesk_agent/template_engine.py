@@ -66,6 +66,7 @@ def render_template(template_key: str, context: dict[str, Any]) -> dict[str, Any
     target_service = context.get("target_service") or "соответствующем разделе каталога"
     occupied_user = context.get("occupied_user") or "другой сотрудник"
     details = context.get("details") or "удобное время"
+    master_task_id = str(context.get("master_task_id") or "")
 
     rendered_text = raw_text.replace("{pc_name}", pc_name)
     rendered_text = rendered_text.replace("{room}", room)
@@ -73,6 +74,7 @@ def render_template(template_key: str, context: dict[str, Any]) -> dict[str, Any
     rendered_text = rendered_text.replace("{target_service}", target_service)
     rendered_text = rendered_text.replace("{occupied_user}", occupied_user)
     rendered_text = rendered_text.replace("{details}", details)
+    rendered_text = rendered_text.replace("{master_task_id}", master_task_id)
 
     return {
         "template_key": template_key,
