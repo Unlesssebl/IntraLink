@@ -36,6 +36,16 @@ uv run python helpdesk_tool.py search-kb "ошибка при входе в 1С"
 # Умная синхронизация закрытых заявок в базу знаний:
 uv run python helpdesk_tool.py sync-kb --limit 50
 
+# Поиск и пакетная отмена заявок на редирект:
+uv run python helpdesk_tool.py redirect --limit 5
+uv run python helpdesk_tool.py redirect --service 2 --limit 10
+
+# Пропуск заявки в текущей смене (не показывать в батчах):
+uv run python helpdesk_tool.py skip 139022,139023
+
+# Сброс кэша сессии (вернуть все пропущенные заявки):
+uv run python helpdesk_tool.py reset-session
+
 # Применить изменения в IntraService (после подтверждения оператором):
 uv run python helpdesk_tool.py apply 139022 --status 27 --comment "Ваша заявка принята в работу. По вопросам звоните на номер 49-87." --expenses 15
 
@@ -52,10 +62,12 @@ uv run python helpdesk_tool.py history 139022
 
 ```
 helpdesk_agent/
-├── helpdesk_tool.py     # CLI-инструмент ввода-вывода (queue, task, diagnose, search-kb, sync-kb, apply)
-├── kb.py                # Семантический поиск RAG, гибридные эмбеддинги, умный фильтр качества
-├── diagnostics.py       # Быстрая сетевая диагностика (ICMP/DNS/SMB)
-├── intraservice_api.py  # Асинхронный клиент к API IntraService
+├── helpdesk_tool.py     # CLI-инструмент ввода-вывода (batch, redirect, task, skip, reset-session, apply)
+├── session_state.py     # Сессионная память пропущенных и обработанных тикетов
+├── template_engine.py   # Генератор шаблонов и семантический RAG-консенсус
+├── kb.py                # Семантический поиск RAG, pgvector, Quality Gate
+├── diagnostics.py       # Fail-Fast сетевая диагностика (ICMP/DNS/SMB) с TTL-кэшем
+├── intraservice_api.py  # Асинхронный клиент к API IntraService с Retry
 ├── GEMINI.md            # Системная персона и шаблоны инженера Беликова Алена
 ├── pyproject.toml       # Конфигурация uv пакета
 └── README.md            # Документация пакета
