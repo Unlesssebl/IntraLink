@@ -137,15 +137,24 @@ def classify_target_service(text: str, current_service_id: int | None = None) ->
     if "контрагент" in t and any(w in t for w in ["договор", "прикрепи", "данные", "карточк"]):
         return "05", "данные контрагентов и карточек в Directum"
 
+    # Проверка на общие системные проблемы производительности ПК (1-я линия, не 1С)
+    is_general_pc_lag = any(w in t for w in [
+        "компьютер работает медленно", "медленно работает сам компьютер",
+        "тормозит компьютер", "зависает компьютер", "зависает пк", "зависает весь пк",
+        "принт скрин не", "скриншот не", "не сохраняет скрин", "не сохраняет выделенный",
+        "зависает весь", "виснет пк", "виснет компьютер", "невозможно работать,тормозит"
+    ])
+
     # 2. Вопросы по 1С (06)
-    if re.search(r"\b1[сc]\b|\bупп\b|\berp\b|\bзуп\b", t) or any(w in t for w in [
-        "бухгалтери", "документооборот 1с", "база 1с", "кэш 1с",
-        "не включается 1с", "вылетает 1с", "ошибка 1с", "заблокирована таблица", "база данных 1с",
-        "провести документ", "не проводится", "печатная форма", "макет 1с", "открытие периода", "номенклатур", "штрихкод в 1с"
-    ]):
-        return "06", "инцидент или ошибка в информационной базе 1С"
-    if "кэш 1с" in t or "кэш базы" in t or ("кэш" in t and any(w in t for w in ["1с", "1c", "баз", "упп", "зуп", "erp"])):
-        return "06", "очистка кэша базы 1С"
+    if not is_general_pc_lag:
+        if re.search(r"\b1[сc]\b|\bупп\b|\berp\b|\bзуп\b", t) or any(w in t for w in [
+            "бухгалтери", "документооборот 1с", "база 1с", "кэш 1с",
+            "не включается 1с", "вылетает 1с", "ошибка 1с", "заблокирована таблица", "база данных 1с",
+            "провести документ", "не проводится", "печатная форма", "макет 1с", "открытие периода", "номенклатур", "штрихкод в 1с"
+        ]):
+            return "06", "инцидент или ошибка в информационной базе 1С"
+        if "кэш 1с" in t or "кэш базы" in t or ("кэш" in t and any(w in t for w in ["1с", "1c", "баз", "упп", "зуп", "erp"])):
+            return "06", "очистка кэша базы 1С"
 
     # Проверка на зависшую блокировку файла (SMB-сессия / занят другим пользователем - 1 линия, не ИБ)
     is_file_lock = any(w in t for w in ["занят другим", "занята другим", "заблокирован другим", "не впускает", "якобы я им пользуюсь", "кем-то занят"])
@@ -206,9 +215,9 @@ def classify_target_service(text: str, current_service_id: int | None = None) ->
         "установить office", "установить word", "установить excel", "установить акробат"
     ])
 
-    # 10. Оргтехника, принтеры, ПК, аппаратный ремонт (03)
+    # 10. Оргтехника, принтеры, ПК, аппаратный ремонт, общие тормоза (03)
     if not is_software_install_request and (
-        is_usb_peripheral or any(w in t for w in [
+        is_general_pc_lag or is_usb_peripheral or any(w in t for w in [
             "принтер", "мфу", "картридж", "тонер", "замятие бумаги",
             "kyocera", "ecosys", "hp laserjet", "canon", "xerox", "принтер этикеток", "zebra", "godex",
             "не работает комп", "не включается компьютер", "системный блок", "весы кпп", "весовое",
@@ -218,7 +227,7 @@ def classify_target_service(text: str, current_service_id: int | None = None) ->
             any(w in t for w in ["сканер", "не сканирует", "печать"]) and not any(w in t for w in ["1с", "упп", "erp", "конвертер"])
         )
     ):
-        return "03", "оргтехника, принтеры или аппаратная часть ПК"
+        return "03", "оргтехника, принтеры или обслуживание/производительность ПК"
 
     # 11. Проблемы с сетью и интернетом / Wi-Fi (04)
     if any(w in t for w in [
@@ -335,14 +344,24 @@ def auto_detect_template(
     if redirect_info:
         return redirect_info
 
-    # 0.5. Семантический RAG-консенсус (проверенные исторические решения базы знаний при сходстве >= 85%)
+    # 0.5. Семантический RAG-консенсус (проверенные исторические решения базы знаний при сходстве >= 90%)
+    name = (task.get("Name") or task.get("name") or "").lower()
+    desc = (task.get("Description") or task.get("description") or "").lower()
+    service_name = (task.get("ServiceName") or task.get("service_name") or "").lower()
+    user_text = f"{name} {desc}".strip()
+
     if kb_matches and not redirect_mode:
         top_kb = kb_matches[0]
         sim = float(top_kb.get("similarity_pct", 0))
         sol = (top_kb.get("solution") or "").strip()
         status_name = top_kb.get("status_name", "")
-        if sim >= 85.0 and sol and len(sol) >= 15:
-            if "выполнен" in status_name.lower():
+        # Автоматическое выполнение (29) разрешено ТОЛЬКО для чистых запросов на обслуживание/выдачу доступов (Wi-Fi, почта, инструкция),
+        # но ЗАПРЕЩЕНО для неисправностей (принтеры, сбои, тормоза, ошибки)
+        is_troubleshooting_incident = any(w in user_text for w in [
+            "не печатает", "не работает", "ошибка", "сбой", "тормозит", "зависает", "вылетает", "не сканирует", "не включается", "проблема"
+        ])
+        if sim >= 90.0 and sol and len(sol) >= 15:
+            if "выполнен" in status_name.lower() and not is_troubleshooting_incident:
                 return {
                     "template_key": "rag_historical_solution",
                     "name": f"🧠 Решение базы знаний (#{top_kb.get('task_id')}, сходство {sim}%)",
@@ -354,11 +373,6 @@ def auto_detect_template(
                     "rag_task_id": top_kb.get("task_id"),
                     "rag_similarity": sim,
                 }
-
-    name = (task.get("Name") or "").lower()
-    desc = (task.get("Description") or "").lower()
-    service_name = (task.get("ServiceName") or "").lower()
-    full_text = f"{name} {desc} {service_name}"
     
     meta = task.get("_field_meta") or {}
     pc_name = meta.get("pc_name") or ""
@@ -372,38 +386,53 @@ def auto_detect_template(
         "target_service": "Общий раздел",
     }
 
-    # 1. Wi-Fi доступ (раздел 04 или ключевые слова)
-    if any(w in full_text for w in ["wi-fi", "wifi", "вайфай", "вай-фай", "work-net", "пароль от сети", "пароль от wi-fi"]):
+    # 1. Приоритет физической доставки техники в каб. 112 (Статус 48)
+    is_physical_delivery = any(w in user_text for w in [
+        "принесу к вам", "привезем", "принесем", "принесу компьютер", "принести компьютер",
+        "принести системный", "принести в 112", "принести устройство", "принесу ноутбук"
+    ])
+    if is_physical_delivery:
+        return render_template("bring_pc_112" if any(w in user_text for w in ["пк", "компьютер", "системн", "блок", "ноутбук"]) else "bring_device_112", context)
+
+    # 2. Wi-Fi доступ (ТОЛЬКО если заявитель явно запросил Wi-Fi в тексте инцидента, а не просто выбрал пункт меню)
+    is_wifi_request = any(w in user_text for w in ["wi-fi", "wifi", "вайфай", "вай-фай", "work-net", "пароль от сети", "пароль от wi-fi", "доступ к wi-fi"])
+    if is_wifi_request and not any(w in user_text for w in ["excel", "exle", "обменник", "папк", "диск", "1с", "принтер"]):
         return render_template("wifi_access", context)
 
-    # 2. Создание электронной почты (раздел 01)
-    if "почт" in full_text and any(w in full_text for w in ["создать почту", "создание почты", "электронная почта", "новый ящик"]):
+    # 3. Создание электронной почты (раздел 01)
+    if "почт" in user_text and any(w in user_text for w in ["создать почту", "создание почты", "электронная почта", "новый ящик"]):
         return render_template("email_created", context)
 
-    # 3. AnyDesk сбой / переход на Ассистент
-    if any(w in full_text for w in ["anydesk не", "не подключается anydesk", "ошибка anydesk", "не могу подключиться через anydesk"]):
+    # 4. AnyDesk сбой / переход на Ассистент
+    if any(w in user_text for w in ["anydesk не", "не подключается anydesk", "ошибка anydesk", "не могу подключиться через anydesk"]):
         return render_template("anydesk_fallback_assistant", context)
 
-    # 4. Аппаратный ремонт / Системный блок / Доставка в 112 каб
-    if any(w in full_text for w in [
-        "принести в 112", "принести системный", "диагностика пк", "новый процессор", "новый системный",
-        "новый пк", "замена диска", "замена hdd", "замена ssd", "черный экран", "пищит компьютер",
-        "замена памяти", "аппаратный ремонт", "сгорел", "задымился"
+    # 5. Аппаратный ремонт / Системный блок / Доставка в 112 каб
+    if any(w in user_text for w in [
+        "диагностика пк", "новый процессор", "новый системный", "новый пк", "замена диска",
+        "замена hdd", "замена ssd", "черный экран", "пищит компьютер", "замена памяти",
+        "аппаратный ремонт", "сгорел", "задымился", "второй монитор", "видеокарт"
     ]):
         return render_template("bring_device_112", context)
 
-    # 5. Принтеры и оргтехника (МФУ не в сети или уточнение IP)
-    if any(w in full_text for w in ["принтер", "мфу", "kyocera", "ecosys", "hp laserjet", "canon", "xerox"]):
+    # 6. Проверка на списание или групповой монтаж (НЕ слать pc_offline)
+    is_decommission_or_event = any(w in user_text for w in [
+        "списание", "списать", "дефектовк", "акт о неисправности", "конференц", "обучение",
+        "подключить 6 компьютеров", "подключить компьютеры к сети"
+    ])
+
+    # 7. Принтеры и оргтехника (МФУ не в сети или уточнение IP)
+    if any(w in user_text for w in ["принтер", "мфу", "kyocera", "ecosys", "hp laserjet", "canon", "xerox"]):
         if diag and not diag.get("is_online", False) and diag.get("target"):
             return render_template("printer_offline", context)
-        if any(w in full_text for w in ["ip принтера", "укажите ip", "не печатает принтер", "подключить принтер"]):
+        if any(w in user_text for w in ["ip принтера", "укажите ip", "не печатает принтер", "подключить принтер"]):
             return render_template("printer_ip_clarify", context)
 
-    # 6. ПК не в сети (если хост явно найден и оффлайн)
-    if diag and not diag.get("is_online", False) and diag.get("target") and diag.get("target") != "UNKNOWN":
+    # 8. ПК не в сети (если хост явно найден, оффлайн и это не списание/монтаж)
+    if not is_decommission_or_event and diag and not diag.get("is_online", False) and diag.get("target") and diag.get("target") != "UNKNOWN":
         context["pc_name"] = diag.get("target")
         return render_template("pc_offline", context)
 
-    # 7. Fallback на стандартное принятие в работу
+    # 9. Fallback на стандартное принятие в работу
     return render_template("in_work_standard", context)
 

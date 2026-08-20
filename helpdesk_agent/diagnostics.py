@@ -4,10 +4,15 @@ import os
 import re
 import socket
 import subprocess
-from typing import Any
-from normalizer import normalize_pc_name, is_valid_pc_name, KNOWN_PC_PREFIXES
-
 import time
+from typing import Any
+from normalizer import (
+    normalize_pc_name,
+    is_valid_pc_name,
+    resolve_pc_candidates,
+    normalize_printer_address,
+    KNOWN_PC_PREFIXES,
+)
 
 logger = logging.getLogger("helpdesk_agent.diagnostics")
 
@@ -19,62 +24,84 @@ IP_REGEX = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
 )
 
-# Паттерн поиска имен ПК по известным префиксам
-PC_PREFIX_PATTERN = re.compile(
-    rf"\b(?:{'|'.join(re.escape(p) for p in KNOWN_PC_PREFIXES)})[A-Za-zА-Яа-я0-9\-_]*\b",
+# Паттерн поиска устройств: любые буквенно-цифровые комбинации с возможными пробелами/дефисами
+DEVICE_PATTERN = re.compile(
+    r"\b([A-Za-zА-Яа-я\-_]{2,7})[\s\-_]*(\d{2,5})\b",
     re.IGNORECASE,
 )
 
 
+KNOWN_PHONE_FIELD_IDS = {"1088", "1144", "1207", "1077", "1096", "1188", "1209"}
+
+
 def extract_potential_hosts(
-    text: str, custom_fields: dict[str, str] | None = None
+    text: str,
+    custom_fields: dict[str, str] | None = None,
+    company: str = "",
+    dept: str = "",
 ) -> list[str]:
     """
-    Извлекает потенциальные имена хостов и IP-адреса из текста заявки и кастомных полей.
+    Интеллектуальное извлечение хостнеймов и IP из кастомных полей и текста:
+    1. Явные валидные имена ПК (NTEMW1434, KMK0122, TKT0001, KPK0011).
+    2. IP-адреса.
+    3. Токены устройств из текста (DEVICE_PATTERN).
+    4. Fallback-кандидаты по номеру (только если явное имя ПК не найдено).
     """
-    hosts: list[str] = []
+    explicit_hosts: list[str] = []
+    digit_candidates: list[str] = []
     seen: set[str] = set()
 
-    def add_host(val: str):
+    def add_explicit(val: str):
         if not val or "@" in val:
             return
         cleaned = val.strip()
         if IP_REGEX.match(cleaned):
             if cleaned not in seen:
                 seen.add(cleaned)
-                hosts.append(cleaned)
+                explicit_hosts.append(cleaned)
             return
 
         normalized = normalize_pc_name(cleaned)
-        if not normalized or not is_valid_pc_name(normalized):
-            return
-        lower = normalized.lower()
-        if lower not in seen:
-            seen.add(lower)
-            hosts.append(normalized)
+        if normalized and is_valid_pc_name(normalized):
+            lower = normalized.lower()
+            if lower not in seen:
+                seen.add(lower)
+                explicit_hosts.append(normalized)
 
-    # 1. Проверяем кастомные поля (наивысший приоритет)
+    # 1. Проверяем кастомные поля на явные имена ПК и IP
     if custom_fields:
-        for val in custom_fields.values():
+        for fid, val in custom_fields.items():
             if not val:
                 continue
-            # Если поле целиком является валидным именем ПК (например NTEMW0047)
-            if is_valid_pc_name(val):
-                add_host(val)
-            for m in PC_PREFIX_PATTERN.findall(val):
-                add_host(m)
+            cleaned = val.strip()
+            if is_valid_pc_name(cleaned):
+                add_explicit(cleaned)
+            for m in DEVICE_PATTERN.finditer(val):
+                add_explicit(m.group(0))
             for m in IP_REGEX.findall(val):
-                add_host(m)
+                add_explicit(m)
 
-    # 2. Проверяем основной текст заявки (предварительно удалив email-адреса)
+            # Сохраняем возможные номера ПК только из не-телефонных полей
+            if str(fid) not in KNOWN_PHONE_FIELD_IDS and cleaned.isdigit() and 2 <= len(cleaned) <= 5:
+                cands = resolve_pc_candidates(cleaned, company=company, dept=dept)
+                for c in cands:
+                    if c.lower() not in seen:
+                        digit_candidates.append(c)
+
+    # 2. Проверяем основной текст заявки
     if text:
         clean_text = re.sub(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", "", text)
-        for m in PC_PREFIX_PATTERN.findall(clean_text):
-            add_host(m)
+        for m in DEVICE_PATTERN.finditer(clean_text):
+            add_explicit(m.group(0))
         for m in IP_REGEX.findall(clean_text):
-            add_host(m)
+            add_explicit(m)
 
-    return hosts
+    # Если есть хотя бы одно явное имя ПК, возвращаем его
+    if explicit_hosts:
+        return explicit_hosts
+
+    # Иначе возвращаем подобранные кандидаты
+    return digit_candidates
 
 
 async def async_ping(host: str, count: int = 1, timeout_sec: float = 0.8) -> dict[str, Any]:
@@ -88,13 +115,14 @@ async def async_ping(host: str, count: int = 1, timeout_sec: float = 0.8) -> dic
     else:
         cmd = ["ping", "-c", str(count), "-W", str(max(1, int(timeout_sec))), host]
 
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec * count + 1.0)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec * count + 1.5)
         out_text = stdout.decode("cp866" if is_win else "utf-8", errors="ignore")
 
         is_online = (proc.returncode == 0) and (
@@ -113,20 +141,35 @@ async def async_ping(host: str, count: int = 1, timeout_sec: float = 0.8) -> dic
             "raw_output": out_text.strip(),
         }
     except asyncio.TimeoutError:
+        if proc:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
         return {"host": host, "is_online": False, "avg_rtt": None, "error": "Timeout"}
     except Exception as e:
+        if proc:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
         return {"host": host, "is_online": False, "avg_rtt": None, "error": str(e)}
 
 
 async def check_tcp_port(host: str, port: int, timeout: float = 0.8) -> bool:
     """
-    Проверяет доступность TCP-порта в режиме Fail-Fast (SMB 445, WinRM 5985, RDP 3389).
+    Проверяет доступность TCP-порта в режиме Fail-Fast (SMB 445, WinRM 5985).
     """
     try:
         conn = asyncio.open_connection(host, port)
         _, writer = await asyncio.wait_for(conn, timeout=timeout)
         writer.close()
-        await writer.wait_closed()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
         return True
     except Exception:
         return False
@@ -142,34 +185,18 @@ async def resolve_dns(host: str, timeout: float = 0.8) -> str | None:
         return None
 
 
-async def run_host_diagnostics(target: str, use_cache: bool = True) -> dict[str, Any]:
-    """
-    Комплексная диагностика хоста: DNS -> ICMP Ping -> SMB 445 -> WinRM 5985 с TTL-кэшированием.
-    """
-    normalized_target = normalize_pc_name(target) or target.strip().upper()
-    now = time.time()
-
-    # Проверка TTL-кэша
-    if use_cache and normalized_target in _DIAG_CACHE:
-        cached_time, cached_res = _DIAG_CACHE[normalized_target]
-        if now - cached_time < _CACHE_TTL_SEC:
-            return cached_res
-    
-    # 1. DNS Резолвинг
-    ip = await resolve_dns(normalized_target) if not re.match(r"^\d+\.\d+\.\d+\.\d+$", normalized_target) else normalized_target
-
-    # 2. Параллельный запуск ICMP Ping и проверок портов (Fail-Fast: 0.8 сек)
-    ping_task = async_ping(normalized_target, count=1, timeout_sec=0.8)
-    smb_task = check_tcp_port(normalized_target, 445, timeout=0.8)
-    winrm_task = check_tcp_port(normalized_target, 5985, timeout=0.8)
+async def run_single_host_diag(target: str) -> dict[str, Any]:
+    """Диагностика одиночного хоста: DNS -> ICMP -> SMB 445 -> WinRM 5985."""
+    ip = await resolve_dns(target) if not re.match(r"^\d+\.\d+\.\d+\.\d+$", target) else target
+    ping_task = async_ping(target, count=1, timeout_sec=0.8)
+    smb_task = check_tcp_port(target, 445, timeout=0.8)
+    winrm_task = check_tcp_port(target, 5985, timeout=0.8)
 
     ping_res, smb_ok, winrm_ok = await asyncio.gather(ping_task, smb_task, winrm_task)
-
-    # 3. Комплексный вывод статуса
     is_online = ping_res.get("is_online") or smb_ok or winrm_ok
 
-    result = {
-        "target": normalized_target,
+    return {
+        "target": target,
         "resolved_ip": ip,
         "is_online": is_online,
         "avg_rtt": ping_res.get("avg_rtt"),
@@ -178,13 +205,36 @@ async def run_host_diagnostics(target: str, use_cache: bool = True) -> dict[str,
         "winrm_port_5985": winrm_ok,
     }
 
-    # Сохраняем в TTL-кэш
-    _DIAG_CACHE[normalized_target] = (now, result)
-    return result
+
+async def run_host_diagnostics(target: str, use_cache: bool = True, fallback_candidates: list[str] | None = None) -> dict[str, Any]:
+    """
+    Комплексная диагностика хоста с поддержкой алиасов и TTL-кэшированием.
+    Если основной target оффлайн и переданы кандидаты, проверяет кандидатов.
+    """
+    normalized_target = normalize_pc_name(target) or target.strip().upper()
+    now = time.time()
+
+    if use_cache and normalized_target in _DIAG_CACHE:
+        cached_time, cached_res = _DIAG_CACHE[normalized_target]
+        if now - cached_time < _CACHE_TTL_SEC:
+            return cached_res
+
+    res = await run_single_host_diag(normalized_target)
+
+    # Если оффлайн и есть fallback кандидаты (например, при подборе префикса KZMK1561 vs NTEMW1561)
+    if not res["is_online"] and fallback_candidates:
+        other_cands = [c for c in fallback_candidates if c != normalized_target]
+        for alt_host in other_cands:
+            alt_res = await run_single_host_diag(alt_host)
+            if alt_res["is_online"]:
+                res = alt_res
+                break
+
+    _DIAG_CACHE[normalized_target] = (now, res)
+    return res
 
 
 def format_diagnostics_summary(diag: dict[str, Any]) -> str:
-    """Форматирует результат диагностики в компактную визуальную строку."""
     target = diag.get("target", "Unknown")
     ip = diag.get("resolved_ip")
     is_online = diag.get("is_online", False)

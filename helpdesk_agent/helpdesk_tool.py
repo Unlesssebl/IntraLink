@@ -102,13 +102,16 @@ async def cmd_task(args):
             sys.exit(1)
 
         # 1. Сетевая диагностика найденных хостов
+        meta_info = task.get("_field_meta") or {}
         hosts = extract_potential_hosts(
             f"{task.get('Name', '')} {task.get('Description', '')}",
-            task.get("_field_meta", {}).get("raw", {}),
+            meta_info.get("raw", {}),
+            company=meta_info.get("company") or task.get("CreatorCompany", ""),
+            dept=meta_info.get("dept") or task.get("CreatorDepartment", ""),
         )
         diag = None
         if hosts:
-            diag = await run_host_diagnostics(hosts[0])
+            diag = await run_host_diagnostics(hosts[0], fallback_candidates=hosts)
 
         # 2. RAG поиск
         task_text = f"{task.get('Name', '')}. {task.get('Description', '')}".strip()
@@ -206,10 +209,12 @@ async def process_single_ticket_for_batch(
         hosts = extract_potential_hosts(
             f"{full_task.get('Name', '')} {full_task.get('Description', '')}",
             meta.get("raw", {}),
+            company=meta.get("company") or full_task.get("CreatorCompany", ""),
+            dept=meta.get("dept") or full_task.get("CreatorDepartment", ""),
         )
         diag = None
         if hosts:
-            diag = await run_host_diagnostics(hosts[0])
+            diag = await run_host_diagnostics(hosts[0], fallback_candidates=hosts)
 
         # RAG поиск
         task_text = f"{full_task.get('Name', '')}. {full_task.get('Description', '')}".strip()

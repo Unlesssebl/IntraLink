@@ -1,4 +1,4 @@
-﻿"""
+"""
 Нормализация имён сетевых устройств (ПК и МФУ/принтеров).
 
 Содержит надежные, детерминированные механизмы:
@@ -22,11 +22,18 @@ _TR_MAP = str.maketrans(
     _LATIN    + _LATIN.lower(),
 )
 
-# Известные префиксы ПК
-KNOWN_PC_PREFIXES = ["NTEMW", "TKT", "TNT", "KMK", "TNM"]
+# Известные префиксы ПК (Таблица 1 + Таблица 2 + доменные)
+KNOWN_PC_PREFIXES = [
+    "ZTE", "KZM", "KMK", "TLK", "TKT", "TNT", "ITT", "TNM", "GKT",
+    "ZT", "KZ", "KM", "TL", "NT", "TT", "TM", "GK",
+    "NTEMW", "KZMK", "ZTEO", "KPK", "NTZ", "TEMPO", "WKS", "PC", "SRV", "NOTE", "LAPTOP", "COMP",
+]
 
-# Известные префиксы принтеров
-KNOWN_PRINTER_PREFIXES = ["ITTP", "KZMP", "KMKP"]
+# Известные префиксы принтеров/МФУ (Таблица 1 + P и Таблица 2 + P)
+KNOWN_PRINTER_PREFIXES = [
+    "ZTEP", "KZMP", "KMKP", "TLKP", "TKTP", "TNTP", "ITTP", "TNMP", "GKTP",
+    "ZTP", "KZP", "KMP", "TLP", "NTP", "TTP", "TMP", "GKP",
+]
 
 _MAX_PREFIX_EDIT_DISTANCE = 2
 
@@ -62,16 +69,25 @@ def _try_fix_prefix(prefix: str, known_prefixes: list[str]) -> str | None:
     if not prefix:
         return None
 
+    clean_p = prefix.upper().replace("-", "").replace("_", "")
+    for known in known_prefixes:
+        if clean_p == known:
+            return known
+
     best_match: str | None = None
-    best_dist = _MAX_PREFIX_EDIT_DISTANCE + 1
+    best_dist = _MAX_PREFIX_EDIT_DISTANCE + 1.0
 
     for known in known_prefixes:
-        dist = _levenshtein(prefix, known)
+        raw_dist = _levenshtein(clean_p, known)
+        dist = float(raw_dist)
+        if clean_p in known or known in clean_p:
+            dist -= 0.1
         if dist < best_dist:
             best_dist = dist
             best_match = known
 
-    if best_match is not None and best_dist <= _MAX_PREFIX_EDIT_DISTANCE:
+    max_allowed = 1.0 if len(clean_p) <= 3 else float(_MAX_PREFIX_EDIT_DISTANCE)
+    if best_match is not None and best_dist <= max_allowed:
         return best_match
     return None
 
