@@ -157,6 +157,9 @@ core_api.db
 core_api.db-journal
 /core-api-data/
 core-api/chroma_db/
+helpdesk_agent/knowledge_base.json
+helpdesk_agent/.session_state.json
+helpdesk_agent/*.tmp
 *.log
 .secrets/
 

@@ -4,6 +4,10 @@ import os
 import re
 from typing import Any
 import aiohttp
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from normalizer import normalize_pc_name, is_valid_pc_name
 
 logger = logging.getLogger("helpdesk_agent.api")
@@ -122,8 +126,8 @@ class IntraServiceClient:
         self.base_url = (
             base_url or os.getenv("INTRASERVICE_URL", "https://servicedesk.corporate.loc/api/")
         ).rstrip("/")
-        self.login = login or os.getenv("INTRASERVICE_LOGIN", "IntraService_dev")
-        self.password = password or os.getenv("INTRASERVICE_PASSWORD", "85_wW8EuOyYaw+xv6")
+        self.login = login or os.getenv("INTRASERVICE_LOGIN", "alen_assistant")
+        self.password = password or os.getenv("INTRASERVICE_PASSWORD", "T6Md=N=d8!YPA)(D")
         self.ssl_verify = ssl_verify
         self._session: aiohttp.ClientSession | None = None
 
@@ -146,6 +150,7 @@ class IntraServiceClient:
         method: str = "GET",
         params: dict[str, Any] | None = None,
         json_data: dict[str, Any] | None = None,
+        max_retries: int = 3,
     ) -> Any | None:
         session = await self._get_session()
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -154,34 +159,63 @@ class IntraServiceClient:
             "Authorization": self.auth_header,
         }
 
-        try:
-            async with session.request(
-                method=method,
-                url=url,
-                headers=headers,
-                params=params,
-                json=json_data,
-                timeout=aiohttp.ClientTimeout(total=20),
-            ) as response:
-                if response.status in (200, 201):
-                    try:
-                        return await response.json()
-                    except Exception:
+        for attempt in range(max_retries):
+            try:
+                async with session.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    params=params,
+                    json=json_data,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as response:
+                    if response.status in (200, 201):
+                        try:
+                            return await response.json()
+                        except Exception:
+                            return {}
+                    elif response.status == 204:
                         return {}
-                elif response.status == 204:
-                    return {}
-                else:
-                    text_resp = await response.text()
+                    elif response.status in (500, 502, 503, 504) and attempt < max_retries - 1:
+                        wait_time = 0.5 * (attempt + 1)
+                        logger.warning(
+                            "IntraService API [%s] %s (попытка %d/%d). Повтор через %.1f сек...",
+                            response.status,
+                            url,
+                            attempt + 1,
+                            max_retries,
+                            wait_time,
+                        )
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        text_resp = await response.text()
+                        logger.warning(
+                            "Ошибка IntraService API [%s] %s: %s",
+                            response.status,
+                            url,
+                            text_resp[:200],
+                        )
+                        return None
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                if attempt < max_retries - 1:
+                    wait_time = 0.5 * (attempt + 1)
                     logger.warning(
-                        "Ошибка IntraService API [%s] %s: %s",
-                        response.status,
-                        url,
-                        text_resp[:200],
+                        "Сетевой сбой при обращении к IntraService (%s): %s (попытка %d/%d). Повтор через %.1f сек...",
+                        endpoint,
+                        e,
+                        attempt + 1,
+                        max_retries,
+                        wait_time,
                     )
-                    return None
-        except Exception as e:
-            logger.error("Сетевой сбой при обращении к IntraService (%s): %s", endpoint, e)
-            return None
+                    await asyncio.sleep(wait_time)
+                    continue
+                logger.error("Сетевой сбой при обращении к IntraService (%s): %s (исчерпаны все попытки)", endpoint, e)
+                return None
+            except Exception as e:
+                logger.error("Критическая ошибка при обращении к IntraService (%s): %s", endpoint, e)
+                return None
+        return None
 
     async def get_service_catalog(self) -> list[dict[str, Any]]:
         """Получает дерево каталога услуг."""
@@ -192,18 +226,108 @@ class IntraServiceClient:
             return res
         return []
 
+    async def get_root_services(self) -> list[dict[str, Any]]:
+        """Возвращает отсортированный список всех корневых разделов каталога услуг."""
+        catalog = await self.get_service_catalog()
+        roots = [s for s in catalog if s.get("ParentId") is None]
+        roots.sort(key=lambda s: s.get("Name", ""))
+        return roots
+
+    async def get_service_subtree(self, service_query: str | int) -> tuple[str, list[int]]:
+        """
+        Находит корневой сервис или категорию по человеческому номеру раздела (например: 2, '02', '3', '6', '16')
+        или названию (например '1С', 'оргтехника', 'программ') и возвращает кортеж:
+        (Отображаемое название раздела, Список всех ID сервиса и его дочерних подсервисов).
+        """
+        catalog = await self.get_service_catalog()
+        if not catalog:
+            return "", []
+
+        query_str = str(service_query).strip()
+        target_service = None
+
+        # 1. Поиск по человеческому номеру раздела (например, '2', '02', '6', '16')
+        if query_str.isdigit():
+            num = int(query_str)
+            num_padded = f"{num:02d}"
+            # Сначала ищем среди корневых разделов по префиксу '02.' или '2.'
+            for s in catalog:
+                name = s.get("Name", "").strip()
+                if s.get("ParentId") is None and (
+                    name.startswith(f"{num_padded}.")
+                    or name.startswith(f"{num}.")
+                    or name.startswith(f"{num_padded} ")
+                    or name.startswith(f"{num} ")
+                ):
+                    target_service = s
+                    break
+
+        # 2. Поиск по подстроке в названии (регистронезависимый)
+        if not target_service:
+            q_lower = query_str.lower()
+            # Сначала среди корневых разделов
+            for s in catalog:
+                if s.get("ParentId") is None and q_lower in s.get("Name", "").lower():
+                    target_service = s
+                    break
+            # Затем среди всех остальных подразделов
+            if not target_service:
+                for s in catalog:
+                    if q_lower in s.get("Name", "").lower():
+                        target_service = s
+                        break
+
+        if not target_service:
+            return "", []
+
+        target_id = target_service["Id"]
+        target_name = target_service.get("Name", f"Сервис ID {target_id}")
+
+        # 3. Рекурсивно собираем все ID подсервисов
+        sub_ids = {target_id}
+        for s in catalog:
+            s_id = s.get("Id")
+            if not s_id:
+                continue
+            path = s.get("Path", "")
+            if path and f"{target_id}|" in path:
+                sub_ids.add(s_id)
+            elif s.get("ParentId") == target_id:
+                sub_ids.add(s_id)
+
+        # Дополнительный проход по ParentId для глубоких иерархий без Path
+        added = True
+        while added:
+            added = False
+            for s in catalog:
+                s_id = s.get("Id")
+                p_id = s.get("ParentId")
+                if s_id and s_id not in sub_ids and p_id in sub_ids:
+                    sub_ids.add(s_id)
+                    added = True
+
+        return target_name, sorted(list(sub_ids))
+
     async def get_tasks_by_filter(
-        self, filter_id: int, page: int = 1, page_size: int = 25
+        self,
+        filter_id: int,
+        page: int = 1,
+        page_size: int = 25,
+        service_ids: list[int] | None = None,
     ) -> list[dict[str, Any]]:
         """Получает список открытых задач по ID фильтра (например, 984 для 1-й линии)."""
+        params = {
+            "filterid": str(filter_id),
+            "include": "status,customfields,service,comments",
+            "pagesize": str(page_size),
+            "page": str(page),
+        }
+        if service_ids:
+            params["serviceids"] = ",".join(str(s) for s in service_ids)
+
         res = await self._request(
             "task",
-            params={
-                "filterid": str(filter_id),
-                "include": "status,customfields,service,comments",
-                "pagesize": str(page_size),
-                "page": str(page),
-            },
+            params=params,
         )
         if isinstance(res, dict):
             return res.get("Tasks", [])
@@ -283,32 +407,47 @@ class IntraServiceClient:
             return res
         return []
 
-    async def add_comment(self, task_id: int, comment: str, is_private: bool = False) -> bool:
-        """Добавляет комментарий к заявке."""
-        payload = {
-            "Id": task_id,
-            "Comments": comment,
-            "IsPublic": not is_private,
-        }
+    async def update_task(
+        self,
+        task_id: int,
+        status_id: int | None = None,
+        comment: str | None = None,
+        executor_ids: str | None = None,
+        is_private: bool = False,
+    ) -> bool:
+        """Атомарно обновляет задачу (статус, комментарий, исполнитель) в одном PUT-запросе."""
+        payload: dict[str, Any] = {"Id": task_id}
+        if status_id is not None:
+            payload["StatusId"] = status_id
+        if comment:
+            payload["Comment"] = comment
+            payload["IsPrivateComment"] = is_private
+        if executor_ids:
+            payload["ExecutorIds"] = str(executor_ids)
         res = await self._request(f"task/{task_id}", method="PUT", json_data=payload)
         return res is not None
+
+    async def add_comment(self, task_id: int, comment: str, is_private: bool = False) -> bool:
+        """Добавляет комментарий к заявке."""
+        return await self.update_task(task_id, comment=comment, is_private=is_private)
 
     async def update_status(self, task_id: int, status_id: int) -> bool:
         """Обновляет статус заявки."""
-        payload = {
-            "Id": task_id,
-            "StatusId": status_id,
-        }
-        res = await self._request(f"task/{task_id}", method="PUT", json_data=payload)
-        return res is not None
+        return await self.update_task(task_id, status_id=status_id)
 
-    async def add_expenses(self, task_id: int, minutes: int) -> bool:
+    async def add_expenses(
+        self,
+        task_id: int,
+        minutes: int,
+        comment: str | None = None,
+        user_id: int = 10502,
+    ) -> bool:
         """Списывает трудозатраты по заявке в минутах."""
-        hours = round(minutes / 60.0, 2)
         payload = {
             "TaskId": task_id,
-            "Hours": hours,
-            "Description": "Автоматическое выполнение в Helpdesk Agent (AGY)",
+            "Minutes": int(minutes),
+            "Comments": comment or "Выполнение заявки в Helpdesk Agent (AGY)",
+            "UserId": user_id,
         }
         res = await self._request("taskexpenses", method="POST", json_data=payload)
         return res is not None

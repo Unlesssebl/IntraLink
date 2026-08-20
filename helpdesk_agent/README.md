@@ -9,8 +9,20 @@
 ## ⚡ Доступные команды (`helpdesk_tool.py`)
 
 ```bash
-# Получить очередь открытых заявок 1-й линии:
+# Пакетный триаж стопки заявок 1-й линии:
+uv run python helpdesk_tool.py batch --limit 5
+
+# Пакетный триаж по конкретному номеру сервиса (например 2 - ПО, 3 - Оргтехника, 6 - 1С):
+uv run python helpdesk_tool.py batch --service 2 --limit 5
+uv run python helpdesk_tool.py batch --service 03 --limit 5
+uv run python helpdesk_tool.py batch --service 6 --limit 5
+
+# Список корневых разделов каталога с номерами (01..16):
+uv run python helpdesk_tool.py services
+
+# Получить очередь открытых заявок 1-й линии (общая или по сервису):
 uv run python helpdesk_tool.py queue --limit 10
+uv run python helpdesk_tool.py queue --service 2 --limit 10
 
 # Детальная карточка инцидента с кастомными полями и комментариями:
 uv run python helpdesk_tool.py task 139022

@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from typing import Any
 from dotenv import load_dotenv
@@ -15,21 +16,71 @@ from kb import (
     search_knowledge_base,
     index_task_record,
     sync_history_kb,
+    test_db_connection,
+    ensure_db_schema,
 )
 from template_engine import auto_detect_template, render_template, load_templates
+from session_state import (
+    add_skipped_tasks,
+    add_applied_tasks,
+    get_skipped_task_ids,
+    reset_session_state,
+)
 
 DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), "downloads")
+
+
+async def cmd_services(args):
+    """Список корневых разделов каталога услуг с человеческими номерами (для фильтрации /triage)."""
+    client = IntraServiceClient()
+    try:
+        catalog = await client.get_service_catalog()
+        roots = [s for s in catalog if s.get("ParentId") is None]
+        roots.sort(key=lambda s: s.get("Name", ""))
+
+        if args.json:
+            print(json.dumps(roots, ensure_ascii=False, indent=2))
+            return
+
+        print("=== 📋 Корневые разделы каталога услуг (Номера для /triage <№>) ===\n")
+        print("| № | ID | Раздел каталога | Назначение |")
+        print("|:---:|:---:|---|---|")
+        for r in roots:
+            name = r.get("Name", "")
+            r_id = r.get("Id")
+            desc = r.get("Description") or "—"
+            num_match = re.match(r"^(\d+)\.", name)
+            num_str = num_match.group(1) if num_match else "—"
+            print(f"| **{num_str}** | `{r_id}` | **{name}** | {desc} |")
+        print("\n💡 Пример использования: `uv run python helpdesk_tool.py batch --service 2` или `/triage 2`")
+    finally:
+        await client.close()
 
 
 async def cmd_queue(args):
     client = IntraServiceClient()
     try:
-        tasks = await client.get_tasks_by_filter(args.filter, page=1, page_size=args.limit)
+        service_ids = None
+        service_title = ""
+        if args.service:
+            s_name, s_ids = await client.get_service_subtree(args.service)
+            if not s_ids:
+                print(f"❌ Сервис/раздел '{args.service}' не найден в каталоге IntraService.", file=sys.stderr)
+                sys.exit(1)
+            service_ids = s_ids
+            service_title = f" | Раздел: {s_name}"
+
+        fetch_size = args.limit if not service_ids else max(args.limit * 5, 50)
+        tasks = await client.get_tasks_by_filter(args.filter, page=1, page_size=fetch_size, service_ids=service_ids)
+        if service_ids:
+            tasks = [t for t in tasks if t.get("ServiceId") in service_ids]
+        tasks = tasks[:args.limit]
+
         if args.json:
             print(json.dumps(tasks, ensure_ascii=False, indent=2))
             return
 
-        print(f"=== Очередь заявок (Фильтр #{args.filter}, Найдено: {len(tasks)}) ===")
+        print(f"=== Очередь заявок (Фильтр #{args.filter}{service_title}, Найдено: {len(tasks)}) ===")
         for t in tasks:
             t_id = t.get("Id")
             name = t.get("Name")
@@ -81,8 +132,8 @@ async def cmd_task(args):
         print(f"=== Заявка #{task.get('Id')} ===")
         print(f"Тема:       {task.get('Name')}")
         print(f"Заявитель:  {task.get('Creator')}")
-        print(f"Раздел:     {task.get('ServiceName')} (ID: {task.get('ServiceId')})")
-        print(f"Статус:     {task.get('StatusName')} (ID: {task.get('StatusId')})")
+        print(f"Раздел:     {task.get('ServiceName')}")
+        print(f"Статус:     {task.get('StatusName')}")
         print(f"Создана:    {task.get('Created')}")
         
         friendly_fields = task.get("_parsed_fields", {})
@@ -94,7 +145,7 @@ async def cmd_task(args):
         if task.get("_has_attachments"):
             print(f"\n📎 Вложения ({len(task.get('_attachments_list', []))}):")
             for att in task.get("_attachments_list", []):
-                print(f"  • ID {att.get('Id')}: {att.get('FileName', 'файл')} ({att.get('Size', 0)} байт)")
+                print(f"  • {att.get('FileName', 'файл')} ({att.get('Size', 0)} байт)")
 
         print(f"\nОписание:\n{task.get('Description') or '—'}")
 
@@ -116,9 +167,9 @@ async def cmd_task(args):
                 print(f"• [Кейс #{kb['task_id']} | Сходство {kb['similarity_pct']}% | {kb['service_name']}]:")
                 print(f"  {kb['solution']}\n")
 
-        print("--- 🎯 Предлагаемое действие (Адаптивный шаблон) ---")
-        print(f"Шаблон:   {action_plan['name']}")
-        print(f"Статус:   #{action_plan['status_id']} ({action_plan['status_name']})")
+        print("--- 🎯 Предлагаемое решение ---")
+        print(f"Действие:     {action_plan['name']}")
+        print(f"Новый статус: {action_plan['status_name']}")
         print(f"Трудозатраты: {action_plan['expenses']} мин.")
         print(f"Проект ответа:\n{action_plan['comment']}")
     finally:
@@ -134,93 +185,172 @@ async def cmd_diagnose(args):
         print(format_diagnostics_summary(diag))
 
 
-async def process_single_ticket_for_batch(client: IntraServiceClient, basic_task: dict[str, Any], idx: int) -> dict[str, Any]:
+async def process_single_ticket_for_batch(
+    client: IntraServiceClient,
+    basic_task: dict[str, Any],
+    idx: int,
+    redirect_mode: bool = False,
+    sem: asyncio.Semaphore | None = None,
+) -> dict[str, Any]:
     """Параллельная обработка одного тикета для формирования сводной матрицы."""
-    t_id = basic_task.get("Id")
-    full_task = await client.get_task_details(t_id) or basic_task
+    async def _do_process():
+        t_id = basic_task.get("Id")
+        full_task = await client.get_task_details(t_id) or basic_task
 
-    meta = full_task.get("_field_meta") or {}
-    room = meta.get("room") or "—"
-    phone = meta.get("phone") or "—"
-    creator = full_task.get("Creator", "Заявитель")
+        meta = full_task.get("_field_meta") or {}
+        room = meta.get("room") or "—"
+        phone = meta.get("phone") or "—"
+        creator = full_task.get("Creator", "Заявитель")
 
-    # Сетевая диагностика
-    hosts = extract_potential_hosts(
-        f"{full_task.get('Name', '')} {full_task.get('Description', '')}",
-        meta.get("raw", {}),
-    )
-    diag = None
-    if hosts:
-        diag = await run_host_diagnostics(hosts[0])
+        # Сетевая диагностика
+        hosts = extract_potential_hosts(
+            f"{full_task.get('Name', '')} {full_task.get('Description', '')}",
+            meta.get("raw", {}),
+        )
+        diag = None
+        if hosts:
+            diag = await run_host_diagnostics(hosts[0])
 
-    # RAG поиск
-    task_text = f"{full_task.get('Name', '')}. {full_task.get('Description', '')}".strip()
-    kb_matches = []
-    try:
-        kb_matches = await search_knowledge_base(task_text, limit=1, distance_threshold=0.70)
-    except Exception:
-        pass
+        # RAG поиск
+        task_text = f"{full_task.get('Name', '')}. {full_task.get('Description', '')}".strip()
+        kb_matches = []
+        try:
+            kb_matches = await search_knowledge_base(task_text, limit=1, distance_threshold=0.70)
+        except Exception:
+            pass
 
-    # Адаптивный шаблон
-    action = auto_detect_template(full_task, diag, kb_matches)
+        # Адаптивный шаблон (с проверкой на неверный сервис / редирект)
+        action = auto_detect_template(full_task, diag, kb_matches, redirect_mode=redirect_mode)
 
-    # Форматирование сетевого бейджа
-    net_badge = "⚪ Нет хоста"
-    if diag:
-        if diag.get("is_online"):
-            rtt = f" ({diag.get('avg_rtt')})" if diag.get("avg_rtt") else ""
-            net_badge = f"🟢 В сети{rtt}"
-        else:
-            net_badge = f"🔴 Офлайн [{diag.get('target')}]"
+        # Форматирование сетевого бейджа
+        net_badge = "⚪ Нет хоста"
+        if diag:
+            if diag.get("is_online"):
+                rtt = f" ({diag.get('avg_rtt')})" if diag.get("avg_rtt") else ""
+                net_badge = f"🟢 В сети{rtt}"
+            else:
+                net_badge = f"🔴 Офлайн [{diag.get('target')}]"
 
-    att_count = len(full_task.get("_attachments_list", []))
-    att_str = f"📎 {att_count}" if att_count > 0 else "—"
+        att_count = len(full_task.get("_attachments_list", []))
+        att_str = f"📎 {att_count}" if att_count > 0 else "—"
 
-    return {
-        "index": idx,
-        "task_id": t_id,
-        "creator_info": f"{creator}<br>`{room}` / `{phone}`",
-        "summary": (full_task.get("Name") or "")[:50],
-        "net_badge": net_badge,
-        "attachments": att_str,
-        "action": action,
-        "full_task": full_task,
-    }
+        return {
+            "index": idx,
+            "task_id": t_id,
+            "creator_info": f"{creator}<br>`{room}` / `{phone}`",
+            "summary": (full_task.get("Name") or "")[:50],
+            "net_badge": net_badge,
+            "attachments": att_str,
+            "action": action,
+            "is_redirect": action.get("is_redirect", False),
+            "target_service_name": action.get("target_service_name", ""),
+            "full_task": full_task,
+        }
+
+    if sem:
+        async with sem:
+            return await _do_process()
+    return await _do_process()
 
 
 async def cmd_batch(args):
-    """Пакетный анализ стопки заявок со сводной матрицей."""
+    """Пакетный анализ стопки заявок со сводной матрицей (с поддержкой фильтра редиректов)."""
     client = IntraServiceClient()
     try:
-        raw_tasks = await client.get_tasks_by_filter(args.filter, page=args.page, page_size=args.limit)
+        service_ids = None
+        service_name = None
+        if args.service:
+            s_name, s_ids = await client.get_service_subtree(args.service)
+            if not s_ids:
+                print(f"❌ Раздел/сервис '{args.service}' не найден в каталоге IntraService.", file=sys.stderr)
+                print("💡 Выполните `uv run python helpdesk_tool.py services`, чтобы увидеть список доступных номеров.", file=sys.stderr)
+                sys.exit(1)
+            service_ids = s_ids
+            service_name = s_name
+
+        is_redirect_mode = getattr(args, "redirect", False)
+
+        # Если включен режим редиректа или фильтрация по сервису, берем большую выборку для поиска кандидатов
+        fetch_size = args.limit
+        if service_ids or is_redirect_mode:
+            fetch_size = max(args.limit * 6, 50)
+
+        raw_tasks = await client.get_tasks_by_filter(
+            args.filter,
+            page=args.page,
+            page_size=fetch_size,
+            service_ids=service_ids,
+        )
+        if service_ids:
+            raw_tasks = [t for t in raw_tasks if t.get("ServiceId") in service_ids]
+
+        # Фильтрация пропущенных оператором заявок в текущей сессии
+        if not getattr(args, "include_skipped", False):
+            skipped_ids = get_skipped_task_ids()
+            if skipped_ids:
+                raw_tasks = [t for t in raw_tasks if t.get("Id") not in skipped_ids]
+
         if not raw_tasks:
-            print("Очередь заявок пуста! Все инциденты обработаны.")
+            target_info = f" в разделе «{service_name}»" if service_name else ""
+            print(f"Очередь заявок{target_info} пуста (или все кандидаты уже обработаны/пропущены в текущей смене)!")
             return
 
-        print(f"Сбор данных и диагностика стопки из {len(raw_tasks)} заявок...")
+        hdr_info = f" (Раздел: {service_name})" if service_name else ""
+        mode_info = " [Режим поиска РЕДИРЕКТОВ]" if is_redirect_mode else ""
+        sem = asyncio.Semaphore(5)
         tasks_coros = [
-            process_single_ticket_for_batch(client, t, idx + 1)
+            process_single_ticket_for_batch(client, t, idx + 1, redirect_mode=is_redirect_mode, sem=sem)
             for idx, t in enumerate(raw_tasks)
         ]
         results = await asyncio.gather(*tasks_coros)
+
+        # Если запрошен режим редиректа, оставляем только заявки, требующие отмены/перенаправления
+        if is_redirect_mode:
+            results = [r for r in results if r.get("is_redirect")]
+            results = results[:args.limit]
+            for i, r in enumerate(results, start=1):
+                r["index"] = i
+
+            if not results:
+                target_info = f" в разделе «{service_name}»" if service_name else " в очереди"
+                print(f"\n✅ Заявок, требующих отмены и редиректа{target_info}, не обнаружено.")
+                print("Все проверенные тикеты соответствуют своим разделам каталога услуг.")
+                return
+        else:
+            results = results[:args.limit]
 
         if args.json:
             print(json.dumps(results, ensure_ascii=False, indent=2))
             return
 
-        print(f"\n### 📋 Очередь 1-й линии (Пачка {args.page}: Заявки 1–{len(results)})\n")
-        print("| № | Тикет | Заявитель (Каб / Тел) | Суть инцидента | Сеть хоста | 📎 | Рекомендация (Статус / Комментарий) |")
-        print("|---|---|---|---|:---:|:---:|---|")
-        
-        for r in results:
-            t_id = r["task_id"]
-            action = r["action"]
-            short_comment = action['comment'].split('\n')[0][:40] + "..."
-            print(
-                f"| **{r['index']}** | **#{t_id}** | {r['creator_info']} | {r['summary']} | "
-                f"{r['net_badge']} | {r['attachments']} | "
-                f"**[{action['status_id']}: {action['status_name']}]** <br>💬 *«{short_comment}»* |"
-            )
+        title = f"Раздел «{service_name}»" if service_name else "Все разделы"
+        if is_redirect_mode:
+            print(f"\n### 🔄 Заявки на отмену и редирект: {title} (Найдено: {len(results)})\n")
+            print("| № | Тикет | Заявитель (Каб / Тел) | Суть инцидента | Текущий раздел ➔ Рекомендованный сервис | Статус |")
+            print("|---|---|---|---|---|:---:|")
+            for r in results:
+                t_id = r["task_id"]
+                action = r["action"]
+                curr_svc = action.get("current_service_name") or r["full_task"].get("ServiceName", "—")
+                target_svc = action.get("target_service_name", "—")
+                print(
+                    f"| **{r['index']}** | **#{t_id}** | {r['creator_info']} | {r['summary']} | "
+                    f"`{curr_svc}` ➔ **{target_svc}** | **🎯 {action['status_name']} (30)** |"
+                )
+        else:
+            print(f"\n### 📋 Очередь 1-й линии: {title} (Пачка {args.page}: Заявки 1–{len(results)})\n")
+            print("| № | Тикет | Заявитель (Каб / Тел) | Суть инцидента | Сеть хоста | 📎 | Рекомендация (Статус / Комментарий) |")
+            print("|---|---|---|---|:---:|:---:|---|")
+            
+            for r in results:
+                t_id = r["task_id"]
+                action = r["action"]
+                short_comment = action['comment'].split('\n')[0][:40] + "..."
+                print(
+                    f"| **{r['index']}** | **#{t_id}** | {r['creator_info']} | {r['summary']} | "
+                    f"{r['net_badge']} | {r['attachments']} | "
+                    f"**{action['status_name']}**<br>💬 *«{short_comment}»* |"
+                )
 
         print("\n---")
         print("⚡ **Шорткаты для оператора:**")
@@ -228,22 +358,35 @@ async def cmd_batch(args):
         print("• `1, 2, 4` — применить выбранные номера")
         print("• `детали <N>` — раскрыть подробную карточку тикета")
         print("• `скриншот <N>` — скачать и посмотреть вложение")
-        print("• `шаблон <имя> для <N>` — сменить шаблон (hardware_repair, 1c_issue, printer_issue, wifi_access, pc_offline)")
+        print("• `шаблон <имя> для <N>` — сменить шаблон (wrong_service, hardware_repair, 1c_issue, printer_issue, wifi_access, pc_offline)")
     finally:
         await client.close()
+
+
+async def cmd_redirect(args):
+    """Поиск и пакетная обработка заявок, требующих отмены из-за неверного сервиса."""
+    args.redirect = True
+    await cmd_batch(args)
 
 
 async def cmd_apply(args):
     client = IntraServiceClient()
     try:
-        task_id = args.task_id
+        raw_ids = str(args.task_id).split(",")
+        task_ids = [int(x.strip()) for x in raw_ids if x.strip().isdigit()]
+        if not task_ids:
+            print(f"❌ Некорректный ID заявки: '{args.task_id}'", file=sys.stderr)
+            sys.exit(1)
+
         status_id = args.status
         comment = args.comment
         expenses = args.expenses
+        executor_ids = getattr(args, "executor", None) or "10502"
         dry_run = args.dry_run
 
-        print(f"=== Применение решения к заявке #{task_id} ===")
+        print(f"=== Применение решения к заявкам: {', '.join(f'#{tid}' for tid in task_ids)} ===")
         print(f"Целевой статус ID: {status_id}")
+        print(f"Исполнитель ID:   {executor_ids} (Беликов Ален_assitant)")
         print(f"Трудозатраты:     {expenses} мин." if expenses else "Трудозатраты: не списываются")
         print(f"Комментарий:\n{comment}\n")
 
@@ -251,49 +394,90 @@ async def cmd_apply(args):
             print("[DRY-RUN] Режим симуляции. Изменения не отправлены.")
             return
 
-        comment_ok = True
-        if comment:
-            comment_ok = await client.add_comment(task_id, comment)
+        all_ok = True
+        for task_id in task_ids:
+            # 1. Если статус финальный или меняется (29, 30, 35, 48), сначала берем в работу (27) с назначением исполнителя
+            if status_id != 27:
+                await client.update_task(task_id=task_id, status_id=27, executor_ids=executor_ids)
 
-        status_ok = True
-        if status_id:
-            status_ok = await client.update_status(task_id, status_id)
+            # 2. Атомарное обновление заявки в целевой статус (статус, комментарий, исполнитель)
+            update_ok = await client.update_task(
+                task_id=task_id,
+                status_id=status_id,
+                comment=comment if comment else None,
+                executor_ids=executor_ids,
+            )
 
-        exp_ok = True
-        if expenses and expenses > 0:
-            exp_ok = await client.add_expenses(task_id, minutes=expenses)
+            # 3. Списание трудозатрат
+            exp_ok = True
+            if expenses and expenses > 0:
+                exp_comment = comment.split("\n")[0][:100] if comment else "Выполнение заявки в Helpdesk Agent"
+                exp_ok = await client.add_expenses(
+                    task_id=task_id,
+                    minutes=expenses,
+                    comment=exp_comment,
+                    user_id=int(executor_ids) if executor_ids.isdigit() else 10502,
+                )
 
-        # Автообучение RAG
-        if status_id in (29, 30) and comment and comment.strip():
-            try:
-                task_data = await client.get_task_details(task_id)
-                if task_data:
-                    t_name = task_data.get("Name") or f"Заявка #{task_id}"
-                    t_desc = task_data.get("Description") or ""
-                    s_id = task_data.get("ServiceId") or 0
-                    s_name = task_data.get("ServiceName") or "Общие"
-                    st_name = "Выполнена" if status_id == 29 else "Отменена"
-                    
-                    await index_task_record(
-                        task_id=task_id,
-                        original_name=t_name,
-                        problem=f"{t_name}. {t_desc}".strip(),
-                        solution=comment.strip(),
-                        service_id=s_id,
-                        service_name=s_name,
-                        status_name=st_name,
-                        classification_data={"type": "auto_indexed_by_agent", "status_id": status_id},
-                    )
-            except Exception:
-                pass
+            # 3. Автообучение RAG
+            if status_id in (29, 30) and comment and comment.strip():
+                try:
+                    task_data = await client.get_task_details(task_id)
+                    if task_data:
+                        t_name = task_data.get("Name") or f"Заявка #{task_id}"
+                        t_desc = task_data.get("Description") or ""
+                        s_id = task_data.get("ServiceId") or 0
+                        s_name = task_data.get("ServiceName") or "Общие"
+                        st_name = "Выполнена" if status_id == 29 else "Отменена"
 
-        if comment_ok and status_ok and exp_ok:
-            print(f"✓ УСПЕХ: Заявка #{task_id} успешно обновлена!")
-        else:
-            print(f"ОШИБКА обновления заявки #{task_id}", file=sys.stderr)
+                        await index_task_record(
+                            task_id=task_id,
+                            original_name=t_name,
+                            problem=f"{t_name}. {t_desc}".strip(),
+                            solution=comment.strip(),
+                            service_id=s_id,
+                            service_name=s_name,
+                            status_name=st_name,
+                            classification_data={"type": "auto_indexed_by_agent", "status_id": status_id},
+                        )
+                except Exception:
+                    pass
+
+            if update_ok and exp_ok:
+                print(f"✓ УСПЕХ: Заявка #{task_id} успешно обновлена!")
+                add_applied_tasks([task_id], status_id)
+            else:
+                print(f"⚠️ ВНИМАНИЕ: Ошибка обновления заявки #{task_id} (update={update_ok}, expenses={exp_ok})", file=sys.stderr)
+                all_ok = False
+
+        if not all_ok:
             sys.exit(1)
     finally:
         await client.close()
+
+
+async def cmd_skip(args):
+    """Помечает заявку или список заявок как пропущенные в текущей смене/сессии."""
+    raw_ids = [x.strip() for x in str(args.task_id).split(",") if x.strip()]
+    task_ids = []
+    for x in raw_ids:
+        try:
+            task_ids.append(int(x))
+        except ValueError:
+            pass
+    if not task_ids:
+        print("❌ Не указаны валидные ID заявок для пропуска.", file=sys.stderr)
+        sys.exit(1)
+
+    add_skipped_tasks(task_ids, reason=args.reason or "operator_skipped")
+    print(f"✓ Заявки #{', #'.join(str(x) for x in task_ids)} помечены как пропущенные в текущей смене.")
+    print("💡 Они не будут появляться в /triage и /redirect до сброса (`reset-session`).")
+
+
+async def cmd_reset_session(args):
+    """Сбрасывает сессионное состояние и возвращает все пропущенные заявки в очередь."""
+    reset_session_state()
+    print("✓ Сессионное состояние сброшено. Все пропущенные заявки снова активны для разбора.")
 
 
 async def cmd_search_kb(args):
@@ -402,16 +586,88 @@ async def cmd_attachment(args):
         await client.close()
 
 
+async def cmd_check_db(args):
+    """Проверка доступности Tier 1 (PostgreSQL pgvector) и LiteLLM."""
+    print("=== Проверка статуса базы знаний (RAG) ===")
+    ok, msg = await test_db_connection()
+    print(msg)
+    if not ok or "Fallback" in msg:
+        print("\n💡 Для запуска PostgreSQL и LiteLLM выполните:")
+        print("   uv run python helpdesk_tool.py start-db")
+        print("   (или в корне проекта: docker compose up -d postgres litellm)")
+        if getattr(args, "exit_code", False):
+            sys.exit(1)
+    else:
+        print("\n✓ Tier 1 активен. Семантический поиск и индексация выполняются в PostgreSQL pgvector.")
+
+
+async def cmd_start_db(args):
+    """Автоматический запуск контейнеров PostgreSQL и LiteLLM через Docker Compose."""
+    import subprocess
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    print("🚀 Запуск контейнеров PostgreSQL и LiteLLM через Docker Compose...")
+
+    cmd = ["docker", "compose", "up", "-d", "postgres", "litellm"]
+    try:
+        proc = subprocess.run(cmd, cwd=root_dir, capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            print(f"🔴 Ошибка запуска Docker: {proc.stderr.strip()}", file=sys.stderr)
+            sys.exit(1)
+        if proc.stdout.strip():
+            print(proc.stdout.strip())
+        else:
+            print("✓ Команда docker compose выполнена успешно.")
+    except Exception as e:
+        print(f"🔴 Не удалось запустить Docker команду: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print("⏳ Ожидание инициализации PostgreSQL (до 10 сек)...")
+    for _ in range(10):
+        await asyncio.sleep(1)
+        from kb import get_pg_connection
+        conn = await get_pg_connection()
+        if conn:
+            await conn.close()
+            break
+
+    # Инициализация схемы
+    schema_ok = await ensure_db_schema()
+    if schema_ok:
+        print("✓ Схема PostgreSQL (таблица task_knowledge_base + pgvector) готова к работе!")
+
+    ok, msg = await test_db_connection()
+    print(f"\nСтатус: {msg}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Helpdesk I/O, Batch Triage & RAG Tools for AGY Agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # check-db
+    p_cdb = subparsers.add_parser("check-db", help="Проверка статуса подключения к PostgreSQL pgvector")
+    p_cdb.add_argument("--exit-code", action="store_true", help="Вернуть exit code 1 при недоступности Tier 1")
+
+    # start-db
+    p_sdb = subparsers.add_parser("start-db", help="Автоматический запуск PostgreSQL и LiteLLM в Docker")
+
     # batch
     p_b = subparsers.add_parser("batch", help="Сводный дашборд стопки заявок с авто-рекомендациями")
     p_b.add_argument("--filter", type=int, default=int(os.getenv("FILTER_ID", "984")), help="ID фильтра очереди")
+    p_b.add_argument("--service", "-s", type=str, default=None, help="Номер раздела (01..16, 2, 3, 6) или название сервиса для фильтрации")
     p_b.add_argument("--limit", type=int, default=5, help="Размер пачки заявок")
     p_b.add_argument("--page", type=int, default=1, help="Номер пачки/страницы")
+    p_b.add_argument("--redirect", "-r", action="store_true", help="Поиск только заявок, требующих отмены и редиректа в другие сервисы")
+    p_b.add_argument("--include-skipped", action="store_true", help="Включить в выборку ранее пропущенные заявки")
     p_b.add_argument("--json", action="store_true", help="Вывод в JSON")
+
+    # redirect
+    p_red = subparsers.add_parser("redirect", help="Поиск и отмена заявок, требующих редиректа в другие сервисы")
+    p_red.add_argument("--filter", type=int, default=int(os.getenv("FILTER_ID", "984")), help="ID фильтра очереди")
+    p_red.add_argument("--service", "-s", type=str, default=None, help="Номер раздела (01..16, 2, 3, 6) или название сервиса для фильтрации")
+    p_red.add_argument("--limit", type=int, default=5, help="Размер пачки заявок")
+    p_red.add_argument("--page", type=int, default=1, help="Номер пачки/страницы")
+    p_red.add_argument("--include-skipped", action="store_true", help="Включить в выборку ранее пропущенные заявки")
+    p_red.add_argument("--json", action="store_true", help="Вывод в JSON")
 
     # task
     p_t = subparsers.add_parser("task", help="Детальная карточка конкретной заявки")
@@ -421,8 +677,13 @@ def main():
     # queue
     p_q = subparsers.add_parser("queue", help="Простой список очереди")
     p_q.add_argument("--filter", type=int, default=int(os.getenv("FILTER_ID", "984")), help="ID фильтра очереди")
+    p_q.add_argument("--service", "-s", type=str, default=None, help="Номер раздела (01..16, 2, 3, 6) или название сервиса для фильтрации")
     p_q.add_argument("--limit", type=int, default=10, help="Количество заявок")
     p_q.add_argument("--json", action="store_true", help="Вывод в JSON")
+
+    # services
+    p_srv = subparsers.add_parser("services", help="Список корневых разделов каталога с номерами")
+    p_srv.add_argument("--json", action="store_true", help="Вывод в JSON")
 
     # diagnose
     p_d = subparsers.add_parser("diagnose", help="Сетевая диагностика ПК / IP")
@@ -443,12 +704,21 @@ def main():
     p_sykb.add_argument("--dry-run", action="store_true", help="Режим симуляции")
 
     # apply
-    p_a = subparsers.add_parser("apply", help="Применение решения к заявке")
-    p_a.add_argument("task_id", type=int, help="ID заявки")
+    p_a = subparsers.add_parser("apply", help="Применение решения к заявке (или списку ID через запятую)")
+    p_a.add_argument("task_id", type=str, help="ID заявки или список ID через запятую (например 139088,138972)")
     p_a.add_argument("--status", type=int, required=True, help="Целевой ID статуса")
     p_a.add_argument("--comment", type=str, default="", help="Текст комментария")
     p_a.add_argument("--expenses", type=int, default=0, help="Списание трудозатрат в минутах")
+    p_a.add_argument("--executor", type=str, default="10502", help="ID исполнителя (по умолчанию 10502 - Беликов Ален_assitant)")
     p_a.add_argument("--dry-run", action="store_true", help="Режим симуляции")
+
+    # skip
+    p_sk = subparsers.add_parser("skip", help="Пропуск заявки в текущей сессии")
+    p_sk.add_argument("task_id", type=str, help="ID заявки или список ID через запятую")
+    p_sk.add_argument("--reason", type=str, default="operator_skipped", help="Причина пропуска")
+
+    # reset-session
+    p_rs = subparsers.add_parser("reset-session", help="Сброс сессионного кэша пропущенных заявок")
 
     # catalog
     p_c = subparsers.add_parser("catalog", help="Поиск по каталогу услуг")
@@ -467,13 +737,19 @@ def main():
     args = parser.parse_args()
 
     dispatch = {
+        "check-db": cmd_check_db,
+        "start-db": cmd_start_db,
         "batch": cmd_batch,
+        "redirect": cmd_redirect,
         "task": cmd_task,
         "queue": cmd_queue,
+        "services": cmd_services,
         "diagnose": cmd_diagnose,
         "search-kb": cmd_search_kb,
         "sync-kb": cmd_sync_kb,
         "apply": cmd_apply,
+        "skip": cmd_skip,
+        "reset-session": cmd_reset_session,
         "catalog": cmd_catalog,
         "history": cmd_history,
         "attachment": cmd_attachment,
