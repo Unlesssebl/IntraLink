@@ -1,7 +1,7 @@
 [project]
-name = "intraservice-tg-bot"
+name = "intralink"
 version = "0.1.0"
-description = "Telegram bot and API gateway for IntraService integration"
+description = "IntraLink - Unified Helpdesk Gateway, AI Automation & Live Operations Dashboard for IntraService"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

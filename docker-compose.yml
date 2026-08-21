@@ -1,7 +1,9 @@
+name: intralink
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: intraservice_postgres
+    container_name: intralink_postgres
     restart: always
     environment:
       - POSTGRES_DB=intraservice
@@ -14,7 +16,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: intraservice_redis
+    container_name: intralink_redis
     restart: always
     command: redis-server --appendonly yes
     volumes:
@@ -24,7 +26,7 @@ services:
 
   ollama:
     image: ollama/ollama:latest
-    container_name: intraservice_ollama
+    container_name: intralink_ollama
     restart: always
     ports:
       - "11434:11434"
@@ -46,7 +48,7 @@ services:
     build:
       context: .
       dockerfile: ./core-api/Dockerfile
-    container_name: intraservice_core_api
+    container_name: intralink_core_api
     restart: always
     ports:
       - "${CORE_API_PORT:-8000}:8000"
@@ -84,7 +86,7 @@ services:
     build:
       context: ./telegram-bot
       dockerfile: Dockerfile
-    container_name: intraservice_tg_bot
+    container_name: intralink_tg_bot
     restart: always
     env_file:
       - ./telegram-bot/.env
