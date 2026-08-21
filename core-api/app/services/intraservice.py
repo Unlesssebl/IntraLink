@@ -247,3 +247,32 @@ async def update_task_custom_fields(
         json_data={"Id": task_id, "CustomFieldValues": custom_field_values},
     )
     return res is not None
+
+
+async def update_task_full(
+    auth_b64: str,
+    task_id: int,
+    status_id: int | None = None,
+    comment: str | None = None,
+    executor_ids: str | None = None,
+    is_private: bool = False,
+) -> bool:
+    """
+    Атомарно обновляет задачу (статус, комментарий, исполнители) в одном PUT запросе.
+    """
+    payload: dict[str, Any] = {"Id": task_id}
+    if status_id is not None:
+        payload["StatusId"] = status_id
+    if comment:
+        payload["Comment"] = comment
+        payload["IsPrivateComment"] = is_private
+    if executor_ids:
+        payload["ExecutorIds"] = str(executor_ids)
+    res = await _make_request(
+        endpoint=f"task/{task_id}",
+        method="PUT",
+        auth_b64=auth_b64,
+        json_data=payload,
+    )
+    return res is not None
+

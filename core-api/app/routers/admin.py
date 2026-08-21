@@ -6,6 +6,7 @@ import os
 import random
 import time
 from pathlib import Path
+from typing import Any
 
 from datetime import datetime, timedelta, UTC
 import jwt
@@ -588,3 +589,301 @@ async def stream_job_logs(job_id: int):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ===========================================================================
+# 🎯 Live Triage Queue Endpoints (Очередь 1-й линии и интерактивный триаж)
+# ===========================================================================
+
+class ApplyActionRequest(BaseModel):
+    status_id: int
+    comment: str
+    minutes: int = 10
+    executor_ids: str = "8664,10502"
+    is_private: bool = False
+
+
+QUEUE_TEMPLATES = {
+    "redirect_1c": (
+        "Заявка отменена, т. к. создана не в подходящем разделе. "
+        "Требуется оставить заявку в подходящем разделе: 06. 1C:Предприятие. По вопросам звоните на номер 49-87."
+    ),
+    "redirect_directum": (
+        "Заявка отменена, т. к. создана не в подходящем разделе. "
+        "Требуется оставить заявку в подходящем разделе: 05. Directum. По вопросам звоните на номер 49-87."
+    ),
+    "redirect_security": (
+        "Заявка отменена, т. к. создана не в подходящем разделе. "
+        "Требуется оставить заявку в подходящем разделе: 08. Информационная безопасность. По вопросам звоните на номер 49-87."
+    ),
+    "redirect_printers": (
+        "Заявка отменена, т. к. создана не в подходящем разделе. "
+        "Требуется оставить заявку в подходящем разделе: 03. Оргтехника. По вопросам звоните на номер 49-87."
+    ),
+    "hardware_repair": (
+        "Приносите системный блок / ноутбук в АБК 3, 112 каб. на диагностику, обслуживание и настройку. "
+        "О времени визита вы можете написать в комментариях к этой заявке."
+    ),
+    "wifi_access": (
+        "Доступ к беспроводной корпоративной сети WLAN-WORKNET успешно предоставлен. "
+        "Инструкция по подключению направлена. По всем вопросам вы можете написать ответ в комментариях к этой заявке."
+    ),
+    "duplicate_task": (
+        "Заявка отменена как повторная (дубликат ранее созданного инцидента). "
+        "Все работы и переписка ведутся в основной заявке. По вопросам звоните на номер 49-87."
+    ),
+    "general": (
+        "Принято в работу специалистом 1-й линии техподдержки. "
+        "Пожалуйста, оставайтесь на связи и пишите ответы в комментариях к этой заявке."
+    ),
+}
+
+
+def _parse_task_custom_fields(data_xml: str | None) -> dict[str, str]:
+    if not data_xml:
+        return {"pc_name": "", "phone": "", "room": "", "department": ""}
+    import re
+    res = {"pc_name": "", "phone": "", "room": "", "department": ""}
+    matches = re.findall(r'<field id="(\d+)">([^<]*)</field>', data_xml)
+    for fid, val in matches:
+        v = val.strip()
+        if not v:
+            continue
+        if fid in ("1089", "1112", "1203"):
+            res["pc_name"] = v.upper()
+        elif fid in ("1088", "1202"):
+            res["phone"] = v
+        elif fid in ("1087",):
+            res["room"] = v
+        elif fid in ("1091", "1206"):
+            res["department"] = v
+    return res
+
+
+def _classify_queue_task(task: dict[str, Any]) -> dict[str, Any]:
+    name = (task.get("Name") or "").strip()
+    desc = (task.get("Description") or "").strip()
+    s_name = (task.get("ServiceName") or "").strip()
+    full_text = f"{name} {desc} {s_name}".lower()
+
+    # 1. Wi-Fi / WLAN
+    if any(w in full_text for w in ["wifi", "wi-fi", "вайфай", "вай-фай", "wlan", "беспроводн"]):
+        return {
+            "rule_type": "wlan_access",
+            "category_label": "Wi-Fi (WLAN-WORKNET)",
+            "score": 9,
+            "target_status_id": 29,
+            "target_status_name": "Выполнена (29)",
+            "suggested_comment": QUEUE_TEMPLATES["wifi_access"],
+            "badge_color": "success",
+        }
+
+    # 2. 1C:Предприятие
+    if any(w in full_text for w in ["1с", "1c", "зуп", "утп", "erp", "бухгалтерия 8", "унф", "фреш"]) and not any(w in full_text for w in ["принтер", "печать", "зависает"]):
+        return {
+            "rule_type": "redirect_1c",
+            "category_label": "Редирект ➔ 06. 1С",
+            "score": 10,
+            "target_status_id": 30,
+            "target_status_name": "Отменена (30)",
+            "suggested_comment": QUEUE_TEMPLATES["redirect_1c"],
+            "badge_color": "warning",
+        }
+
+    # 3. Directum
+    if any(w in full_text for w in ["directum", "директум", "директуме"]):
+        return {
+            "rule_type": "redirect_directum",
+            "category_label": "Редирект ➔ 05. Directum",
+            "score": 10,
+            "target_status_id": 30,
+            "target_status_name": "Отменена (30)",
+            "suggested_comment": QUEUE_TEMPLATES["redirect_directum"],
+            "badge_color": "warning",
+        }
+
+    # 4. Обслуживание ПК, чистка, тормозит
+    if any(w in full_text for w in ["тормозит", "зависает", "чистк", "шумит", "пыл", "переустанов", "греется", "не включается", "синий экран", "глючит", "медленно"]):
+        return {
+            "rule_type": "hardware_repair",
+            "category_label": "Ожидание устройства (Ремонт)",
+            "score": 9,
+            "target_status_id": 48,
+            "target_status_name": "Ожидание устройства (48)",
+            "suggested_comment": QUEUE_TEMPLATES["hardware_repair"],
+            "badge_color": "primary",
+        }
+
+    # 5. Сброс пароля / ИБ
+    if any(w in full_text for w in ["сброс парол", "забыл парол", "разблокиров", "учетн", "заблокирован"]):
+        return {
+            "rule_type": "redirect_security",
+            "category_label": "Редирект ➔ 08. ИБ",
+            "score": 9,
+            "target_status_id": 30,
+            "target_status_name": "Отменена (30)",
+            "suggested_comment": QUEUE_TEMPLATES["redirect_security"],
+            "badge_color": "warning",
+        }
+
+    # 6. Оргтехника / Принтеры
+    if any(w in full_text for w in ["принтер", "мфу", "сканер", "картридж", "замяти", "не печатает"]):
+        return {
+            "rule_type": "redirect_printers",
+            "category_label": "Оргтехника (03)",
+            "score": 8,
+            "target_status_id": 27,
+            "target_status_name": "В работе (27)",
+            "suggested_comment": QUEUE_TEMPLATES["redirect_printers"],
+            "badge_color": "info",
+        }
+
+    # 7. Общее
+    return {
+        "rule_type": "general",
+        "category_label": "1-я линия техподдержки",
+        "score": 6,
+        "target_status_id": 27,
+        "target_status_name": "В работе (27)",
+        "suggested_comment": QUEUE_TEMPLATES["general"],
+        "badge_color": "secondary",
+    }
+
+
+@router.get("/admin/api/queue", dependencies=[Depends(verify_admin_jwt)])
+async def get_triage_queue(filter_id: int = 984, limit: int = 25):
+    """
+    Возвращает открытые заявки очереди 1-й линии с классификацией Rule Engine,
+    кастомными полями и предложенными действиями.
+    """
+    from app.services.crypto import decrypt_token
+    from app.services.intraservice import get_tasks
+
+    r = get_redis_client()
+    auth_encrypted = await r.get("worker:service_auth_b64")
+    if not auth_encrypted:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервисный аккаунт IntraService не инициализирован. Выполните вход через панель администратора.",
+        )
+
+    auth_b64 = decrypt_token(auth_encrypted)
+    params = {
+        "filterid": str(filter_id),
+        "include": "status,customfields,service,comments,attachments",
+        "pagesize": str(limit),
+        "page": "1",
+    }
+
+    raw_res = await get_tasks(auth_b64=auth_b64, filters=params)
+    tasks = []
+    if isinstance(raw_res, dict):
+        tasks = raw_res.get("Tasks", [])
+    elif isinstance(raw_res, list):
+        tasks = raw_res
+
+    items = []
+    for t in tasks:
+        t_id = t.get("Id")
+        if not t_id:
+            continue
+        c_fields = _parse_task_custom_fields(t.get("Data"))
+        cls_info = _classify_queue_task(t)
+
+        items.append({
+            "id": t_id,
+            "name": t.get("Name") or "Без темы",
+            "description": t.get("Description") or "",
+            "creator": t.get("Creator") or t.get("CreatorLogin") or "Пользователь",
+            "created": t.get("Created") or "",
+            "service_id": t.get("ServiceId"),
+            "service_name": t.get("ServiceName") or "Общий сервис",
+            "status_id": t.get("StatusId"),
+            "status_name": t.get("StatusName") or "Открыта",
+            "pc_name": c_fields["pc_name"],
+            "phone": c_fields["phone"],
+            "room": c_fields["room"],
+            "department": c_fields["department"],
+            "rule_type": cls_info["rule_type"],
+            "category_label": cls_info["category_label"],
+            "score": cls_info["score"],
+            "target_status_id": cls_info["target_status_id"],
+            "target_status_name": cls_info["target_status_name"],
+            "suggested_comment": cls_info["suggested_comment"],
+            "badge_color": cls_info["badge_color"],
+            "has_attachments": bool(t.get("Attachments") or t.get("Files")),
+        })
+
+    return {"total": len(items), "filter_id": filter_id, "tasks": items}
+
+
+@router.post("/admin/api/tasks/{task_id}/apply", dependencies=[Depends(verify_admin_jwt)])
+async def apply_task_action(task_id: int, payload: ApplyActionRequest):
+    """
+    Интерактивно применяет действие к заявке (перевод в статус 27/29/30/48, комментарий, трудозатраты).
+    """
+    from app.services.crypto import decrypt_token
+    from app.services.intraservice import (
+        get_single_task,
+        update_task_full,
+        add_task_expenses,
+    )
+
+    r = get_redis_client()
+    auth_encrypted = await r.get("worker:service_auth_b64")
+    if not auth_encrypted:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервисный аккаунт не настроен",
+        )
+
+    auth_b64 = decrypt_token(auth_encrypted)
+
+    # 1. Pre-flight: проверяем статус в живой базе
+    task_curr = await get_single_task(auth_b64, task_id)
+    if task_curr:
+        curr_status = task_curr.get("StatusId")
+        if curr_status in (29, 30):
+            return {
+                "success": True,
+                "already_closed": True,
+                "task_id": task_id,
+                "message": f"Заявка #{task_id} уже закрыта со статусом {curr_status}",
+            }
+
+    # 2. Двухэтапный жизненный цикл: переводим в 27 В работе с назначением исполнителей
+    await update_task_full(
+        auth_b64,
+        task_id=task_id,
+        status_id=27,
+        executor_ids=payload.executor_ids,
+    )
+
+    # 3. Списываем трудозатраты (10 мин)
+    if payload.minutes > 0:
+        await add_task_expenses(auth_b64, task_id=task_id, minutes=payload.minutes)
+
+    # 4. Переводим в целевой статус с комментарием
+    ok = await update_task_full(
+        auth_b64,
+        task_id=task_id,
+        status_id=payload.status_id,
+        comment=payload.comment.strip(),
+        executor_ids=payload.executor_ids,
+        is_private=payload.is_private,
+    )
+
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось обновить статус заявки #{task_id} в IntraService",
+        )
+
+    logger.info("Заявка #%s успешно обновлена администратором в статус %s", task_id, payload.status_id)
+    return {
+        "success": True,
+        "task_id": task_id,
+        "final_status_id": payload.status_id,
+        "message": f"Заявка #{task_id} переведена в статус {payload.status_id}",
+    }
+

@@ -1,13 +1,19 @@
 import { createRouter, createWebHashHistory } from 'vue-router';
+import QueueDashboardView from './views/QueueDashboardView.vue';
 import HistoryView from './views/HistoryView.vue';
-import PrinterWorkerView from './views/PrinterWorkerView.vue';
 import AIWorkerView from './views/AIWorkerView.vue';
 import SettingsView from './views/SettingsView.vue';
 
 const routes = [
     {
         path: '/',
-        redirect: '/history'
+        redirect: '/queue'
+    },
+    {
+        path: '/queue',
+        name: 'queue',
+        component: QueueDashboardView,
+        meta: { title: 'Очередь 1-й линии' }
     },
     {
         path: '/history',
@@ -16,16 +22,10 @@ const routes = [
         meta: { title: 'Журнал операций' }
     },
     {
-        path: '/printer-worker',
-        name: 'printer-worker',
-        component: PrinterWorkerView,
-        meta: { title: 'Printer Worker' }
-    },
-    {
         path: '/ai-worker',
         name: 'ai-worker',
         component: AIWorkerView,
-        meta: { title: 'AI Воркер' }
+        meta: { title: 'AI Воркер & База знаний' }
     },
     {
         path: '/settings',
@@ -35,7 +35,7 @@ const routes = [
     },
     {
         path: '/:pathMatch(.*)*',
-        redirect: '/history'
+        redirect: '/queue'
     }
 ];
 

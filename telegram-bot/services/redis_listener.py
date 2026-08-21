@@ -1,61 +1,35 @@
-import logging
-import json
 import asyncio
+import logging
+from typing import Any
 import redis.asyncio as aioredis
 from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from config import REDIS_URL
 from services.api_client import api_client
 
-# ИМПОРТ КЛАВИАТУРЫ ИЗ НАШЕГО РОУТЕРА
-from handlers.printer_approvals import get_approval_keyboard
-
 logger = logging.getLogger(__name__)
 
+STREAM_NAME = "stream:intraservice_events"
+GROUP_NAME = "bot_group"
+CONSUMER_NAME = "bot_1"
 
-async def _handle_message_payload(bot: Bot, payload: dict):
+
+async def _handle_message_payload(bot: Bot, payload: dict[str, Any]):
     """Отправляет отформатированное сообщение пользователю Telegram."""
     tg_user_id = payload.get("tg_user_id")
     if not tg_user_id:
         return
 
-    event_type = payload.get("event_type")
-    reply_markup = None
-
-    if event_type == "printer_approval_request":
-        task_id = payload.get("task_id")
-        target_pc = payload.get("target_pc") or "Не определен"
-        model_key = payload.get("model_key") or "Не определена"
-        connection_type = payload.get("connection_type") or "Не определен"
-        driver_name = payload.get("driver_name") or "Не определен"
-
-        text = (
-            f"⚙️ <b>Запрос на подтверждение установки принтера</b> по заявке #{task_id}\n\n"
-            f"🖥 <b>Компьютер:</b> <code>{target_pc}</code>\n"
-            f"🖨 <b>Модель:</b> <code>{model_key}</code>\n"
-            f"🔌 <b>Тип подключения:</b> <code>{connection_type}</code>\n"
-            f"📄 <b>Драйвер:</b> <code>{driver_name}</code>\n\n"
-            f"Пожалуйста, подтвердите установку или измените параметры."
-        )
-        if task_id:
-            reply_markup = get_approval_keyboard(task_id)
-    else:
-        text = payload.get("text")
-        if not text:
-            return
-
-        is_printer_approval = payload.get("is_printer_approval", False)
-        task_id = payload.get("task_id")
-        if is_printer_approval and task_id:
-            reply_markup = get_approval_keyboard(task_id)
+    text = payload.get("text")
+    if not text:
+        return
 
     try:
         await bot.send_message(
             chat_id=tg_user_id,
             text=text,
             parse_mode="HTML",
-            reply_markup=reply_markup,
         )
     except TelegramForbiddenError as e:
         logger.warning("Пользователь %s заблокировал бота: %s", tg_user_id, e)
@@ -76,19 +50,36 @@ async def _handle_message_payload(bot: Bot, payload: dict):
         logger.error("Неизвестная ошибка при отправке уведомления пользователю %s: %s", tg_user_id, e)
 
 
-async def _listen_printer_actions_pubsub(redis: aioredis.Redis, bot: Bot):
-    """Слушает интерактивные запросы подтверждения из printer_actions."""
-    try:
-        async with redis.pubsub() as pubsub:
-            await pubsub.subscribe("printer_actions")
-            while True:
-                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if message is None or message.get("type") != "message":
-                    await asyncio.sleep(0.1)
-                    continue
+async def _autoclaim_pending_messages(redis: aioredis.Redis, bot: Bot):
+    """
+    Фоновая периодическая задача автовосстановления зависших сообщений (Pending Entries List).
+    Если бот перезагружался или упал во время отправки, сообщения старше 30 секунд будут
+    перехвачены, обработаны и подтверждены через XACK.
+    """
+    while True:
+        try:
+            await asyncio.sleep(30)
+            # xautoclaim перехватывает сообщения, находящиеся в PEL > 30000 мс
+            res = await redis.xautoclaim(
+                name=STREAM_NAME,
+                groupname=GROUP_NAME,
+                consumername=CONSUMER_NAME,
+                min_idle_time=30000,
+                start_id="0-0",
+                count=20,
+            )
+            if not res or len(res) < 2:
+                continue
 
-                payload_str = message.get("data")
-                if not isinstance(payload_str, (str, bytes)):
+            messages = res[1]
+            if not messages:
+                continue
+
+            logger.info("XAUTOCLAIM: Найдено %s зависших сообщений в стриме %s. Доставка...", len(messages), STREAM_NAME)
+            for msg_id, data in messages:
+                payload_str = data.get("payload") if isinstance(data, dict) else None
+                if not payload_str:
+                    await redis.xack(STREAM_NAME, GROUP_NAME, msg_id)
                     continue
 
                 try:
@@ -96,30 +87,30 @@ async def _listen_printer_actions_pubsub(redis: aioredis.Redis, bot: Bot):
                         import orjson
                         payload = orjson.loads(payload_str)
                     except ImportError:
+                        import json
                         payload = json.loads(payload_str)
 
-                    if payload.get("event_type") == "printer_approval_request":
-                        await _handle_message_payload(bot, payload)
+                    await _handle_message_payload(bot, payload)
+                    await redis.xack(STREAM_NAME, GROUP_NAME, msg_id)
                 except Exception as e:
-                    logger.error("Ошибка обработки printer_actions: %s", e)
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        logger.error("Сбой подписчика printer_actions в боте: %s", e)
+                    logger.error("Ошибка обработки восстановленного сообщения %s: %s", msg_id, e)
+                    await redis.xack(STREAM_NAME, GROUP_NAME, msg_id)
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug("Ошибка в фоновом таске xautoclaim: %s", e)
 
 
 async def start_redis_listener(bot: Bot):
     """
-    Асинхронная функция, которая слушает события из Redis Streams и пересылает их пользователям Telegram.
+    Асинхронный слушатель Redis Streams с гарантированной доставкой (At-Least-Once Delivery).
     """
-    logger.info("Запуск фонового слушателя Redis Streams для Telegram-бота...")
-    STREAM_NAME = "stream:intraservice_events"
-    GROUP_NAME = "bot_group"
-    CONSUMER_NAME = "bot_1"
+    logger.info("Запуск фонового слушателя Redis Streams (%s, группа: %s)...", STREAM_NAME, GROUP_NAME)
 
     while True:
         redis = None
-        action_task = None
+        autoclaim_task = None
         try:
             redis = aioredis.from_url(REDIS_URL, decode_responses=True)
 
@@ -130,7 +121,8 @@ async def start_redis_listener(bot: Bot):
                 if "BUSYGROUP" not in str(e):
                     logger.debug("Инициализация Consumer Group в боте: %s", e)
 
-            action_task = asyncio.create_task(_listen_printer_actions_pubsub(redis, bot))
+            # Запускаем фоновый таск автовосстановления зависших сообщений
+            autoclaim_task = asyncio.create_task(_autoclaim_pending_messages(redis, bot))
 
             while True:
                 try:
@@ -161,6 +153,7 @@ async def start_redis_listener(bot: Bot):
                                 import orjson
                                 payload = orjson.loads(payload_str)
                             except ImportError:
+                                import json
                                 payload = json.loads(payload_str)
 
                             await _handle_message_payload(bot, payload)
@@ -171,16 +164,16 @@ async def start_redis_listener(bot: Bot):
 
         except asyncio.CancelledError:
             logger.info("Слушатель Redis Streams в боте остановлен.")
-            if action_task:
-                action_task.cancel()
+            if autoclaim_task:
+                autoclaim_task.cancel()
             break
         except Exception as e:
             logger.exception(
                 "Сетевая ошибка или сбой подключения к Redis. Повторное подключение через 5 секунд... Ошибка: %s",
                 e,
             )
-            if action_task:
-                action_task.cancel()
+            if autoclaim_task:
+                autoclaim_task.cancel()
             await asyncio.sleep(5)
         finally:
             if redis is not None:

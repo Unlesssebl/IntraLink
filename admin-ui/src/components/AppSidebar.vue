@@ -12,19 +12,18 @@
     </div>
 
     <div class="sidebar-nav">
+      <RouterLink to="/queue" class="nav-item" active-class="router-link-active">
+        <svg viewBox="0 0 24 24">
+          <path d="M4 6h16M4 12h16M4 18h7" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        Очередь 1-й линии
+      </RouterLink>
+
       <RouterLink to="/history" class="nav-item" active-class="router-link-active">
         <svg viewBox="0 0 24 24">
           <path d="M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
         </svg>
         Журнал операций
-      </RouterLink>
-
-      <RouterLink to="/printer-worker" class="nav-item" active-class="router-link-active">
-        <svg viewBox="0 0 24 24">
-          <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
-          <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
-        </svg>
-        Printer Worker
       </RouterLink>
 
       <RouterLink to="/ai-worker" class="nav-item" active-class="router-link-active">
@@ -33,7 +32,7 @@
           <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
           <line x1="12" y1="22.08" x2="12" y2="12"></line>
         </svg>
-        AI Воркер
+        AI & База знаний
       </RouterLink>
 
       <RouterLink to="/settings" class="nav-item" active-class="router-link-active">
