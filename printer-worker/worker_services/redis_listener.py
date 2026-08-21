@@ -451,74 +451,38 @@ async def _recover_orphan_jobs() -> None:
     logger.info("Сканирование и восстановление сиротских задач завершено.")
 
 
-async def start_redis_listener():
-    """
-    Фоновый процесс подписки на Redis Pub/Sub для прослушивания событий IntraService.
-    """
-    logger.info(
-        "Запуск фонового подписчика Redis Pub/Sub..."
-    )
+async def _listen_printer_actions(redis: aioredis.Redis):
+    """Слушает интерактивные команды оператора/бота из канала printer_actions."""
     try:
-        await _recover_orphan_jobs()
-    except Exception as e:
-        logger.exception("Критическая ошибка при восстановлении сиротских задач: %s", e)
-    while True:
-        redis = None
-        try:
-            redis = aioredis.from_url(REDIS_URL, decode_responses=True)
-            async with redis.pubsub() as pubsub:
-                await pubsub.subscribe("printer_actions", "ai_validated_events")
-                logger.info(
-                    "Подписка на Redis Pub/Sub каналы 'ai_validated_events' и 'printer_actions' успешно оформлена."
-                )
+        async with redis.pubsub() as pubsub:
+            await pubsub.subscribe("printer_actions")
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message is None or message.get("type") != "message":
+                    await asyncio.sleep(0.1)
+                    continue
 
-                while True:
-                    message = await pubsub.get_message(
-                        ignore_subscribe_messages=True, timeout=1.0
-                    )
-                    if message is None or message.get("type") != "message":
-                        continue
+                payload_str = message.get("data")
+                if not isinstance(payload_str, (str, bytes)):
+                    continue
 
-                    payload_str = message.get("data")
-                    if not isinstance(payload_str, (str, bytes)):
-                        logger.error(
-                            "Неверный формат данных сообщения из Redis: %s",
-                            type(payload_str),
-                        )
-                        continue
+                try:
                     try:
+                        import orjson
+                        payload = orjson.loads(payload_str)
+                    except ImportError:
                         payload = json.loads(payload_str)
-                    except Exception as e:
-                        logger.error(
-                            "Ошибка парсинга JSON события из Redis: %s. Данные: %s",
-                            e,
-                            payload_str,
-                        )
-                        continue
 
                     event_type = payload.get("event_type")
-                    channel = message.get("channel") or ""
-
-                    # Обработка ответов от бота
                     if event_type == "approval_response":
                         asyncio.create_task(_process_approval_response(payload))
-                        continue
-
-                    # Обработка ручного запуска из веб-интерфейса
-                    if event_type == "manual_trigger":
+                    elif event_type == "manual_trigger":
                         asyncio.create_task(_process_manual_trigger(payload))
-                        continue
-                        
-                    # Обработка запуска индексации драйверов
-                    if event_type == "rebuild_index":
+                    elif event_type == "rebuild_index":
                         from worker_services.indexer_service import auto_extract_and_index
 
-                        # Защита от повторного запуска
                         already_running = await redis.get("indexer:status")
                         if already_running == "running":
-                            logger.warning(
-                                "Индексация уже выполняется. Повторный запуск отклонён."
-                            )
                             continue
 
                         async def run_indexing():
@@ -536,12 +500,6 @@ async def start_redis_listener():
                                     "duration_sec": round(duration),
                                 }
                                 await redis.set("indexer:last_result", json.dumps(result))
-                                logger.info(
-                                    "Индексация завершена за %dс. Моделей: %d, скопировано: %d, распаковано: %d, пропущено: %d",
-                                    round(duration),
-                                    result["indexed"], result["copied"],
-                                    result["extracted"], result["skipped"],
-                                )
                             except Exception as exc:
                                 duration = time.time() - started_at
                                 result = {
@@ -550,23 +508,16 @@ async def start_redis_listener():
                                     "duration_sec": round(duration),
                                 }
                                 await redis.set("indexer:last_result", json.dumps(result))
-                                logger.error("Критическая ошибка индексации: %s", exc)
                             finally:
                                 await redis.delete("indexer:status")
                                 await redis.set("indexer:last_run", time.time())
 
                         asyncio.create_task(run_indexing())
-                        continue
-
-                    # Быстрая переиндексация (только extracted-drv-inf, без обхода шары)
-                    if event_type == "fast_reindex":
+                    elif event_type == "fast_reindex":
                         from worker_services.indexer_service import rebuild_index_only
 
                         already_running = await redis.get("indexer:status")
                         if already_running == "running":
-                            logger.warning(
-                                "Индексация уже выполняется. Быстрый перезапуск отклонён."
-                            )
                             continue
 
                         async def run_fast_reindex():
@@ -585,10 +536,6 @@ async def start_redis_listener():
                                     "duration_sec": round(duration),
                                 }
                                 await redis.set("indexer:last_result", json.dumps(result))
-                                logger.info(
-                                    "Быстрая переиндексация завершена за %dс. Моделей: %d",
-                                    round(duration), result["indexed"],
-                                )
                             except Exception as exc:
                                 duration = time.time() - started_at
                                 result = {
@@ -598,29 +545,102 @@ async def start_redis_listener():
                                     "duration_sec": round(duration),
                                 }
                                 await redis.set("indexer:last_result", json.dumps(result))
-                                logger.error("Критическая ошибка быстрой переиндексации: %s", exc)
                             finally:
                                 await redis.delete("indexer:status")
                                 await redis.set("indexer:last_run", time.time())
 
                         asyncio.create_task(run_fast_reindex())
-                        continue
+                except Exception as e:
+                    logger.error("Ошибка обработки printer_actions: %s", e)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error("Сбой подписчика printer_actions: %s", e)
 
-                    # Фильтруем события IntraService
-                    if event_type != "new_task":
-                        continue
 
-                    # Запускаем обработку события асинхронно
-                    asyncio.create_task(_process_event(payload, channel))
+async def start_redis_listener():
+    """
+    Фоновый процесс подписки на Redis Streams (stream:ai_validated_events) и Pub/Sub (printer_actions).
+    """
+    logger.info("Запуск фонового подписчика Redis Streams...")
+    try:
+        await _recover_orphan_jobs()
+    except Exception as e:
+        logger.exception("Критическая ошибка при восстановлении сиротских задач: %s", e)
+
+    STREAM_NAME = "stream:ai_validated_events"
+    GROUP_NAME = "printer_worker_group"
+    CONSUMER_NAME = "printer_worker_1"
+
+    while True:
+        redis = None
+        action_task = None
+        try:
+            redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+
+            # Создаем группу потребителей
+            try:
+                await redis.xgroup_create(STREAM_NAME, GROUP_NAME, id="0", mkstream=True)
+                logger.info("Создана Consumer Group '%s' для стрима '%s'", GROUP_NAME, STREAM_NAME)
+            except Exception as e:
+                if "BUSYGROUP" not in str(e):
+                    logger.debug("Инициализация Consumer Group: %s", e)
+
+            # Запускаем параллельный слушатель управляющих действий
+            action_task = asyncio.create_task(_listen_printer_actions(redis))
+
+            while True:
+                try:
+                    entries = await redis.xreadgroup(
+                        groupname=GROUP_NAME,
+                        consumername=CONSUMER_NAME,
+                        streams={STREAM_NAME: ">"},
+                        count=5,
+                        block=2000,
+                    )
+                except Exception as read_err:
+                    logger.warning("Ошибка чтения из стрима %s: %s", STREAM_NAME, read_err)
+                    await asyncio.sleep(2)
+                    continue
+
+                if not entries:
+                    continue
+
+                for stream, messages in entries:
+                    for msg_id, data in messages:
+                        payload_str = data.get("payload") if isinstance(data, dict) else None
+                        if not payload_str:
+                            await redis.xack(STREAM_NAME, GROUP_NAME, msg_id)
+                            continue
+
+                        try:
+                            try:
+                                import orjson
+                                payload = orjson.loads(payload_str)
+                            except ImportError:
+                                payload = json.loads(payload_str)
+
+                            event_type = payload.get("event_type")
+                            if event_type == "new_task":
+                                asyncio.create_task(_process_event(payload, STREAM_NAME))
+
+                            await redis.xack(STREAM_NAME, GROUP_NAME, msg_id)
+                        except Exception as e:
+                            logger.error("Ошибка при обработке сообщения %s: %s", msg_id, e)
+                            await redis.xack(STREAM_NAME, GROUP_NAME, msg_id)
 
         except asyncio.CancelledError:
-            logger.info("Слушатель Redis Pub/Sub остановлен.")
+            logger.info("Слушатель Redis Streams остановлен.")
+            if action_task:
+                action_task.cancel()
             break
         except Exception as e:
             logger.exception(
                 "Сбой соединения с Redis. Повторное подключение через 5 секунд... Ошибка: %s",
                 e,
             )
+            if action_task:
+                action_task.cancel()
             await asyncio.sleep(5)
         finally:
             if redis is not None:

@@ -61,8 +61,12 @@ def load_checkpoint(checkpoint_path: str) -> dict:
     """Загружает сохраненное состояние (прогресс) обработки заявок."""
     if os.path.exists(checkpoint_path):
         try:
-            with open(checkpoint_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            with open(checkpoint_path, "rb") as f:
+                try:
+                    import orjson
+                    data = orjson.loads(f.read())
+                except ImportError:
+                    data = json.loads(f.read().decode("utf-8"))
                 if "processed_task_ids" not in data:
                     data["processed_task_ids"] = []
                 if "skipped_task_ids" not in data:
@@ -82,8 +86,14 @@ def save_checkpoint(checkpoint_path: str, data: dict):
     """Атомарно сохраняет прогресс в файл чекпоинта."""
     try:
         temp_path = checkpoint_path + ".tmp"
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            import orjson
+            content = orjson.dumps(data, option=orjson.OPT_INDENT_2)
+            with open(temp_path, "wb") as f:
+                f.write(content)
+        except ImportError:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(temp_path, checkpoint_path)
     except Exception as e:
         logger.error("Ошибка при сохранении чекпоинта %s: %s", checkpoint_path, e)

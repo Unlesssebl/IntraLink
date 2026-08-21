@@ -173,7 +173,7 @@ async def process_intraservice_event(
                 
                 # 2. Мгновенный реактивный триггер для printer-worker (и других)
                 try:
-                    await redis.publish("ai_validated_events", json.dumps(payload))
+                    await publish_event(redis, "ai_validated_events", payload)
                     logger.info("Заявка #%d прошла валидацию AI и отправлена в ai_validated_events", task_id)
                 except Exception as e:
                     logger.error("Ошибка при публикации в ai_validated_events для заявки #%d: %s", task_id, e)
@@ -234,68 +234,155 @@ async def handle_test_reply(
     await redis.publish(f"ai:test_reply_chan:{req_id}", json.dumps(result))
 
 
+async def publish_event(
+    redis: aioredis.Redis,
+    channel_or_stream: str,
+    payload: dict,
+    maxlen: int = 10000,
+) -> None:
+    """
+    Dual-Publishing: запись в Redis Stream (at-least-once) и параллельно в Pub/Sub.
+    """
+    try:
+        import orjson
+        payload_json = orjson.dumps(payload, default=str).decode("utf-8")
+    except ImportError:
+        payload_json = json.dumps(payload, default=str)
+
+    stream_name = channel_or_stream if channel_or_stream.startswith("stream:") else f"stream:{channel_or_stream}"
+    pubsub_channel = channel_or_stream.replace("stream:", "")
+
+    try:
+        await redis.xadd(stream_name, {"payload": payload_json}, maxlen=maxlen, approximate=True)
+    except Exception as e:
+        logger.error("Ошибка при записи в Redis Stream %s: %s", stream_name, e)
+
+    try:
+        await redis.publish(pubsub_channel, payload_json)
+    except Exception as e:
+        logger.error("Ошибка при публикации в Pub/Sub канал %s: %s", pubsub_channel, e)
+
+
+async def _listen_pubsub_actions(redis: aioredis.Redis, responder: AIResponder):
+    """Слушает управляющие команды из канала ai_actions."""
+    try:
+        async with redis.pubsub() as pubsub:
+            await pubsub.subscribe("ai_actions")
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message is None or message.get("type") != "message":
+                    await asyncio.sleep(0.1)
+                    continue
+
+                payload_str = message.get("data")
+                if not isinstance(payload_str, (str, bytes)):
+                    continue
+
+                try:
+                    try:
+                        import orjson
+                        payload = orjson.loads(payload_str)
+                    except ImportError:
+                        payload = json.loads(payload_str)
+
+                    event_type = payload.get("event_type")
+                    if event_type == "rag_build":
+                        asyncio.create_task(handle_rag_build(redis, payload))
+                    elif event_type == "test_reply":
+                        asyncio.create_task(handle_test_reply(redis, payload, responder))
+                except Exception as e:
+                    logger.error("Ошибка парсинга управляющего действия ai_actions: %s", e)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error("Сбой слушателя ai_actions: %s", e)
+
+
 async def start_redis_listener():
     logger.info("Инициализация AI модулей...")
     classifier = AIClassifier()
     responder = AIResponder()
 
-    logger.info("Запуск слушателя Redis Pub/Sub...")
+    STREAM_NAME = "stream:intraservice_events"
+    GROUP_NAME = "ai_worker_group"
+    CONSUMER_NAME = "ai_worker_1"
+
+    logger.info("Запуск слушателя Redis Streams (%s / %s)...", STREAM_NAME, GROUP_NAME)
     while True:
         redis = None
+        action_task = None
         try:
             redis = get_redis_client()
-            async with redis.pubsub() as pubsub:
-                await pubsub.subscribe("intraservice_events", "ai_actions")
-                logger.info(
-                    "Успешно подписались на каналы 'intraservice_events' и 'ai_actions'"
-                )
 
-                while True:
-                    message = await pubsub.get_message(
-                        ignore_subscribe_messages=True, timeout=1.0
+            # Создаем группу потребителей (если еще не создана)
+            try:
+                await redis.xgroup_create(STREAM_NAME, GROUP_NAME, id="0", mkstream=True)
+                logger.info("Создана Consumer Group '%s' для стрима '%s'", GROUP_NAME, STREAM_NAME)
+            except Exception as e:
+                if "BUSYGROUP" not in str(e):
+                    logger.debug("Инициализация Consumer Group: %s", e)
+
+            # Запускаем фоновый слушатель управляющих Pub/Sub команд
+            action_task = asyncio.create_task(_listen_pubsub_actions(redis, responder))
+
+            while True:
+                # Читаем новые сообщения из стрима
+                try:
+                    entries = await redis.xreadgroup(
+                        groupname=GROUP_NAME,
+                        consumername=CONSUMER_NAME,
+                        streams={STREAM_NAME: ">"},
+                        count=10,
+                        block=2000,
                     )
-                    if message is None or message.get("type") != "message":
-                        continue
+                except Exception as read_err:
+                    logger.warning("Ошибка чтения из Redis Stream: %s", read_err)
+                    await asyncio.sleep(2)
+                    continue
 
-                    payload_str = message.get("data")
-                    if not isinstance(payload_str, (str, bytes)):
-                        continue
+                if not entries:
+                    continue
 
-                    try:
-                        payload = json.loads(payload_str)
-                    except Exception as e:
-                        logger.error(
-                            "Ошибка парсинга JSON события: %s. Данные: %s",
-                            e,
-                            payload_str,
-                        )
-                        continue
+                for stream, messages in entries:
+                    for msg_id, data in messages:
+                        payload_str = data.get("payload") if isinstance(data, dict) else None
+                        if not payload_str:
+                            await redis.xack(STREAM_NAME, GROUP_NAME, msg_id)
+                            continue
 
-                    channel = message.get("channel")
+                        try:
+                            try:
+                                import orjson
+                                payload = orjson.loads(payload_str)
+                            except ImportError:
+                                payload = json.loads(payload_str)
 
-                    if channel == "ai_actions":
-                        event_type = payload.get("event_type")
-                        if event_type == "rag_build":
-                            asyncio.create_task(handle_rag_build(redis, payload))
-                        elif event_type == "test_reply":
+                            # Запускаем обработку события
                             asyncio.create_task(
-                                handle_test_reply(redis, payload, responder)
+                                process_intraservice_event(
+                                    redis, payload, classifier, responder
+                                )
                             )
-                    elif channel == "intraservice_events":
-                        asyncio.create_task(
-                            process_intraservice_event(
-                                redis, payload, classifier, responder
+                            # Подтверждаем получение
+                            await redis.xack(STREAM_NAME, GROUP_NAME, msg_id)
+                        except Exception as e:
+                            logger.error(
+                                "Ошибка обработки сообщения %s из стрима: %s", msg_id, e
                             )
-                        )
+                            await redis.xack(STREAM_NAME, GROUP_NAME, msg_id)
 
         except asyncio.CancelledError:
-            logger.info("Слушатель Redis Pub/Sub остановлен.")
+            logger.info("Слушатель Redis Streams остановлен.")
+            if action_task:
+                action_task.cancel()
             break
         except Exception as e:
             logger.exception(
                 "Сбой соединения с Redis. Переподключение через 5 секунд... Ошибка: %s",
                 e,
             )
+            if action_task:
+                action_task.cancel()
             await asyncio.sleep(5)
 
 

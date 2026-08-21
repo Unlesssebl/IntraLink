@@ -273,10 +273,11 @@ async def test_recover_orphan_jobs(mock_redis):
 async def test_start_redis_listener_shutdown():
     mock_pubsub = AsyncMock()
     mock_pubsub.subscribe = AsyncMock()
-    # Raise CancelledError to end loop immediately
     mock_pubsub.get_message = AsyncMock(side_effect=asyncio.CancelledError)
 
     mock_redis_inst = AsyncMock()
+    mock_redis_inst.xgroup_create = AsyncMock()
+    mock_redis_inst.xreadgroup = AsyncMock(side_effect=asyncio.CancelledError)
 
     mock_pubsub_mgr = MagicMock()
     mock_pubsub_mgr.__aenter__ = AsyncMock(return_value=mock_pubsub)
@@ -293,15 +294,12 @@ async def test_start_redis_listener_shutdown():
             return_value=mock_redis_inst,
         ),
     ):
-        # Оборачиваем в wait_for, чтобы тест гарантированно завершился при зависании
         try:
             await asyncio.wait_for(start_redis_listener(), timeout=1.0)
         except asyncio.TimeoutError:
             pytest.fail("start_redis_listener hung and timed out")
         mock_recover.assert_called_once()
-        mock_pubsub.subscribe.assert_called_once_with(
-            "printer_actions", "ai_validated_events"
-        )
+        mock_redis_inst.xgroup_create.assert_called_once()
 
 
 
@@ -373,7 +371,6 @@ async def test_recover_orphan_jobs_waiting_approval(mock_redis):
 
 @pytest.mark.asyncio
 async def test_start_redis_listener_message_routing():
-    # Наш кастомный mock_pubsub вернет одно сообщение и выбросит CancelledError на второй итерации
     mock_pubsub = AsyncMock()
     mock_pubsub.subscribe = AsyncMock()
 
@@ -389,7 +386,7 @@ async def test_start_redis_listener_message_routing():
 
     async def mock_get_message(*args, **kwargs):
         if not messages:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.01)
             return None
         val = messages.pop(0)
         if isinstance(val, BaseException):
@@ -404,27 +401,14 @@ async def test_start_redis_listener_message_routing():
     mock_pubsub_mgr.__aexit__ = AsyncMock(return_value=None)
     mock_redis_inst.pubsub = MagicMock(return_value=mock_pubsub_mgr)
 
-    with (
-        patch(
-            "worker_services.redis_listener._recover_orphan_jobs",
-            new_callable=AsyncMock,
-        ) as mock_recover,
-        patch(
-            "worker_services.redis_listener.aioredis.from_url",
-            return_value=mock_redis_inst,
-        ),
-        patch(
-            "worker_services.redis_listener._process_approval_response",
-            new_callable=AsyncMock,
-        ) as mock_process_approval,
-    ):
-        try:
-            await asyncio.wait_for(start_redis_listener(), timeout=1.0)
-        except asyncio.TimeoutError:
-            pytest.fail("start_redis_listener hung and timed out")
+    from worker_services.redis_listener import _listen_printer_actions
 
-        mock_recover.assert_called_once()
-        mock_pubsub.subscribe.assert_called_once()
+    with patch(
+        "worker_services.redis_listener._process_approval_response",
+        new_callable=AsyncMock,
+    ) as mock_process_approval:
+        await _listen_printer_actions(mock_redis_inst)
+        mock_pubsub.subscribe.assert_called_once_with("printer_actions")
         mock_process_approval.assert_called_once_with(
             {"event_type": "approval_response", "task_id": 111, "action": "approve"}
         )
@@ -521,7 +505,7 @@ async def test_start_redis_listener_invalid_json():
 
     async def mock_get_message(*args, **kwargs):
         if not messages:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.01)
             return None
         val = messages.pop(0)
         if isinstance(val, BaseException):
@@ -530,6 +514,9 @@ async def test_start_redis_listener_invalid_json():
 
     mock_pubsub.get_message = mock_get_message
     mock_redis_inst = AsyncMock()
+    mock_redis_inst.xgroup_create = AsyncMock()
+    mock_redis_inst.xreadgroup = AsyncMock(side_effect=asyncio.CancelledError)
+
     mock_pubsub_mgr = MagicMock()
     mock_pubsub_mgr.__aenter__ = AsyncMock(return_value=mock_pubsub)
     mock_pubsub_mgr.__aexit__ = AsyncMock(return_value=None)

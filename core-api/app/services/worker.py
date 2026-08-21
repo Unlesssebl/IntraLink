@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database.db import AsyncSessionLocal, User
+from app.utils.json_utils import json_dumps, json_loads
 from app.services.intraservice import (
     get_task_lifetime,
     get_tasks,
@@ -26,6 +27,21 @@ logger = logging.getLogger(__name__)
 
 redis_client = None
 scheduler = AsyncIOScheduler()
+_consecutive_api_errors = 0
+
+
+def get_backoff_interval() -> int:
+    """Вычисляет интервал задержки при экспоненциальном откладывании опроса."""
+    global _consecutive_api_errors
+    _consecutive_api_errors += 1
+    delay = min(settings.POLLING_INTERVAL * (2 ** min(_consecutive_api_errors - 1, 4)), 300)
+    return delay
+
+
+def reset_backoff_interval() -> None:
+    """Сбрасывает счетчик ошибок API."""
+    global _consecutive_api_errors
+    _consecutive_api_errors = 0
 
 
 class VirtualServiceUser:
@@ -48,6 +64,38 @@ async def close_redis():
     if redis_client is not None:
         await redis_client.close()
         redis_client = None
+
+
+async def publish_event(
+    redis: aioredis.Redis,
+    channel_or_stream: str,
+    payload: dict,
+    maxlen: int = 10000,
+) -> None:
+    """
+    Dual-Publishing: гарантированная запись в Redis Stream (at-least-once)
+    и параллельная публикация в Pub/Sub канал (для обратной совместимости).
+    """
+    payload_json = json_dumps(payload)
+    stream_name = channel_or_stream if channel_or_stream.startswith("stream:") else f"stream:{channel_or_stream}"
+    pubsub_channel = channel_or_stream.replace("stream:", "")
+
+    # 1. Запись в Redis Stream (XADD)
+    try:
+        await redis.xadd(
+            stream_name,
+            {"payload": payload_json},
+            maxlen=maxlen,
+            approximate=True,
+        )
+    except Exception as e:
+        logger.error("Ошибка при записи события в Redis Stream %s: %s", stream_name, e)
+
+    # 2. Дублирование в Pub/Sub канал
+    try:
+        await redis.publish(pubsub_channel, payload_json)
+    except Exception as e:
+        logger.error("Ошибка при публикации события в Pub/Sub канал %s: %s", pubsub_channel, e)
 
 
 async def _check_new_tasks_global(
@@ -379,9 +427,7 @@ async def process_user(
         if pending_notifications:
             for payload in pending_notifications:
                 try:
-                    await redis_client.publish(
-                        "intraservice_events", json.dumps(payload)
-                    )
+                    await publish_event(redis_client, "intraservice_events", payload)
                 except Exception as pub_err:
                     logger.error(
                         "Ошибка отправки уведомления в Redis для пользователя %s: %s",
@@ -641,7 +687,7 @@ async def sync_service_catalog() -> None:
         # Сохраняем в Redis с TTL 24 часа
         await redis.set(
             "worker:service_catalog",
-            json.dumps(flat_catalog, ensure_ascii=False),
+            json_dumps(flat_catalog),
             ex=86400,
         )
         logger.info(
@@ -778,27 +824,60 @@ async def check_updates():
                 },
             )
 
+            # Отказоустойчивость: проверка сбоев сети/API (Exponential Backoff)
+            if new_tasks_data is None or updated_tasks_data is None:
+                backoff_delay = get_backoff_interval()
+                logger.warning(
+                    "Сбой при запросе к IntraService API (ошибок подряд: %d). Следующая попытка через %d сек.",
+                    _consecutive_api_errors,
+                    backoff_delay,
+                )
+                try:
+                    if scheduler.running:
+                        scheduler.reschedule_job(
+                            "intraservice_polling_job",
+                            trigger="interval",
+                            seconds=backoff_delay,
+                        )
+                except Exception as sched_err:
+                    logger.debug("Ошибка перепланирования джобы воркера: %s", sched_err)
+                return
+            else:
+                if _consecutive_api_errors > 0:
+                    reset_backoff_interval()
+                    logger.info(
+                        "Связь с IntraService API восстановлена. Интервал опроса сброшен до %d сек.",
+                        settings.POLLING_INTERVAL,
+                    )
+                    try:
+                        if scheduler.running:
+                            scheduler.reschedule_job(
+                                "intraservice_polling_job",
+                                trigger="interval",
+                                seconds=settings.POLLING_INTERVAL,
+                            )
+                    except Exception as sched_err:
+                        logger.debug("Ошибка перепланирования джобы воркера: %s", sched_err)
+
             # Парсим новые задачи
             new_tasks = []
             statuses_map = {}
-            if new_tasks_data is not None:
-                if isinstance(new_tasks_data, dict):
-                    new_tasks = new_tasks_data.get("Tasks", [])
-                    for s in new_tasks_data.get("Statuses", []):
-                        statuses_map[s.get("Id")] = s.get("Name")
-                elif isinstance(new_tasks_data, list):
-                    new_tasks = new_tasks_data
+            if isinstance(new_tasks_data, dict):
+                new_tasks = new_tasks_data.get("Tasks", [])
+                for s in new_tasks_data.get("Statuses", []):
+                    statuses_map[s.get("Id")] = s.get("Name")
+            elif isinstance(new_tasks_data, list):
+                new_tasks = new_tasks_data
 
             # Парсим измененные задачи
             updated_tasks = []
             updated_statuses_map = {}
-            if updated_tasks_data is not None:
-                if isinstance(updated_tasks_data, dict):
-                    updated_tasks = updated_tasks_data.get("Tasks", [])
-                    for s in updated_tasks_data.get("Statuses", []):
-                        updated_statuses_map[s.get("Id")] = s.get("Name")
-                elif isinstance(updated_tasks_data, list):
-                    updated_tasks = updated_tasks_data
+            if isinstance(updated_tasks_data, dict):
+                updated_tasks = updated_tasks_data.get("Tasks", [])
+                for s in updated_tasks_data.get("Statuses", []):
+                    updated_statuses_map[s.get("Id")] = s.get("Name")
+            elif isinstance(updated_tasks_data, list):
+                updated_tasks = updated_tasks_data
 
             # 4. Проверяем новые
             new_notifications = await _check_new_tasks_global(
@@ -843,11 +922,11 @@ async def check_updates():
                 "worker:last_check_time", current_time_utc.strftime("%Y-%m-%d %H:%M:%S")
             )
 
-            # Публикуем уведомления в Redis
+            # Публикуем уведомления в Redis (Stream + Pub/Sub)
             if pending_notifications:
                 for payload in pending_notifications:
                     try:
-                        await redis.publish("intraservice_events", json.dumps(payload))
+                        await publish_event(redis, "intraservice_events", payload)
                     except Exception as pub_err:
                         logger.error(
                             "Ошибка отправки уведомления в Redis для пользователя %s: %s",

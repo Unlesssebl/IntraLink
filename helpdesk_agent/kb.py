@@ -76,7 +76,7 @@ async def get_gemini_3072_embedding(text_input: str) -> list[float] | None:
         except Exception:
             pass
 
-    # 2. Попытка через Google Generative Language REST API
+    # 2. Попытка через Google Generative Language REST API (при прямом ключе)
     if GEMINI_KEY:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={GEMINI_KEY}"
@@ -90,11 +90,8 @@ async def get_gemini_3072_embedding(text_input: str) -> list[float] | None:
                     if resp.status == 200:
                         data = await resp.json()
                         vec = data.get("embedding", {}).get("values", [])
-                        if vec:
-                            if len(vec) < EMBEDDING_DIMENSION:
-                                vec = vec + [0.0] * (EMBEDDING_DIMENSION - len(vec))
-                            elif len(vec) > EMBEDDING_DIMENSION:
-                                vec = vec[:EMBEDDING_DIMENSION]
+                        # Принимаем только если размерность строго совпадает с целевой схемой
+                        if vec and len(vec) == EMBEDDING_DIMENSION:
                             return vec
         except Exception:
             pass
@@ -171,8 +168,13 @@ def load_local_kb() -> dict[str, dict[str, Any]]:
     """Загружает локальную базу знаний из JSON-файла."""
     if os.path.exists(LOCAL_DB_FILE):
         try:
-            with open(LOCAL_DB_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+            try:
+                import orjson
+                with open(LOCAL_DB_FILE, "rb") as f:
+                    return orjson.loads(f.read())
+            except ImportError:
+                with open(LOCAL_DB_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
         except Exception as e:
             logger.warning("Ошибка чтения локального KB %s: %s", LOCAL_DB_FILE, e)
     return {}
@@ -182,8 +184,13 @@ def save_local_kb(kb_data: dict[str, dict[str, Any]]):
     """Атомарно сохраняет локальную базу знаний."""
     try:
         temp_file = LOCAL_DB_FILE + ".tmp"
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(kb_data, f, ensure_ascii=False, indent=2)
+        try:
+            import orjson
+            with open(temp_file, "wb") as f:
+                f.write(orjson.dumps(kb_data, option=orjson.OPT_INDENT_2))
+        except ImportError:
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(kb_data, f, ensure_ascii=False, indent=2)
         os.replace(temp_file, LOCAL_DB_FILE)
     except Exception as e:
         logger.error("Ошибка сохранения KB: %s", e)

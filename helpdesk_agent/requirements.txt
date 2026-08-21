@@ -4,3 +4,4 @@ pgvector>=0.2.5
 pydantic>=2.5.0
 python-dotenv>=1.0.0
 sqlalchemy>=2.0.0
+orjson>=3.10.0
