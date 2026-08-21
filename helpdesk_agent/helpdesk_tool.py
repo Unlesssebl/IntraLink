@@ -27,6 +27,8 @@ from session_state import (
     get_skipped_task_ids,
     reset_session_state,
 )
+from executors.ad import ActiveDirectoryExecutor
+from llm.ollama_client import OllamaClient
 
 DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 
@@ -480,6 +482,19 @@ async def cmd_apply(args):
             except Exception:
                 pass
 
+            # 0.1. Защита для Wi-Fi: при попытке закрытия (29) обязательно проверяем/выдаем доступ в AD
+            if status_id == 29 and any(w in (comment or "").lower() for w in ["wi-fi", "wifi", "вайфай", "вай-фай"]):
+                ad_exec = ActiveDirectoryExecutor()
+                identity = ad_exec.extract_identity_from_task(curr or await client.get_task_details(task_id) or {})
+                if identity:
+                    print(f"⚡ [AD Auto-Execution] Проверка и выдача доступа в AD для '{identity}'...")
+                    ad_res = ad_exec.grant_wlan_access(identity)
+                    if not ad_res.success:
+                        print(f"❌ СБОЙ AD: {ad_res.message}. Перевод в статус 29 отменен, заявка переводится в '27 В работе'.", file=sys.stderr)
+                        status_id = 27
+                    else:
+                        print(f"✓ AD: {ad_res.message}")
+
             # 1. Если статус финальный или меняется (29, 30, 35, 48), сначала берем в работу (27) с назначением исполнителя
             if status_id != 27:
                 await client.update_task(task_id=task_id, status_id=27, executor_ids=executor_ids)
@@ -537,6 +552,167 @@ async def cmd_apply(args):
 
         if not all_ok:
             sys.exit(1)
+    finally:
+        await client.close()
+
+
+async def cmd_wlan(args):
+    """Автоматическая выдача Wi-Fi доступа через Active Directory (WLAN-WORKNET) и закрытие заявки."""
+    client = IntraServiceClient()
+    ad_exec = ActiveDirectoryExecutor()
+    try:
+        raw_ids = str(args.task_id).split(",")
+        task_ids = [int(x.strip()) for x in raw_ids if x.strip().isdigit()]
+        if not task_ids:
+            print(f"❌ Некорректный ID заявки: '{args.task_id}'", file=sys.stderr)
+            sys.exit(1)
+
+        executor_ids = getattr(args, "executor", None) or "8664,10502"
+        dry_run = args.dry_run
+
+        print(f"=== ⚡ Автоматическая выдача доступа Wi-Fi (Active Directory) ===")
+        print(f"Целевые заявки: {', '.join(f'#{tid}' for tid in task_ids)}")
+        print(f"Группа AD:      {ad_exec.target_wlan_group}")
+        print(f"Исполнители:    {executor_ids} (Беликов Ален + Беликов Ален_assitant)\n")
+
+        for task_id in task_ids:
+            task = await client.get_task_details(task_id)
+            if not task:
+                print(f"❌ Заявка #{task_id} не найдена в IntraService.", file=sys.stderr)
+                continue
+
+            identity = getattr(args, "identity", None) or getattr(args, "login", None)
+            if not identity:
+                identity = ad_exec.extract_identity_from_task(task)
+
+            if not identity:
+                print(f"❌ Заявка #{task_id}: Не удалось определить пользователя (логин/ФИО). Укажите явно: `--login <username>`", file=sys.stderr)
+                continue
+
+            print(f"--- Обработка заявки #{task_id} ---")
+            print(f"Заявитель:   {task.get('Creator')} (Логин в ИС: {task.get('CreatorLogin')})")
+            print(f"Субъект AD:  '{identity}'")
+
+            if dry_run:
+                st = ad_exec.get_user_status(identity)
+                print(f"[DRY-RUN] Статус пользователя в AD: {st}")
+                continue
+
+            # Выполнение добавления в AD
+            ad_res = ad_exec.grant_wlan_access(identity)
+            if not ad_res.success:
+                print(f"❌ ОШИБКА AD: {ad_res.message}", file=sys.stderr)
+                print(f"⚠️ Заявка #{task_id} переводится в статус '27 В работе' без закрытия.", file=sys.stderr)
+                await client.update_task(task_id=task_id, status_id=27, executor_ids=executor_ids)
+                continue
+
+            print(f"✓ {ad_res.message}")
+
+            # Формирование комментария
+            comment = (
+                "Доступ к Wi-Fi предоставлен.\n"
+                "Используйте логин и пароль от вашей учетной записи на ПК. Инструкцию по подключению приложил.\n"
+                "Если возникнут проблемы с подключением, приходите в АБК-3, кабинет 112."
+            )
+
+            # Двухэтапная финализация в IntraService: 27 ➔ 29
+            await client.update_task(task_id=task_id, status_id=27, executor_ids=executor_ids)
+            update_ok = await client.update_task(
+                task_id=task_id,
+                status_id=29,
+                comment=comment,
+                executor_ids=executor_ids,
+            )
+            exp_ok = await client.add_expenses(task_id=task_id, minutes=10, user_id=8664)
+
+            # Автообучение RAG
+            try:
+                t_name = task.get("Name") or f"Заявка #{task_id}"
+                t_desc = task.get("Description") or ""
+                await index_task_record(
+                    task_id=task_id,
+                    original_name=t_name,
+                    problem=f"{t_name}. {t_desc}".strip(),
+                    solution=comment.strip(),
+                    service_id=task.get("ServiceId") or 0,
+                    service_name=task.get("ServiceName") or "Wi-Fi",
+                    status_name="Выполнена",
+                    classification_data={"type": "auto_wlan_execution", "status_id": 29},
+                )
+            except Exception:
+                pass
+
+            if update_ok and exp_ok:
+                print(f"🎯 УСПЕХ: Заявка #{task_id} закрыта со статусом 29 (Выполнена) и списанием 10 мин трудозатрат.\n")
+                add_applied_tasks([task_id], 29)
+            else:
+                print(f"⚠️ Ошибка обновления статуса заявки #{task_id} в IntraService.", file=sys.stderr)
+    finally:
+        await client.close()
+
+
+async def cmd_summary(args):
+    """Суммаризация истории и переписки инцидента через локальную микро-нейросеть Ollama."""
+    client = IntraServiceClient()
+    ollama = OllamaClient()
+    try:
+        task_id = args.task_id
+        task = await client.get_task_details(task_id)
+        if not task:
+            print(f"❌ Заявка #{task_id} не найдена в IntraService.", file=sys.stderr)
+            sys.exit(1)
+
+        lifetime = await client.get_task_history(task_id) or []
+        # Фильтруем записи с комментариями
+        comments = []
+        for item in lifetime:
+            txt = (item.get("Comment") or item.get("Description") or item.get("Text") or "").strip()
+            if txt:
+                comments.append({
+                    "UserName": item.get("UserName") or item.get("Creator") or "Пользователь",
+                    "Created": item.get("Created") or "",
+                    "Text": txt,
+                })
+
+        t_name = task.get("Name") or ""
+        t_desc = task.get("Description") or ""
+
+        if not await ollama.is_available():
+            print(f"⚠️ Локальная нейросеть Ollama недоступна на {ollama.base_url}.", file=sys.stderr)
+            print("💡 Запустите Ollama (`docker compose up -d ollama` или `ollama serve`).\n")
+            print(f"=== 📋 Заявка #{task_id}: {t_name} ===")
+            print(f"Описание: {t_desc}\n")
+            print(f"Всего комментариев в истории: {len(comments)}")
+            for c in comments[-3:]:
+                print(f"• [{c['Created'][:16]}] {c['UserName']}: {c['Text'][:100]}...")
+            return
+
+        summary = await ollama.summarize_task_history(
+            task_id=task_id,
+            task_name=t_name,
+            task_desc=t_desc,
+            comments=comments,
+        )
+
+        if not summary:
+            print(f"❌ Не удалось сформировать AI-сводку по заявке #{task_id}.", file=sys.stderr)
+            sys.exit(1)
+
+        if args.json:
+            print(json.dumps(summary.model_dump(), ensure_ascii=False, indent=2))
+            return
+
+        print(f"### 📋 AI-Сводка по заявке [#{task_id}](https://servicedesk.corporate.loc/Task/View/{task_id}) ({ollama.model})\n")
+        print(f"• **Суть инцидента:** {summary.core_problem}")
+        print("• **Предпринятые действия:**")
+        if summary.actions_taken:
+            for act in summary.actions_taken:
+                print(f"  - {act}")
+        else:
+            print("  - Действий пока не зафиксировано")
+        print(f"• **Текущий статус:** {summary.current_status}")
+        print(f"• **Рекомендованный следующий шаг:** {summary.recommended_next_step}\n")
+
     finally:
         await client.close()
 
@@ -819,6 +995,18 @@ def main():
     p_att = subparsers.add_parser("attachment", help="Скачивание вложений заявки")
     p_att.add_argument("task_id", type=int, help="ID заявки")
 
+    # wlan (Active Directory WLAN Automation)
+    p_wlan = subparsers.add_parser("wlan", help="Автоматическая выдача Wi-Fi доступа в AD (WLAN-WORKNET) и закрытие заявки")
+    p_wlan.add_argument("task_id", type=str, help="ID заявки или список ID через запятую")
+    p_wlan.add_argument("--login", "--identity", type=str, default=None, help="Явный логин sAMAccountName или ФИО пользователя")
+    p_wlan.add_argument("--executor", type=str, default="8664,10502", help="ID исполнителей")
+    p_wlan.add_argument("--dry-run", action="store_true", help="Режим симуляции без изменений")
+
+    # summary (Ollama AI Thread Summarization)
+    p_sum = subparsers.add_parser("summary", help="AI-суммаризация истории и переписки инцидента через Qwen2.5:1.5B")
+    p_sum.add_argument("task_id", type=int, help="ID заявки")
+    p_sum.add_argument("--json", action="store_true", help="Вывод в JSON")
+
     # duplicates / dedup
     p_dup = subparsers.add_parser("duplicates", aliases=["dedup"], help="Поиск и отмена заявок-дубликатов в очереди 1-й линии")
     p_dup.add_argument("--filter", type=int, default=int(os.getenv("FILTER_ID", "984")), help="ID фильтра очереди")
@@ -842,6 +1030,8 @@ def main():
         "search-kb": cmd_search_kb,
         "sync-kb": cmd_sync_kb,
         "apply": cmd_apply,
+        "wlan": cmd_wlan,
+        "summary": cmd_summary,
         "skip": cmd_skip,
         "reset-session": cmd_reset_session,
         "catalog": cmd_catalog,

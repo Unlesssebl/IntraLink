@@ -169,9 +169,6 @@ KB_PATH = Path(
         str(
             Path(__file__).resolve().parent
             / ".."
-            / ".."
-            / ".."
-            / "printer-worker"
             / "knowledge_base"
             / "printers_knowledge_base.json"
         ),

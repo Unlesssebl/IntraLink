@@ -46,16 +46,16 @@ class CredentialsRule(BaseRule):
                 ),
             )
 
-        # 2. Выдача Wi-Fi (Статус 29)
+        # 2. Выдача Wi-Fi (Автоматизируемое действие через Active Directory)
         is_wifi_request = any(w in user_text for w in [
             "wi-fi", "wifi", "вайфай", "вай-фай", "work-net", "пароль от сети", "пароль от wi-fi", "доступ к wi-fi"
         ])
         if is_wifi_request and not any(w in user_text for w in ["excel", "exle", "обменник", "папк", "диск", "1с", "принтер"]):
             return RuleDecision(
                 template_key="wifi_access",
-                name="Предоставление Wi-Fi",
-                status_id=29,
-                status_name="Выполнена",
+                name="⚡ Автовыдача доступа WLAN в AD ➔ Выполнена (29)",
+                status_id=27,
+                status_name="В работе",
                 expenses=10,
                 comment=(
                     "Доступ к Wi-Fi предоставлен.\n"
@@ -64,15 +64,15 @@ class CredentialsRule(BaseRule):
                 ),
             )
 
-        # 3. Создание электронной почты (Статус 29)
+        # 3. Создание электронной почты (Статус 27 В работе)
         if "почт" in user_text and any(w in user_text for w in ["создать почту", "создание почты", "электронная почта", "новый ящик"]):
             return RuleDecision(
-                template_key="email_created",
-                name="Создание почты выполнено",
-                status_id=29,
-                status_name="Выполнена",
+                template_key="in_work_standard",
+                name="Создание корпоративной почты (в работе)",
+                status_id=27,
+                status_name="В работе",
                 expenses=10,
-                comment="Заявка выполнена, логин и пароль для входа в почту указаны в зеленых рамках выше.\nЕсли возникнут сложности со входом, напишите в комментариях к этой заявке.",
+                comment="Добрый день! Заявка на создание почтового ящика принята в работу. После создания учетные данные будут направлены в комментариях к этой заявке.",
             )
 
         return None

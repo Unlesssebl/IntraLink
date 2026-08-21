@@ -22,33 +22,36 @@ services:
     ports:
       - "${REDIS_PORT:-6379}:6379"
 
-  litellm:
-    image: ghcr.io/berriai/litellm:main-latest
-    container_name: intraservice_litellm
+  ollama:
+    image: ollama/ollama:latest
+    container_name: intraservice_ollama
     restart: always
     ports:
-      - "${LITELLM_PORT:-4000}:4000"
+      - "11434:11434"
     volumes:
-      - ./litellm/config.yaml:/app/config.yaml
-    command: --config /app/config.yaml
-    env_file:
-      - ./litellm/.env
-    depends_on:
-      - postgres
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_FLASH_ATTENTION=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   core-api:
     build:
-      context: ./core-api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./core-api/Dockerfile
     container_name: intraservice_core_api
     restart: always
     ports:
       - "${CORE_API_PORT:-8000}:8000"
     env_file:
       - ./core-api/.env
-    volumes:
-      - ./core-api:/app
-      - ./printer-worker/knowledge_base:/app/knowledge_base:ro
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
       - REDIS_URL=redis://redis:6379/0
@@ -58,7 +61,6 @@ services:
       - INTRASERVICE_SERVICE_USER_ID=9891
       - INTRASERVICE_SERVICE_PASSWORD_FILE=/run/secrets/service_password
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
-      - LITELLM_BASE_URL=http://litellm:4000/v1
     secrets:
       - encryption_key
       - service_password
@@ -76,16 +78,16 @@ services:
       - postgres
       - redis
 
-  bot:
+  telegram-bot:
     profiles:
       - with-bot
     build:
-      context: ./bot
+      context: ./telegram-bot
       dockerfile: Dockerfile
     container_name: intraservice_tg_bot
     restart: always
     env_file:
-      - ./bot/.env
+      - ./telegram-bot/.env
     environment:
       - CORE_API_URL=http://core-api:8000/api/v1
       - REDIS_URL=redis://redis:6379/0
@@ -101,77 +103,11 @@ services:
     depends_on:
       - core-api
       - redis
-
-  printer-worker:
-    build:
-      context: ./printer-worker
-      dockerfile: Dockerfile
-    container_name: intraservice_printer_worker
-    restart: always
-    volumes:
-      - ./printer-worker:/app
-    env_file:
-      - ./printer-worker/.env
-    environment:
-      - CORE_API_URL=http://core-api:8000/api/v1
-      - REDIS_URL=redis://redis:6379/0
-      - LLM_API_URL=http://host.docker.internal:11434
-      - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
-    secrets:
-      - encryption_key
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    dns:
-      - 10.244.0.11
-      - 172.18.128.50
-      - 8.8.8.8
-    dns_opt:
-      - timeout:1
-      - attempts:1
-    dns_search:
-      - corporate.loc
-    depends_on:
-      - core-api
-      - redis
-
-  ai-worker:
-    build:
-      context: ./ai-worker
-      dockerfile: Dockerfile
-    container_name: intraservice_ai_worker
-    restart: always
-    env_file:
-      - ./ai-worker/.env
-    environment:
-      - CORE_API_URL=http://core-api:8000/api/v1
-      - INTRASERVICE_URL=https://servicedesk.corporate.loc/api/
-      - BOT_API_KEY=test_api_key_12345
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
-      - REDIS_URL=redis://redis:6379/0
-      - LITELLM_BASE_URL=http://litellm:4000/v1
-      - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
-      - INTRASERVICE_SERVICE_PASSWORD_FILE=/run/secrets/service_password
-    secrets:
-      - service_password
-      - encryption_key
-    dns:
-      - 10.244.0.11
-      - 172.18.128.50
-      - 8.8.8.8
-    dns_opt:
-      - timeout:1
-      - attempts:1
-    dns_search:
-      - corporate.loc
-    depends_on:
-      - core-api
-      - redis
-      - postgres
-      - litellm
 
 volumes:
   postgres_data:
   redis_data:
+  ollama_data:
 
 secrets:
   encryption_key:
@@ -180,6 +116,3 @@ secrets:
     file: ./.secrets/service_password.txt
   jwt_secret:
     file: ./.secrets/jwt_secret.txt
-
-
-
