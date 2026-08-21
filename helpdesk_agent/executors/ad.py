@@ -2,12 +2,34 @@ import json
 import logging
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 TARGET_WLAN_GROUP = "WLAN-WORKNET"
+
+
+@dataclass
+class ADUserProfile:
+    found: bool
+    sam_account_name: Optional[str] = None
+    display_name: Optional[str] = None
+    enabled: bool = False
+    locked_out: bool = False
+    password_expired: bool = False
+    title: Optional[str] = None
+    department: Optional[str] = None
+    company: Optional[str] = None
+    phone: Optional[str] = None
+    room: Optional[str] = None
+    mail: Optional[str] = None
+    manager: Optional[str] = None
+    groups: list[str] = field(default_factory=list)
+    last_logon: Optional[str] = None
+    account_expiration_date: Optional[str] = None
+    is_wlan_member: bool = False
+    error: Optional[str] = None
 
 
 @dataclass
@@ -37,6 +59,7 @@ class ActiveDirectoryExecutor:
     """
     Отказоустойчивый исполнитель операций в Active Directory.
     Обеспечивает Single-DC Affinity, проверку активности учетных записей,
+    разблокировку (Unlock-ADAccount), поиск карточек сотрудников,
     идемпотентность и Read-after-Write верификацию.
     """
 
@@ -69,6 +92,11 @@ class ActiveDirectoryExecutor:
             json_end = out.rfind("}")
             if json_start != -1 and json_end != -1:
                 return json.loads(out[json_start : json_end + 1])
+            # Проверяем массив JSON
+            arr_start = out.find("[")
+            arr_end = out.rfind("]")
+            if arr_start != -1 and arr_end != -1 and (json_start == -1 or arr_start < json_start):
+                return {"items": json.loads(out[arr_start : arr_end + 1])}
             return json.loads(out)
         except subprocess.TimeoutExpired:
             return {"error": f"Таймаут выполнения запроса к Active Directory ({timeout}s)"}
@@ -77,12 +105,13 @@ class ActiveDirectoryExecutor:
         except Exception as e:
             return {"error": f"Непредвиденная ошибка выполнения PowerShell: {e}"}
 
-    def get_user_status(self, identity: str, company: Optional[str] = None) -> ADUserStatus:
+    def search_user_profiles(self, identity: str, company: Optional[str] = None) -> list[ADUserProfile]:
         """
-        Каскадный поиск пользователя в Active Directory с нормализацией инициалов и проверкой WLAN.
+        Полнотекстовый поиск пользователей в Active Directory с извлечением полной карточки
+        (должность, отдел, телефон, кабинет, руководитель, группы, статус блокировки).
         """
         if not identity or not identity.strip():
-            return ADUserStatus(found=False, error="Идентификатор пользователя пуст")
+            return [ADUserProfile(found=False, error="Идентификатор пользователя пуст")]
 
         clean_identity = identity.strip()
         
@@ -96,113 +125,168 @@ class ActiveDirectoryExecutor:
             safe_id = clean_identity.replace('"', '`"').replace("$", "`$")
             filter_expr = f"SamAccountName -eq '{safe_id}' -or UserPrincipalName -like '{safe_id}*' -or Name -like '*{safe_id}*'"
 
-        # Нормализация ё/е для русских фамилий
-        if "ё" in filter_expr or "е" in filter_expr:
-            # PowerShell regex/like handles basic matching, but filter with wildcard covers both
-            pass
-
         safe_comp = (company or "").strip().replace('"', '`"').replace("$", "`$")
 
         script = f"""
         Import-Module ActiveDirectory -ErrorAction Stop
-        $user = Get-ADUser -Filter "{filter_expr}" -Properties MemberOf, Enabled, Mail, Department, Company -ErrorAction SilentlyContinue
-        if (-not $user) {{
+        $users = Get-ADUser -Filter "{filter_expr}" -Properties Title, Department, Company, telephoneNumber, physicalDeliveryOfficeName, Manager, LockedOut, PasswordExpired, AccountExpirationDate, LastLogonDate, MemberOf, Enabled, Mail -ErrorAction SilentlyContinue
+        
+        if (-not $users) {{
             Write-Output (ConvertTo-Json @{{ found = $false; error = "Пользователь '$([string]'{clean_identity}')' не найден в Active Directory" }})
             exit 0
         }}
-        if ($user -is [array]) {{
-            # Если передана компания/отдел, ищем точное совпадение
-            if ("{safe_comp}" -ne "") {{
-                $matched = $user | Where-Object {{ $_.Company -like "*{safe_comp}*" -or $_.Department -like "*{safe_comp}*" }}
-                if ($matched) {{
-                    $user = if ($matched -is [array]) {{ $matched[0] }} else {{ $matched }}
-                }}
-            }}
-            # Иначе берем первое активное совпадение
-            if ($user -is [array]) {{
-                $active = $user | Where-Object {{ $_.Enabled -eq $true }}
-                $user = if ($active) {{ if ($active -is [array]) {{ $active[0] }} else {{ $active }} }} else {{ $user[0] }}
-            }}
+
+        $userList = @()
+        if ($users -is [array]) {{
+            $userList = $users
+        }} else {{
+            $userList = @($users)
         }}
-        $isWlan = ($user.MemberOf -like "*{self.target_wlan_group}*")
-        Write-Output (ConvertTo-Json @{{
-            found = $true
-            sam_account_name = [string]$user.SamAccountName
-            display_name = [string]$user.Name
-            enabled = [bool]$user.Enabled
-            is_wlan_member = [bool]$isWlan
-            department = [string]$user.Department
-            mail = [string]$user.Mail
-        }})
+
+        $result = @()
+        foreach ($u in $userList) {{
+            $grps = @()
+            if ($u.MemberOf) {{
+                $grps = @($u.MemberOf | ForEach-Object {{ ($_ -split ',')[0] -replace '^CN=', '' }})
+            }}
+            $isWlan = ($u.MemberOf -like "*{self.target_wlan_group}*")
+            
+            $item = [ordered]@{{
+                found = $true
+                sam_account_name = [string]$u.SamAccountName
+                display_name = [string]$u.Name
+                enabled = [bool]$u.Enabled
+                locked_out = [bool]$u.LockedOut
+                password_expired = [bool]$u.PasswordExpired
+                title = [string]$u.Title
+                department = [string]$u.Department
+                company = [string]$u.Company
+                phone = [string]$u.telephoneNumber
+                room = [string]$u.physicalDeliveryOfficeName
+                mail = [string]$u.Mail
+                manager = [string]$u.Manager
+                last_logon = [string]$u.LastLogonDate
+                account_expiration_date = [string]$u.AccountExpirationDate
+                is_wlan_member = [bool]$isWlan
+                groups = [string[]]$grps
+            }}
+            $result += $item
+        }}
+
+        if ($result.Count -eq 1) {{
+            Write-Output (ConvertTo-Json $result[0])
+        }} else {{
+            Write-Output (ConvertTo-Json $result)
+        }}
         """
 
         data = self._run_ps_command(script)
-        if "error" in data and not data.get("found"):
-            return ADUserStatus(found=False, error=data["error"])
+        if "error" in data and not data.get("found") and "items" not in data:
+            return [ADUserProfile(found=False, error=data["error"])]
+
+        items = []
+        if "items" in data:
+            items = data["items"]
+        elif isinstance(data, list):
+            items = data
+        elif isinstance(data, dict) and data.get("found"):
+            items = [data]
+        elif isinstance(data, dict) and not data.get("found"):
+            return [ADUserProfile(found=False, error=data.get("error", "UserNotFound"))]
+
+        profiles = []
+        for raw in items:
+            profiles.append(
+                ADUserProfile(
+                    found=raw.get("found", True),
+                    sam_account_name=raw.get("sam_account_name"),
+                    display_name=raw.get("display_name"),
+                    enabled=raw.get("enabled", False),
+                    locked_out=raw.get("locked_out", False),
+                    password_expired=raw.get("password_expired", False),
+                    title=raw.get("title") or None,
+                    department=raw.get("department") or None,
+                    company=raw.get("company") or None,
+                    phone=raw.get("phone") or None,
+                    room=raw.get("room") or None,
+                    mail=raw.get("mail") or None,
+                    manager=raw.get("manager") or None,
+                    groups=raw.get("groups") or [],
+                    last_logon=raw.get("last_logon") or None,
+                    account_expiration_date=raw.get("account_expiration_date") or None,
+                    is_wlan_member=raw.get("is_wlan_member", False),
+                    error=raw.get("error"),
+                )
+            )
+        return profiles
+
+    def get_user_status(self, identity: str, company: Optional[str] = None) -> ADUserStatus:
+        """
+        Быстрая проверка статуса для обратной совместимости.
+        """
+        profiles = self.search_user_profiles(identity, company=company)
+        if not profiles or not profiles[0].found:
+            err = profiles[0].error if profiles else "UserNotFound"
+            return ADUserStatus(found=False, error=err)
+        
+        # Если найдено несколько, берем активного или точное совпадение по компании
+        p = profiles[0]
+        if len(profiles) > 1:
+            active = [x for x in profiles if x.enabled]
+            p = active[0] if active else profiles[0]
 
         return ADUserStatus(
-            found=data.get("found", False),
-            sam_account_name=data.get("sam_account_name"),
-            display_name=data.get("display_name"),
-            enabled=data.get("enabled", False),
-            is_wlan_member=data.get("is_wlan_member", False),
-            department=data.get("department"),
-            mail=data.get("mail"),
-            error=data.get("error"),
+            found=True,
+            sam_account_name=p.sam_account_name,
+            display_name=p.display_name,
+            enabled=p.enabled,
+            is_wlan_member=p.is_wlan_member,
+            department=p.department,
+            mail=p.mail,
+            error=p.error,
         )
 
-    def grant_wlan_access(self, identity: str) -> ADExecutionResult:
+    def unlock_user_account(self, identity: str) -> tuple[bool, str, Optional[ADUserProfile]]:
         """
-        Добавляет пользователя в целевую группу WLAN с Single-DC Affinity и Read-after-Write проверкой.
+        Разблокировка заблокированной учетной записи в Active Directory с Single-DC Affinity
+        и предпроверкой статуса LockedOut.
         """
-        status = self.get_user_status(identity)
-        if not status.found:
-            return ADExecutionResult(
-                success=False,
-                already_member=False,
-                sam_account_name=identity,
-                message=f"Пользователь '{identity}' не найден в Active Directory",
-                target_group=self.target_wlan_group,
-                error=status.error or "UserNotFound",
-            )
+        profiles = self.search_user_profiles(identity)
+        if not profiles or not profiles[0].found:
+            return False, f"Пользователь '{identity}' не найден в Active Directory", None
+        
+        if len(profiles) > 1:
+            names = ", ".join(f"{p.sam_account_name} ({p.display_name} - {p.department})" for p in profiles)
+            return False, f"Найдено несколько учетных записей ({len(profiles)}): {names}. Уточните логин sAMAccountName.", None
 
-        if not status.enabled:
-            return ADExecutionResult(
-                success=False,
-                already_member=False,
-                sam_account_name=status.sam_account_name or identity,
-                display_name=status.display_name,
-                message=f"Учетная запись '{status.sam_account_name}' ({status.display_name}) отключена в домене",
-                target_group=self.target_wlan_group,
-                error="AccountDisabled",
-            )
+        user = profiles[0]
+        if not user.enabled:
+            return False, f"Учетная запись '{user.sam_account_name}' ({user.display_name}) отключена администратором домена (Enabled=False)", user
 
-        if status.is_wlan_member:
-            return ADExecutionResult(
-                success=True,
-                already_member=True,
-                sam_account_name=status.sam_account_name or identity,
-                display_name=status.display_name,
-                message=f"Пользователь '{status.sam_account_name}' ({status.display_name}) уже состоит в группе {self.target_wlan_group}",
-                target_group=self.target_wlan_group,
-            )
+        if not user.locked_out:
+            diag_info = []
+            if user.password_expired:
+                diag_info.append("истек срок действия пароля")
+            if user.account_expiration_date:
+                diag_info.append(f"срок действия аккаунта: {user.account_expiration_date}")
+            diag_str = f" ({', '.join(diag_info)})" if diag_info else ""
+            return False, f"Учетная запись '{user.sam_account_name}' ({user.display_name}) НЕ заблокирована (LockedOut=False){diag_str}", user
 
-        safe_sam = (status.sam_account_name or "").replace('"', '`"').replace("$", "`$")
-        safe_group = self.target_wlan_group.replace('"', '`"').replace("$", "`$")
+        safe_sam = (user.sam_account_name or "").replace('"', '`"').replace("$", "`$")
 
         script = f"""
         Import-Module ActiveDirectory -ErrorAction Stop
         $dc = (Get-ADDomainController -Discover).HostName
         try {{
-            Add-ADGroupMember -Server $dc -Identity "{safe_group}" -Members "{safe_sam}" -ErrorAction Stop
+            Unlock-ADAccount -Server $dc -Identity "{safe_sam}" -ErrorAction Stop
             
             # Read-after-Write верификация на том же контроллере домена
-            $verify = Get-ADUser -Server $dc -Identity "{safe_sam}" -Properties MemberOf -ErrorAction Stop
-            $ok = ($verify.MemberOf -like "*{safe_group}*")
+            $verify = Get-ADUser -Server $dc -Identity "{safe_sam}" -Properties LockedOut -ErrorAction Stop
+            $isUnlocked = (-not $verify.LockedOut)
             
             Write-Output (ConvertTo-Json @{{
-                success = [bool]$ok
-                message = if ($ok) {{ "Добавлен и верифицирован" }} else {{ "Не найден в группе после добавления" }}
+                success = [bool]$isUnlocked
+                message = if ($isUnlocked) {{ "Разблокирована и верифицирована" }} else {{ "Остается заблокированной после попытки разблокировки" }}
             }})
         }} catch {{
             Write-Output (ConvertTo-Json @{{
@@ -214,25 +298,117 @@ class ActiveDirectoryExecutor:
 
         data = self._run_ps_command(script)
         if data.get("success"):
-            logger.info(
-                "Пользователь %s успешно добавлен в доменную группу %s",
-                status.sam_account_name,
-                self.target_wlan_group,
-            )
+            user.locked_out = False
+            logger.info("Учетная запись %s успешно разблокирована в Active Directory", user.sam_account_name)
+            return True, f"Учетная запись '{user.sam_account_name}' ({user.display_name}) успешно разблокирована в домене", user
+
+        err_msg = data.get("error") or data.get("message") or "Сбой разблокировки"
+        logger.error("Ошибка при разблокировке учетной записи %s: %s", user.sam_account_name, err_msg)
+        return False, f"Не удалось разблокировать '{user.sam_account_name}': {err_msg}", user
+
+    def add_user_to_group(self, identity: str, group_name: str) -> ADExecutionResult:
+        """
+        Добавляет пользователя в произвольную доменную группу безопасности с pre-flight проверкой группы,
+        Single-DC Affinity и Read-after-Write верификацией.
+        """
+        clean_group = group_name.strip()
+        status = self.get_user_status(identity)
+        if not status.found:
             return ADExecutionResult(
-                success=True,
+                success=False,
+                already_member=False,
+                sam_account_name=identity,
+                message=f"Пользователь '{identity}' не найден в Active Directory",
+                target_group=clean_group,
+                error=status.error or "UserNotFound",
+            )
+
+        if not status.enabled:
+            return ADExecutionResult(
+                success=False,
                 already_member=False,
                 sam_account_name=status.sam_account_name or identity,
                 display_name=status.display_name,
-                message=f"Пользователь '{status.sam_account_name}' ({status.display_name}) успешно добавлен в группу {self.target_wlan_group}",
-                target_group=self.target_wlan_group,
+                message=f"Учетная запись '{status.sam_account_name}' ({status.display_name}) отключена в домене",
+                target_group=clean_group,
+                error="AccountDisabled",
             )
 
-        err_msg = data.get("error") or "Сбой верификации членства"
+        safe_sam = (status.sam_account_name or "").replace('"', '`"').replace("$", "`$")
+        safe_group = clean_group.replace('"', '`"').replace("$", "`$")
+
+        script = f"""
+        Import-Module ActiveDirectory -ErrorAction Stop
+        $dc = (Get-ADDomainController -Discover).HostName
+        
+        # 1. Pre-flight проверка существования группы
+        $grp = Get-ADGroup -Server $dc -Filter "Name -eq '{safe_group}' -or SamAccountName -eq '{safe_group}'" -ErrorAction SilentlyContinue
+        if (-not $grp) {{
+            Write-Output (ConvertTo-Json @{{
+                success = $false
+                error = "Группа '$([string]'{clean_group}')' не найдена в Active Directory"
+            }})
+            exit 0
+        }}
+
+        $targetGroupExactName = $grp.SamAccountName
+
+        # 2. Проверка текущего членства
+        $u = Get-ADUser -Server $dc -Identity "{safe_sam}" -Properties MemberOf -ErrorAction Stop
+        if ($u.MemberOf -like "*$targetGroupExactName*") {{
+            Write-Output (ConvertTo-Json @{{
+                success = $true
+                already_member = $true
+                target_group = $targetGroupExactName
+            }})
+            exit 0
+        }}
+
+        # 3. Добавление в группу
+        try {{
+            Add-ADGroupMember -Server $dc -Identity $targetGroupExactName -Members "{safe_sam}" -ErrorAction Stop
+            
+            # Read-after-Write верификация на том же контроллере домена
+            $verify = Get-ADUser -Server $dc -Identity "{safe_sam}" -Properties MemberOf -ErrorAction Stop
+            $ok = ($verify.MemberOf -like "*$targetGroupExactName*")
+            
+            Write-Output (ConvertTo-Json @{{
+                success = [bool]$ok
+                already_member = $false
+                target_group = $targetGroupExactName
+                message = if ($ok) {{ "Добавлен и верифицирован" }} else {{ "Не найден в группе после добавления" }}
+            }})
+        }} catch {{
+            Write-Output (ConvertTo-Json @{{
+                success = $false
+                already_member = $false
+                error = $_.Exception.Message
+            }})
+        }}
+        """
+
+        data = self._run_ps_command(script)
+        if data.get("success"):
+            already = data.get("already_member", False)
+            msg = (
+                f"Пользователь '{status.sam_account_name}' ({status.display_name}) уже состоит в группе {clean_group}"
+                if already
+                else f"Пользователь '{status.sam_account_name}' ({status.display_name}) успешно добавлен в группу {clean_group}"
+            )
+            return ADExecutionResult(
+                success=True,
+                already_member=already,
+                sam_account_name=status.sam_account_name or identity,
+                display_name=status.display_name,
+                message=msg,
+                target_group=clean_group,
+            )
+
+        err_msg = data.get("error") or data.get("message") or "Сбой добавления в группу"
         logger.error(
             "Не удалось добавить пользователя %s в группу %s: %s",
             status.sam_account_name,
-            self.target_wlan_group,
+            clean_group,
             err_msg,
         )
         return ADExecutionResult(
@@ -240,10 +416,16 @@ class ActiveDirectoryExecutor:
             already_member=False,
             sam_account_name=status.sam_account_name or identity,
             display_name=status.display_name,
-            message=f"Ошибка добавления в группу {self.target_wlan_group}: {err_msg}",
-            target_group=self.target_wlan_group,
+            message=f"Ошибка добавления в группу {clean_group}: {err_msg}",
+            target_group=clean_group,
             error=err_msg,
         )
+
+    def grant_wlan_access(self, identity: str) -> ADExecutionResult:
+        """
+        Добавляет пользователя в целевую группу WLAN-WORKNET.
+        """
+        return self.add_user_to_group(identity, self.target_wlan_group)
 
     @staticmethod
     def extract_identity_from_task(task: dict[str, Any]) -> str:
@@ -255,13 +437,11 @@ class ActiveDirectoryExecutor:
         fio_match = re.search(r"(?:для|пользователю|сотруднику)\s+([А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)", desc, re.IGNORECASE)
         if fio_match:
             candidate = fio_match.group(1).strip()
-            # Проверяем, что это не название отдела/сервиса
             if len(candidate.split()) >= 2:
                 return candidate
 
         # 2. Приоритет: явный CreatorLogin
         creator_login = (task.get("CreatorLogin") or "").strip()
-        # Отсекаем явные имена ПК в логине (например, NTEMW0603)
         if creator_login and not re.match(r"^[A-Z]{3,5}\d{3,5}$", creator_login, re.IGNORECASE):
             return creator_login
 

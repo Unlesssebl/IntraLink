@@ -717,6 +717,70 @@ async def cmd_summary(args):
         await client.close()
 
 
+async def cmd_ad(args):
+    """Инструменты управления и диагностики пользователей в Active Directory."""
+    ad = ActiveDirectoryExecutor()
+    action = args.ad_action
+
+    if action in ("search", "find", "user"):
+        query = args.identity
+        profiles = ad.search_user_profiles(query)
+        if not profiles or not profiles[0].found:
+            err = profiles[0].error if profiles else "UserNotFound"
+            print(f"❌ {err}", file=sys.stderr)
+            sys.exit(1)
+
+        if args.json:
+            print(json.dumps([p.__dict__ for p in profiles], ensure_ascii=False, indent=2))
+            return
+
+        print(f"### 🏢 Найдено пользователей в Active Directory: {len(profiles)}\n")
+        for i, p in enumerate(profiles, start=1):
+            lock_status = "🔴 ЗАБЛОКИРОВАН" if p.locked_out else "🟢 Активен"
+            if not p.enabled:
+                lock_status = "⚫ Отключен"
+            wlan_status = "🟢 Да" if p.is_wlan_member else "⚪ Нет"
+            
+            print(f"**{i}. {p.display_name}** (`{p.sam_account_name}`)")
+            print(f"   • **Статус:** {lock_status} | **Wi-Fi (WLAN):** {wlan_status}")
+            if p.title:
+                print(f"   • **Должность:** {p.title}")
+            if p.department or p.company:
+                print(f"   • **Подразделение:** {p.department or ''} ({p.company or ''})")
+            if p.phone:
+                print(f"   • **Телефон:** {p.phone}")
+            if p.mail:
+                print(f"   • **Почта:** {p.mail}")
+            if p.room:
+                print(f"   • **Кабинет / Локация:** {p.room}")
+            if p.last_logon:
+                print(f"   • **Последний вход:** {p.last_logon}")
+            if p.groups:
+                print(f"   • **Группы ({len(p.groups)}):** {', '.join(p.groups[:8])}{'...' if len(p.groups) > 8 else ''}")
+            print()
+
+    elif action in ("unlock",):
+        identity = args.identity
+        success, msg, profile = ad.unlock_user_account(identity)
+        if success:
+            print(f"🎯 УСПЕХ: {msg}")
+        else:
+            print(f"⚠️ {msg}")
+
+    elif action in ("add-group", "group-add"):
+        identity = args.identity
+        group_name = args.group_name
+        if not group_name:
+            print("❌ Укажите имя целевой группы безопасности Active Directory.", file=sys.stderr)
+            sys.exit(1)
+        res = ad.add_user_to_group(identity, group_name)
+        if res.success:
+            print(f"🎯 УСПЕХ: {res.message}")
+        else:
+            print(f"❌ ОШИБКА: {res.message}", file=sys.stderr)
+            sys.exit(1)
+
+
 async def cmd_skip(args):
     """Помечает заявку или список заявок как пропущенные в текущей смене/сессии."""
     raw_ids = [x.strip() for x in str(args.task_id).split(",") if x.strip()]
@@ -1007,6 +1071,13 @@ def main():
     p_sum.add_argument("task_id", type=int, help="ID заявки")
     p_sum.add_argument("--json", action="store_true", help="Вывод в JSON")
 
+    # ad (Active Directory Management & Diagnostics)
+    p_ad = subparsers.add_parser("ad", help="Управление и диагностика пользователей в Active Directory")
+    p_ad.add_argument("ad_action", choices=["search", "find", "user", "unlock", "add-group", "group-add"], help="Действие (search, unlock, add-group)")
+    p_ad.add_argument("identity", type=str, help="ФИО, логин sAMAccountName или инициалы пользователя")
+    p_ad.add_argument("group_name", type=str, nargs="?", default=None, help="Имя целевой группы безопасности для add-group")
+    p_ad.add_argument("--json", action="store_true", help="Вывод в JSON")
+
     # duplicates / dedup
     p_dup = subparsers.add_parser("duplicates", aliases=["dedup"], help="Поиск и отмена заявок-дубликатов в очереди 1-й линии")
     p_dup.add_argument("--filter", type=int, default=int(os.getenv("FILTER_ID", "984")), help="ID фильтра очереди")
@@ -1032,6 +1103,7 @@ def main():
         "apply": cmd_apply,
         "wlan": cmd_wlan,
         "summary": cmd_summary,
+        "ad": cmd_ad,
         "skip": cmd_skip,
         "reset-session": cmd_reset_session,
         "catalog": cmd_catalog,

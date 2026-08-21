@@ -22,6 +22,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-2")
 EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "3072"))
 
 _fastembed_model = None
+_reranker_model = None
 
 
 def get_local_embed_model():
@@ -36,6 +37,18 @@ def get_local_embed_model():
         except Exception as e:
             logger.debug("Ошибка инициализации fastembed: %s", e)
     return _fastembed_model
+
+
+def get_reranker_model():
+    """Ленивая загрузка BGE Cross-Encoder reranker."""
+    global _reranker_model
+    if _reranker_model is None:
+        try:
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
+            _reranker_model = TextCrossEncoder(model_name="BAAI/bge-reranker-base")
+        except Exception as e:
+            logger.debug("Ошибка инициализации BGE-Reranker: %s", e)
+    return _reranker_model
 
 
 def clean_html(raw_html: str | None) -> str:
@@ -437,26 +450,66 @@ def search_local_kb(
     return scored_items[:limit]
 
 
+def rerank_candidates(
+    query_text: str, candidates: list[dict[str, Any]], top_k: int = 3
+) -> list[dict[str, Any]]:
+    """
+    Выполняет Cross-Encoder Re-ranking кандидатов из векторного поиска.
+    Повышает точность ранжирования и устраняет ложноположительные совпадения.
+    """
+    if not candidates or len(candidates) <= 1:
+        return candidates[:top_k]
+
+    reranker = get_reranker_model()
+    if not reranker:
+        return candidates[:top_k]
+
+    try:
+        doc_texts = [
+            f"Тема: {c.get('name', '')}\nПроблема: {c.get('problem', '')}\nРешение: {c.get('solution', '')}"
+            for c in candidates
+        ]
+        scores = list(reranker.rerank(query_text, doc_texts))
+        for c, score in zip(candidates, scores):
+            s_val = float(score)
+            c["rerank_score"] = round(s_val, 4)
+            # Нормализация скора логита в проценты (сигмоида)
+            import math
+            prob = 1.0 / (1.0 + math.exp(-max(-15.0, min(15.0, s_val))))
+            c["rerank_pct"] = round(prob * 100.0, 1)
+
+        # Сортируем по Cross-Encoder скору (от наибольшего к наименьшему)
+        candidates.sort(key=lambda x: x.get("rerank_score", -999.0), reverse=True)
+        return candidates[:top_k]
+    except Exception as e:
+        logger.debug("Ошибка re-ranking: %s", e)
+        return candidates[:top_k]
+
+
 async def search_knowledge_base(
     query_text: str, limit: int = 3, distance_threshold: float = 0.70
 ) -> list[dict[str, Any]]:
     """
-    Двухуровневый семантический поиск:
-    1. Tier 1: PostgreSQL + pgvector (3072 dim Gemini embeddings)
-    2. Tier 2 (Fallback): Локальный JSON кэш (FastEmbed 384 dim)
+    Двухуровневый семантический поиск с умным Cross-Encoder Re-ranking:
+    1. Tier 1: PostgreSQL + pgvector (3072 dim Gemini embeddings) -> BGE Reranker
+    2. Tier 2 (Fallback): Локальный JSON кэш (FastEmbed 384 dim) -> BGE Reranker
     """
     clean_query = clean_html(query_text).strip()
     if not clean_query:
         return []
 
+    # Запрашиваем расширенную выборку кандидатов (в 3 раза больше limit) для качественного реранкинга
+    fetch_limit = max(10, limit * 3)
+
     # 1. Попытка поиска в PostgreSQL (Tier 1)
-    pg_results = await search_pgvector(clean_query, limit=limit, distance_threshold=distance_threshold)
+    pg_results = await search_pgvector(clean_query, limit=fetch_limit, distance_threshold=distance_threshold)
     if pg_results is not None:
-        return pg_results
+        return rerank_candidates(clean_query, pg_results, top_k=limit)
 
     # 2. Fallback: локальный поиск в памяти (Tier 2)
     local_vector = get_fastembed_vector(clean_query)
-    return search_local_kb(local_vector, limit=limit, distance_threshold=distance_threshold)
+    local_results = search_local_kb(local_vector, limit=fetch_limit, distance_threshold=distance_threshold)
+    return rerank_candidates(clean_query, local_results, top_k=limit)
 
 
 # ---------------------------------------------------------------------------

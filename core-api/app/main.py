@@ -2,7 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import ORJSONResponse, RedirectResponse
 
 from app.database.db import init_db
 from app.routers import admin, auth, service_tasks, tasks, users, ai_worker
@@ -56,6 +56,7 @@ app = FastAPI(
     title="IntraService Core API Gateway",
     description="Микросервис-шлюз для интеграции с API IntraService",
     version="1.0.0",
+    default_response_class=ORJSONResponse,
     lifespan=lifespan,
 )
 
