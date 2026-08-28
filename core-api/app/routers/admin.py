@@ -927,12 +927,114 @@ def _parse_task_custom_fields(data_xml: str | None) -> dict[str, str]:
     return res
 
 
-def _classify_queue_task(task: dict[str, Any]) -> dict[str, Any]:
+async def _get_service_catalog_map() -> tuple[dict[int, dict], list[dict], dict[int, list[dict]]]:
+    """
+    Возвращает:
+    1. svc_map: словарь всех услуг по ID.
+    2. root_services: список корневых сервисов (17 штук).
+    3. subservices_by_root: словарь [root_id -> list of child services].
+    """
+    r = get_redis_client()
+    catalog_str = await r.get("worker:service_catalog")
+    if not catalog_str:
+        with contextlib.suppress(Exception):
+            from app.services.worker import sync_service_catalog
+            await sync_service_catalog()
+            catalog_str = await r.get("worker:service_catalog")
+
+    if not catalog_str:
+        return {}, [], {}
+
+    try:
+        flat_list = json.loads(catalog_str)
+        svc_map = {s["id"]: s for s in flat_list if "id" in s}
+
+        # 1. Выбираем корневые сервисы (ParentId отсутствует или равен None/0)
+        root_services = []
+        for s in flat_list:
+            if not s.get("parent_id") or s.get("parent_id") not in svc_map:
+                root_services.append({
+                    "id": s["id"],
+                    "name": s["name"],
+                })
+
+        # 2. Сопоставление дочерних подсервисов с корневыми разделами
+        subservices_by_root: dict[int, list[dict]] = {r["id"]: [] for r in root_services}
+        for s in flat_list:
+            s_id = s["id"]
+            curr = s
+            visited = set()
+            while curr.get("parent_id") and curr.get("parent_id") in svc_map and curr.get("parent_id") not in visited:
+                visited.add(curr["id"])
+                curr = svc_map[curr.get("parent_id")]
+            root_id = curr.get("id")
+            if root_id and root_id in subservices_by_root and s_id != root_id:
+                subservices_by_root[root_id].append({
+                    "id": s_id,
+                    "name": s.get("name"),
+                    "parent_id": s.get("parent_id"),
+                })
+
+        return svc_map, root_services, subservices_by_root
+    except Exception as e:
+        logger.error("Ошибка парсинга каталога услуг: %s", e)
+        return {}, [], {}
+
+
+def _resolve_service_hierarchy(service_id: int | None, svc_map: dict[int, dict]) -> dict[str, Any]:
+    """
+    По ServiceId находит точное имя подуслуги, корневой сервис IntraService (1 из 17) и цепочку навигации.
+    """
+    if not service_id or service_id not in svc_map:
+        return {
+            "service_id": service_id,
+            "service_name": "1-я линия технической поддержки",
+            "root_service_id": None,
+            "root_service_name": "11. Общие вопросы" if not service_id else "Прочие сервисы",
+            "service_path": "1-я линия технической поддержки",
+        }
+
+    curr = svc_map[service_id]
+    leaf_name = curr.get("name") or "Не указана"
+    path_names = [leaf_name]
+
+    visited = set()
+    while curr.get("parent_id") and curr.get("parent_id") in svc_map and curr.get("parent_id") not in visited:
+        visited.add(curr["id"])
+        curr = svc_map[curr.get("parent_id")]
+        path_names.append(curr.get("name") or "")
+
+    root_id = curr.get("id")
+    root_name = curr.get("name") or leaf_name
+    path_names.reverse()
+
+    return {
+        "service_id": service_id,
+        "service_name": leaf_name,
+        "root_service_id": root_id,
+        "root_service_name": root_name,
+        "service_path": " ➔ ".join(path_names),
+    }
+
+
+def _format_comment(template: str, pc_name: str = "", target_service: str = "", master_task_id: str = "") -> str:
+    res = template or ""
+    if "{pc_name}" in res:
+        res = res.replace("{pc_name}", pc_name if pc_name else "вашем ПК")
+    if "{target_service}" in res:
+        res = res.replace("{target_service}", target_service if target_service else "соответствующий раздел")
+    if "{master_task_id}" in res:
+        res = res.replace("{master_task_id}", master_task_id)
+    return res
+
+
+def _classify_queue_task(task: dict[str, Any], svc_info: dict[str, Any] | None = None, pc_name: str = "") -> dict[str, Any]:
     templates = _get_all_templates()
     name = (task.get("Name") or "").strip()
     desc = (task.get("Description") or "").strip()
-    s_name = (task.get("ServiceName") or "").strip()
-    full_text = f"{name} {desc} {s_name}".lower()
+    s_name = (svc_info.get("service_name") if svc_info else task.get("ServiceName")) or ""
+    r_name = (svc_info.get("root_service_name") if svc_info else "") or ""
+    full_text = f"{name} {desc} {s_name} {r_name}".lower()
 
     # 1. Wi-Fi / WLAN
     if any(w in full_text for w in ["wifi", "wi-fi", "вайфай", "вай-фай", "wlan", "беспроводн"]):
@@ -941,12 +1043,14 @@ def _classify_queue_task(task: dict[str, Any]) -> dict[str, Any]:
             "rule_type": "wlan_access",
             "template_key": "wifi_access",
             "category_label": "Wi-Fi (WLAN-WORKNET)",
+            "ai_summary": "Запрос на предоставление корпоративного доступа к сети Wi-Fi (WLAN-WORKNET). Подготовлена инструкция и реквизиты авторизации (Статус 29: Выполнена).",
             "target_service_name": "Wi-Fi доступ",
             "is_redirect": False,
+            "has_ai_solution": True,
             "score": 10,
             "target_status_id": tmpl["status_id"],
             "target_status_name": tmpl["status_name"],
-            "suggested_comment": tmpl["template"],
+            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name),
             "expenses": tmpl.get("expenses", 10),
             "badge_color": "success",
         }
@@ -954,16 +1058,19 @@ def _classify_queue_task(task: dict[str, Any]) -> dict[str, Any]:
     # 2. 1C:Предприятие
     if any(w in full_text for w in ["1с", "1c", "зуп", "утп", "erp", "бухгалтерия 8", "унф", "фреш"]) and not any(w in full_text for w in ["принтер", "печать", "зависает"]):
         tmpl = templates.get("redirect_1c", DEFAULT_TEMPLATES_CATALOG["redirect_1c"])
+        target_svc = "06. 1C:Предприятие"
         return {
             "rule_type": "redirect_1c",
             "template_key": "redirect_1c",
             "category_label": "Редирект ➔ 06. 1С",
-            "target_service_name": "06. 1C:Предприятие",
+            "ai_summary": "Вопрос по функционалу или ошибкам 1С (ЗУП/ERP/Бухгалтерия). Заявка зарегистрирована в первой линии, требуется перенаправление в 06. 1С (Статус 30: Отменена).",
+            "target_service_name": target_svc,
             "is_redirect": True,
+            "has_ai_solution": True,
             "score": 10,
             "target_status_id": tmpl["status_id"],
             "target_status_name": tmpl["status_name"],
-            "suggested_comment": tmpl["template"],
+            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name, target_service=target_svc),
             "expenses": tmpl.get("expenses", 5),
             "badge_color": "warning",
         }
@@ -971,16 +1078,19 @@ def _classify_queue_task(task: dict[str, Any]) -> dict[str, Any]:
     # 3. Directum
     if any(w in full_text for w in ["directum", "директум", "директуме"]):
         tmpl = templates.get("redirect_directum", DEFAULT_TEMPLATES_CATALOG["redirect_directum"])
+        target_svc = "05. Directum"
         return {
             "rule_type": "redirect_directum",
             "template_key": "redirect_directum",
             "category_label": "Редирект ➔ 05. Directum",
-            "target_service_name": "05. Directum",
+            "ai_summary": "Вопрос по СЭД Directum / B2B. Требуется перенаправление в службу поддержки Directum (Статус 30: Отменена).",
+            "target_service_name": target_svc,
             "is_redirect": True,
+            "has_ai_solution": True,
             "score": 10,
             "target_status_id": tmpl["status_id"],
             "target_status_name": tmpl["status_name"],
-            "suggested_comment": tmpl["template"],
+            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name, target_service=target_svc),
             "expenses": tmpl.get("expenses", 5),
             "badge_color": "warning",
         }
@@ -992,12 +1102,14 @@ def _classify_queue_task(task: dict[str, Any]) -> dict[str, Any]:
             "rule_type": "hardware_repair",
             "template_key": "hardware_repair",
             "category_label": "Ожидание устройства (Ремонт)",
+            "ai_summary": "Аппаратный сбой рабочей станции (шум, перегрев, сбои ОС, синий экран). Требуется доставка системного блока/ноутбука в каб. 112 на аппаратную диагностику (Статус 48: Ожидание устройства).",
             "target_service_name": "Ремонт и обслуживание ПК (112 каб.)",
             "is_redirect": False,
+            "has_ai_solution": True,
             "score": 9,
             "target_status_id": tmpl["status_id"],
             "target_status_name": tmpl["status_name"],
-            "suggested_comment": tmpl["template"],
+            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name),
             "expenses": tmpl.get("expenses", 10),
             "badge_color": "primary",
         }
@@ -1005,16 +1117,19 @@ def _classify_queue_task(task: dict[str, Any]) -> dict[str, Any]:
     # 5. Сброс пароля / ИБ
     if any(w in full_text for w in ["сброс парол", "забыл парол", "разблокиров", "учетн", "заблокирован"]):
         tmpl = templates.get("redirect_security", DEFAULT_TEMPLATES_CATALOG["redirect_security"])
+        target_svc = "08. Информационная безопасность"
         return {
             "rule_type": "redirect_security",
             "template_key": "redirect_security",
             "category_label": "Редирект ➔ 08. ИБ",
-            "target_service_name": "08. Информационная безопасность",
+            "ai_summary": "Запрос на сброс/разблокировку пароля учетной записи или доступы. Требуется перенаправление в службу информационной безопасности (Статус 30: Отменена).",
+            "target_service_name": target_svc,
             "is_redirect": True,
+            "has_ai_solution": True,
             "score": 9,
             "target_status_id": tmpl["status_id"],
             "target_status_name": tmpl["status_name"],
-            "suggested_comment": tmpl["template"],
+            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name, target_service=target_svc),
             "expenses": tmpl.get("expenses", 5),
             "badge_color": "warning",
         }
@@ -1026,12 +1141,14 @@ def _classify_queue_task(task: dict[str, Any]) -> dict[str, Any]:
             "rule_type": "file_lock_smb",
             "template_key": "file_lock_smb",
             "category_label": "Файловые блокировки (SMB)",
+            "ai_summary": "Блокировка общего файла на сетевом диске/SMB другим пользователем. Подготовлен ответ по проверке открытых сессий (Статус 27: В работе).",
             "target_service_name": "Файловые ресурсы",
             "is_redirect": False,
+            "has_ai_solution": True,
             "score": 8,
             "target_status_id": tmpl["status_id"],
             "target_status_name": tmpl["status_name"],
-            "suggested_comment": tmpl["template"],
+            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name),
             "expenses": tmpl.get("expenses", 10),
             "badge_color": "info",
         }
@@ -1039,32 +1156,38 @@ def _classify_queue_task(task: dict[str, Any]) -> dict[str, Any]:
     # 7. Оргтехника / Принтеры
     if any(w in full_text for w in ["принтер", "мфу", "сканер", "картридж", "замяти", "не печатает"]):
         tmpl = templates.get("redirect_printers", DEFAULT_TEMPLATES_CATALOG["redirect_printers"])
+        target_svc = "03. Оргтехника"
         return {
             "rule_type": "redirect_printers",
             "template_key": "redirect_printers",
             "category_label": "Оргтехника (03)",
-            "target_service_name": "03. Оргтехника",
+            "ai_summary": "Сбой печати, замятие бумаги или замена картриджа оргтехники. Рекомендуется перевод в раздел 03. Оргтехника (Статус 30: Отменена).",
+            "target_service_name": target_svc,
             "is_redirect": True,
+            "has_ai_solution": True,
             "score": 8,
             "target_status_id": tmpl["status_id"],
             "target_status_name": tmpl["status_name"],
-            "suggested_comment": tmpl["template"],
+            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name, target_service=target_svc),
             "expenses": tmpl.get("expenses", 5),
             "badge_color": "info",
         }
 
-    # 8. Общее
+    # 8. Общее (Ручной разбор / Дефолт)
+    fallback_name = (svc_info.get("root_service_name") if svc_info else None) or s_name or "1-я линия техподдержки"
     tmpl = templates.get("general", DEFAULT_TEMPLATES_CATALOG["general"])
     return {
         "rule_type": "general",
         "template_key": "general",
         "category_label": "1-я линия техподдержки",
-        "target_service_name": s_name or "1-я линия техподдержки",
+        "ai_summary": "Обращение первой линии техподдержки. Требуется экспертный анализ оператора и выбор индивидуального решения.",
+        "target_service_name": fallback_name,
         "is_redirect": False,
+        "has_ai_solution": False,
         "score": 6,
         "target_status_id": tmpl["status_id"],
         "target_status_name": tmpl["status_name"],
-        "suggested_comment": tmpl["template"],
+        "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name),
         "expenses": tmpl.get("expenses", 10),
         "badge_color": "secondary",
     }
@@ -1102,27 +1225,48 @@ async def get_triage_queue(filter_id: int = 984, limit: int = 50):
     elif isinstance(raw_res, list):
         tasks = raw_res
 
+    svc_map, root_services, subservices_by_root = await _get_service_catalog_map()
+
     items = []
     for t in tasks:
         t_id = t.get("Id")
         if not t_id:
             continue
         c_fields = _parse_task_custom_fields(t.get("Data"))
-        cls_info = _classify_queue_task(t)
+        svc_info = _resolve_service_hierarchy(t.get("ServiceId"), svc_map)
+        cls_info = _classify_queue_task(t, svc_info, pc_name=c_fields.get("pc_name", ""))
+        has_ai = cls_info.get("has_ai_solution", False)
 
-        s_name = t.get("ServiceName") or (t.get("Service", {}).get("Name") if isinstance(t.get("Service"), dict) else None) or "1-я линия технической поддержки"
+        # Формируем список вложений
+        attachments = []
+        raw_files = t.get("Attachments") or t.get("Files") or []
+        if isinstance(raw_files, list):
+            for f in raw_files:
+                f_id = f.get("Id")
+                attachments.append({
+                    "id": f_id,
+                    "name": f.get("Name") or f.get("FileName") or "Вложение",
+                    "size": f.get("Size") or f.get("Length"),
+                    "content_type": f.get("ContentType") or "",
+                    "url": f.get("Url") or f.get("DownloadUrl") or f"/admin/api/attachments/{f_id}",
+                })
 
         items.append({
             "id": t_id,
             "name": t.get("Name") or "Без темы",
             "description": t.get("Description") or "",
+            "ai_summary": cls_info.get("ai_summary", ""),
             "creator": t.get("Creator") or t.get("CreatorLogin") or "Пользователь",
             "creator_login": t.get("CreatorLogin") or "",
             "created": t.get("Created") or "",
-            "service_id": t.get("ServiceId"),
-            "service_name": s_name,
-            "target_service_name": cls_info.get("target_service_name") or s_name,
+            "service_id": svc_info["service_id"],
+            "service_name": svc_info["service_name"],
+            "root_service_id": svc_info["root_service_id"],
+            "root_service_name": svc_info["root_service_name"],
+            "service_path": svc_info["service_path"],
+            "target_service_name": cls_info.get("target_service_name") or svc_info["root_service_name"],
             "is_redirect": cls_info.get("is_redirect", False),
+            "has_ai_solution": has_ai,
             "status_id": t.get("StatusId"),
             "status_name": t.get("StatusName") or "Открыта",
             "pc_name": c_fields["pc_name"],
@@ -1136,12 +1280,21 @@ async def get_triage_queue(filter_id: int = 984, limit: int = 50):
             "target_status_id": cls_info["target_status_id"],
             "target_status_name": cls_info["target_status_name"],
             "suggested_comment": cls_info["suggested_comment"],
+            "original_comment": cls_info["suggested_comment"],
             "expenses": cls_info.get("expenses", 10),
+            "is_private": False,
             "badge_color": cls_info["badge_color"],
-            "has_attachments": bool(t.get("Attachments") or t.get("Files")),
+            "has_attachments": len(attachments) > 0,
+            "attachments": attachments,
         })
 
-    return {"total": len(items), "filter_id": filter_id, "tasks": items}
+    return {
+        "total": len(items),
+        "filter_id": filter_id,
+        "root_services": root_services,
+        "subservices_by_root": subservices_by_root,
+        "tasks": items,
+    }
 
 
 
@@ -1193,17 +1346,24 @@ async def get_task_details(task_id: int):
                 "url": f.get("Url") or f.get("DownloadUrl") or f"/admin/api/attachments/{f.get('Id')}",
             })
 
+    svc_map, _, _ = await _get_service_catalog_map()
+    svc_info = _resolve_service_hierarchy(task_data.get("ServiceId"), svc_map)
     c_fields = _parse_task_custom_fields(task_data.get("Data"))
-    cls_info = _classify_queue_task(task_data)
+    cls_info = _classify_queue_task(task_data, svc_info, pc_name=c_fields.get("pc_name", ""))
 
     return {
         "id": task_id,
         "name": task_data.get("Name") or "Без темы",
         "description": task_data.get("Description") or "",
+        "ai_summary": cls_info.get("ai_summary", ""),
         "creator": task_data.get("Creator") or task_data.get("CreatorLogin") or "Пользователь",
         "creator_login": task_data.get("CreatorLogin") or "",
         "created": task_data.get("Created") or "",
-        "service_name": task_data.get("ServiceName") or "",
+        "service_id": svc_info["service_id"],
+        "service_name": svc_info["service_name"],
+        "root_service_id": svc_info["root_service_id"],
+        "root_service_name": svc_info["root_service_name"],
+        "service_path": svc_info["service_path"],
         "status_id": task_data.get("StatusId"),
         "status_name": task_data.get("StatusName") or "",
         "pc_name": c_fields["pc_name"],

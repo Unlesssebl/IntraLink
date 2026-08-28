@@ -1,34 +1,72 @@
 <template>
   <div class="topbar">
+    <!-- Левая часть: Заголовок текущего экрана -->
     <div class="topbar-left">
       <h1 class="topbar-title">{{ pageTitle }}</h1>
     </div>
 
+    <!-- Центр: Быстрый поиск и вызов Command Palette -->
     <div class="topbar-center">
       <button class="palette-trigger-btn" @click="$emit('open-palette')">
         <svg viewBox="0 0 24 24" width="16" height="16">
           <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2" fill="none"/>
           <line x1="21" y1="21" x2="16.65" y2="16.65" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
         </svg>
-        <span>Поиск или команда...</span>
+        <span>Поиск (#ID, ПК, сервис) или команда...</span>
         <kbd class="kbd-badge">Ctrl K</kbd>
       </button>
     </div>
 
+    <!-- Правая часть: Тема, звук, обновление, профиль -->
     <div class="topbar-right">
-      <!-- Звуковой сигнал о новых заявках -->
+      <!-- Переключатель темы: Светлая (Notion) / Темная -->
+      <button 
+        class="icon-toggle-btn" 
+        :title="themeStore.currentTheme === 'light' ? 'Переключить на темную тему' : 'Переключить на светлую тему'"
+        @click="themeStore.toggleTheme"
+      >
+        <svg v-if="themeStore.currentTheme === 'light'" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1" x2="12" y2="3"/>
+          <line x1="12" y1="21" x2="12" y2="23"/>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+          <line x1="1" y1="12" x2="3" y2="12"/>
+          <line x1="21" y1="12" x2="23" y2="12"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        </svg>
+        <svg v-else viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
+
+      <!-- Переключатель звука -->
       <button 
         class="icon-toggle-btn" 
         :class="{ active: soundEnabled }" 
-        :title="soundEnabled ? 'Звук уведомлений включен' : 'Звук уведомлений выключен'"
+        :title="soundEnabled ? 'Звук уведомлений включен (нажмите для выключения)' : 'Звук уведомлений выключен (нажмите для включения)'"
         @click="toggleSound"
       >
-        <span v-if="soundEnabled">🔔</span>
-        <span v-else>🔕</span>
+        <svg v-if="soundEnabled" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+        <svg v-else viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+          <path d="M18.63 13A17.89 17.89 0 0 1 18 8"/>
+          <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/>
+          <path d="M18 8a6 6 0 0 0-9.33-5"/>
+          <line x1="1" y1="1" x2="23" y2="23"/>
+        </svg>
       </button>
 
-      <!-- Кнопка обновления данных -->
-      <button class="btn btn-outline btn-sm topbar-refresh-btn" :disabled="isRefreshing" @click="handleRefresh">
+      <!-- Кнопка обновления с анимацией -->
+      <button 
+        class="btn btn-outline btn-sm topbar-refresh-btn" 
+        :disabled="isRefreshing" 
+        @click="triggerRefresh"
+      >
         <svg v-if="isRefreshing" class="spin" viewBox="0 0 24 24" width="14" height="14">
           <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity="0.3"/>
           <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" fill="none"/>
@@ -41,11 +79,9 @@
         <span>Обновить</span>
       </button>
 
-      <!-- Пользователь и Выход -->
+      <!-- Меню профиля / выход -->
       <div class="user-profile-menu">
-        <div class="user-avatar">
-          {{ userInitials }}
-        </div>
+        <div class="user-avatar">{{ userInitials }}</div>
         <span class="user-name">{{ userName }}</span>
         <button class="btn-ghost btn-sm" title="Выйти из сессии" @click="handleLogout">
           <svg viewBox="0 0 24 24" width="16" height="16">
@@ -59,45 +95,52 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useRoute } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
 import { useToastStore } from '../stores/toast';
+import { useThemeStore } from '../stores/theme';
+import { useSound } from '../composables/useSound';
 
-const emit = defineEmits(['refresh', 'open-palette']);
+const emit = defineEmits<{
+  (e: 'refresh'): void;
+  (e: 'open-palette'): void;
+}>();
 
 const route = useRoute();
 const authStore = useAuthStore();
 const toastStore = useToastStore();
+const themeStore = useThemeStore();
+const sound = useSound();
 
 const isRefreshing = ref(false);
 const soundEnabled = ref(localStorage.getItem('intralink_sound_enabled') === 'true');
 
 const pageTitle = computed(() => {
-  return route.meta?.title || 'Панель администратора';
+  return (route.meta?.title as string) || 'Панель администратора';
 });
 
 const userName = computed(() => {
-  return authStore.user?.username || 'Оператор';
+  return authStore.user?.username || 'Инженер Helpdesk';
 });
 
 const userInitials = computed(() => {
-  const name = userName.value;
-  return name.substring(0, 2).toUpperCase();
+  return userName.value.substring(0, 2).toUpperCase();
 });
 
 const toggleSound = () => {
   soundEnabled.value = !soundEnabled.value;
   localStorage.setItem('intralink_sound_enabled', soundEnabled.value.toString());
   if (soundEnabled.value) {
-    toastStore.info('Звуковые уведомления включены');
+    sound.playSuccessSound();
+    toastStore.info('Звуковые оповещения включены', 'Звук');
   } else {
-    toastStore.info('Звуковые уведомления отключены');
+    toastStore.info('Звуковые оповещения отключены', 'Звук');
   }
 };
 
-const handleRefresh = async () => {
+const triggerRefresh = async () => {
   isRefreshing.value = true;
   emit('refresh');
   setTimeout(() => {
@@ -114,118 +157,131 @@ const handleLogout = async () => {
 
 <style scoped>
 .topbar {
-  height: 64px;
-  padding: 0 1.75rem;
-  background: var(--surface);
+  padding: 1rem 2rem;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1.5rem;
+  background: var(--surface);
   position: sticky;
   top: 0;
   z-index: 100;
 }
 
 .topbar-left {
-  display: flex;
-  align-items: center;
+  min-width: 0;
 }
 
 .topbar-title {
-  font-size: 1.15rem;
+  font-size: 1.1rem;
   font-weight: 700;
-  color: var(--text);
   letter-spacing: -0.02em;
+  color: var(--text);
+  white-space: nowrap;
 }
 
 .topbar-center {
   flex: 1;
-  max-width: 420px;
+  max-width: 450px;
 }
 
 .palette-trigger-btn {
   width: 100%;
-  background: var(--surface-2);
+  background: rgba(0, 0, 0, 0.35);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-3);
-  padding: 0.45rem 0.85rem;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.82rem;
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  font-size: 0.85rem;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.15s;
 }
+
 .palette-trigger-btn:hover {
   border-color: var(--border-hover);
   color: var(--text-2);
   background: rgba(255, 255, 255, 0.03);
 }
+
 .palette-trigger-btn span {
   flex: 1;
   text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .kbd-badge {
-  font-size: 0.7rem;
-  background: rgba(255, 255, 255, 0.06);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.68rem;
+  background: rgba(255, 255, 255, 0.08);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 0.15rem 0.4rem;
-  color: var(--text-3);
-  font-family: inherit;
+  padding: 0.1rem 0.4rem;
+  color: var(--text-2);
 }
 
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: 0.85rem;
+  gap: 0.75rem;
 }
 
 .icon-toggle-btn {
   background: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.4rem 0.6rem;
-  font-size: 0.95rem;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
+  font-size: 0.95rem;
   transition: all 0.15s;
+  opacity: 0.7;
 }
-.icon-toggle-btn:hover {
-  border-color: var(--border-hover);
-  background: rgba(255, 255, 255, 0.04);
-}
+
 .icon-toggle-btn.active {
-  background: rgba(79, 70, 229, 0.15);
+  opacity: 1;
   border-color: rgba(79, 70, 229, 0.4);
+  background: rgba(79, 70, 229, 0.1);
+}
+
+.icon-toggle-btn:hover {
+  opacity: 1;
+  border-color: var(--border-hover);
 }
 
 .user-profile-menu {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding-left: 0.75rem;
+  padding-left: 0.5rem;
   border-left: 1px solid var(--border);
 }
 
 .user-avatar {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   background: var(--primary);
-  color: #fff;
+  color: white;
+  font-size: 0.72rem;
   font-weight: 700;
-  font-size: 0.75rem;
   display: flex;
   align-items: center;
   justify-content: center;
+  letter-spacing: -0.02em;
 }
 
 .user-name {
-  font-size: 0.85rem;
-  font-weight: 500;
+  font-size: 0.82rem;
+  font-weight: 600;
   color: var(--text);
 }
 </style>

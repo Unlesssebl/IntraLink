@@ -23,7 +23,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, provide } from 'vue';
 import AppSidebar from './AppSidebar.vue';
 import AppTopbar from './AppTopbar.vue';
@@ -31,10 +31,10 @@ import ToastContainer from './ToastContainer.vue';
 import CommandPalette from './CommandPalette.vue';
 import TaskDrawer from './TaskDrawer.vue';
 
-const paletteRef = ref(null);
-const refreshCallbacks = new Set();
+const paletteRef = ref<InstanceType<typeof CommandPalette> | null>(null);
+const refreshCallbacks = new Set<() => void>();
 
-const registerRefreshCallback = (cb) => {
+const registerRefreshCallback = (cb: () => void) => {
   refreshCallbacks.add(cb);
   return () => refreshCallbacks.delete(cb);
 };

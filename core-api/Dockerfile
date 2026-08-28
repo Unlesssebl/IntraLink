@@ -1,12 +1,13 @@
 # ----------------------------------------------------
-# Этап 1: Сборка фронтенда Admin UI (Node.js)
+# Этап 1: Сборка фронтенда Web UI (Node.js)
 # ----------------------------------------------------
 FROM node:20-alpine AS frontend-builder
-WORKDIR /app/admin-ui
-COPY admin-ui/package*.json ./
+WORKDIR /app/intra-web
+COPY intra-web/package*.json ./
 RUN npm ci
-COPY admin-ui/ ./
+COPY intra-web/ ./
 RUN npm run build
+
 
 # ----------------------------------------------------
 # Этап 2: Финальный контейнер Core API (Python 3.13)

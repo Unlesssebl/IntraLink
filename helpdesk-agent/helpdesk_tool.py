@@ -27,7 +27,7 @@ from session_state import (
     get_skipped_task_ids,
     reset_session_state,
 )
-from executors.ad import ActiveDirectoryExecutor
+from executors.ad import ActiveDirectoryExecutor, generate_sam_account_name, generate_secure_password
 from llm.ollama_client import OllamaClient
 
 DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), "downloads")
@@ -495,6 +495,35 @@ async def cmd_apply(args):
                     else:
                         print(f"✓ AD: {ad_res.message}")
 
+            # 0.2. Создание пользователя в Active Directory при финализации
+            if status_id == 29 and ("{password}" in (comment or "") or "учетная запись успешно создана" in (comment or "").lower()):
+                ad_exec = ActiveDirectoryExecutor()
+                task_data = curr or await client.get_task_details(task_id) or {}
+                details = ad_exec.extract_user_creation_details_from_task(task_data)
+
+                if details.get("surname") and details.get("name"):
+                    print(f"⚡ [AD Auto-Execution] Создание пользователя в AD для {details['surname']} {details['name']}...")
+                    create_res = ad_exec.create_user_account(
+                        surname=details["surname"],
+                        name=details["name"],
+                        patronymic=details.get("patronymic"),
+                        company=details.get("company"),
+                        department=details.get("department"),
+                        phone=details.get("phone"),
+                        pc_name=details.get("pc_name"),
+                        title=details.get("title"),
+                        creator_company=details.get("creator_company"),
+                        creator_dept=details.get("creator_department"),
+                    )
+                    if not create_res.success:
+                        print(f"❌ СБОЙ AD: {create_res.error}. Перевод в статус 29 отменен, заявка переводится в '27 В работе'.", file=sys.stderr)
+                        status_id = 27
+                        comment = f"Не удалось автоматически создать учетную запись в AD: {create_res.error}. Заявка принята в ручную обработку."
+                    else:
+                        print(f"✓ AD: {create_res.message} (Логин: {create_res.sam_account_name}, Пароль: {create_res.password})")
+                        comment = comment.replace("{password}", create_res.password)
+                        comment = comment.replace("{login}", create_res.sam_account_name)
+
             # 1. Если статус финальный или меняется (29, 30, 35, 48), сначала берем в работу (27) с назначением исполнителя
             if status_id != 27:
                 await client.update_task(task_id=task_id, status_id=27, executor_ids=executor_ids)
@@ -638,6 +667,129 @@ async def cmd_wlan(args):
                     service_name=task.get("ServiceName") or "Wi-Fi",
                     status_name="Выполнена",
                     classification_data={"type": "auto_wlan_execution", "status_id": 29},
+                )
+            except Exception:
+                pass
+
+            if update_ok and exp_ok:
+                print(f"🎯 УСПЕХ: Заявка #{task_id} закрыта со статусом 29 (Выполнена) и списанием 10 мин трудозатрат.\n")
+                add_applied_tasks([task_id], 29)
+            else:
+                print(f"⚠️ Ошибка обновления статуса заявки #{task_id} в IntraService.", file=sys.stderr)
+    finally:
+        await client.close()
+
+
+async def cmd_create_user(args):
+    """Автоматическое создание учетной записи пользователя в Active Directory и закрытие заявки."""
+    client = IntraServiceClient()
+    ad_exec = ActiveDirectoryExecutor()
+    try:
+        raw_ids = str(args.task_id).split(",")
+        task_ids = [int(x.strip()) for x in raw_ids if x.strip().isdigit()]
+        if not task_ids:
+            print(f"❌ Некорректный ID заявки: '{args.task_id}'", file=sys.stderr)
+            sys.exit(1)
+
+        executor_ids = getattr(args, "executor", None) or "8664,10502"
+        dry_run = args.dry_run
+
+        print(f"=== ⚡ Автоматическое создание пользователя (Active Directory) ===")
+        print(f"Целевые заявки: {', '.join(f'#{tid}' for tid in task_ids)}")
+        print(f"Исполнители:    {executor_ids} (Беликов Ален + Беликов Ален_assitant)\n")
+
+        for task_id in task_ids:
+            task = await client.get_task_details(task_id)
+            if not task:
+                print(f"❌ Заявка #{task_id} не найдена в IntraService.", file=sys.stderr)
+                continue
+
+            details = ad_exec.extract_user_creation_details_from_task(task)
+            surname = getattr(args, "surname", None) or details.get("surname")
+            emp_name = getattr(args, "name", None) or details.get("name")
+            patronymic = getattr(args, "patronymic", None) or details.get("patronymic")
+            company = getattr(args, "company", None) or details.get("company")
+            dept = getattr(args, "department", None) or details.get("department")
+            phone = getattr(args, "phone", None) or details.get("phone")
+            pc_name = getattr(args, "pc_name", None) or details.get("pc_name")
+            title = getattr(args, "title", None) or details.get("title")
+
+            if not surname or not emp_name:
+                print(f"❌ Заявка #{task_id}: Не удалось определить ФИО сотрудника. Укажите вручную: `--surname <Фамилия> --name <Имя>`", file=sys.stderr)
+                continue
+
+            fio_str = f"{surname} {emp_name}" + (f" {patronymic}" if patronymic else "")
+            print(f"--- Обработка заявки #{task_id} ---")
+            print(f"Сотрудник:     {fio_str}")
+            print(f"Должность:     {title or '—'}")
+            print(f"Подразделение: {dept or '—'} ({company or '—'})")
+            print(f"Телефон / ПК:  {phone or '—'} / {pc_name or '—'}")
+
+            if dry_run:
+                base_sam = generate_sam_account_name(surname, emp_name, patronymic)
+                print(f"[DRY-RUN] Сгенерированный логин: {base_sam}")
+                print(f"[DRY-RUN] Сгенерированный пароль: {generate_secure_password(10)}")
+                print("[DRY-RUN] Симуляция завершена. Учетная запись не создавалась.\n")
+                continue
+
+            # Создание в AD
+            res = ad_exec.create_user_account(
+                surname=surname,
+                name=emp_name,
+                patronymic=patronymic,
+                company=company,
+                department=dept,
+                phone=phone,
+                pc_name=pc_name,
+                title=title,
+                creator_company=details.get("creator_company"),
+                creator_dept=details.get("creator_department"),
+            )
+
+            if not res.success:
+                print(f"❌ ОШИБКА AD: {res.error}", file=sys.stderr)
+                print(f"⚠️ Заявка #{task_id} переводится в статус '27 В работе' без закрытия.", file=sys.stderr)
+                await client.update_task(task_id=task_id, status_id=27, executor_ids=executor_ids)
+                continue
+
+            print(f"✓ {res.message}")
+            print(f"  • sAMAccountName:    {res.sam_account_name}")
+            print(f"  • UserPrincipalName: {res.user_principal_name}")
+            print(f"  • Временный пароль: {res.password}")
+            print(f"  • OU:                {res.ou}")
+            print(f"  • Группы:            {', '.join(res.groups) if res.groups else 'Domain Users'}")
+
+            comment = (
+                "Учетная запись успешно создана.\n"
+                f"Логин: {res.sam_account_name}\n"
+                f"Временный пароль: {res.password}\n"
+                "При первом входе в систему потребуется изменить пароль на постоянный.\n"
+                "Если возникнут сложности со входом, напишите в комментариях к этой заявке или подходите в АБК-3, кабинет 112."
+            )
+
+            # Двухэтапная финализация: 27 ➔ 29
+            await client.update_task(task_id=task_id, status_id=27, executor_ids=executor_ids)
+            update_ok = await client.update_task(
+                task_id=task_id,
+                status_id=29,
+                comment=comment,
+                executor_ids=executor_ids,
+            )
+            exp_ok = await client.add_expenses(task_id=task_id, minutes=10, user_id=8664)
+
+            # Индексация в RAG
+            try:
+                t_name = task.get("Name") or f"Заявка #{task_id}"
+                t_desc = task.get("Description") or ""
+                await index_task_record(
+                    task_id=task_id,
+                    original_name=t_name,
+                    problem=f"{t_name}. {t_desc}".strip(),
+                    solution=comment.strip(),
+                    service_id=task.get("ServiceId") or 0,
+                    service_name=task.get("ServiceName") or "Учетные записи",
+                    status_name="Выполнена",
+                    classification_data={"type": "auto_ad_user_creation", "status_id": 29},
                 )
             except Exception:
                 pass
@@ -1085,6 +1237,20 @@ def main():
     p_dup.add_argument("--include-skipped", action="store_true", help="Включить в выборку ранее пропущенные заявки")
     p_dup.add_argument("--json", action="store_true", help="Вывод в JSON")
 
+    # create-user / new-user (Active Directory User Creation)
+    p_cu = subparsers.add_parser("create-user", aliases=["new-user"], help="Автоматическое создание пользователя в AD и закрытие заявки")
+    p_cu.add_argument("task_id", type=str, help="ID заявки или список ID через запятую")
+    p_cu.add_argument("--surname", type=str, default=None, help="Фамилия")
+    p_cu.add_argument("--name", type=str, default=None, help="Имя")
+    p_cu.add_argument("--patronymic", type=str, default=None, help="Отчество")
+    p_cu.add_argument("--company", type=str, default=None, help="Организация")
+    p_cu.add_argument("--department", type=str, default=None, help="Подразделение")
+    p_cu.add_argument("--phone", type=str, default=None, help="Телефон")
+    p_cu.add_argument("--pc-name", type=str, default=None, help="Имя ПК")
+    p_cu.add_argument("--title", type=str, default=None, help="Должность")
+    p_cu.add_argument("--executor", type=str, default="8664,10502", help="ID исполнителей")
+    p_cu.add_argument("--dry-run", action="store_true", help="Режим симуляции")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -1102,6 +1268,8 @@ def main():
         "sync-kb": cmd_sync_kb,
         "apply": cmd_apply,
         "wlan": cmd_wlan,
+        "create-user": cmd_create_user,
+        "new-user": cmd_create_user,
         "summary": cmd_summary,
         "ad": cmd_ad,
         "skip": cmd_skip,
