@@ -112,3 +112,82 @@ async def test_apply_task_action(
     assert res["final_status_id"] == 29
     assert mock_update_task.called
     assert mock_add_expenses.called
+
+
+@pytest.mark.asyncio
+async def test_get_templates_catalog():
+    from app.routers.admin import get_templates_catalog
+    res = await get_templates_catalog()
+    assert "templates" in res
+    assert "map" in res
+    assert len(res["templates"]) >= 5
+    assert "wifi_access" in res["map"]
+
+
+@pytest.mark.asyncio
+@patch("app.routers.admin._check_host_ping_and_ports")
+async def test_get_host_diagnostics(mock_check):
+    from app.routers.admin import get_host_diagnostics
+    mock_check.return_value = {
+        "host": "WS-TEST-01",
+        "is_online": True,
+        "avg_rtt": "2ms",
+        "smb_ok": True,
+        "winrm_ok": True,
+        "status_label": "🟢 2ms",
+    }
+    res = await get_host_diagnostics("WS-TEST-01")
+    assert res["is_online"] is True
+    assert res["avg_rtt"] == "2ms"
+
+
+@pytest.mark.asyncio
+@patch("app.routers.admin.get_redis_client")
+@patch("app.services.crypto.decrypt_token")
+@patch("app.services.intraservice.get_single_task")
+@patch("app.services.intraservice.get_task_lifetime")
+async def test_get_task_details(mock_lifetime, mock_task, mock_decrypt, mock_redis):
+    from app.routers.admin import get_task_details
+    r_mock = AsyncMock()
+    r_mock.get.return_value = "encrypted_auth"
+    mock_redis.return_value = r_mock
+    mock_decrypt.return_value = "auth_str"
+    mock_task.return_value = {
+        "Id": 202,
+        "Name": "Сбой 1С ЗУП",
+        "Description": "Подробное описание проблемы",
+        "Creator": "Петров Петр",
+        "ServiceName": "1-я линия техподдержки",
+        "StatusId": 27,
+        "StatusName": "В работе",
+        "Data": '<field id="1089">WS-PETROV</field>',
+        "Attachments": [{"Id": 501, "Name": "error.png", "Size": 1024}],
+    }
+    mock_lifetime.return_value = [
+        {"Id": 1, "UserName": "Петров", "Created": "2026-08-25", "Comment": "Жду решения"}
+    ]
+
+    res = await get_task_details(202)
+    assert res["id"] == 202
+    assert res["pc_name"] == "WS-PETROV"
+    assert len(res["attachments"]) == 1
+    assert len(res["comments"]) == 1
+    assert res["comments"][0]["text"] == "Жду решения"
+
+
+@pytest.mark.asyncio
+@patch("app.routers.admin.apply_task_action")
+async def test_bulk_apply_tasks(mock_apply):
+    from app.routers.admin import bulk_apply_tasks, BulkApplyRequest, BulkApplyItem
+    mock_apply.return_value = {"success": True, "task_id": 101}
+    payload = BulkApplyRequest(
+        tasks=[
+            BulkApplyItem(task_id=101, status_id=29, comment="Готово"),
+            BulkApplyItem(task_id=102, status_id=30, comment="Редирект"),
+        ]
+    )
+    res = await bulk_apply_tasks(payload)
+    assert res["total"] == 2
+    assert res["success_count"] == 2
+    assert len(res["applied"]) == 2
+

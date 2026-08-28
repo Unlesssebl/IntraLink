@@ -1210,3 +1210,54 @@ select.form-control {
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-2);
 }
+
+/* ─── Modern Utilities & Badges ──────────────────────── */
+.spin {
+    animation: spin 1s linear infinite;
+}
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.btn-xs {
+    padding: 0.25rem 0.55rem;
+    font-size: 0.75rem;
+    border-radius: 4px;
+}
+
+.category-badge {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+.category-badge.success {
+    background: var(--green-bg);
+    color: var(--green);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+}
+.category-badge.warning {
+    background: var(--yellow-bg);
+    color: var(--yellow);
+    border: 1px solid rgba(245, 158, 11, 0.25);
+}
+.category-badge.primary {
+    background: var(--primary-glow);
+    color: #818cf8;
+    border: 1px solid rgba(99, 102, 241, 0.25);
+}
+.category-badge.info {
+    background: var(--blue-bg);
+    color: var(--blue);
+    border: 1px solid rgba(96, 165, 250, 0.25);
+}
+.category-badge.secondary {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-2);
+    border: 1px solid var(--border);
+}
+

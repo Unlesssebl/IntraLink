@@ -592,6 +592,7 @@ async def stream_job_logs(job_id: int):
 
 
 # ===========================================================================
+# ===========================================================================
 # 🎯 Live Triage Queue Endpoints (Очередь 1-й линии и интерактивный триаж)
 # ===========================================================================
 
@@ -603,40 +604,306 @@ class ApplyActionRequest(BaseModel):
     is_private: bool = False
 
 
-QUEUE_TEMPLATES = {
-    "redirect_1c": (
-        "Заявка отменена, т. к. создана не в подходящем разделе. "
-        "Требуется оставить заявку в подходящем разделе: 06. 1C:Предприятие. По вопросам звоните на номер 49-87."
-    ),
-    "redirect_directum": (
-        "Заявка отменена, т. к. создана не в подходящем разделе. "
-        "Требуется оставить заявку в подходящем разделе: 05. Directum. По вопросам звоните на номер 49-87."
-    ),
-    "redirect_security": (
-        "Заявка отменена, т. к. создана не в подходящем разделе. "
-        "Требуется оставить заявку в подходящем разделе: 08. Информационная безопасность. По вопросам звоните на номер 49-87."
-    ),
-    "redirect_printers": (
-        "Заявка отменена, т. к. создана не в подходящем разделе. "
-        "Требуется оставить заявку в подходящем разделе: 03. Оргтехника. По вопросам звоните на номер 49-87."
-    ),
-    "hardware_repair": (
-        "Приносите системный блок / ноутбук в АБК 3, 112 каб. на диагностику, обслуживание и настройку. "
-        "О времени визита вы можете написать в комментариях к этой заявке."
-    ),
-    "wifi_access": (
-        "Доступ к беспроводной корпоративной сети WLAN-WORKNET успешно предоставлен. "
-        "Инструкция по подключению направлена. По всем вопросам вы можете написать ответ в комментариях к этой заявке."
-    ),
-    "duplicate_task": (
-        "Заявка отменена как повторная (дубликат ранее созданного инцидента). "
-        "Все работы и переписка ведутся в основной заявке. По вопросам звоните на номер 49-87."
-    ),
-    "general": (
-        "Принято в работу специалистом 1-й линии техподдержки. "
-        "Пожалуйста, оставайтесь на связи и пишите ответы в комментариях к этой заявке."
-    ),
+class BulkApplyItem(BaseModel):
+    task_id: int
+    status_id: int
+    comment: str
+    minutes: int = 10
+    executor_ids: str = "8664,10502"
+    is_private: bool = False
+
+
+class BulkApplyRequest(BaseModel):
+    tasks: list[BulkApplyItem]
+
+
+DEFAULT_TEMPLATES_CATALOG = {
+    "wifi_access": {
+        "name": "Предоставление Wi-Fi (WLAN-WORKNET)",
+        "status_id": 29,
+        "status_name": "Выполнена (29)",
+        "expenses": 10,
+        "template": (
+            "Доступ к беспроводной корпоративной сети WLAN-WORKNET успешно предоставлен. "
+            "Используйте логин и пароль от вашей учетной записи на ПК. Инструкцию по подключению приложил. "
+            "По всем вопросам вы можете написать ответ в комментариях к этой заявке."
+        ),
+        "badge_color": "success",
+    },
+    "redirect_1c": {
+        "name": "Редирект ➔ 06. 1C:Предприятие",
+        "status_id": 30,
+        "status_name": "Отменена (30)",
+        "expenses": 5,
+        "template": (
+            "Заявка отменена, т. к. создана не в подходящем разделе. "
+            "Требуется оставить заявку в подходящем разделе: 06. 1C:Предприятие. По вопросам звоните на номер 49-87."
+        ),
+        "badge_color": "warning",
+    },
+    "redirect_directum": {
+        "name": "Редирект ➔ 05. Directum",
+        "status_id": 30,
+        "status_name": "Отменена (30)",
+        "expenses": 5,
+        "template": (
+            "Заявка отменена, т. к. создана не в подходящем разделе. "
+            "Требуется оставить заявку в подходящем разделе: 05. Directum. По вопросам звоните на номер 49-87."
+        ),
+        "badge_color": "warning",
+    },
+    "redirect_security": {
+        "name": "Редирект ➔ 08. Информационная безопасность",
+        "status_id": 30,
+        "status_name": "Отменена (30)",
+        "expenses": 5,
+        "template": (
+            "Заявка отменена, т. к. создана не в подходящем разделе. "
+            "Требуется оставить заявку в подходящем разделе: 08. Информационная безопасность. По вопросам звоните на номер 49-87."
+        ),
+        "badge_color": "warning",
+    },
+    "redirect_printers": {
+        "name": "Редирект ➔ 03. Оргтехника",
+        "status_id": 30,
+        "status_name": "Отменена (30)",
+        "expenses": 5,
+        "template": (
+            "Заявка отменена, т. к. создана не в подходящем разделе. "
+            "Требуется оставить заявку в подходящем разделе: 03. Оргтехника. По вопросам звоните на номер 49-87."
+        ),
+        "badge_color": "warning",
+    },
+    "hardware_repair": {
+        "name": "Обслуживание / Ремонт ПК в 112 каб.",
+        "status_id": 48,
+        "status_name": "Ожидание устройства (48)",
+        "expenses": 10,
+        "template": (
+            "Приносите системный блок / ноутбук в АБК 3, 112 каб. на диагностику, обслуживание и настройку. "
+            "О времени визита вы можете написать в комментариях к этой заявке."
+        ),
+        "badge_color": "primary",
+    },
+    "duplicate_task": {
+        "name": "Дубликат заявки",
+        "status_id": 30,
+        "status_name": "Отменена (30)",
+        "expenses": 5,
+        "template": (
+            "Заявка отменена как повторная (дубликат ранее созданного инцидента). "
+            "Все работы и переписка ведутся в основной заявке. По вопросам звоните на номер 49-87."
+        ),
+        "badge_color": "warning",
+    },
+    "pc_offline": {
+        "name": "Не вижу ПК в сети",
+        "status_id": 35,
+        "status_name": "Требует уточнения (35)",
+        "expenses": 5,
+        "template": (
+            "Не вижу ПК в сети.\n"
+            "1. Убедитесь в корректности имени ПК;\n"
+            "2. Перезагрузите компьютер;\n"
+            "3. Проверьте подключение сетевого кабеля.\n"
+            "Пожалуйста, напишите в комментариях к заявке, когда ПК будет включен и доступен в сети."
+        ),
+        "badge_color": "info",
+    },
+    "printer_offline": {
+        "name": "Не вижу МФУ в сети",
+        "status_id": 35,
+        "status_name": "Требует уточнения (35)",
+        "expenses": 5,
+        "template": (
+            "Не вижу МФУ в сети.\n"
+            "1. Убедитесь в корректности имени/IP адреса принтера;\n"
+            "2. Перезагрузите МФУ;\n"
+            "3. Переподключите сетевой кабель к МФУ.\n"
+            "Пожалуйста, напишите в комментариях к заявке о результатах проверки."
+        ),
+        "badge_color": "info",
+    },
+    "anydesk_fallback_assistant": {
+        "name": "Сбой AnyDesk (Установка Ассистент)",
+        "status_id": 35,
+        "status_name": "Требует уточнения (35)",
+        "expenses": 5,
+        "template": (
+            "Связь через AnyDesk не устанавливается. Установите программу «Ассистент» по ссылке: https://мойассистент.рф/скачать/\n"
+            "После установки укажите в комментарии к этой заявке ваш идентификатор и пароль от программы."
+        ),
+        "badge_color": "info",
+    },
+    "file_lock_smb": {
+        "name": "Снятие SMB-блокировки файлов",
+        "status_id": 27,
+        "status_name": "В работе (27)",
+        "expenses": 10,
+        "template": (
+            "Добрый день! Уточните, пожалуйста, в комментариях к этой заявке полный путь к файлу или сетевой папке "
+            "для сброса зависшей сессии на файловом сервере."
+        ),
+        "badge_color": "info",
+    },
+    "general": {
+        "name": "Принятие в работу (1-я линия)",
+        "status_id": 27,
+        "status_name": "В работе (27)",
+        "expenses": 10,
+        "template": (
+            "Принято в работу специалистом 1-й линии техподдержки. "
+            "Пожалуйста, оставайтесь на связи и пишите ответы в комментариях к этой заявке."
+        ),
+        "badge_color": "secondary",
+    },
+    "resolved_standard": {
+        "name": "Стандартное завершение заявки",
+        "status_id": 29,
+        "status_name": "Выполнена (29)",
+        "expenses": 15,
+        "template": (
+            "Работы по заявке успешно выполнены. Если возникнут вопросы или потребуется помощь, "
+            "пожалуйста, оставьте комментарий в этой заявке."
+        ),
+        "badge_color": "success",
+    },
 }
+
+
+def _get_all_templates() -> dict[str, dict[str, Any]]:
+    """
+    Загружает корпоративные шаблоны из helpdesk-agent/templates.json
+    с объединением с базовым каталогом.
+    """
+    templates = dict(DEFAULT_TEMPLATES_CATALOG)
+    custom_json_path = (
+        Path(__file__).resolve().parent / ".." / ".." / "helpdesk-agent" / "templates.json"
+    )
+    if custom_json_path.exists():
+        with contextlib.suppress(Exception):
+            with custom_json_path.open(encoding="utf-8") as f:
+                disk_data = json.load(f)
+                for k, v in disk_data.items():
+                    if k not in templates:
+                        templates[k] = {
+                            "name": v.get("name", k),
+                            "status_id": v.get("status_id", 27),
+                            "status_name": f"{v.get('status_name', 'В работе')} ({v.get('status_id', 27)})",
+                            "expenses": v.get("expenses", 10),
+                            "template": v.get("template", ""),
+                            "badge_color": "primary" if v.get("status_id") == 48 else ("success" if v.get("status_id") == 29 else "warning"),
+                        }
+    return templates
+
+
+@router.get("/admin/api/templates", dependencies=[Depends(verify_admin_jwt)])
+async def get_templates_catalog():
+    """
+    Возвращает полный каталог шаблонов ответов заявителю для быстрого выбора в UI.
+    """
+    templates = _get_all_templates()
+    items = []
+    for key, data in templates.items():
+        items.append({
+            "key": key,
+            "name": data.get("name", key),
+            "status_id": data.get("status_id", 27),
+            "status_name": data.get("status_name", "В работе"),
+            "expenses": data.get("expenses", 10),
+            "template": data.get("template", ""),
+            "badge_color": data.get("badge_color", "secondary"),
+        })
+    return {"templates": items, "map": templates}
+
+
+# ─── Сетевая экспресс-диагностика хостов ─────────────────────────────────────
+_DIAG_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_DIAG_CACHE_TTL = 60.0  # 1 минута
+
+
+async def _check_host_ping_and_ports(host: str) -> dict[str, Any]:
+    """
+    Выполняет быстрый ICMP-пинг и проверку портов SMB/WinRM.
+    """
+    import subprocess
+    clean_host = host.strip()
+    is_win = os.name == "nt"
+    timeout_sec = 1.0
+
+    # 1. ICMP Ping
+    if is_win:
+        cmd = ["ping", "-n", "1", "-w", str(int(timeout_sec * 1000)), clean_host]
+    else:
+        cmd = ["ping", "-c", "1", "-W", "1", clean_host]
+
+    is_online = False
+    avg_rtt = None
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.5)
+        out_text = stdout.decode("cp866" if is_win else "utf-8", errors="ignore").lower()
+        if proc.returncode == 0 and ("ttl=" in out_text or "bytes=" in out_text or "байт=" in out_text):
+            is_online = True
+            import re
+            rtt_match = re.search(r"(?:время|time)[<=]([0-9\.]+)\s*ms", out_text)
+            if not rtt_match:
+                rtt_match = re.search(r"(?:среднее|average|avg)[ =]+([0-9\.]+)\s*ms", out_text)
+            avg_rtt = f"{rtt_match.group(1)}ms" if rtt_match else "1ms"
+    except Exception:
+        if proc:
+            with contextlib.suppress(Exception):
+                proc.kill()
+
+    # 2. Быстрая проверка портов SMB (445) и WinRM (5985)
+    smb_ok = False
+    winrm_ok = False
+    if is_online:
+        for port, flag_name in [(445, "smb"), (5985, "winrm")]:
+            try:
+                conn = asyncio.open_connection(clean_host, port)
+                _, writer = await asyncio.wait_for(conn, timeout=0.8)
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+                if flag_name == "smb":
+                    smb_ok = True
+                else:
+                    winrm_ok = True
+            except Exception:
+                pass
+
+    return {
+        "host": clean_host,
+        "is_online": is_online,
+        "avg_rtt": avg_rtt,
+        "smb_ok": smb_ok,
+        "winrm_ok": winrm_ok,
+        "status_label": f"🟢 {avg_rtt}" if is_online else "🔴 Офлайн",
+    }
+
+
+@router.get("/admin/api/diag/{host}", dependencies=[Depends(verify_admin_jwt)])
+async def get_host_diagnostics(host: str):
+    """
+    Возвращает статус доступности рабочего места оператора в реальном времени.
+    """
+    clean_host = host.strip()
+    if not clean_host:
+        raise HTTPException(status_code=400, detail="Хост не указан")
+
+    now = time.time()
+    if clean_host in _DIAG_CACHE:
+        ts, cached_data = _DIAG_CACHE[clean_host]
+        if now - ts < _DIAG_CACHE_TTL:
+            return cached_data
+
+    result = await _check_host_ping_and_ports(clean_host)
+    _DIAG_CACHE[clean_host] = (now, result)
+    return result
 
 
 def _parse_task_custom_fields(data_xml: str | None) -> dict[str, str]:
@@ -661,6 +928,7 @@ def _parse_task_custom_fields(data_xml: str | None) -> dict[str, str]:
 
 
 def _classify_queue_task(task: dict[str, Any]) -> dict[str, Any]:
+    templates = _get_all_templates()
     name = (task.get("Name") or "").strip()
     desc = (task.get("Description") or "").strip()
     s_name = (task.get("ServiceName") or "").strip()
@@ -668,93 +936,145 @@ def _classify_queue_task(task: dict[str, Any]) -> dict[str, Any]:
 
     # 1. Wi-Fi / WLAN
     if any(w in full_text for w in ["wifi", "wi-fi", "вайфай", "вай-фай", "wlan", "беспроводн"]):
+        tmpl = templates.get("wifi_access", DEFAULT_TEMPLATES_CATALOG["wifi_access"])
         return {
             "rule_type": "wlan_access",
+            "template_key": "wifi_access",
             "category_label": "Wi-Fi (WLAN-WORKNET)",
-            "score": 9,
-            "target_status_id": 29,
-            "target_status_name": "Выполнена (29)",
-            "suggested_comment": QUEUE_TEMPLATES["wifi_access"],
+            "target_service_name": "Wi-Fi доступ",
+            "is_redirect": False,
+            "score": 10,
+            "target_status_id": tmpl["status_id"],
+            "target_status_name": tmpl["status_name"],
+            "suggested_comment": tmpl["template"],
+            "expenses": tmpl.get("expenses", 10),
             "badge_color": "success",
         }
 
     # 2. 1C:Предприятие
     if any(w in full_text for w in ["1с", "1c", "зуп", "утп", "erp", "бухгалтерия 8", "унф", "фреш"]) and not any(w in full_text for w in ["принтер", "печать", "зависает"]):
+        tmpl = templates.get("redirect_1c", DEFAULT_TEMPLATES_CATALOG["redirect_1c"])
         return {
             "rule_type": "redirect_1c",
+            "template_key": "redirect_1c",
             "category_label": "Редирект ➔ 06. 1С",
+            "target_service_name": "06. 1C:Предприятие",
+            "is_redirect": True,
             "score": 10,
-            "target_status_id": 30,
-            "target_status_name": "Отменена (30)",
-            "suggested_comment": QUEUE_TEMPLATES["redirect_1c"],
+            "target_status_id": tmpl["status_id"],
+            "target_status_name": tmpl["status_name"],
+            "suggested_comment": tmpl["template"],
+            "expenses": tmpl.get("expenses", 5),
             "badge_color": "warning",
         }
 
     # 3. Directum
     if any(w in full_text for w in ["directum", "директум", "директуме"]):
+        tmpl = templates.get("redirect_directum", DEFAULT_TEMPLATES_CATALOG["redirect_directum"])
         return {
             "rule_type": "redirect_directum",
+            "template_key": "redirect_directum",
             "category_label": "Редирект ➔ 05. Directum",
+            "target_service_name": "05. Directum",
+            "is_redirect": True,
             "score": 10,
-            "target_status_id": 30,
-            "target_status_name": "Отменена (30)",
-            "suggested_comment": QUEUE_TEMPLATES["redirect_directum"],
+            "target_status_id": tmpl["status_id"],
+            "target_status_name": tmpl["status_name"],
+            "suggested_comment": tmpl["template"],
+            "expenses": tmpl.get("expenses", 5),
             "badge_color": "warning",
         }
 
     # 4. Обслуживание ПК, чистка, тормозит
     if any(w in full_text for w in ["тормозит", "зависает", "чистк", "шумит", "пыл", "переустанов", "греется", "не включается", "синий экран", "глючит", "медленно"]):
+        tmpl = templates.get("hardware_repair", DEFAULT_TEMPLATES_CATALOG["hardware_repair"])
         return {
             "rule_type": "hardware_repair",
+            "template_key": "hardware_repair",
             "category_label": "Ожидание устройства (Ремонт)",
+            "target_service_name": "Ремонт и обслуживание ПК (112 каб.)",
+            "is_redirect": False,
             "score": 9,
-            "target_status_id": 48,
-            "target_status_name": "Ожидание устройства (48)",
-            "suggested_comment": QUEUE_TEMPLATES["hardware_repair"],
+            "target_status_id": tmpl["status_id"],
+            "target_status_name": tmpl["status_name"],
+            "suggested_comment": tmpl["template"],
+            "expenses": tmpl.get("expenses", 10),
             "badge_color": "primary",
         }
 
     # 5. Сброс пароля / ИБ
     if any(w in full_text for w in ["сброс парол", "забыл парол", "разблокиров", "учетн", "заблокирован"]):
+        tmpl = templates.get("redirect_security", DEFAULT_TEMPLATES_CATALOG["redirect_security"])
         return {
             "rule_type": "redirect_security",
+            "template_key": "redirect_security",
             "category_label": "Редирект ➔ 08. ИБ",
+            "target_service_name": "08. Информационная безопасность",
+            "is_redirect": True,
             "score": 9,
-            "target_status_id": 30,
-            "target_status_name": "Отменена (30)",
-            "suggested_comment": QUEUE_TEMPLATES["redirect_security"],
+            "target_status_id": tmpl["status_id"],
+            "target_status_name": tmpl["status_name"],
+            "suggested_comment": tmpl["template"],
+            "expenses": tmpl.get("expenses", 5),
             "badge_color": "warning",
         }
 
-    # 6. Оргтехника / Принтеры
-    if any(w in full_text for w in ["принтер", "мфу", "сканер", "картридж", "замяти", "не печатает"]):
+    # 6. SMB-блокировки файлов
+    if any(w in full_text for w in ["заблокирован", "занят другим пользователем", "блокировка файла", "сетевая папка"]):
+        tmpl = templates.get("file_lock_smb", DEFAULT_TEMPLATES_CATALOG["file_lock_smb"])
         return {
-            "rule_type": "redirect_printers",
-            "category_label": "Оргтехника (03)",
+            "rule_type": "file_lock_smb",
+            "template_key": "file_lock_smb",
+            "category_label": "Файловые блокировки (SMB)",
+            "target_service_name": "Файловые ресурсы",
+            "is_redirect": False,
             "score": 8,
-            "target_status_id": 27,
-            "target_status_name": "В работе (27)",
-            "suggested_comment": QUEUE_TEMPLATES["redirect_printers"],
+            "target_status_id": tmpl["status_id"],
+            "target_status_name": tmpl["status_name"],
+            "suggested_comment": tmpl["template"],
+            "expenses": tmpl.get("expenses", 10),
             "badge_color": "info",
         }
 
-    # 7. Общее
+    # 7. Оргтехника / Принтеры
+    if any(w in full_text for w in ["принтер", "мфу", "сканер", "картридж", "замяти", "не печатает"]):
+        tmpl = templates.get("redirect_printers", DEFAULT_TEMPLATES_CATALOG["redirect_printers"])
+        return {
+            "rule_type": "redirect_printers",
+            "template_key": "redirect_printers",
+            "category_label": "Оргтехника (03)",
+            "target_service_name": "03. Оргтехника",
+            "is_redirect": True,
+            "score": 8,
+            "target_status_id": tmpl["status_id"],
+            "target_status_name": tmpl["status_name"],
+            "suggested_comment": tmpl["template"],
+            "expenses": tmpl.get("expenses", 5),
+            "badge_color": "info",
+        }
+
+    # 8. Общее
+    tmpl = templates.get("general", DEFAULT_TEMPLATES_CATALOG["general"])
     return {
         "rule_type": "general",
+        "template_key": "general",
         "category_label": "1-я линия техподдержки",
+        "target_service_name": s_name or "1-я линия техподдержки",
+        "is_redirect": False,
         "score": 6,
-        "target_status_id": 27,
-        "target_status_name": "В работе (27)",
-        "suggested_comment": QUEUE_TEMPLATES["general"],
+        "target_status_id": tmpl["status_id"],
+        "target_status_name": tmpl["status_name"],
+        "suggested_comment": tmpl["template"],
+        "expenses": tmpl.get("expenses", 10),
         "badge_color": "secondary",
     }
 
 
 @router.get("/admin/api/queue", dependencies=[Depends(verify_admin_jwt)])
-async def get_triage_queue(filter_id: int = 984, limit: int = 25):
+async def get_triage_queue(filter_id: int = 984, limit: int = 50):
     """
     Возвращает открытые заявки очереди 1-й линии с классификацией Rule Engine,
-    кастомными полями и предложенными действиями.
+    кастомными полями, шаблонами и предложенными действиями.
     """
     from app.services.crypto import decrypt_token
     from app.services.intraservice import get_tasks
@@ -790,14 +1110,19 @@ async def get_triage_queue(filter_id: int = 984, limit: int = 25):
         c_fields = _parse_task_custom_fields(t.get("Data"))
         cls_info = _classify_queue_task(t)
 
+        s_name = t.get("ServiceName") or (t.get("Service", {}).get("Name") if isinstance(t.get("Service"), dict) else None) or "1-я линия технической поддержки"
+
         items.append({
             "id": t_id,
             "name": t.get("Name") or "Без темы",
             "description": t.get("Description") or "",
             "creator": t.get("Creator") or t.get("CreatorLogin") or "Пользователь",
+            "creator_login": t.get("CreatorLogin") or "",
             "created": t.get("Created") or "",
             "service_id": t.get("ServiceId"),
-            "service_name": t.get("ServiceName") or "Общий сервис",
+            "service_name": s_name,
+            "target_service_name": cls_info.get("target_service_name") or s_name,
+            "is_redirect": cls_info.get("is_redirect", False),
             "status_id": t.get("StatusId"),
             "status_name": t.get("StatusName") or "Открыта",
             "pc_name": c_fields["pc_name"],
@@ -805,16 +1130,90 @@ async def get_triage_queue(filter_id: int = 984, limit: int = 25):
             "room": c_fields["room"],
             "department": c_fields["department"],
             "rule_type": cls_info["rule_type"],
+            "template_key": cls_info.get("template_key", "general"),
             "category_label": cls_info["category_label"],
             "score": cls_info["score"],
             "target_status_id": cls_info["target_status_id"],
             "target_status_name": cls_info["target_status_name"],
             "suggested_comment": cls_info["suggested_comment"],
+            "expenses": cls_info.get("expenses", 10),
             "badge_color": cls_info["badge_color"],
             "has_attachments": bool(t.get("Attachments") or t.get("Files")),
         })
 
     return {"total": len(items), "filter_id": filter_id, "tasks": items}
+
+
+
+@router.get("/admin/api/tasks/{task_id}/details", dependencies=[Depends(verify_admin_jwt)])
+async def get_task_details(task_id: int):
+    """
+    Возвращает расширенные детали задачи: историю комментариев, вложения и кастомные поля.
+    """
+    from app.services.crypto import decrypt_token
+    from app.services.intraservice import get_single_task, get_task_lifetime
+
+    r = get_redis_client()
+    auth_encrypted = await r.get("worker:service_auth_b64")
+    if not auth_encrypted:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервисный аккаунт не настроен",
+        )
+
+    auth_b64 = decrypt_token(auth_encrypted)
+    task_data = await get_single_task(auth_b64, task_id)
+    if not task_data:
+        raise HTTPException(status_code=404, detail=f"Заявка #{task_id} не найдена")
+
+    lifetime = await get_task_lifetime(auth_b64, task_id) or []
+    
+    # Формируем список комментариев
+    comments = []
+    for item in lifetime:
+        if item.get("Comment"):
+            comments.append({
+                "id": item.get("Id"),
+                "author": item.get("UserName") or item.get("UserLogin") or "Пользователь",
+                "created": item.get("Created"),
+                "text": item.get("Comment"),
+                "is_private": item.get("IsPrivateComment", False),
+            })
+
+    # Извлекаем вложения
+    attachments = []
+    raw_files = task_data.get("Attachments") or task_data.get("Files") or []
+    if isinstance(raw_files, list):
+        for f in raw_files:
+            attachments.append({
+                "id": f.get("Id"),
+                "name": f.get("Name") or f.get("FileName") or "Вложение",
+                "size": f.get("Size") or f.get("Length"),
+                "content_type": f.get("ContentType") or "",
+                "url": f.get("Url") or f.get("DownloadUrl") or f"/admin/api/attachments/{f.get('Id')}",
+            })
+
+    c_fields = _parse_task_custom_fields(task_data.get("Data"))
+    cls_info = _classify_queue_task(task_data)
+
+    return {
+        "id": task_id,
+        "name": task_data.get("Name") or "Без темы",
+        "description": task_data.get("Description") or "",
+        "creator": task_data.get("Creator") or task_data.get("CreatorLogin") or "Пользователь",
+        "creator_login": task_data.get("CreatorLogin") or "",
+        "created": task_data.get("Created") or "",
+        "service_name": task_data.get("ServiceName") or "",
+        "status_id": task_data.get("StatusId"),
+        "status_name": task_data.get("StatusName") or "",
+        "pc_name": c_fields["pc_name"],
+        "phone": c_fields["phone"],
+        "room": c_fields["room"],
+        "department": c_fields["department"],
+        "comments": comments,
+        "attachments": attachments,
+        "cls_info": cls_info,
+    }
 
 
 @router.post("/admin/api/tasks/{task_id}/apply", dependencies=[Depends(verify_admin_jwt)])
@@ -859,7 +1258,7 @@ async def apply_task_action(task_id: int, payload: ApplyActionRequest):
         executor_ids=payload.executor_ids,
     )
 
-    # 3. Списываем трудозатраты (10 мин)
+    # 3. Списываем трудозатраты
     if payload.minutes > 0:
         await add_task_expenses(auth_b64, task_id=task_id, minutes=payload.minutes)
 
@@ -886,4 +1285,37 @@ async def apply_task_action(task_id: int, payload: ApplyActionRequest):
         "final_status_id": payload.status_id,
         "message": f"Заявка #{task_id} переведена в статус {payload.status_id}",
     }
+
+
+@router.post("/admin/api/tasks/bulk-apply", dependencies=[Depends(verify_admin_jwt)])
+async def bulk_apply_tasks(payload: BulkApplyRequest):
+    """
+    Пакетно применяет действия к списку выбранных заявок с фиксацией прогресса.
+    """
+    applied = []
+    failed = []
+
+    for item in payload.tasks:
+        try:
+            req = ApplyActionRequest(
+                status_id=item.status_id,
+                comment=item.comment,
+                minutes=item.minutes,
+                executor_ids=item.executor_ids,
+                is_private=item.is_private,
+            )
+            res = await apply_task_action(item.task_id, req)
+            applied.append({"task_id": item.task_id, "res": res})
+        except Exception as e:
+            logger.error("Ошибка пакетного применения к задаче #%d: %s", item.task_id, e)
+            failed.append({"task_id": item.task_id, "error": str(e)})
+
+    return {
+        "total": len(payload.tasks),
+        "success_count": len(applied),
+        "failed_count": len(failed),
+        "applied": applied,
+        "failed": failed,
+    }
+
 

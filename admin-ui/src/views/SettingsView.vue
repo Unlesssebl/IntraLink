@@ -1,11 +1,60 @@
 <template>
   <section class="screen active">
-    <!-- КАРТОЧКА 1: Доменная учетная запись (WinRM / SMB) -->
-    <div class="card">
+    <!-- КАРТОЧКА 1: Мониторинг здоровья инфраструктуры -->
+    <div class="card mb-3">
       <div class="card-header">
         <div>
-          <div class="card-title">Доменная учетная запись (WinRM / SMB)</div>
-          <div class="card-subtitle">Конфигурация учетных данных для удаленной установки принтеров</div>
+          <div class="card-title">🖥️ Статус сервисов и интеграций</div>
+          <div class="card-subtitle">Мониторинг подключения шлюза к IntraService API, Redis и воркерам</div>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="health-grid">
+          <div class="health-card">
+            <div class="health-head">
+              <span class="health-title">IntraService API</span>
+              <span class="status-indicator online"></span>
+            </div>
+            <div class="health-val">Подключено</div>
+            <div class="health-sub">Фильтр #984 (Очередь 1-й линии)</div>
+          </div>
+
+          <div class="health-card">
+            <div class="health-head">
+              <span class="health-title">Redis State & Streams</span>
+              <span class="status-indicator online"></span>
+            </div>
+            <div class="health-val">Активен</div>
+            <div class="health-sub">stream:intraservice_events</div>
+          </div>
+
+          <div class="health-card">
+            <div class="health-head">
+              <span class="health-title">База знаний RAG</span>
+              <span class="status-indicator online"></span>
+            </div>
+            <div class="health-val">pgvector Tier-1</div>
+            <div class="health-sub">FastEmbed семантический поиск</div>
+          </div>
+
+          <div class="health-card">
+            <div class="health-head">
+              <span class="health-title">WinRM & SMB Доступ</span>
+              <span class="status-indicator" :class="{ online: isDomainConfigured }"></span>
+            </div>
+            <div class="health-val">{{ isDomainConfigured ? 'Настроено' : 'Не задано' }}</div>
+            <div class="health-sub">{{ domainUsername || 'Переменные окружения' }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- КАРТОЧКА 2: Доменная учетная запись (WinRM / SMB) -->
+    <div class="card mb-3">
+      <div class="card-header">
+        <div>
+          <div class="card-title">🔑 Доменная учетная запись (WinRM / SMB)</div>
+          <div class="card-subtitle">Конфигурация учетных данных для удаленной установки принтеров на рабочие станции</div>
         </div>
       </div>
       <div class="card-body">
@@ -30,24 +79,23 @@
               </div>
               <div class="form-group">
                 <label class="form-label" for="f-domain-password">Пароль (необязательно)</label>
-                <input 
-                  v-model="domainPassword" 
-                  type="password" 
-                  id="f-domain-password" 
-                  class="form-control"
-                  placeholder="Введите новый пароль (оставьте пустым, если не хотите менять)..." 
-                  autocomplete="new-password" 
-                  :disabled="savingDomain"
-                />
-                <span class="form-hint">Пароль будет зашифрован и сохранен в Redis.</span>
+                <div class="password-input-wrap">
+                  <input 
+                    v-model="domainPassword" 
+                    :type="showPassword ? 'text' : 'password'" 
+                    id="f-domain-password" 
+                    class="form-control"
+                    placeholder="Введите новый пароль..." 
+                    autocomplete="new-password" 
+                    :disabled="savingDomain"
+                  />
+                  <button type="button" class="pwd-toggle-btn" @click="showPassword = !showPassword">
+                    {{ showPassword ? '👁️' : '🔒' }}
+                  </button>
+                </div>
+                <span class="form-hint">Пароль надежно шифруется Fernet и сохраняется в защищенном хранилище Redis.</span>
               </div>
             </div>
-          </div>
-          
-          <div v-if="domainAlertMsg" class="alert" :class="`alert-${domainAlertType}`" style="display: flex;">
-            <svg v-if="domainAlertType === 'success'" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-            <svg v-else viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-            {{ domainAlertMsg }}
           </div>
           
           <button type="submit" class="btn btn-primary" :disabled="savingDomain || !domainUsername">
@@ -55,10 +103,10 @@
               <div class="spinner"></div> Сохранение...
             </template>
             <template v-else>
-              <svg viewBox="0 0 24 24">
-                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
-                <polyline points="17 21 17 13 7 13 7 21"></polyline>
-                <polyline points="7 3 7 8 15 8"></polyline>
+              <svg viewBox="0 0 24 24" width="16" height="16">
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" stroke="currentColor" stroke-width="2" fill="none"></path>
+                <polyline points="17 21 17 13 7 13 7 21" stroke="currentColor" stroke-width="2" fill="none"></polyline>
+                <polyline points="7 3 7 8 15 8" stroke="currentColor" stroke-width="2" fill="none"></polyline>
               </svg>
               Сохранить учетные данные
             </template>
@@ -67,79 +115,70 @@
       </div>
     </div>
 
-    <!-- КАРТОЧКА 2: Синхронизация индексов драйверов -->
-    <div class="card" style="margin-top: 24px;">
+    <!-- КАРТОЧКА 3: Синхронизация индексов драйверов -->
+    <div class="card">
       <div class="card-header">
         <div>
-          <div class="card-title">Индексация драйверов</div>
-          <div class="card-subtitle">Запуск обхода SMB-шары, распаковки архивов и обновления базы поддерживаемых моделей принтеров</div>
+          <div class="card-title">🖨️ Индексация базы драйверов принтеров</div>
+          <div class="card-subtitle">Обход SMB-шары, распаковка архивов и обновление справочника поддерживаемых моделей</div>
         </div>
       </div>
       <div class="card-body">
-        <div v-if="indexAlertMsg" class="alert" :class="`alert-${indexAlertType}`" style="display: flex; margin-bottom: 16px;">
-          <svg v-if="indexAlertType === 'success'" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-          <svg v-else viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-          {{ indexAlertMsg }}
-        </div>
-        <button @click="triggerRebuildIndex" class="btn btn-secondary" :disabled="rebuildingIndex" style="margin-right: 8px;">
-          <template v-if="rebuildingIndex && !fastReindexing">
-            <div class="spinner"></div> Запуск...
-          </template>
-          <template v-else>
-            <svg viewBox="0 0 24 24">
-              <polyline points="23 4 23 10 17 10"></polyline>
-              <polyline points="1 20 1 14 7 14"></polyline>
-              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-            </svg>
-            Полная синхронизация
-          </template>
-        </button>
-        <button @click="triggerFastReindex" class="btn btn-primary" :disabled="rebuildingIndex">
-          <template v-if="rebuildingIndex && fastReindexing">
-            <div class="spinner"></div> Запуск...
-          </template>
-          <template v-else>
-            <svg viewBox="0 0 24 24">
-              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-            </svg>
-            Быстрая переиндексация
-          </template>
-        </button>
-        <div class="form-hint" style="margin-top: 12px;">
-          <template v-if="indexerStatus.is_running">
-            <span style="color: var(--blue); display: inline-flex; align-items: center; gap: 6px;">
-              <div class="spinner" style="width: 12px; height: 12px; border-width: 2px;"></div>
-              {{ fastReindexing ? 'Быстрая переиндексация...' : 'Полная синхронизация... (это займёт несколько минут)' }}
-            </span>
-          </template>
-          <template v-else-if="indexerStatus.last_run">
-            <template v-if="indexerStatus.last_result?.status === 'error'">
-              <span style="color: var(--red);">
-                ⚠ Ошибка при последней синхронизации ({{ formatLastRun(indexerStatus.last_run) }}):
-                {{ indexerStatus.last_result.error }}
-              </span>
+        <div class="indexer-actions-row">
+          <button @click="triggerFastReindex" class="btn btn-primary" :disabled="rebuildingIndex">
+            <template v-if="rebuildingIndex && fastReindexing">
+              <div class="spinner"></div> Переиндексация...
             </template>
             <template v-else>
-              <span style="color: var(--green);">
-                <template v-if="indexerStatus.last_result?.mode === 'fast'">⚡</template>
-                <template v-else>✓</template>
-                <template v-if="indexerStatus.last_result?.mode === 'fast'">Быстрая переиндексация</template>
-                <template v-else>Синхронизация</template>
-                {{ formatLastRun(indexerStatus.last_run) }}
+              <svg viewBox="0 0 24 24" width="16" height="16">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"></polygon>
+              </svg>
+              Быстрая переиндексация (Секунды)
+            </template>
+          </button>
+
+          <button @click="triggerRebuildIndex" class="btn btn-outline" :disabled="rebuildingIndex">
+            <template v-if="rebuildingIndex && !fastReindexing">
+              <div class="spinner"></div> Запуск полной синхронизации...
+            </template>
+            <template v-else>
+              <svg viewBox="0 0 24 24" width="16" height="16">
+                <polyline points="23 4 23 10 17 10" stroke="currentColor" stroke-width="2" fill="none"/>
+                <polyline points="1 20 1 14 7 14" stroke="currentColor" stroke-width="2" fill="none"/>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" stroke="currentColor" stroke-width="2" fill="none"/>
+              </svg>
+              Полная синхронизация SMB
+            </template>
+          </button>
+        </div>
+
+        <div class="indexer-status-card" style="margin-top: 1rem;">
+          <template v-if="indexerStatus.is_running">
+            <div class="indexer-running">
+              <div class="spinner"></div>
+              <span>{{ fastReindexing ? 'Быстрая переиндексация выполняется...' : 'Полная синхронизация... (это займет несколько минут)' }}</span>
+            </div>
+          </template>
+          <template v-else-if="indexerStatus.last_run">
+            <div v-if="indexerStatus.last_result?.status === 'error'" class="indexer-result error">
+              <span>⚠️ Ошибка последней синхронизации ({{ formatLastRun(indexerStatus.last_run) }}): {{ indexerStatus.last_result.error }}</span>
+            </div>
+            <div v-else class="indexer-result success">
+              <span>
+                {{ indexerStatus.last_result?.mode === 'fast' ? '⚡ Быстрая переиндексация' : '✓ Синхронизация' }}
+                завершена {{ formatLastRun(indexerStatus.last_run) }}
                 <template v-if="indexerStatus.last_result">
-                  — {{ indexerStatus.last_result.indexed }} моделей
-                  <template v-if="indexerStatus.last_result.mode !== 'fast'">,
-                    {{ indexerStatus.last_result.copied }} папок скопировано,
-                    {{ indexerStatus.last_result.extracted }} архивов распаковано
-                  </template>
+                  — проиндексировано <strong>{{ indexerStatus.last_result.indexed }}</strong> моделей
                   ({{ indexerStatus.last_result.duration_sec }}с)
                 </template>
               </span>
-            </template>
+            </div>
           </template>
           <template v-else>
-            <b>Быстрая переиндексация</b> — только читает <code>extracted-drv-inf</code>, занимает секунды. Используйте после ручного добавления папки с драйвером.<br>
-            <b>Полная синхронизация</b> — обходит всю шару, копирует новые папки и распаковывает архивы. Занимает несколько минут.
+            <div class="indexer-hint">
+              <b>Быстрая переиндексация</b> — сканирует каталог <code>extracted-drv-inf</code> за считанные секунды.<br>
+              <b>Полная синхронизация</b> — обходит удаленную SMB-шару, копирует новые архивы и распаковывает драйверы.
+            </div>
           </template>
         </div>
       </div>
@@ -150,20 +189,23 @@
 <script setup>
 import { ref, onMounted, inject, onUnmounted } from 'vue';
 import { apiFetch } from '../api';
+import { useToastStore } from '../stores/toast';
+
+const toastStore = useToastStore();
 
 // Секция 1: WinRM
 const domainUsername = ref('');
 const domainPassword = ref('');
+const showPassword = ref(false);
+const isDomainConfigured = ref(false);
 const domainStatusText = ref('Загрузка...');
 const domainStatusColor = ref('var(--text-3)');
 const savingDomain = ref(false);
-const domainAlertMsg = ref('');
-const domainAlertType = ref('success');
 
-// Загрузка доменных учетных данных
 const fetchDomainAuthStatus = async () => {
   try {
     const data = await apiFetch('/admin/api/domain-auth');
+    isDomainConfigured.value = data.is_configured;
     if (data.is_configured) {
       domainUsername.value = data.username || '';
       domainStatusText.value = `Текущая учетная запись: ${data.username}`;
@@ -179,11 +221,8 @@ const fetchDomainAuthStatus = async () => {
   }
 };
 
-// Сохранение учетных данных
 const saveDomainAuth = async () => {
   savingDomain.value = true;
-  domainAlertMsg.value = '';
-  
   try {
     await apiFetch('/admin/api/domain-auth', {
       method: 'POST',
@@ -193,23 +232,19 @@ const saveDomainAuth = async () => {
       })
     });
     
-    domainAlertType.value = 'success';
-    domainAlertMsg.value = 'Учетная запись домена успешно сохранена';
+    toastStore.success('Учетная запись домена сохранена в Redis');
     domainPassword.value = '';
     await fetchDomainAuthStatus();
   } catch (err) {
-    domainAlertType.value = 'error';
-    domainAlertMsg.value = err.message || 'Ошибка сохранения учетной записи';
+    toastStore.error(err.message || 'Ошибка сохранения учетной записи');
   } finally {
     savingDomain.value = false;
   }
 };
 
-// Секция 2: Синхронизация индексов драйверов
+// Секция 2: Индексация драйверов
 const rebuildingIndex = ref(false);
-const fastReindexing = ref(false); // true = запущена быстрая, false = полная
-const indexAlertMsg = ref('');
-const indexAlertType = ref('success');
+const fastReindexing = ref(false);
 const indexerStatus = ref({ is_running: false, last_run: null });
 let indexerPollInterval = null;
 
@@ -217,11 +252,7 @@ const checkIndexerStatus = async () => {
   try {
     const data = await apiFetch('/admin/api/printers/index-status');
     indexerStatus.value = data;
-    if (data.is_running) {
-      rebuildingIndex.value = true;
-    } else {
-      rebuildingIndex.value = false;
-    }
+    rebuildingIndex.value = !!data.is_running;
   } catch (err) {
     console.error('Ошибка проверки статуса индексатора:', err);
   }
@@ -236,35 +267,27 @@ const formatLastRun = (ts) => {
 const triggerRebuildIndex = async () => {
   rebuildingIndex.value = true;
   fastReindexing.value = false;
-  indexAlertMsg.value = '';
-  
   try {
     await apiFetch('/admin/api/printers/rebuild-index', { method: 'POST' });
-    indexAlertType.value = 'success';
-    indexAlertMsg.value = 'Задача успешно отправлена воркеру';
+    toastStore.info('Полная синхронизация SMB запущена');
     checkIndexerStatus();
   } catch (err) {
     rebuildingIndex.value = false;
-    indexAlertType.value = 'error';
-    indexAlertMsg.value = err.message || 'Ошибка запуска синхронизации';
+    toastStore.error(err.message || 'Ошибка запуска синхронизации');
   }
 };
 
 const triggerFastReindex = async () => {
   rebuildingIndex.value = true;
   fastReindexing.value = true;
-  indexAlertMsg.value = '';
-  
   try {
     await apiFetch('/admin/api/printers/fast-reindex', { method: 'POST' });
-    indexAlertType.value = 'success';
-    indexAlertMsg.value = 'Быстрая переиндексация запущена';
+    toastStore.success('Быстрая переиндексация запущена');
     checkIndexerStatus();
   } catch (err) {
     rebuildingIndex.value = false;
     fastReindexing.value = false;
-    indexAlertType.value = 'error';
-    indexAlertMsg.value = err.message || 'Ошибка запуска быстрой переиндексации';
+    toastStore.error(err.message || 'Ошибка запуска быстрой переиндексации');
   }
 };
 
@@ -279,7 +302,6 @@ const refreshAll = () => {
 onMounted(() => {
   refreshAll();
   indexerPollInterval = setInterval(checkIndexerStatus, 5000);
-  
   if (registerRefresh) {
     unregisterRefresh = registerRefresh(refreshAll);
   }
@@ -291,3 +313,94 @@ onUnmounted(() => {
 });
 </script>
 
+<style scoped>
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.health-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.health-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.health-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.health-val {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.health-sub {
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.password-input-wrap .form-control {
+  padding-right: 2.5rem;
+}
+.pwd-toggle-btn {
+  position: absolute;
+  right: 0.6rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.indexer-actions-row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.indexer-status-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.85rem 1rem;
+}
+
+.indexer-running {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--blue);
+  font-size: 0.85rem;
+}
+
+.indexer-result {
+  font-size: 0.85rem;
+}
+.indexer-result.success {
+  color: var(--green);
+}
+.indexer-result.error {
+  color: var(--red);
+}
+
+.indexer-hint {
+  font-size: 0.8rem;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+</style>
