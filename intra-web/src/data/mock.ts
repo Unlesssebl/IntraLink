@@ -390,29 +390,62 @@ export const mockTickets: Ticket[] = [
 ];
 
 export const savedFilters = [
-  { id: 'sf1', name: 'Критичные — без исполнителя', icon: '🔴' },
-  { id: 'sf2', name: 'Мои заявки сегодня', icon: '⭐' },
-  { id: 'sf3', name: 'Нарушение SLA', icon: '⚠️' },
+  { id: 'sf1', name: 'Критичные — без исполнителя', type: 'critical' },
+  { id: 'sf2', name: 'Мои заявки сегодня', type: 'my' },
+  { id: 'sf3', name: 'Нарушение SLA', type: 'sla' },
 ];
 
 export const categoryLabel: Record<Category, string> = {
   network: 'Сеть',
-  hardware: 'Железо',
+  hardware: 'Оборудование',
   software: 'ПО',
   access: 'Доступ',
   email: 'Почта',
 };
 
-export const statusConfig: Record<Status, { label: string; className: string }> = {
-  new: { label: 'Новая', className: 'bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300' },
-  in_progress: { label: 'В работе', className: 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300' },
-  waiting: { label: 'Ожидание', className: 'bg-violet-50 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300' },
-  resolved: { label: 'Решена', className: 'bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300' },
+export const statusConfig: Record<Status, { label: string; className: string; dotClass: string }> = {
+  new: {
+    label: 'Новая',
+    className: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 border border-neutral-200 dark:border-neutral-700',
+    dotClass: 'bg-blue-500',
+  },
+  in_progress: {
+    label: 'В работе',
+    className: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 border border-neutral-200 dark:border-neutral-700',
+    dotClass: 'bg-amber-500',
+  },
+  waiting: {
+    label: 'Ожидание',
+    className: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700',
+    dotClass: 'bg-neutral-400',
+  },
+  resolved: {
+    label: 'Решена',
+    className: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700',
+    dotClass: 'bg-emerald-500',
+  },
 };
 
 export const priorityConfig: Record<Priority, { label: string; className: string; dotClass: string }> = {
-  critical: { label: 'Критичный', className: 'bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300', dotClass: 'bg-red-500' },
-  high: { label: 'Высокий', className: 'bg-orange-50 text-orange-700 dark:bg-orange-950/60 dark:text-orange-300', dotClass: 'bg-orange-500' },
-  medium: { label: 'Средний', className: 'bg-yellow-50 text-yellow-700 dark:bg-yellow-950/60 dark:text-yellow-300', dotClass: 'bg-yellow-500' },
-  low: { label: 'Низкий', className: 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800/60 dark:text-neutral-400', dotClass: 'bg-neutral-400' },
+  critical: {
+    label: 'Критичный',
+    className: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 border border-neutral-300 dark:border-neutral-700',
+    dotClass: 'bg-rose-500',
+  },
+  high: {
+    label: 'Высокий',
+    className: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 border border-neutral-200 dark:border-neutral-700',
+    dotClass: 'bg-amber-500',
+  },
+  medium: {
+    label: 'Средний',
+    className: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700',
+    dotClass: 'bg-neutral-400',
+  },
+  low: {
+    label: 'Низкий',
+    className: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700',
+    dotClass: 'bg-neutral-400',
+  },
 };
+

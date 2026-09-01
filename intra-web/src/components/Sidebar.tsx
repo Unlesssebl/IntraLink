@@ -147,17 +147,36 @@ export default function Sidebar({
         {/* Saved filters */}
         <div className="mt-5">
           <p className="px-2 mb-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-600">
-            Избранное
+            Фильтры очереди
           </p>
           <div className="space-y-0.5">
             {savedFilters.map(f => (
               <button
                 key={f.id}
                 onClick={() => onNavigate('queue')}
-                className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-[12px] text-neutral-500 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-800 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors text-left cursor-pointer"
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-[12px] text-neutral-600 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-800 hover:text-neutral-900 dark:hover:text-neutral-100 transition-colors text-left cursor-pointer"
               >
-                <span className="text-[11px]">{f.icon}</span>
-                <span className="truncate">{f.name}</span>
+                <span className="shrink-0 text-neutral-400">
+                  {f.type === 'critical' && (
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                      <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.2"/>
+                      <path d="M6 3.5v3M6 8v.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                    </svg>
+                  )}
+                  {f.type === 'my' && (
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                      <circle cx="6" cy="4" r="2.2" stroke="currentColor" strokeWidth="1.2"/>
+                      <path d="M2.5 10c0-1.8 1.5-3 3.5-3s3.5 1.2 3.5 3" stroke="currentColor" strokeWidth="1.2"/>
+                    </svg>
+                  )}
+                  {f.type === 'sla' && (
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                      <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.2"/>
+                      <path d="M6 3.5V6l1.8 1.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                    </svg>
+                  )}
+                </span>
+                <span className="truncate text-[12px]">{f.name}</span>
               </button>
             ))}
           </div>

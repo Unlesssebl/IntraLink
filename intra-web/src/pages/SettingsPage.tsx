@@ -36,41 +36,47 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
   const [newFullName, setNewFullName] = useState('');
   const [addingUser, setAddingUser] = useState(false);
 
-  // Logs State
+  // Worker Logs State
   const [logs, setLogs] = useState<any[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
 
+  // Load Status
   const loadStatus = async () => {
     setStatusLoading(true);
     try {
       const data = await fetchSystemStatus();
       setSysStatus(data);
+      if (data.service_login) {
+        setServiceLogin(data.service_login);
+      }
     } catch (err) {
-      console.error('Ошибка загрузки статуса:', err);
+      console.error('Failed to load status:', err);
     } finally {
       setStatusLoading(false);
     }
   };
 
+  // Load Telegram Users
   const loadUsers = async () => {
     setUsersLoading(true);
     try {
       const data = await fetchTelegramUsers();
-      setUsers(data || []);
+      setUsers(data.users || []);
     } catch (err) {
-      console.error('Ошибка загрузки пользователей:', err);
+      console.error('Failed to load users:', err);
     } finally {
       setUsersLoading(false);
     }
   };
 
+  // Load Logs
   const loadLogs = async () => {
     setLogsLoading(true);
     try {
-      const data = await fetchWorkerLogs();
+      const data = await fetchWorkerLogs(25);
       setLogs(data.logs || []);
     } catch (err) {
-      console.error('Ошибка загрузки логов:', err);
+      console.error('Failed to load logs:', err);
     } finally {
       setLogsLoading(false);
     }
@@ -82,9 +88,9 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
     loadLogs();
   }, []);
 
+  // Save Service User
   const handleSaveServiceUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!serviceLogin || !servicePassword) return;
     setSavingUser(true);
     setUserMsg(null);
     try {
@@ -99,35 +105,41 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
     }
   };
 
+  // Delete Service User
   const handleDeleteServiceUser = async () => {
-    if (!confirm('Вы уверены, что хотите удалить сервисный аккаунт?')) return;
+    if (!confirm('Удалить сохраненные учетные данные сервисного пользователя?')) return;
     try {
       await deleteServiceUser();
-      setUserMsg({ type: 'success', text: 'Сервисный аккаунт удален' });
+      setServiceLogin('');
+      setServicePassword('');
+      setUserMsg({ type: 'success', text: 'Сервисный пользователь удален' });
       loadStatus();
     } catch (err: any) {
-      setUserMsg({ type: 'error', text: err.message });
+      setUserMsg({ type: 'error', text: err.message || 'Ошибка удаления' });
     }
   };
 
+  // Restart Worker
   const handleRestartWorker = async () => {
+    if (!confirm('Перезапустить фоновый воркер опроса?')) return;
     try {
       await restartWorker();
-      alert('Воркер успешно перезапущен');
+      alert('Команда перезапуска отправлена в Redis Streams');
       loadStatus();
     } catch (err: any) {
-      alert(`Ошибка перезапуска: ${err.message}`);
+      alert('Ошибка перезапуска: ' + (err.message || err));
     }
   };
 
+  // Add Telegram User
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    const idNum = parseInt(newTgId, 10);
-    if (!idNum) return;
+    const tgIdNum = Number(newTgId);
+    if (!tgIdNum) return;
     setAddingUser(true);
     try {
       await addTelegramUser({
-        telegram_id: idNum,
+        telegram_id: tgIdNum,
         username: newUsername || undefined,
         full_name: newFullName || undefined,
       });
@@ -136,7 +148,7 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
       setNewFullName('');
       loadUsers();
     } catch (err: any) {
-      alert(`Ошибка добавления пользователя: ${err.message}`);
+      alert('Ошибка добавления: ' + (err.message || err));
     } finally {
       setAddingUser(false);
     }
@@ -170,15 +182,30 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
             Системные настройки и мониторинг
           </h1>
           <p className="text-[12px] text-neutral-500 dark:text-neutral-400 mt-0.5">
-            Статус шлюза Core API, учетные записи IntraService, операторы Telegram и журналы
+            Статус шлюза Core API, учетные записи IntraService, операторы Telegram и системные журналы
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={onToggleTheme}
-            className="px-3 py-1.5 border border-neutral-200 dark:border-neutral-800 rounded bg-white dark:bg-neutral-900 text-[12px] text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+            className="px-3 py-1.5 border border-neutral-200 dark:border-neutral-800 rounded bg-white dark:bg-neutral-900 text-[12px] text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors flex items-center gap-2"
           >
-            Тема: {theme === 'dark' ? '🌙 Темная' : '☀️ Светлая'}
+            {theme === 'dark' ? (
+              <>
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                  <path d="M11 7.5A5 5 0 115.5 2a4 4 0 005.5 5.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
+                </svg>
+                <span>Темная тема</span>
+              </>
+            ) : (
+              <>
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                  <circle cx="6.5" cy="6.5" r="2.5" stroke="currentColor" strokeWidth="1.2"/>
+                  <path d="M6.5 1v1.5M6.5 10.5V12M1 6.5h1.5M10.5 6.5H12M2.6 2.6l1.1 1.1M9.3 9.3l1.1 1.1M2.6 10.4l1.1-1.1M9.3 3.7l1.1-1.1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                </svg>
+                <span>Светлая тема</span>
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -201,15 +228,22 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
                 <button
                   onClick={loadStatus}
                   disabled={statusLoading}
-                  className="px-2.5 py-1 text-[11px] border border-neutral-200 dark:border-neutral-700 rounded text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+                  className="px-2.5 py-1 text-[11px] border border-neutral-200 dark:border-neutral-700 rounded text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors flex items-center gap-1.5"
                 >
-                  {statusLoading ? 'Проверка...' : '🔄 Обновить'}
+                  <svg width="11" height="11" viewBox="0 0 11 11" fill="none" className={statusLoading ? 'animate-spin' : ''}>
+                    <path d="M9.5 2a4.5 4.5 0 11-7.8 4.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                    <path d="M9.5 2v2.5H7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  {statusLoading ? 'Проверка...' : 'Обновить'}
                 </button>
                 <button
                   onClick={handleRestartWorker}
-                  className="px-2.5 py-1 text-[11px] bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300 border border-red-200 dark:border-red-800 rounded hover:bg-red-100 dark:hover:bg-red-900/60 transition-colors"
+                  className="px-2.5 py-1 text-[11px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-700 rounded hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors flex items-center gap-1.5"
                 >
-                  ⚡ Перезапуск Worker
+                  <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                    <path d="M5.5 1v3M5.5 7v3M1 5.5h3M7 5.5h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                  </svg>
+                  Перезапуск Worker
                 </button>
               </div>
             </div>
@@ -217,15 +251,15 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
             <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
               <div className="py-2.5 flex items-center justify-between text-[12px]">
                 <span className="text-neutral-700 dark:text-neutral-300 font-medium">PostgreSQL + pgvector</span>
-                <span className={`px-2 py-0.5 rounded font-mono text-[11px] ${sysStatus?.db_connected ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300' : 'bg-red-100 text-red-800'}`}>
-                  {sysStatus?.db_connected ? 'Connected' : 'Offline'}
+                <span className={`px-2 py-0.5 rounded font-mono text-[11px] border ${sysStatus?.db_connected ? 'border-emerald-300 dark:border-emerald-800/80 bg-emerald-50/50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300' : 'border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950 text-rose-800 dark:text-rose-300'}`}>
+                  {sysStatus?.db_connected ? 'CONNECTED' : 'OFFLINE'}
                 </span>
               </div>
 
               <div className="py-2.5 flex items-center justify-between text-[12px]">
                 <span className="text-neutral-700 dark:text-neutral-300 font-medium">Redis Streams & Pub/Sub</span>
-                <span className={`px-2 py-0.5 rounded font-mono text-[11px] ${sysStatus?.redis_connected ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300' : 'bg-red-100 text-red-800'}`}>
-                  {sysStatus?.redis_connected ? 'Connected' : 'Offline'}
+                <span className={`px-2 py-0.5 rounded font-mono text-[11px] border ${sysStatus?.redis_connected ? 'border-emerald-300 dark:border-emerald-800/80 bg-emerald-50/50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300' : 'border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950 text-rose-800 dark:text-rose-300'}`}>
+                  {sysStatus?.redis_connected ? 'CONNECTED' : 'OFFLINE'}
                 </span>
               </div>
 
@@ -236,15 +270,15 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
                     Circuit Breaker: {sysStatus?.circuit_breaker_state || 'CLOSED'}
                   </span>
                 </div>
-                <span className={`px-2 py-0.5 rounded font-mono text-[11px] ${sysStatus?.intraservice_connected ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300' : 'bg-red-100 text-red-800'}`}>
-                  {sysStatus?.intraservice_connected ? 'Available' : 'Unavailable'}
+                <span className={`px-2 py-0.5 rounded font-mono text-[11px] border ${sysStatus?.intraservice_connected ? 'border-emerald-300 dark:border-emerald-800/80 bg-emerald-50/50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300' : 'border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950 text-rose-800 dark:text-rose-300'}`}>
+                  {sysStatus?.intraservice_connected ? 'AVAILABLE' : 'UNAVAILABLE'}
                 </span>
               </div>
 
               <div className="py-2.5 flex items-center justify-between text-[12px]">
                 <span className="text-neutral-700 dark:text-neutral-300 font-medium">Сервисный пользователь</span>
-                <span className={`px-2 py-0.5 rounded font-mono text-[11px] ${sysStatus?.service_user_configured ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300' : 'bg-amber-100 text-amber-800'}`}>
-                  {sysStatus?.service_user_configured ? 'Настроен' : 'Не настроен'}
+                <span className={`px-2 py-0.5 rounded font-mono text-[11px] border ${sysStatus?.service_user_configured ? 'border-emerald-300 dark:border-emerald-800/80 bg-emerald-50/50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300' : 'border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'}`}>
+                  {sysStatus?.service_user_configured ? 'CONFIGURED' : 'NOT CONFIGURED'}
                 </span>
               </div>
             </div>
@@ -284,7 +318,7 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
               </div>
 
               {userMsg && (
-                <div className={`p-2 rounded text-[11px] ${userMsg.type === 'success' ? 'bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300' : 'bg-red-50 text-red-700'}`}>
+                <div className={`p-2 rounded text-[11px] border ${userMsg.type === 'success' ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300' : 'border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300'}`}>
                   {userMsg.text}
                 </div>
               )}
@@ -293,7 +327,7 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
                 <button
                   type="submit"
                   disabled={savingUser || !serviceLogin || !servicePassword}
-                  className="px-3.5 py-1.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded text-[12px] font-medium hover:bg-neutral-700 dark:hover:bg-neutral-300 disabled:opacity-50 transition-colors"
+                  className="px-3.5 py-1.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded text-[12px] font-medium hover:bg-neutral-800 dark:hover:bg-neutral-200 disabled:opacity-50 transition-colors"
                 >
                   {savingUser ? 'Сохранение...' : 'Сохранить аккаунт'}
                 </button>
@@ -301,7 +335,7 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
                   <button
                     type="button"
                     onClick={handleDeleteServiceUser}
-                    className="px-3 py-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 rounded text-[12px] transition-colors"
+                    className="px-3 py-1.5 text-neutral-500 hover:text-rose-600 dark:text-neutral-400 dark:hover:text-rose-400 rounded text-[12px] transition-colors"
                   >
                     Удалить
                   </button>
@@ -343,15 +377,18 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => handleToggleUser(u.telegram_id)}
-                      className={`px-2 py-0.5 text-[10px] font-medium rounded ${u.is_active ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300' : 'bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400'}`}
+                      className={`px-2 py-0.5 text-[10px] font-mono rounded border uppercase ${u.is_active ? 'border-emerald-300 dark:border-emerald-800/80 bg-emerald-50/50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300' : 'border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'}`}
                     >
                       {u.is_active ? 'Активен' : 'Отключен'}
                     </button>
                     <button
                       onClick={() => handleDeleteUser(u.telegram_id)}
-                      className="text-neutral-300 hover:text-red-500 dark:text-neutral-600 dark:hover:text-red-400 text-xs px-1"
+                      className="text-neutral-400 hover:text-rose-600 dark:text-neutral-500 dark:hover:text-rose-400 text-xs p-1 rounded transition-colors"
+                      title="Удалить оператора"
                     >
-                      ✕
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M2 3h8M4.5 3V1.5h3V3M3 3l.5 7.5a1 1 0 001 1h3a1 1 0 001-1L9 3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
                     </button>
                   </div>
                 </div>
@@ -393,7 +430,7 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
                 disabled={addingUser || !newTgId}
                 className="w-full py-1.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded text-[11px] font-medium disabled:opacity-50 transition-colors"
               >
-                + Добавить оператора
+                Добавить оператора
               </button>
             </form>
           </div>
@@ -412,17 +449,17 @@ export default function SettingsPage({ theme, onToggleTheme }: Props) {
               <button
                 onClick={loadLogs}
                 disabled={logsLoading}
-                className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
+                className="text-[11px] text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100"
               >
                 {logsLoading ? 'Обновление...' : 'Обновить'}
               </button>
             </div>
 
-            <div className="bg-neutral-950 text-neutral-300 font-mono text-[11px] p-3 rounded max-h-52 overflow-y-auto space-y-1.5">
+            <div className="bg-neutral-950 text-neutral-300 font-mono text-[11px] p-3 rounded max-h-52 overflow-y-auto space-y-1.5 border border-neutral-800">
               {logs.map((l, idx) => (
                 <div key={idx} className="flex gap-2">
                   <span className="text-neutral-500 shrink-0">[{l.id?.slice(0, 10)}]</span>
-                  <span className="text-green-400 shrink-0">[{l.type}]</span>
+                  <span className="text-neutral-400 shrink-0">[{l.type}]</span>
                   <span className="text-neutral-200 break-all">{l.message}</span>
                 </div>
               ))}

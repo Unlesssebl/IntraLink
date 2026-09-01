@@ -94,7 +94,7 @@ export default function AutomationPage() {
       target: targetName,
       status: 'running',
       time: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
-      message: 'Отправлено в Redis Streams stream:execution_queue...',
+      message: 'Отправлено в очередь выполнения Redis Streams...',
     };
 
     setJobs(prev => [newJob, ...prev]);
@@ -107,7 +107,6 @@ export default function AutomationPage() {
 
       const actualJobId = res.job_id || newJobId;
 
-      // Poll job status
       setTimeout(async () => {
         try {
           const statusRes = await getExecutionJob(actualJobId);
@@ -148,20 +147,20 @@ export default function AutomationPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-[18px] font-semibold text-neutral-900 dark:text-neutral-50 tracking-tight">
-            Автоматизация & RAG База знаний
+            Автоматизация и база знаний
           </h1>
           <p className="text-[12px] text-neutral-500 dark:text-neutral-400 mt-0.5">
-            Семантический поиск pgvector (FastEmbed) и брокер фонового выполнения Windows
+            Семантический RAG-поиск в pgvector и брокер фонового выполнения на Windows-хостах
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-green-50 dark:bg-green-950/50 text-green-700 dark:text-green-300 text-[11px] font-medium border border-green-200 dark:border-green-800">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-            pgvector Tier-1 RAG Online
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 text-[11px] font-mono border border-neutral-200 dark:border-neutral-700">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            pgvector RAG
           </span>
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 text-[11px] font-medium border border-blue-200 dark:border-blue-800">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 text-[11px] font-mono border border-neutral-200 dark:border-neutral-700">
             <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-            Execution Broker RPC Ready
+            Execution Broker
           </span>
         </div>
       </div>
@@ -171,15 +170,13 @@ export default function AutomationPage() {
         <div className="space-y-6">
           {/* RAG Search Card */}
           <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded p-5 space-y-4 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
-                  Семантический поиск решений
-                </h2>
-                <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                  Поиск похожих исторических инцидентов и решений инженеров
-                </p>
-              </div>
+            <div>
+              <h2 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
+                Семантический поиск решений
+              </h2>
+              <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                Поиск похожих исторических инцидентов и решений инженеров
+              </p>
             </div>
 
             <div className="flex gap-2">
@@ -188,12 +185,12 @@ export default function AutomationPage() {
                 onChange={e => setQuery(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleSearch()}
                 placeholder="Опишите проблему своими словами..."
-                className="flex-1 px-3 py-2 text-[13px] bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded text-neutral-900 dark:text-neutral-100 outline-none focus:border-blue-500 transition-colors"
+                className="flex-1 px-3 py-2 text-[13px] bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded text-neutral-900 dark:text-neutral-100 outline-none focus:border-neutral-500 transition-colors"
               />
               <button
                 onClick={() => handleSearch()}
                 disabled={searching || !query.trim()}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-[12px] font-medium disabled:opacity-50 transition-colors shrink-0"
+                className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 rounded text-[12px] font-medium disabled:opacity-50 transition-colors shrink-0"
               >
                 {searching ? 'Поиск...' : 'Найти решение'}
               </button>
@@ -206,7 +203,7 @@ export default function AutomationPage() {
                 <button
                   key={q}
                   onClick={() => { setQuery(q); handleSearch(q); }}
-                  className="text-[11px] px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                  className="text-[11px] px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 transition-colors"
                 >
                   {q}
                 </button>
@@ -218,13 +215,13 @@ export default function AutomationPage() {
               {ragMatches.map(m => (
                 <div
                   key={m.task_id}
-                  className="p-3 rounded border border-neutral-100 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/40 space-y-1.5"
+                  className="p-3 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/40 space-y-1.5"
                 >
                   <div className="flex items-center justify-between text-[12px]">
                     <span className="font-semibold text-neutral-900 dark:text-neutral-100">
                       #{m.task_id} · {m.name}
                     </span>
-                    <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300 font-medium">
+                    <span className="font-mono text-[11px] px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 font-medium">
                       {m.similarity_pct}% совпадение
                     </span>
                   </div>
@@ -232,7 +229,7 @@ export default function AutomationPage() {
                     Раздел: {m.service_name} · Статус: {m.status_name}
                   </p>
                   <div className="mt-2 text-[12px] text-neutral-700 dark:text-neutral-300 bg-white dark:bg-neutral-900 p-2.5 rounded border border-neutral-200 dark:border-neutral-800">
-                    <p className="font-medium text-neutral-900 dark:text-neutral-100 mb-1 text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400">
+                    <p className="font-medium text-neutral-900 dark:text-neutral-100 mb-1 text-[11px] uppercase tracking-wider text-neutral-500">
                       Решение инженера:
                     </p>
                     <p className="whitespace-pre-wrap">{m.solution}</p>
@@ -255,7 +252,7 @@ export default function AutomationPage() {
                 Синхронизация базы знаний (sync-kb)
               </h2>
               <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                Выгружает закрытые заявки (29/30) из IntraService и векторизует решения в FastEmbed
+                Выгружает закрытые заявки из IntraService и индексирует решения в FastEmbed
               </p>
             </div>
 
@@ -275,16 +272,20 @@ export default function AutomationPage() {
               <button
                 onClick={handleSync}
                 disabled={syncing}
-                className="ml-auto px-3.5 py-1.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded text-[12px] font-medium hover:bg-neutral-700 dark:hover:bg-neutral-300 disabled:opacity-50 transition-colors"
+                className="ml-auto px-3.5 py-1.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded text-[12px] font-medium hover:bg-neutral-800 dark:hover:bg-neutral-200 disabled:opacity-50 transition-colors flex items-center gap-1.5"
               >
-                {syncing ? 'Синхронизация...' : '🔄 Запустить Sync'}
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className={syncing ? 'animate-spin' : ''}>
+                  <path d="M10 2a5 5 0 11-8.66 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                  <path d="M10 2v3H7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                {syncing ? 'Синхронизация...' : 'Запустить синхронизацию'}
               </button>
             </div>
 
             {syncResult && (
               <div className="p-3 bg-neutral-50 dark:bg-neutral-950 rounded border border-neutral-200 dark:border-neutral-800 text-[12px] space-y-1">
-                <p className="font-semibold text-green-600 dark:text-green-400">
-                  {syncResult.status === 'ok' ? '✓ Синхронизация успешно завершена' : 'Статус: ' + syncResult.status}
+                <p className="font-semibold text-neutral-900 dark:text-neutral-100">
+                  {syncResult.status === 'ok' ? 'Синхронизация успешно завершена' : 'Статус: ' + syncResult.status}
                 </p>
                 <div className="grid grid-cols-2 gap-2 text-[11px] text-neutral-600 dark:text-neutral-400 pt-1 font-mono">
                   <div>Всего обработано: {syncResult.total_fetched}</div>
@@ -303,20 +304,20 @@ export default function AutomationPage() {
           <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded p-5 space-y-5 shadow-sm">
             <div>
               <h2 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
-                1-Click Execution Broker (Windows RPC)
+                Execution Broker (Windows RPC)
               </h2>
               <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                Прямой запуск автоматизированных доменных сценариев на Windows Worker
+                Запуск автоматизированных доменных сценариев на Windows Worker
               </p>
             </div>
 
             {/* Action 1: Wi-Fi */}
-            <div className="p-3.5 rounded border border-neutral-100 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/40 space-y-2">
+            <div className="p-3.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/40 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-[12px] font-semibold text-neutral-800 dark:text-neutral-200">
-                  ⚡ Выдать Wi-Fi в AD (WLAN-WORKNET)
+                  Выдать Wi-Fi в AD (WLAN-WORKNET)
                 </span>
-                <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300">
+                <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400">
                   Active Directory
                 </span>
               </div>
@@ -330,7 +331,7 @@ export default function AutomationPage() {
                 <button
                   onClick={() => { dispatchAction('grant_wlan', { identity: wlanUser }, wlanUser); setWlanUser(''); }}
                   disabled={brokerBusy || !wlanUser.trim()}
-                  className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded text-[11px] font-medium disabled:opacity-50 transition-colors"
+                  className="px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 rounded text-[11px] font-medium disabled:opacity-50 transition-colors"
                 >
                   Выдать доступ
                 </button>
@@ -338,12 +339,12 @@ export default function AutomationPage() {
             </div>
 
             {/* Action 2: Diagnose Host */}
-            <div className="p-3.5 rounded border border-neutral-100 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/40 space-y-2">
+            <div className="p-3.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/40 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-[12px] font-semibold text-neutral-800 dark:text-neutral-200">
-                  ⚡ Сетевая диагностика рабочей станции
+                  Сетевая диагностика рабочей станции
                 </span>
-                <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300">
+                <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400">
                   WMI / SMB / Ping
                 </span>
               </div>
@@ -357,7 +358,7 @@ export default function AutomationPage() {
                 <button
                   onClick={() => { dispatchAction('diagnose_host', { host: diagHost }, diagHost); setDiagHost(''); }}
                   disabled={brokerBusy || !diagHost.trim()}
-                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-[11px] font-medium disabled:opacity-50 transition-colors"
+                  className="px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 rounded text-[11px] font-medium disabled:opacity-50 transition-colors"
                 >
                   Диагностика
                 </button>
@@ -365,12 +366,12 @@ export default function AutomationPage() {
             </div>
 
             {/* Action 3: Create User AD */}
-            <div className="p-3.5 rounded border border-neutral-100 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/40 space-y-2">
+            <div className="p-3.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/40 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-[12px] font-semibold text-neutral-800 dark:text-neutral-200">
-                  ⚡ Создать учетную запись в Active Directory
+                  Создать учетную запись в Active Directory
                 </span>
-                <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300">
+                <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400">
                   New-ADUser
                 </span>
               </div>
@@ -400,7 +401,7 @@ export default function AutomationPage() {
                   setAdFullName(''); setAdLogin(''); setAdDept('');
                 }}
                 disabled={brokerBusy || !adFullName.trim()}
-                className="w-full mt-1 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-[11px] font-medium disabled:opacity-50 transition-colors"
+                className="w-full mt-1 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 rounded text-[11px] font-medium disabled:opacity-50 transition-colors"
               >
                 Создать пользователя в AD
               </button>
@@ -418,7 +419,7 @@ export default function AutomationPage() {
                   <div className="space-y-0.5 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-neutral-900 dark:text-neutral-100">{j.action}</span>
-                      <span className="font-mono text-[11px] text-neutral-500">➔ {j.target}</span>
+                      <span className="font-mono text-[11px] text-neutral-500">→ {j.target}</span>
                     </div>
                     {j.message && (
                       <p className="text-[11px] text-neutral-600 dark:text-neutral-400 truncate">{j.message}</p>
@@ -427,12 +428,12 @@ export default function AutomationPage() {
                   <div className="flex items-center gap-2 shrink-0">
                     <span className="text-[10px] font-mono text-neutral-400">{j.time}</span>
                     <span
-                      className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                      className={`text-[10px] font-mono px-1.5 py-0.5 rounded border uppercase tracking-wider ${
                         j.status === 'success'
-                          ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
+                          ? 'border-emerald-300 dark:border-emerald-800/80 bg-emerald-50/50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300'
                           : j.status === 'failed'
-                          ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
-                          : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                          ? 'border-rose-300 dark:border-rose-800/80 bg-rose-50/50 dark:bg-rose-950/30 text-rose-800 dark:text-rose-300'
+                          : 'border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200'
                       }`}
                     >
                       {j.status}

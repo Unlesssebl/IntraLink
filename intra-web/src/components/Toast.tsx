@@ -34,10 +34,10 @@ const icons = {
 };
 
 const styles = {
-  success: 'bg-green-50 text-green-800 border-green-200 dark:bg-green-950/80 dark:text-green-200 dark:border-green-800',
-  error: 'bg-red-50 text-red-800 border-red-200 dark:bg-red-950/80 dark:text-red-200 dark:border-red-800',
-  warning: 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/80 dark:text-amber-200 dark:border-amber-800',
-  info: 'bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-950/80 dark:text-blue-200 dark:border-blue-800',
+  success: 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-950 border border-neutral-800 dark:border-neutral-200',
+  error: 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-950 border border-rose-500/40 dark:border-rose-500/40',
+  warning: 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-950 border border-amber-500/40 dark:border-amber-500/40',
+  info: 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-950 border border-neutral-800 dark:border-neutral-200',
 };
 
 function Toast({ toast, onDismiss }: { toast: ToastMessage; onDismiss: () => void }) {

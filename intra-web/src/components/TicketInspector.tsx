@@ -112,7 +112,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           params: { identity: ticket.requesterName },
           auto_close_ticket: true,
         });
-        onToast({ type: 'success', message: '⚡ Задача выдачи Wi-Fi поставлена в Execution Broker' });
+        onToast({ type: 'success', message: 'Задача выдачи Wi-Fi поставлена в Execution Broker' });
         onUpdateTicket(ticket.id, { status: 'resolved' });
       } else if (actionType === 'create_user') {
         await enqueueExecution({
@@ -121,7 +121,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           params: {},
           auto_close_ticket: true,
         });
-        onToast({ type: 'success', message: '⚡ Создание УЗ в AD передано в Execution Broker' });
+        onToast({ type: 'success', message: 'Создание УЗ в AD передано в Execution Broker' });
         onUpdateTicket(ticket.id, { status: 'resolved' });
       } else if (actionType === 'redirect') {
         const comm = ticket.aiSuggestion || `Заявка отменена, т. к. создана не в подходящем разделе. Требуется оставить заявку в подходящем разделе: ${ticket.targetServiceName || 'соответствующий сервис'}.`;
@@ -130,7 +130,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           comment: comm,
           minutes: 5,
         });
-        onToast({ type: 'success', message: `↩️ Заявка перенаправлена в ${ticket.targetServiceName || 'целевой раздел'}` });
+        onToast({ type: 'success', message: `Заявка перенаправлена в ${ticket.targetServiceName || 'целевой раздел'}` });
         onUpdateTicket(ticket.id, { status: 'resolved' });
       } else if (actionType === 'hardware') {
         const comm = ticket.aiSuggestion || 'Приносите системный блок / ноутбук в АБК-3, каб. 112 на аппаратную диагностику и обслуживание.';
@@ -139,7 +139,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           comment: comm,
           minutes: 10,
         });
-        onToast({ type: 'success', message: '🛠️ Переведено в Статус 48 (Ожидание устройства, каб. 112)' });
+        onToast({ type: 'success', message: 'Переведено в Статус 48 (Ожидание устройства, каб. 112)' });
         onUpdateTicket(ticket.id, { status: 'waiting' });
       } else if (actionType === 'duplicate') {
         const masterId = ticket.duplicateInfo?.master_task_id || '';
@@ -149,7 +149,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           comment: comm,
           minutes: 5,
         });
-        onToast({ type: 'success', message: `❌ Заявка отменена как дубликат #${masterId}` });
+        onToast({ type: 'success', message: `Заявка отменена как дубликат #${masterId}` });
         onUpdateTicket(ticket.id, { status: 'resolved' });
       }
     } catch (err: any) {
@@ -245,24 +245,30 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       <div className="flex-1 overflow-y-auto">
         {/* Duplicate Banner */}
         {(ticket.isDuplicate || ticket.ruleType === 'duplicate_task') && (
-          <div className="mx-5 mt-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded p-3">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-amber-600 dark:text-amber-400 text-sm font-bold">⚠️ Обнаружен дубликат</span>
+          <div className="mx-5 mt-4 border border-amber-300 dark:border-amber-800/80 bg-amber-50/50 dark:bg-amber-950/30 rounded p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="text-amber-600 dark:text-amber-400 shrink-0">
+                  <rect x="1.5" y="1.5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
+                  <path d="M4.5 4.5h6a1.5 1.5 0 011.5 1.5v6a1.5 1.5 0 01-1.5 1.5h-6A1.5 1.5 0 013 12" stroke="currentColor" strokeWidth="1.2"/>
+                </svg>
+                <span className="text-amber-900 dark:text-amber-200 text-[12px] font-semibold">Повторная заявка (Дубликат)</span>
+              </div>
               {ticket.duplicateInfo?.master_task_id && (
-                <span className="text-[11px] font-mono bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 px-1.5 py-0.5 rounded">
+                <span className="text-[11px] font-mono bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 px-1.5 py-0.5 rounded border border-amber-300/60 dark:border-amber-700/60">
                   Master #{ticket.duplicateInfo.master_task_id}
                 </span>
               )}
             </div>
-            <p className="text-[12px] text-amber-800 dark:text-amber-200 mb-2">
+            <p className="text-[12px] text-neutral-700 dark:text-neutral-300 leading-relaxed">
               Данная заявка дублирует ранее созданный инцидент от того же заявителя.
             </p>
             <button
               onClick={() => handleQuickAction('duplicate')}
               disabled={executingAction !== null}
-              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-medium rounded transition-colors disabled:opacity-50"
+              className="px-2.5 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 text-[11px] font-medium rounded transition-colors disabled:opacity-50"
             >
-              ❌ Отменить как дубликат (Статус 30)
+              Отменить как дубликат (Статус 30)
             </button>
           </div>
         )}
@@ -273,9 +279,12 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <button
               onClick={() => handleQuickAction('wlan')}
               disabled={executingAction !== null}
-              className="px-2.5 py-1 bg-green-600 hover:bg-green-700 text-white text-[11px] font-medium rounded flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50"
+              className="px-2.5 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50"
             >
-              ⚡ Выдать Wi-Fi в AD (Статус 29)
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M1 4.5C3.8 2 8.2 2 11 4.5M2.5 6.5c2-1.8 5-1.8 7 0M4.5 8.5c1-0.9 2-0.9 3 0M6 10.5h.01" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+              </svg>
+              Выдать Wi-Fi в AD (Статус 29)
             </button>
           )}
 
@@ -283,9 +292,13 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <button
               onClick={() => handleQuickAction('create_user')}
               disabled={executingAction !== null}
-              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-medium rounded flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50"
+              className="px-2.5 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50"
             >
-              ⚡ Создать УЗ в AD
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <circle cx="5" cy="4" r="2" stroke="currentColor" strokeWidth="1.2"/>
+                <path d="M1.5 10c0-1.8 1.5-3 3.5-3s3.5 1.2 3.5 3M9.5 4v4M7.5 6h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+              </svg>
+              Создать УЗ в AD
             </button>
           )}
 
@@ -293,9 +306,12 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <button
               onClick={() => handleQuickAction('redirect')}
               disabled={executingAction !== null}
-              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-medium rounded flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50"
+              className="px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 border border-neutral-200 dark:border-neutral-700 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50"
             >
-              ↩️ Редирект в {ticket.targetServiceName || 'сервис'}
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M9.5 2.5L2.5 9.5M9.5 2.5H4.5M9.5 2.5V7.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Редирект в {ticket.targetServiceName || 'сервис'}
             </button>
           )}
 
@@ -303,34 +319,37 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <button
               onClick={() => handleQuickAction('hardware')}
               disabled={executingAction !== null}
-              className="px-2.5 py-1 bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-medium rounded flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50"
+              className="px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 border border-neutral-200 dark:border-neutral-700 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50"
             >
-              🛠️ В каб. 112 (Статус 48)
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M7.5 1.5a3 3 0 00-3.8 3.8L1 8l3 3 2.7-2.7a3 3 0 003.8-3.8l-2 2-1-1 2-2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
+              </svg>
+              В каб. 112 (Статус 48)
             </button>
           )}
         </div>
 
         {/* AI suggestion */}
         {ticket.aiConfidence !== null && ticket.aiSuggestion && (
-          <div className="mx-5 mt-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded p-3">
+          <div className="mx-5 mt-3 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded p-3">
             <div className="flex items-center justify-between mb-1.5">
               <div className="flex items-center gap-2">
-                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" className="text-blue-600 dark:text-blue-400 shrink-0">
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" className="text-neutral-700 dark:text-neutral-300 shrink-0">
                   <path d="M6.5 1.5L8 5H11.5L8.5 7.2 9.5 10.5 6.5 8.5 3.5 10.5 4.5 7.2 1.5 5H5L6.5 1.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
                 </svg>
-                <span className="text-[11px] font-semibold text-blue-700 dark:text-blue-300">
-                  AI-подсказка · {ticket.ruleType || 'Rule Engine'}
+                <span className="text-[11px] font-semibold text-neutral-800 dark:text-neutral-200">
+                  Рекомендация триажа · {ticket.ruleType || 'Rule Engine'}
                 </span>
               </div>
-              <span className="text-[11px] font-mono text-blue-600 dark:text-blue-400">
+              <span className="text-[11px] font-mono text-neutral-500">
                 {ticket.expenses ? `${ticket.expenses} мин` : ''}
               </span>
             </div>
-            <p className="text-[12px] text-blue-700 dark:text-blue-300 leading-relaxed whitespace-pre-wrap">{ticket.aiSuggestion}</p>
+            <p className="text-[12px] text-neutral-700 dark:text-neutral-300 leading-relaxed whitespace-pre-wrap">{ticket.aiSuggestion}</p>
             <div className="flex items-center gap-3 mt-2">
               <button
                 onClick={() => { setReplyText(ticket.aiSuggestion!); setReplyMode('reply'); }}
-                className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                className="text-[11px] text-neutral-900 dark:text-neutral-100 hover:underline font-medium"
               >
                 Вставить в ответ →
               </button>
@@ -339,7 +358,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                 disabled={ragLoading}
                 className="text-[11px] text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 font-medium"
               >
-                {ragLoading ? 'Поиск RAG...' : '🧠 Найти аналогичные решения'}
+                {ragLoading ? 'Поиск RAG...' : 'Поиск аналогичных решений в RAG'}
               </button>
             </div>
           </div>
@@ -347,20 +366,20 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
         {/* RAG Matches List */}
         {ragMatches.length > 0 && (
-          <div className="mx-5 mt-3 border border-indigo-200 dark:border-indigo-900 bg-indigo-50/50 dark:bg-indigo-950/20 rounded p-3 space-y-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
+          <div className="mx-5 mt-3 border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 rounded p-3 space-y-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
               Похожие решения в базе знаний RAG
             </span>
             {ragMatches.map(m => (
-              <div key={m.task_id} className="text-[12px] border-t border-indigo-100 dark:border-indigo-900/50 pt-1.5">
-                <div className="flex items-center justify-between text-indigo-900 dark:text-indigo-200 font-medium mb-0.5">
+              <div key={m.task_id} className="text-[12px] border-t border-neutral-200 dark:border-neutral-800 pt-1.5">
+                <div className="flex items-center justify-between text-neutral-900 dark:text-neutral-100 font-medium mb-0.5">
                   <span>#{m.task_id} · {m.name}</span>
-                  <span className="font-mono text-[11px] text-indigo-600 dark:text-indigo-400">{m.similarity_pct}%</span>
+                  <span className="font-mono text-[11px] text-neutral-600 dark:text-neutral-400">{m.similarity_pct}%</span>
                 </div>
                 <p className="text-neutral-600 dark:text-neutral-400 line-clamp-2 text-[11px]">{m.solution}</p>
                 <button
                   onClick={() => { setReplyText(m.solution); setReplyMode('reply'); }}
-                  className="mt-1 text-[10px] text-indigo-600 dark:text-indigo-400 hover:underline"
+                  className="mt-1 text-[10px] text-neutral-700 dark:text-neutral-300 hover:underline font-medium"
                 >
                   Скопировать решение в ответ →
                 </button>

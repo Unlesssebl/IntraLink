@@ -163,10 +163,10 @@ export default function QueuePage({ tickets, selectedTicketId, onSelectTicket, o
           <div className="flex items-center gap-0.5 bg-neutral-100 dark:bg-neutral-800 p-0.5 rounded">
             {([
               ['all', 'Все темы'],
-              ['duplicates', `⚠️ Дубли (${tickets.filter(t => t.isDuplicate || t.ruleType === 'duplicate_task').length})`],
-              ['redirects', `↩️ Редирект (${tickets.filter(t => t.isRedirect || t.ruleType?.startsWith('redirect')).length})`],
-              ['wifi', `⚡ Wi-Fi (${tickets.filter(t => t.ruleType === 'wlan_access' || t.templateKey === 'wifi_access').length})`],
-              ['repair', `🛠️ Ремонт (${tickets.filter(t => t.ruleType === 'hardware_repair').length})`],
+              ['duplicates', `Дубликаты (${tickets.filter(t => t.isDuplicate || t.ruleType === 'duplicate_task').length})`],
+              ['redirects', `Редиректы (${tickets.filter(t => t.isRedirect || t.ruleType?.startsWith('redirect')).length})`],
+              ['wifi', `Wi-Fi (${tickets.filter(t => t.ruleType === 'wlan_access' || t.templateKey === 'wifi_access').length})`],
+              ['repair', `Каб. 112 (${tickets.filter(t => t.ruleType === 'hardware_repair').length})`],
             ] as const).map(([v, l]) => (
               <button
                 key={v}
@@ -254,9 +254,9 @@ export default function QueuePage({ tickets, selectedTicketId, onSelectTicket, o
                       onClick={() => onSelectTicket(isActive ? null : ticket.id)}
                       onKeyDown={e => e.key === 'Enter' && onSelectTicket(isActive ? null : ticket.id)}
                       tabIndex={0}
-                      className={`cursor-pointer transition-colors outline-none focus:bg-blue-50/50 dark:focus:bg-blue-950/20 ${
+                      className={`cursor-pointer transition-colors outline-none focus:bg-neutral-100/70 dark:focus:bg-neutral-800/40 ${
                         isActive
-                          ? 'bg-blue-50 dark:bg-blue-950/30'
+                          ? 'bg-neutral-100 dark:bg-neutral-800/60'
                           : isSelected
                           ? 'bg-neutral-50 dark:bg-neutral-900'
                           : 'hover:bg-neutral-50 dark:hover:bg-neutral-900/50'
@@ -272,24 +272,24 @@ export default function QueuePage({ tickets, selectedTicketId, onSelectTicket, o
                       </td>
                       <td className="px-3 py-2.5 max-w-[280px]">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="font-mono text-[11px] text-neutral-400 dark:text-neutral-600 shrink-0">{ticket.id}</span>
+                          <span className="font-mono text-[11px] text-neutral-400 dark:text-neutral-500 shrink-0">{ticket.id}</span>
                           {ticket.isDuplicate && (
-                            <span className="px-1 py-0.2 bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 rounded text-[9px] font-semibold">
+                            <span className="px-1.5 py-0.5 border border-amber-300 dark:border-amber-800/80 bg-amber-50/50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 rounded text-[10px] font-mono uppercase tracking-wider">
                               дубликат
                             </span>
                           )}
                           {ticket.isRedirect && (
-                            <span className="px-1 py-0.2 bg-orange-100 text-orange-800 dark:bg-orange-950/80 dark:text-orange-300 rounded text-[9px] font-semibold">
+                            <span className="px-1.5 py-0.5 border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded text-[10px] font-mono uppercase tracking-wider">
                               редирект
                             </span>
                           )}
                           {ticket.ruleType === 'wlan_access' && (
-                            <span className="px-1 py-0.2 bg-green-100 text-green-800 dark:bg-green-950/80 dark:text-green-300 rounded text-[9px] font-semibold">
-                              Wi-Fi
+                            <span className="px-1.5 py-0.5 border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded text-[10px] font-mono uppercase tracking-wider">
+                              wi-fi
                             </span>
                           )}
                           {ticket.ruleType === 'hardware_repair' && (
-                            <span className="px-1 py-0.2 bg-purple-100 text-purple-800 dark:bg-purple-950/80 dark:text-purple-300 rounded text-[9px] font-semibold">
+                            <span className="px-1.5 py-0.5 border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded text-[10px] font-mono uppercase tracking-wider">
                               каб 112
                             </span>
                           )}
