@@ -1,217 +1,440 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import {
+  fetchSystemStatus,
+  saveServiceUser,
+  deleteServiceUser,
+  restartWorker,
+  fetchTelegramUsers,
+  addTelegramUser,
+  toggleTelegramUser,
+  deleteTelegramUser,
+  fetchWorkerLogs,
+} from '../lib/tasks';
+import type { SystemStatusResponse, TelegramUserItem } from '../lib/types';
 
 interface Props {
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
 }
 
-type ServiceStatus = 'ok' | 'degraded' | 'down' | 'checking';
-
-const StatusBadge = ({ status }: { status: ServiceStatus }) => {
-  const cfg = {
-    ok: { cls: 'bg-green-50 text-green-700 dark:bg-green-950/50 dark:text-green-300', label: 'Работает' },
-    degraded: { cls: 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300', label: 'Деградация' },
-    down: { cls: 'bg-red-50 text-red-700 dark:bg-red-950/50 dark:text-red-300', label: 'Недоступен' },
-    checking: { cls: 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400', label: 'Проверка...' },
-  }[status];
-  return (
-    <span className={`text-[11px] px-2 py-0.5 rounded font-medium ${cfg.cls}`}>
-      <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${
-        status === 'ok' ? 'bg-green-500' : status === 'degraded' ? 'bg-amber-500' : status === 'down' ? 'bg-red-500' : 'bg-neutral-400'
-      }`} />
-      {cfg.label}
-    </span>
-  );
-};
-
 export default function SettingsPage({ theme, onToggleTheme }: Props) {
-  const [services, setServices] = useState<{ id: string; name: string; type: string; status: ServiceStatus; latency?: string }[]>([
-    { id: 's1', name: 'REST API Gateway', type: 'API', status: 'ok', latency: '12ms' },
-    { id: 's2', name: 'Очередь сообщений (RabbitMQ)', type: 'Queue', status: 'ok', latency: '3ms' },
-    { id: 's3', name: 'PostgreSQL', type: 'Database', status: 'ok', latency: '8ms' },
-    { id: 's4', name: 'Telegram Bot', type: 'Bot', status: 'degraded', latency: '340ms' },
-    { id: 's5', name: 'AI Engine (GPT-4o)', type: 'AI', status: 'ok', latency: '780ms' },
-    { id: 's6', name: 'ActiveSync (Exchange)', type: 'Integration', status: 'down' },
-  ]);
+  // System Status State
+  const [sysStatus, setSysStatus] = useState<SystemStatusResponse | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
 
-  const [density, setDensity] = useState<'comfortable' | 'compact' | 'spacious'>('comfortable');
-  const [notifications, setNotifications] = useState(true);
-  const [sound, setSound] = useState(false);
-  const [visibleCols, setVisibleCols] = useState<Record<string, boolean>>({
-    title: true, status: true, priority: true, ai: true,
-    category: true, assignee: true, host: true, sla: true, requester: true,
-  });
+  // Service User State
+  const [serviceLogin, setServiceLogin] = useState('');
+  const [servicePassword, setServicePassword] = useState('');
+  const [savingUser, setSavingUser] = useState(false);
+  const [userMsg, setUserMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const checkAll = () => {
-    setServices(prev => prev.map(s => ({ ...s, status: 'checking' })));
-    setTimeout(() => {
-      setServices(prev => prev.map(s => ({
-        ...s,
-        status: s.id === 's6' ? 'down' : s.id === 's4' ? 'ok' : 'ok',
-        latency: s.id === 's6' ? undefined : `${Math.floor(Math.random() * 100 + 5)}ms`,
-      })));
-    }, 1800);
+  // Telegram Users State
+  const [users, setUsers] = useState<TelegramUserItem[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [newTgId, setNewTgId] = useState('');
+  const [newUsername, setNewUsername] = useState('');
+  const [newFullName, setNewFullName] = useState('');
+  const [addingUser, setAddingUser] = useState(false);
+
+  // Logs State
+  const [logs, setLogs] = useState<any[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+
+  const loadStatus = async () => {
+    setStatusLoading(true);
+    try {
+      const data = await fetchSystemStatus();
+      setSysStatus(data);
+    } catch (err) {
+      console.error('Ошибка загрузки статуса:', err);
+    } finally {
+      setStatusLoading(false);
+    }
+  };
+
+  const loadUsers = async () => {
+    setUsersLoading(true);
+    try {
+      const data = await fetchTelegramUsers();
+      setUsers(data || []);
+    } catch (err) {
+      console.error('Ошибка загрузки пользователей:', err);
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  const loadLogs = async () => {
+    setLogsLoading(true);
+    try {
+      const data = await fetchWorkerLogs();
+      setLogs(data.logs || []);
+    } catch (err) {
+      console.error('Ошибка загрузки логов:', err);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadStatus();
+    loadUsers();
+    loadLogs();
+  }, []);
+
+  const handleSaveServiceUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!serviceLogin || !servicePassword) return;
+    setSavingUser(true);
+    setUserMsg(null);
+    try {
+      await saveServiceUser(serviceLogin, servicePassword);
+      setUserMsg({ type: 'success', text: 'Учетные данные сервисного пользователя успешно сохранены' });
+      setServicePassword('');
+      loadStatus();
+    } catch (err: any) {
+      setUserMsg({ type: 'error', text: err.message || 'Ошибка сохранения' });
+    } finally {
+      setSavingUser(false);
+    }
+  };
+
+  const handleDeleteServiceUser = async () => {
+    if (!confirm('Вы уверены, что хотите удалить сервисный аккаунт?')) return;
+    try {
+      await deleteServiceUser();
+      setUserMsg({ type: 'success', text: 'Сервисный аккаунт удален' });
+      loadStatus();
+    } catch (err: any) {
+      setUserMsg({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleRestartWorker = async () => {
+    try {
+      await restartWorker();
+      alert('Воркер успешно перезапущен');
+      loadStatus();
+    } catch (err: any) {
+      alert(`Ошибка перезапуска: ${err.message}`);
+    }
+  };
+
+  const handleAddUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const idNum = parseInt(newTgId, 10);
+    if (!idNum) return;
+    setAddingUser(true);
+    try {
+      await addTelegramUser({
+        telegram_id: idNum,
+        username: newUsername || undefined,
+        full_name: newFullName || undefined,
+      });
+      setNewTgId('');
+      setNewUsername('');
+      setNewFullName('');
+      loadUsers();
+    } catch (err: any) {
+      alert(`Ошибка добавления пользователя: ${err.message}`);
+    } finally {
+      setAddingUser(false);
+    }
+  };
+
+  const handleToggleUser = async (tgId: number) => {
+    try {
+      await toggleTelegramUser(tgId);
+      loadUsers();
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
+
+  const handleDeleteUser = async (tgId: number) => {
+    if (!confirm(`Удалить оператора ${tgId}?`)) return;
+    try {
+      await deleteTelegramUser(tgId);
+      loadUsers();
+    } catch (err: any) {
+      console.error(err);
+    }
   };
 
   return (
-    <div className="h-full overflow-y-auto bg-neutral-50 dark:bg-neutral-950">
-      <div className="max-w-3xl mx-auto px-6 py-6 space-y-5">
+    <div className="h-full overflow-y-auto bg-neutral-50 dark:bg-neutral-950 p-6 space-y-6">
+      {/* Page Header */}
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-[17px] font-semibold text-neutral-900 dark:text-neutral-50 tracking-tight">Настройки</h1>
-          <p className="text-[12px] text-neutral-500 dark:text-neutral-400 mt-0.5">Конфигурация IntraLink Helpdesk</p>
+          <h1 className="text-[18px] font-semibold text-neutral-900 dark:text-neutral-50 tracking-tight">
+            Системные настройки и мониторинг
+          </h1>
+          <p className="text-[12px] text-neutral-500 dark:text-neutral-400 mt-0.5">
+            Статус шлюза Core API, учетные записи IntraService, операторы Telegram и журналы
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onToggleTheme}
+            className="px-3 py-1.5 border border-neutral-200 dark:border-neutral-800 rounded bg-white dark:bg-neutral-900 text-[12px] text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+          >
+            Тема: {theme === 'dark' ? '🌙 Темная' : '☀️ Светлая'}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Left Column: System Status & IntraService Account */}
+        <div className="space-y-6">
+          {/* Status Box */}
+          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded p-5 space-y-4 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
+                  Состояние сервисов
+                </h2>
+                <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  Подключение к брокерам, БД и внешнему шлюзу
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={loadStatus}
+                  disabled={statusLoading}
+                  className="px-2.5 py-1 text-[11px] border border-neutral-200 dark:border-neutral-700 rounded text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+                >
+                  {statusLoading ? 'Проверка...' : '🔄 Обновить'}
+                </button>
+                <button
+                  onClick={handleRestartWorker}
+                  className="px-2.5 py-1 text-[11px] bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300 border border-red-200 dark:border-red-800 rounded hover:bg-red-100 dark:hover:bg-red-900/60 transition-colors"
+                >
+                  ⚡ Перезапуск Worker
+                </button>
+              </div>
+            </div>
+
+            <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
+              <div className="py-2.5 flex items-center justify-between text-[12px]">
+                <span className="text-neutral-700 dark:text-neutral-300 font-medium">PostgreSQL + pgvector</span>
+                <span className={`px-2 py-0.5 rounded font-mono text-[11px] ${sysStatus?.db_connected ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300' : 'bg-red-100 text-red-800'}`}>
+                  {sysStatus?.db_connected ? 'Connected' : 'Offline'}
+                </span>
+              </div>
+
+              <div className="py-2.5 flex items-center justify-between text-[12px]">
+                <span className="text-neutral-700 dark:text-neutral-300 font-medium">Redis Streams & Pub/Sub</span>
+                <span className={`px-2 py-0.5 rounded font-mono text-[11px] ${sysStatus?.redis_connected ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300' : 'bg-red-100 text-red-800'}`}>
+                  {sysStatus?.redis_connected ? 'Connected' : 'Offline'}
+                </span>
+              </div>
+
+              <div className="py-2.5 flex items-center justify-between text-[12px]">
+                <div>
+                  <span className="text-neutral-700 dark:text-neutral-300 font-medium block">IntraService Gateway</span>
+                  <span className="text-[10px] text-neutral-400 font-mono">
+                    Circuit Breaker: {sysStatus?.circuit_breaker_state || 'CLOSED'}
+                  </span>
+                </div>
+                <span className={`px-2 py-0.5 rounded font-mono text-[11px] ${sysStatus?.intraservice_connected ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300' : 'bg-red-100 text-red-800'}`}>
+                  {sysStatus?.intraservice_connected ? 'Available' : 'Unavailable'}
+                </span>
+              </div>
+
+              <div className="py-2.5 flex items-center justify-between text-[12px]">
+                <span className="text-neutral-700 dark:text-neutral-300 font-medium">Сервисный пользователь</span>
+                <span className={`px-2 py-0.5 rounded font-mono text-[11px] ${sysStatus?.service_user_configured ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300' : 'bg-amber-100 text-amber-800'}`}>
+                  {sysStatus?.service_user_configured ? 'Настроен' : 'Не настроен'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* IntraService Account Setup */}
+          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded p-5 space-y-4 shadow-sm">
+            <div>
+              <h2 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
+                Сервисный аккаунт IntraService
+              </h2>
+              <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                Используется фоновым воркером для централизованного опроса очереди и триажа
+              </p>
+            </div>
+
+            <form onSubmit={handleSaveServiceUser} className="space-y-3">
+              <div>
+                <label className="text-[11px] text-neutral-600 dark:text-neutral-400 block mb-1">Логин IntraService</label>
+                <input
+                  value={serviceLogin}
+                  onChange={e => setServiceLogin(e.target.value)}
+                  placeholder="IntraService_dev"
+                  className="w-full px-3 py-1.5 text-[12px] bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded outline-none text-neutral-900 dark:text-neutral-100"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] text-neutral-600 dark:text-neutral-400 block mb-1">Пароль</label>
+                <input
+                  type="password"
+                  value={servicePassword}
+                  onChange={e => setServicePassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full px-3 py-1.5 text-[12px] bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded outline-none text-neutral-900 dark:text-neutral-100"
+                />
+              </div>
+
+              {userMsg && (
+                <div className={`p-2 rounded text-[11px] ${userMsg.type === 'success' ? 'bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300' : 'bg-red-50 text-red-700'}`}>
+                  {userMsg.text}
+                </div>
+              )}
+
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="submit"
+                  disabled={savingUser || !serviceLogin || !servicePassword}
+                  className="px-3.5 py-1.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded text-[12px] font-medium hover:bg-neutral-700 dark:hover:bg-neutral-300 disabled:opacity-50 transition-colors"
+                >
+                  {savingUser ? 'Сохранение...' : 'Сохранить аккаунт'}
+                </button>
+                {sysStatus?.service_user_configured && (
+                  <button
+                    type="button"
+                    onClick={handleDeleteServiceUser}
+                    className="px-3 py-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 rounded text-[12px] transition-colors"
+                  >
+                    Удалить
+                  </button>
+                )}
+              </div>
+            </form>
+          </div>
         </div>
 
-        {/* Service status */}
-        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-100 dark:border-neutral-800">
-            <div>
-              <h2 className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-200">Статус сервисов</h2>
-              <p className="text-[11px] text-neutral-400 dark:text-neutral-600 mt-0.5">Мониторинг интеграций и компонентов</p>
+        {/* Right Column: Telegram Users & System Logs */}
+        <div className="space-y-6">
+          {/* Telegram Operators */}
+          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded p-5 space-y-4 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
+                  Операторы Telegram-бота
+                </h2>
+                <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  Управление доступом операторов и дежурных
+                </p>
+              </div>
+              <span className="text-[11px] font-mono text-neutral-400">
+                Всего: {users.length}
+              </span>
             </div>
-            <button
-              onClick={checkAll}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700 rounded hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
-            >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <path d="M10 2a5 5 0 11-8.66 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                <path d="M10 2v3H7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-              Обновить
-            </button>
-          </div>
-          <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
-            {services.map(svc => (
-              <div key={svc.id} className="flex items-center gap-3 px-4 py-2.5">
-                <div className="flex-1 min-w-0">
-                  <p className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200">{svc.name}</p>
-                  <p className="text-[11px] text-neutral-400 dark:text-neutral-600 font-mono">{svc.type}</p>
+
+            {/* Users Table */}
+            <div className="divide-y divide-neutral-100 dark:divide-neutral-800 max-h-48 overflow-y-auto">
+              {users.map(u => (
+                <div key={u.telegram_id} className="py-2 flex items-center justify-between text-[12px]">
+                  <div>
+                    <div className="flex items-center gap-1.5 font-medium text-neutral-900 dark:text-neutral-100">
+                      <span>{u.full_name || u.username || 'Без имени'}</span>
+                      {u.username && <span className="text-neutral-400 text-[11px]">@{u.username}</span>}
+                    </div>
+                    <span className="font-mono text-[10px] text-neutral-400">ID: {u.telegram_id}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleToggleUser(u.telegram_id)}
+                      className={`px-2 py-0.5 text-[10px] font-medium rounded ${u.is_active ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300' : 'bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400'}`}
+                    >
+                      {u.is_active ? 'Активен' : 'Отключен'}
+                    </button>
+                    <button
+                      onClick={() => handleDeleteUser(u.telegram_id)}
+                      className="text-neutral-300 hover:text-red-500 dark:text-neutral-600 dark:hover:text-red-400 text-xs px-1"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
-                {svc.latency && (
-                  <span className="font-mono text-[11px] text-neutral-400 dark:text-neutral-600">{svc.latency}</span>
-                )}
-                <StatusBadge status={svc.status} />
-              </div>
-            ))}
-          </div>
-        </section>
+              ))}
+              {users.length === 0 && !usersLoading && (
+                <div className="text-center py-3 text-[12px] text-neutral-400">
+                  Нет зарегистрированных пользователей
+                </div>
+              )}
+            </div>
 
-        {/* Queue config */}
-        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded">
-          <div className="px-4 py-3 border-b border-neutral-100 dark:border-neutral-800">
-            <h2 className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-200">Параметры очереди</h2>
-            <p className="text-[11px] text-neutral-400 dark:text-neutral-600 mt-0.5">Только чтение — изменяется через конфигурацию инфраструктуры</p>
-          </div>
-          <div className="px-4 py-3 space-y-3">
-            {[
-              { label: 'Источник заявок', value: 'Telegram Bot + Email (Exchange) + Web Portal' },
-              { label: 'Движок классификации', value: 'GPT-4o-mini (fine-tuned v2.1)' },
-              { label: 'Векторная база', value: 'PostgreSQL pgvector (1536-dim)' },
-              { label: 'Очередь сообщений', value: 'RabbitMQ 3.12 / exchange: helpdesk.tickets' },
-              { label: 'Версия API', value: 'v2.4.1 / 2024-11-15' },
-            ].map(row => (
-              <div key={row.label} className="flex items-start gap-4">
-                <span className="text-[12px] text-neutral-400 dark:text-neutral-600 w-44 shrink-0">{row.label}</span>
-                <span className="text-[12px] font-mono text-neutral-700 dark:text-neutral-300">{row.value}</span>
+            {/* Add User Form */}
+            <form onSubmit={handleAddUser} className="pt-2 border-t border-neutral-100 dark:border-neutral-800 space-y-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 block">
+                Добавить оператора
+              </span>
+              <div className="grid grid-cols-3 gap-2">
+                <input
+                  value={newTgId}
+                  onChange={e => setNewTgId(e.target.value)}
+                  placeholder="Telegram ID"
+                  className="px-2.5 py-1.5 text-[12px] bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded outline-none text-neutral-900 dark:text-neutral-100"
+                />
+                <input
+                  value={newUsername}
+                  onChange={e => setNewUsername(e.target.value)}
+                  placeholder="Username"
+                  className="px-2.5 py-1.5 text-[12px] bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded outline-none text-neutral-900 dark:text-neutral-100"
+                />
+                <input
+                  value={newFullName}
+                  onChange={e => setNewFullName(e.target.value)}
+                  placeholder="ФИО"
+                  className="px-2.5 py-1.5 text-[12px] bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded outline-none text-neutral-900 dark:text-neutral-100"
+                />
               </div>
-            ))}
-          </div>
-        </section>
-
-        {/* Interface settings */}
-        <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded">
-          <div className="px-4 py-3 border-b border-neutral-100 dark:border-neutral-800">
-            <h2 className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-200">Интерфейс</h2>
-          </div>
-          <div className="px-4 py-3 space-y-4">
-            {/* Theme */}
-            <SettingRow label="Тема" desc="Светлая или тёмная цветовая схема">
               <button
-                onClick={onToggleTheme}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] border border-neutral-200 dark:border-neutral-700 rounded hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors text-neutral-700 dark:text-neutral-300"
+                type="submit"
+                disabled={addingUser || !newTgId}
+                className="w-full py-1.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded text-[11px] font-medium disabled:opacity-50 transition-colors"
               >
-                {theme === 'light' ? (
-                  <><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="2.5" stroke="currentColor" strokeWidth="1.2"/><path d="M6 1v1.5M6 9.5V11M1 6h1.5M9.5 6H11M2.64 2.64l1.06 1.06M8.3 8.3l1.06 1.06M2.64 9.36l1.06-1.06M8.3 3.7l1.06-1.06" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg> Светлая</>
-                ) : (
-                  <><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M10 7A4.5 4.5 0 015 2a4.5 4.5 0 100 9 4.5 4.5 0 005-4z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg> Тёмная</>
-                )}
+                + Добавить оператора
               </button>
-            </SettingRow>
+            </form>
+          </div>
 
-            {/* Density */}
-            <SettingRow label="Плотность таблицы" desc="Размер строк в очереди заявок">
-              <div className="flex gap-1 bg-neutral-100 dark:bg-neutral-800 p-0.5 rounded">
-                {(['compact', 'comfortable', 'spacious'] as const).map(d => (
-                  <button
-                    key={d}
-                    onClick={() => setDensity(d)}
-                    className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
-                      density === d ? 'bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 shadow-sm' : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
-                    }`}
-                  >
-                    {d === 'compact' ? 'Компактный' : d === 'comfortable' ? 'Обычный' : 'Просторный'}
-                  </button>
-                ))}
+          {/* System Logs Viewer */}
+          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded p-5 space-y-3 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
+                  Журнал событий Redis Streams
+                </h2>
+                <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  Поток push-уведомлений и системных событий воркера
+                </p>
               </div>
-            </SettingRow>
+              <button
+                onClick={loadLogs}
+                disabled={logsLoading}
+                className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
+              >
+                {logsLoading ? 'Обновление...' : 'Обновить'}
+              </button>
+            </div>
 
-            {/* Notifications */}
-            <SettingRow label="Уведомления в браузере" desc="Push-уведомления о новых заявках">
-              <Toggle value={notifications} onChange={setNotifications} />
-            </SettingRow>
-            <SettingRow label="Звуковые уведомления" desc="Звуковой сигнал при поступлении заявки">
-              <Toggle value={sound} onChange={setSound} />
-            </SettingRow>
-
-            {/* Column visibility */}
-            <div>
-              <p className="text-[12px] font-medium text-neutral-700 dark:text-neutral-300 mb-1">Видимость колонок</p>
-              <p className="text-[11px] text-neutral-400 dark:text-neutral-600 mb-2.5">Выберите колонки для отображения в таблице</p>
-              <div className="flex flex-wrap gap-2">
-                {Object.entries({
-                  title: 'Заявка', status: 'Статус', priority: 'Приоритет', ai: 'AI',
-                  category: 'Категория', assignee: 'Исполнитель', host: 'Хост', sla: 'SLA', requester: 'Заявитель'
-                }).map(([key, label]) => (
-                  <button
-                    key={key}
-                    onClick={() => key !== 'title' && setVisibleCols(prev => ({ ...prev, [key]: !prev[key] }))}
-                    disabled={key === 'title'}
-                    className={`px-2.5 py-1 rounded text-[11px] font-medium border transition-colors ${
-                      visibleCols[key]
-                        ? 'bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 border-neutral-900 dark:border-neutral-100'
-                        : 'bg-white dark:bg-neutral-900 text-neutral-500 dark:text-neutral-400 border-neutral-200 dark:border-neutral-700 hover:border-neutral-400'
-                    } disabled:cursor-not-allowed`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+            <div className="bg-neutral-950 text-neutral-300 font-mono text-[11px] p-3 rounded max-h-52 overflow-y-auto space-y-1.5">
+              {logs.map((l, idx) => (
+                <div key={idx} className="flex gap-2">
+                  <span className="text-neutral-500 shrink-0">[{l.id?.slice(0, 10)}]</span>
+                  <span className="text-green-400 shrink-0">[{l.type}]</span>
+                  <span className="text-neutral-200 break-all">{l.message}</span>
+                </div>
+              ))}
+              {logs.length === 0 && (
+                <div className="text-neutral-500 text-center py-2">
+                  Нет недавних событий в потоке stream:intraservice_events
+                </div>
+              )}
             </div>
           </div>
-        </section>
+        </div>
       </div>
     </div>
-  );
-}
-
-function SettingRow({ label, desc, children }: { label: string; desc: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-4">
-      <div>
-        <p className="text-[12px] font-medium text-neutral-700 dark:text-neutral-300">{label}</p>
-        <p className="text-[11px] text-neutral-400 dark:text-neutral-600">{desc}</p>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      onClick={() => onChange(!value)}
-      className={`w-9 h-5 rounded-full transition-colors flex items-center ${value ? 'bg-blue-500' : 'bg-neutral-200 dark:bg-neutral-700'}`}
-    >
-      <div className={`w-3.5 h-3.5 bg-white rounded-full shadow-sm transition-transform ${value ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
-    </button>
   );
 }

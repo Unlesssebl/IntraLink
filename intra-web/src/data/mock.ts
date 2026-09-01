@@ -34,6 +34,15 @@ export interface Ticket {
   aiConfidence: number | null;
   aiSuggestion: string | null;
   timeline: TimelineEvent[];
+  ruleType?: string;
+  templateKey?: string;
+  targetServiceName?: string;
+  isRedirect?: boolean;
+  targetStatusId?: number;
+  isDuplicate?: boolean;
+  duplicateInfo?: any;
+  attachments?: Array<{ id: number; name: string; size?: number; url?: string }>;
+  expenses?: number;
 }
 
 export interface ToastMessage {

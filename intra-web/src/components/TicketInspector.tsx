@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { Ticket, Status, Priority } from '../data/mock';
 import { statusConfig, priorityConfig, operators, categoryLabel } from '../data/mock';
-import { fetchDiagnostics, applyTask } from '../lib/tasks';
+import { fetchDiagnostics, applyTask, enqueueExecution, searchRAG } from '../lib/tasks';
+import type { RAGMatchItem } from '../lib/types';
 
 interface Props {
   ticket: Ticket;
@@ -56,6 +57,16 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [executingAction, setExecutingAction] = useState<string | null>(null);
+  const [ragLoading, setRagLoading] = useState(false);
+  const [ragMatches, setRagMatches] = useState<RAGMatchItem[]>([]);
+
+  const rawId = parseInt(ticket.id.replace(/\D/g, ''), 10);
+
+  // Auto-search RAG on ticket change
+  useEffect(() => {
+    setRagMatches([]);
+  }, [ticket.id]);
 
   const runDiag = async () => {
     if (!ticket.host) {
@@ -76,9 +87,80 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     }
   };
 
+  const loadRagMatches = async () => {
+    setRagLoading(true);
+    try {
+      const res = await searchRAG(ticket.title, 3);
+      setRagMatches(res.matches || []);
+      if (!res.matches || res.matches.length === 0) {
+        onToast({ type: 'info', message: 'В базе знаний RAG нет точных совпадений' });
+      }
+    } catch (err) {
+      console.warn('RAG search error:', err);
+    } finally {
+      setRagLoading(false);
+    }
+  };
+
+  const handleQuickAction = async (actionType: string) => {
+    setExecutingAction(actionType);
+    try {
+      if (actionType === 'wlan') {
+        await enqueueExecution({
+          action: 'grant_wlan',
+          task_id: rawId,
+          params: { identity: ticket.requesterName },
+          auto_close_ticket: true,
+        });
+        onToast({ type: 'success', message: '⚡ Задача выдачи Wi-Fi поставлена в Execution Broker' });
+        onUpdateTicket(ticket.id, { status: 'resolved' });
+      } else if (actionType === 'create_user') {
+        await enqueueExecution({
+          action: 'create_user',
+          task_id: rawId,
+          params: {},
+          auto_close_ticket: true,
+        });
+        onToast({ type: 'success', message: '⚡ Создание УЗ в AD передано в Execution Broker' });
+        onUpdateTicket(ticket.id, { status: 'resolved' });
+      } else if (actionType === 'redirect') {
+        const comm = ticket.aiSuggestion || `Заявка отменена, т. к. создана не в подходящем разделе. Требуется оставить заявку в подходящем разделе: ${ticket.targetServiceName || 'соответствующий сервис'}.`;
+        await applyTask(rawId, {
+          status_id: 30,
+          comment: comm,
+          minutes: 5,
+        });
+        onToast({ type: 'success', message: `↩️ Заявка перенаправлена в ${ticket.targetServiceName || 'целевой раздел'}` });
+        onUpdateTicket(ticket.id, { status: 'resolved' });
+      } else if (actionType === 'hardware') {
+        const comm = ticket.aiSuggestion || 'Приносите системный блок / ноутбук в АБК-3, каб. 112 на аппаратную диагностику и обслуживание.';
+        await applyTask(rawId, {
+          status_id: 48,
+          comment: comm,
+          minutes: 10,
+        });
+        onToast({ type: 'success', message: '🛠️ Переведено в Статус 48 (Ожидание устройства, каб. 112)' });
+        onUpdateTicket(ticket.id, { status: 'waiting' });
+      } else if (actionType === 'duplicate') {
+        const masterId = ticket.duplicateInfo?.master_task_id || '';
+        const comm = `Заявка отменена как повторная (дубликат инцидента #${masterId}). Все работы ведутся в основной заявке.`;
+        await applyTask(rawId, {
+          status_id: 30,
+          comment: comm,
+          minutes: 5,
+        });
+        onToast({ type: 'success', message: `❌ Заявка отменена как дубликат #${masterId}` });
+        onUpdateTicket(ticket.id, { status: 'resolved' });
+      }
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Ошибка выполнения: ${err.message || err}` });
+    } finally {
+      setExecutingAction(null);
+    }
+  };
+
   const handleSend = async (close = false) => {
     if (!replyText.trim()) return;
-    const rawId = parseInt(ticket.id.replace(/\D/g, ''), 10);
     const targetStatusId = close ? 4 : (ticket.status === 'new' ? 2 : undefined);
 
     if (rawId && !isNaN(rawId)) {
@@ -120,7 +202,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
   const panelClass = expanded
     ? 'fixed inset-0 z-30 flex flex-col bg-white dark:bg-neutral-950'
-    : 'w-[440px] shrink-0 flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950';
+    : 'w-[460px] shrink-0 flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950';
 
   return (
     <div className={panelClass}>
@@ -161,24 +243,129 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       </div>
 
       <div className="flex-1 overflow-y-auto">
+        {/* Duplicate Banner */}
+        {(ticket.isDuplicate || ticket.ruleType === 'duplicate_task') && (
+          <div className="mx-5 mt-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded p-3">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-amber-600 dark:text-amber-400 text-sm font-bold">⚠️ Обнаружен дубликат</span>
+              {ticket.duplicateInfo?.master_task_id && (
+                <span className="text-[11px] font-mono bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 px-1.5 py-0.5 rounded">
+                  Master #{ticket.duplicateInfo.master_task_id}
+                </span>
+              )}
+            </div>
+            <p className="text-[12px] text-amber-800 dark:text-amber-200 mb-2">
+              Данная заявка дублирует ранее созданный инцидент от того же заявителя.
+            </p>
+            <button
+              onClick={() => handleQuickAction('duplicate')}
+              disabled={executingAction !== null}
+              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-medium rounded transition-colors disabled:opacity-50"
+            >
+              ❌ Отменить как дубликат (Статус 30)
+            </button>
+          </div>
+        )}
+
+        {/* Smart Actions Bar */}
+        <div className="mx-5 mt-3 flex flex-wrap gap-1.5">
+          {(ticket.ruleType === 'wlan_access' || ticket.templateKey === 'wifi_access') && (
+            <button
+              onClick={() => handleQuickAction('wlan')}
+              disabled={executingAction !== null}
+              className="px-2.5 py-1 bg-green-600 hover:bg-green-700 text-white text-[11px] font-medium rounded flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50"
+            >
+              ⚡ Выдать Wi-Fi в AD (Статус 29)
+            </button>
+          )}
+
+          {(ticket.ruleType === 'user_created' || ticket.templateKey === 'user_created') && (
+            <button
+              onClick={() => handleQuickAction('create_user')}
+              disabled={executingAction !== null}
+              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-medium rounded flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50"
+            >
+              ⚡ Создать УЗ в AD
+            </button>
+          )}
+
+          {(ticket.isRedirect || ticket.ruleType?.startsWith('redirect')) && (
+            <button
+              onClick={() => handleQuickAction('redirect')}
+              disabled={executingAction !== null}
+              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-medium rounded flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50"
+            >
+              ↩️ Редирект в {ticket.targetServiceName || 'сервис'}
+            </button>
+          )}
+
+          {ticket.ruleType === 'hardware_repair' && (
+            <button
+              onClick={() => handleQuickAction('hardware')}
+              disabled={executingAction !== null}
+              className="px-2.5 py-1 bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-medium rounded flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-50"
+            >
+              🛠️ В каб. 112 (Статус 48)
+            </button>
+          )}
+        </div>
+
         {/* AI suggestion */}
         {ticket.aiConfidence !== null && ticket.aiSuggestion && (
-          <div className="mx-5 mt-4 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded p-3">
-            <div className="flex items-center gap-2 mb-1.5">
-              <svg width="13" height="13" viewBox="0 0 13 13" fill="none" className="text-blue-600 dark:text-blue-400 shrink-0">
-                <path d="M6.5 1.5L8 5H11.5L8.5 7.2 9.5 10.5 6.5 8.5 3.5 10.5 4.5 7.2 1.5 5H5L6.5 1.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
-              </svg>
-              <span className="text-[11px] font-semibold text-blue-700 dark:text-blue-300">
-                AI-подсказка · уверенность {ticket.aiConfidence}%
+          <div className="mx-5 mt-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded p-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-2">
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" className="text-blue-600 dark:text-blue-400 shrink-0">
+                  <path d="M6.5 1.5L8 5H11.5L8.5 7.2 9.5 10.5 6.5 8.5 3.5 10.5 4.5 7.2 1.5 5H5L6.5 1.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
+                </svg>
+                <span className="text-[11px] font-semibold text-blue-700 dark:text-blue-300">
+                  AI-подсказка · {ticket.ruleType || 'Rule Engine'}
+                </span>
+              </div>
+              <span className="text-[11px] font-mono text-blue-600 dark:text-blue-400">
+                {ticket.expenses ? `${ticket.expenses} мин` : ''}
               </span>
             </div>
-            <p className="text-[12px] text-blue-700 dark:text-blue-300 leading-relaxed">{ticket.aiSuggestion}</p>
-            <button
-              onClick={() => { setReplyText(ticket.aiSuggestion!); setReplyMode('reply'); }}
-              className="mt-2 text-[11px] text-blue-600 dark:text-blue-400 hover:underline font-medium"
-            >
-              Вставить в ответ →
-            </button>
+            <p className="text-[12px] text-blue-700 dark:text-blue-300 leading-relaxed whitespace-pre-wrap">{ticket.aiSuggestion}</p>
+            <div className="flex items-center gap-3 mt-2">
+              <button
+                onClick={() => { setReplyText(ticket.aiSuggestion!); setReplyMode('reply'); }}
+                className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline font-medium"
+              >
+                Вставить в ответ →
+              </button>
+              <button
+                onClick={loadRagMatches}
+                disabled={ragLoading}
+                className="text-[11px] text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 font-medium"
+              >
+                {ragLoading ? 'Поиск RAG...' : '🧠 Найти аналогичные решения'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* RAG Matches List */}
+        {ragMatches.length > 0 && (
+          <div className="mx-5 mt-3 border border-indigo-200 dark:border-indigo-900 bg-indigo-50/50 dark:bg-indigo-950/20 rounded p-3 space-y-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
+              Похожие решения в базе знаний RAG
+            </span>
+            {ragMatches.map(m => (
+              <div key={m.task_id} className="text-[12px] border-t border-indigo-100 dark:border-indigo-900/50 pt-1.5">
+                <div className="flex items-center justify-between text-indigo-900 dark:text-indigo-200 font-medium mb-0.5">
+                  <span>#{m.task_id} · {m.name}</span>
+                  <span className="font-mono text-[11px] text-indigo-600 dark:text-indigo-400">{m.similarity_pct}%</span>
+                </div>
+                <p className="text-neutral-600 dark:text-neutral-400 line-clamp-2 text-[11px]">{m.solution}</p>
+                <button
+                  onClick={() => { setReplyText(m.solution); setReplyMode('reply'); }}
+                  className="mt-1 text-[10px] text-indigo-600 dark:text-indigo-400 hover:underline"
+                >
+                  Скопировать решение в ответ →
+                </button>
+              </div>
+            ))}
           </div>
         )}
 
@@ -279,23 +466,27 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             </PropRow>
 
             <PropRow label="Телефон">
-              <span className="text-[12px] font-mono text-neutral-600 dark:text-neutral-400">{ticket.requesterPhone}</span>
+              <span className="text-[12px] font-mono text-neutral-600 dark:text-neutral-400">{ticket.requesterPhone || '—'}</span>
             </PropRow>
 
             <PropRow label="Хост / IP">
               <div className="flex items-center gap-1.5">
                 <span className="font-mono text-[11px] bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 px-1.5 py-0.5 rounded">
-                  {ticket.host}
+                  {ticket.host || 'Не указан'}
                 </span>
-                <span className="font-mono text-[11px] bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-500 px-1.5 py-0.5 rounded">
-                  {ticket.ip}
-                </span>
-                <button onClick={() => copyToClipboard(ticket.ip)} className="text-neutral-300 hover:text-neutral-500 dark:text-neutral-700 dark:hover:text-neutral-400 transition-colors">
-                  <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                    <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.2"/>
-                    <path d="M1.5 7.5V1.5h6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-                  </svg>
-                </button>
+                {ticket.ip && (
+                  <span className="font-mono text-[11px] bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-500 px-1.5 py-0.5 rounded">
+                    {ticket.ip}
+                  </span>
+                )}
+                {ticket.host && (
+                  <button onClick={() => copyToClipboard(ticket.host)} className="text-neutral-300 hover:text-neutral-500 dark:text-neutral-700 dark:hover:text-neutral-400 transition-colors">
+                    <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                      <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+                      <path d="M1.5 7.5V1.5h6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                    </svg>
+                  </button>
+                )}
               </div>
             </PropRow>
 
@@ -315,8 +506,33 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           </div>
         </div>
 
+        {/* Attachments Section */}
+        {ticket.attachments && ticket.attachments.length > 0 && (
+          <div className="mx-5 mt-4 border border-neutral-200 dark:border-neutral-800 rounded p-3">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-600 block mb-2">
+              Вложения ({ticket.attachments.length})
+            </span>
+            <div className="space-y-1.5">
+              {ticket.attachments.map(att => (
+                <a
+                  key={att.id}
+                  href={att.url || `/admin/api/attachments/${att.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center justify-between p-2 rounded bg-neutral-50 dark:bg-neutral-900 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors text-[12px]"
+                >
+                  <span className="truncate font-medium text-blue-600 dark:text-blue-400">{att.name}</span>
+                  <span className="text-[11px] text-neutral-400 font-mono shrink-0 ml-2">
+                    {att.size ? `${Math.round(att.size / 1024)} КБ` : 'Скачать'}
+                  </span>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Network diagnostics */}
-        <div className="mx-5 mt-5 border border-neutral-200 dark:border-neutral-800 rounded p-3">
+        <div className="mx-5 mt-4 border border-neutral-200 dark:border-neutral-800 rounded p-3">
           <div className="flex items-center justify-between mb-2.5">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-600">
               Диагностика хоста

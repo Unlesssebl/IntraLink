@@ -13,6 +13,7 @@ interface Props {
 
 type ViewMode = 'table' | 'kanban';
 type AiFilter = 'all' | 'ai_ready' | 'needs_action';
+type DomainFilter = 'all' | 'duplicates' | 'redirects' | 'wifi' | 'repair';
 
 function getSlaClass(deadline: Date) {
   const h = (deadline.getTime() - Date.now()) / 3600000;
@@ -35,6 +36,7 @@ function formatSla(deadline: Date) {
 export default function QueuePage({ tickets, selectedTicketId, onSelectTicket, onUpdateTicket, onToast }: Props) {
   const [view, setView] = useState<ViewMode>('table');
   const [aiFilter, setAiFilter] = useState<AiFilter>('all');
+  const [domainFilter, setDomainFilter] = useState<DomainFilter>('all');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [inlineStatus, setInlineStatus] = useState<string | null>(null);
@@ -45,6 +47,10 @@ export default function QueuePage({ tickets, selectedTicketId, onSelectTicket, o
   const selectedTicket = tickets.find(t => t.id === selectedTicketId) ?? null;
 
   const filtered = tickets.filter(t => {
+    if (domainFilter === 'duplicates' && !t.isDuplicate && t.ruleType !== 'duplicate_task') return false;
+    if (domainFilter === 'redirects' && !t.isRedirect && !t.ruleType?.startsWith('redirect')) return false;
+    if (domainFilter === 'wifi' && t.ruleType !== 'wlan_access' && t.templateKey !== 'wifi_access') return false;
+    if (domainFilter === 'repair' && t.ruleType !== 'hardware_repair') return false;
     if (aiFilter === 'ai_ready' && (t.aiConfidence === null || t.aiConfidence < 80)) return false;
     if (aiFilter === 'needs_action' && t.assigneeId !== null) return false;
     if (search) {
@@ -151,6 +157,29 @@ export default function QueuePage({ tickets, selectedTicketId, onSelectTicket, o
             ))}
           </div>
 
+          <div className="w-px h-4 bg-neutral-200 dark:bg-neutral-800" />
+
+          {/* Domain tabs */}
+          <div className="flex items-center gap-0.5 bg-neutral-100 dark:bg-neutral-800 p-0.5 rounded">
+            {([
+              ['all', 'Все темы'],
+              ['duplicates', `⚠️ Дубли (${tickets.filter(t => t.isDuplicate || t.ruleType === 'duplicate_task').length})`],
+              ['redirects', `↩️ Редирект (${tickets.filter(t => t.isRedirect || t.ruleType?.startsWith('redirect')).length})`],
+              ['wifi', `⚡ Wi-Fi (${tickets.filter(t => t.ruleType === 'wlan_access' || t.templateKey === 'wifi_access').length})`],
+              ['repair', `🛠️ Ремонт (${tickets.filter(t => t.ruleType === 'hardware_repair').length})`],
+            ] as const).map(([v, l]) => (
+              <button
+                key={v}
+                onClick={() => setDomainFilter(v)}
+                className={`px-2 py-1 rounded text-[11px] font-medium transition-colors ${
+                  domainFilter === v ? 'bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 shadow-sm' : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
+                }`}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
+
           {/* Search */}
           <div className="ml-auto flex items-center gap-1.5 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded px-2 py-1">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-neutral-400">
@@ -241,12 +270,32 @@ export default function QueuePage({ tickets, selectedTicketId, onSelectTicket, o
                           className="w-3.5 h-3.5 accent-neutral-700 dark:accent-neutral-300 cursor-pointer"
                         />
                       </td>
-                      <td className="px-3 py-2.5 max-w-[260px]">
-                        <div className="flex items-center gap-2">
+                      <td className="px-3 py-2.5 max-w-[280px]">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="font-mono text-[11px] text-neutral-400 dark:text-neutral-600 shrink-0">{ticket.id}</span>
+                          {ticket.isDuplicate && (
+                            <span className="px-1 py-0.2 bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 rounded text-[9px] font-semibold">
+                              дубликат
+                            </span>
+                          )}
+                          {ticket.isRedirect && (
+                            <span className="px-1 py-0.2 bg-orange-100 text-orange-800 dark:bg-orange-950/80 dark:text-orange-300 rounded text-[9px] font-semibold">
+                              редирект
+                            </span>
+                          )}
+                          {ticket.ruleType === 'wlan_access' && (
+                            <span className="px-1 py-0.2 bg-green-100 text-green-800 dark:bg-green-950/80 dark:text-green-300 rounded text-[9px] font-semibold">
+                              Wi-Fi
+                            </span>
+                          )}
+                          {ticket.ruleType === 'hardware_repair' && (
+                            <span className="px-1 py-0.2 bg-purple-100 text-purple-800 dark:bg-purple-950/80 dark:text-purple-300 rounded text-[9px] font-semibold">
+                              каб 112
+                            </span>
+                          )}
                           <span className="text-neutral-800 dark:text-neutral-200 truncate font-medium">{ticket.title}</span>
                         </div>
-                        <div className="text-[11px] text-neutral-400 dark:text-neutral-600 mt-0.5 pl-12">{ticket.requesterName}</div>
+                        <div className="text-[11px] text-neutral-400 dark:text-neutral-600 mt-0.5">{ticket.requesterName}</div>
                       </td>
                       <td className="px-3 py-2.5 whitespace-nowrap" onClick={e => { e.stopPropagation(); setInlineStatus(inlineStatus === ticket.id ? null : ticket.id); }}>
                         <div className="relative">

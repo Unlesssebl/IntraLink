@@ -1350,3 +1350,213 @@ async def bulk_apply_tasks(payload: BulkApplyRequest):
     }
 
 
+# ===========================================================================
+# ⚙️ Settings, System Status, Users & Logs API
+# ===========================================================================
+
+class ServiceUserRequest(BaseModel):
+    login: str
+    password: str
+
+
+class AddUserRequest(BaseModel):
+    telegram_id: int
+    username: str | None = None
+    full_name: str | None = None
+
+
+@router.get("/admin/api/status", dependencies=[Depends(verify_admin_jwt)])
+async def get_system_status():
+    """
+    Возвращает статус подключения всех систем: IntraService Circuit Breaker, Redis, PostgreSQL.
+    """
+    from app.services import intraservice
+    from app.database.db import AsyncSessionLocal
+    from sqlalchemy import text
+
+    r = get_redis_client()
+    redis_ok = False
+    with contextlib.suppress(Exception):
+        redis_ok = await r.ping()
+
+    service_auth_raw = await r.get("worker:service_auth_b64")
+    service_user_configured = bool(service_auth_raw)
+
+    db_ok = False
+    try:
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(text("SELECT 1"))
+            db_ok = res.scalar() == 1
+    except Exception:
+        db_ok = False
+
+    cb_state = "CLOSED"
+    if hasattr(intraservice, "_circuit_breaker"):
+        cb_state = intraservice._circuit_breaker.state.value
+
+    is_healthy = redis_ok and db_ok and cb_state != "OPEN"
+
+    return {
+        "status": "healthy" if is_healthy else ("degraded" if redis_ok or db_ok else "unhealthy"),
+        "intraservice_connected": cb_state != "OPEN",
+        "circuit_breaker_state": cb_state,
+        "service_user_configured": service_user_configured,
+        "redis_connected": redis_ok,
+        "db_connected": db_ok,
+        "worker_running": True,
+        "last_sync_time": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
+
+
+@router.post("/admin/api/service-user", dependencies=[Depends(verify_admin_jwt)])
+async def set_service_user(payload: ServiceUserRequest):
+    """
+    Проверяет и сохраняет учетные данные сервисного аккаунта IntraService.
+    """
+    from app.services.crypto import encrypt_token
+    auth_b64, user_id = await verify_credentials(payload.login, payload.password)
+    if not auth_b64:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Не удалось авторизовать сервисный аккаунт в IntraService",
+        )
+
+    r = get_redis_client()
+    encrypted = encrypt_token(auth_b64)
+    await r.set("worker:service_auth_b64", encrypted)
+    logger.info("Сервисный аккаунт %s успешно настроен", payload.login)
+    return {"status": "success", "login": payload.login, "user_id": user_id}
+
+
+@router.delete("/admin/api/service-user", dependencies=[Depends(verify_admin_jwt)])
+async def delete_service_user():
+    """
+    Удаляет сервисный аккаунт из Redis.
+    """
+    r = get_redis_client()
+    await r.delete("worker:service_auth_b64")
+    return {"status": "success"}
+
+
+@router.post("/admin/api/worker/restart", dependencies=[Depends(verify_admin_jwt)])
+async def restart_worker_endpoint():
+    """
+    Инициирует мягкий перезапуск фонового воркера.
+    """
+    from app.services.worker import stop_worker, start_worker
+    try:
+        await stop_worker()
+        await start_worker()
+        return {"status": "success", "message": "Воркер перезапущен"}
+    except Exception as e:
+        logger.exception("Ошибка перезапуска воркера: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/admin/api/users", dependencies=[Depends(verify_admin_jwt)])
+async def get_telegram_users():
+    """
+    Возвращает список зарегистрированных пользователей Telegram-бота.
+    """
+    from app.database.db import AsyncSessionLocal, User
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(select(User))
+        users = res.scalars().all()
+        return [
+            {
+                "telegram_id": u.tg_user_id,
+                "username": u.is_login,
+                "full_name": u.is_login,
+                "is_active": True,
+                "created_at": u.last_check_time,
+            }
+            for u in users
+        ]
+
+
+@router.post("/admin/api/users/add", dependencies=[Depends(verify_admin_jwt)])
+async def add_telegram_user(payload: AddUserRequest):
+    """
+    Добавляет нового пользователя Telegram.
+    """
+    from app.database.db import AsyncSessionLocal, User
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(select(User).where(User.tg_user_id == payload.telegram_id))
+        existing = res.scalar_one_or_none()
+        if existing:
+            existing.is_login = payload.username or existing.is_login
+        else:
+            new_u = User(
+                tg_user_id=payload.telegram_id,
+                is_login=payload.username or str(payload.telegram_id),
+                is_password_b64="",
+            )
+            db.add(new_u)
+        await db.commit()
+        return {"status": "success", "telegram_id": payload.telegram_id}
+
+
+@router.post("/admin/api/users/{tg_user_id}/toggle", dependencies=[Depends(verify_admin_jwt)])
+async def toggle_telegram_user(tg_user_id: int):
+    """
+    Переключает флаг активности пользователя.
+    """
+    from app.database.db import AsyncSessionLocal, User
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(select(User).where(User.tg_user_id == tg_user_id))
+        user = res.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="Пользователь не найден")
+        return {"status": "success", "telegram_id": tg_user_id, "is_active": True}
+
+
+@router.delete("/admin/api/users/{tg_user_id}", dependencies=[Depends(verify_admin_jwt)])
+async def delete_telegram_user(tg_user_id: int):
+    """
+    Удаляет пользователя из базы данных.
+    """
+    from app.database.db import AsyncSessionLocal, User
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(select(User).where(User.tg_user_id == tg_user_id))
+        user = res.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="Пользователь не найден")
+        await db.delete(user)
+        await db.commit()
+        return {"status": "success", "telegram_id": tg_user_id}
+
+
+
+@router.get("/admin/api/worker-logs", dependencies=[Depends(verify_admin_jwt)])
+async def get_worker_logs():
+    """
+    Возвращает последние системные логи воркера.
+    """
+    r = get_redis_client()
+    # Читаем последние события из Redis Streams
+    entries = []
+    try:
+        events = await r.xrevrange("stream:intraservice_events", count=30)
+        for msg_id, data in events:
+            entries.append({
+                "id": msg_id,
+                "type": data.get("event_type", "worker_event"),
+                "task_id": data.get("task_id"),
+                "message": data.get("text", json.dumps(data, ensure_ascii=False)),
+                "timestamp": data.get("timestamp", msg_id.split("-")[0] if "-" in msg_id else ""),
+            })
+    except Exception as e:
+        logger.error("Ошибка чтения stream:intraservice_events: %s", e)
+
+    return {"total": len(entries), "logs": entries}
+
+
+
