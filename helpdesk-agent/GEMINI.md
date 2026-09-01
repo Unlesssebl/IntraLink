@@ -4,7 +4,7 @@
 
 > [!IMPORTANT]
 > **Справочники и точки входа:**
-> - **Справочник Workflow и CLI-команд:** [`../docs/services/helpdesk_agent/WORKFLOWS.md`](../docs/services/helpdesk_agent/WORKFLOWS.md)
+> - **Справочник Workflow и CLI-команд:** [`../docs/services/helpdesk-agent/WORKFLOWS.md`](../docs/services/helpdesk-agent/WORKFLOWS.md)
 > - **Навык Helpdesk (полный регламент):** [`.agents/skills/intraservice-helpdesk/SKILL.md`](../.agents/skills/intraservice-helpdesk/SKILL.md)
 > - **Пайплайн правил триажа (Rule Engine):** [`rules/`](rules/)
 > - **Корпоративные шаблоны ответов:** [`templates.json`](templates.json)

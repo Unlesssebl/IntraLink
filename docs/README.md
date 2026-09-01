@@ -1,6 +1,6 @@
 # 📚 Документация проекта IntraLink
 
-Центральный навигационный справочник по архитектуре, микросервисам и руководствам проекта **IntraLink**.
+Центральный навигационный справочник по архитектуре, сервисам и руководствам проекта **IntraLink**.
 
 ---
 
@@ -9,14 +9,13 @@
 ```text
 docs/
 ├── architecture.md          ← Единый источник правды об архитектуре, схемах и Data Flow
-├── developer_guide.md       ← Настольная книга разработчика (для AI-агентов и инженеров)
+├── developer_guide.md       ← Настольная книга разработчика и AI-агентов (инварианты и правила)
 │
-├── services/                ← Документация по микросервисам проекта
-│   ├── core-api/            ← Сервис API-шлюза (FastAPI, Web Admin, Worker)
-│   ├── bot/                 ← Сервис Telegram-бота (aiogram 3.x, Redis Listener)
-│   ├── ai-worker/           ← AI-классификатор и автоответчик (RAG + pgvector + LLM)
-│   ├── printer-worker/      ← Автоустановка принтеров (WMI, WinRM, SMB)
-│   └── helpdesk_agent/      ← Инструменты техподдержки и RAG в среде Antigravity (AGY)
+├── services/                ← Документация по сервисам проекта
+│   ├── core-api/            ← Сервис API-шлюза (FastAPI, Web Admin, фоновый воркер)
+│   ├── telegram-bot/        ← Сервис Telegram-бота (aiogram 3.x, слушатель Redis Pub/Sub)
+│   ├── intra-web/           ← Веб-панель управления и мониторинга (React 19, Vite, Tailwind CSS v4)
+│   └── helpdesk-agent/      ← Инженерный кокпит и инструменты автоматизации в AGY
 │
 └── external/                ← Документация внешних систем (не наш код)
     └── intraservice_api/    ← Справочник по REST API IntraService
@@ -27,16 +26,15 @@ docs/
 ## 🧭 Навигация по разделам
 
 ### 1. Архитектура и принципы
-* **[Архитектура системы (`docs/architecture.md`)](architecture.md)** — схемы компонентов, слои, каналы связи (HTTP REST, Redis Pub/Sub), форматы полезной нагрузки и диаграммы последовательности (Data Flow).
-* **[Руководство разработчика (`docs/developer_guide.md`)](developer_guide.md)** — ключевые архитектурные инварианты, правила безопасности, запуск юнит-тестов и отладка воркеров через `debug_tools`.
+* **[Архитектура системы (`docs/architecture.md`)](architecture.md)** — схемы компонентов, слои, каналы связи (HTTP REST, Redis Pub/Sub), форматы полезной нагрузки и принципы надежного исполнения.
+* **[Руководство разработчика (`docs/developer_guide.md`)](developer_guide.md)** — ключевые архитектурные инварианты, правила безопасности, межсервисные каналы и команды тестирования.
 
 ### 2. Сервисы и компоненты
-* **[Core API Gateway](services/core-api/README.md)** — эндпоинты, JWT-сессии, шифрование учетных данных, фоновый опрос IntraService.
-  * **[Справочник API](services/core-api/api_reference/README.md)** — спецификации REST эндпоинтов Core API.
-* **[Telegram Bot](services/bot/README.md)** — архитектура хендлеров aiogram, обработка FSM и получение уведомлений.
-* **[AI Worker](services/ai-worker/README.md)** — пайплайн интеллектуальной маршрутизации заявок с помощью RAG и LLM.
-* **[Printer Worker](services/printer-worker/README.md)** — стратегии установки драйверов принтеров, WMI Bootstrap и сетевая валидация.
-* **[Helpdesk Agent (AGY-Native)](services/helpdesk_agent/README.md)** — инструментарий I/O, сетевая диагностика хостов и семантический RAG-поиск в AGY.
+* **[Core API Gateway](services/core-api/README.md)** — архитектура шлюза, JWT-сессии, шифрование учетных данных, фоновый опрос IntraService и ссылки на Swagger `/docs`.
+* **[Telegram Bot](services/telegram-bot/README.md)** — архитектура хендлеров aiogram, обработка FSM и получение уведомлений.
+* **[Intra Web (Admin Panel)](services/intra-web/README.md)** — React 19 SPA интерфейс мониторинга очередей, логов SSE и управления AI/RAG.
+* **[Helpdesk Agent & Execution Hub](services/helpdesk-agent/README.md)** — модули прямого исполнения (AD WLAN, WinRM), сетевая диагностика хостов и семантический RAG-поиск в AGY.
+  * **[Справочник Workflows и команд](services/helpdesk-agent/WORKFLOWS.md)** — слэш-команды (`/triage`, `/task`, `/diag`, `/screen`, `/kb`, `/sync`) и оперативные сценарии.
 
 ### 3. Внешние интеграции
-* **[Справочник IntraService REST API](external/intraservice_api/IntraService_API_Index.md)** — подробные спецификации по ресурсам IntraService (`/api/task`, `/api/service`, `/api/tasklifetime`, `/api/taskstatus`).
+* **[Справочник IntraService REST API](external/intraservice_api/IntraService_API_Index.md)** — справочник по внешнему REST API IntraService (`/api/task`, `/api/service`, `/api/tasklifetime`, `/api/taskstatus`).

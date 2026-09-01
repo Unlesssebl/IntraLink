@@ -6,7 +6,7 @@
 > [!IMPORTANT]
 > Перед внесением изменений обязательно ознакомьтесь с документацией в папке [`docs/`](docs/):
 > - **Архитектура системы:** [`docs/architecture.md`](docs/architecture.md)
-> - **API Core Gateway:** [`docs/services/core-api/api_reference/README.md`](docs/services/core-api/api_reference/README.md)
+> - **API Core Gateway:** [`docs/services/core-api/README.md`](docs/services/core-api/README.md)
 > - **Внешний API IntraService:** [`docs/external/intraservice_api/IntraService_API_Index.md`](docs/external/intraservice_api/IntraService_API_Index.md)
 
 ---

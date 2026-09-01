@@ -777,23 +777,24 @@ def _get_all_templates() -> dict[str, dict[str, Any]]:
     с объединением с базовым каталогом.
     """
     templates = dict(DEFAULT_TEMPLATES_CATALOG)
-    custom_json_path = (
-        Path(__file__).resolve().parent / ".." / ".." / "helpdesk-agent" / "templates.json"
-    )
-    if custom_json_path.exists():
-        with contextlib.suppress(Exception):
-            with custom_json_path.open(encoding="utf-8") as f:
-                disk_data = json.load(f)
-                for k, v in disk_data.items():
-                    if k not in templates:
-                        templates[k] = {
-                            "name": v.get("name", k),
-                            "status_id": v.get("status_id", 27),
-                            "status_name": f"{v.get('status_name', 'В работе')} ({v.get('status_id', 27)})",
-                            "expenses": v.get("expenses", 10),
-                            "template": v.get("template", ""),
-                            "badge_color": "primary" if v.get("status_id") == 48 else ("success" if v.get("status_id") == 29 else "warning"),
-                        }
+    for folder_name in ["helpdesk-agent", "helpdesk_agent"]:
+        custom_json_path = (
+            Path(__file__).resolve().parent / ".." / ".." / folder_name / "templates.json"
+        )
+        if custom_json_path.exists():
+            with contextlib.suppress(Exception):
+                with custom_json_path.open(encoding="utf-8") as f:
+                    disk_data = json.load(f)
+                    for k, v in disk_data.items():
+                        if k not in templates:
+                            templates[k] = {
+                                "name": v.get("name", k),
+                                "status_id": v.get("status_id", 27),
+                                "status_name": f"{v.get('status_name', 'В работе')} ({v.get('status_id', 27)})",
+                                "expenses": v.get("expenses", 10),
+                                "template": v.get("template", ""),
+                                "badge_color": "primary" if v.get("status_id") == 48 else ("success" if v.get("status_id") == 29 else "warning"),
+                            }
     return templates
 
 

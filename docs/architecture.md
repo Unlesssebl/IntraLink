@@ -12,9 +12,9 @@
 
 | Сервис / Модуль | Технологии | Роль |
 |---|---|---|
-| **Core API** | FastAPI, SQLAlchemy 2.0, APScheduler, Redis | Шлюз к IntraService API, управление БД, фоновый опрос очереди, хостинг встроенной веб-панели управления (`admin-ui`) |
+| **Core API** | FastAPI, SQLAlchemy 2.0, APScheduler, Redis | Шлюз к IntraService API, управление БД, фоновый опрос очереди, хостинг встроенной веб-панели управления (`intra-web`) |
 | **Telegram Bot** | aiogram 3.x, aiohttp | Мобильный интерфейс оператора и пользователей, доставка Push-уведомлений |
-| **Admin UI** | Vue 3, Vite, Tailwind | Встроенная веб-панель мониторинга заявок, очередей и управления доступом |
+| **Intra Web (Admin UI)** | React 19, Vite, Tailwind CSS v4 | Встроенная веб-панель мониторинга заявок, очередей и управления доступом |
 | **Helpdesk Agent & Execution Hub** | Python, FastEmbed, pgvector, PowerShell | Интерактивный CLI-кокпит оператора в среде Antigravity (AGY), детерминированный триаж, RAG и исполнение команд (AD WLAN, WinRM принтеры) |
 
 Каналы связи:
@@ -43,7 +43,7 @@ flowchart TB
 
     subgraph Interface_Layer ["Слой интерфейсов"]
         TG_API["💬 Telegram Bot API"]:::telegramStyle
-        Admin_UI["🖥️ Admin UI (SPA /admin)"]:::serviceStyle
+        Intra_Web["🖥️ Intra Web (SPA /admin)"]:::serviceStyle
     end
 
     subgraph Bot_Service ["Telegram Bot Service (Python / aiogram)"]
@@ -105,8 +105,8 @@ flowchart TB
     API_Client <-->|REST HTTP| API_Main
     Redis_Broker -->|task_events| Redis_Listener
 
-    Admin <-->|Браузер (:8000/admin)| Admin_UI
-    Admin_UI <--> API_Main
+    Admin <-->|Браузер (:8000/admin)| Intra_Web
+    Intra_Web <--> API_Main
     Admin <-->|Команды /triage, /apply, /wlan| HD_Tool
 
     API_Main --> API_Routers

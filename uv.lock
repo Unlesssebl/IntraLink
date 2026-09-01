@@ -680,7 +680,7 @@ wheels = [
 ]
 
 [[package]]
-name = "intraservice-tg-bot"
+name = "intralink"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

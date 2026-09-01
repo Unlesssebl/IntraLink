@@ -28,7 +28,7 @@ dependencies = [
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
-extraPaths = ["core-api", "telegram-bot", "helpdesk_agent"]
+extraPaths = ["core-api", "telegram-bot", "helpdesk_agent", "helpdesk-agent"]
 exclude = ["**/__pyrefly_virtual__"]
 
 [tool.pytest.ini_options]
@@ -47,7 +47,7 @@ dev = [
 project-excludes = [
     "**/__pyrefly_virtual__/**",
 ]
-search_path = ["core-api", "telegram-bot", "helpdesk_agent"]
+search_path = ["core-api", "telegram-bot", "helpdesk_agent", "helpdesk-agent"]
 
 
 
