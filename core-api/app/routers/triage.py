@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database.db import get_db
 from app.routers.deps import get_service_auth_b64, verify_api_key
 from app.services import intraservice
@@ -52,8 +53,8 @@ class ApplyTriageRequest(BaseModel):
     comment: str = Field("", description="Текст комментария заявителю")
     expenses: int = Field(0, description="Списание трудозатрат в минутах")
     executor_ids: str = Field(
-        "8664,10502",
-        description="ID исполнителей (Беликов Ален + Беликов Ален_assitant)",
+        settings.DEFAULT_EXECUTOR_IDS,
+        description="ID исполнителей по умолчанию",
     )
     dry_run: bool = Field(False, description="Режим симуляции")
 
@@ -304,7 +305,7 @@ async def apply_triage_action(
     status_id = payload.status_id
     comment = payload.comment
     expenses = payload.expenses
-    executor_ids = payload.executor_ids or "8664,10502"
+    executor_ids = payload.executor_ids or settings.DEFAULT_EXECUTOR_IDS
     dry_run = payload.dry_run
 
     results = []
@@ -343,11 +344,21 @@ async def apply_triage_action(
                 auth_b64=service_auth_b64,
                 task_id=tid,
                 minutes=expenses,
-                user_id=8664,
+                user_id=settings.PRIMARY_EXECUTOR_ID,
             )
 
         # 4. Автообучение RAG при закрытии (29 или 30)
-        if status_id in (29, 30) and comment and comment.strip():
+        # Для статуса 30 индексируем только если комментарий содержит реальное решение/инструкцию (не шаблонную заглушку)
+        clean_comment = comment.strip() if comment else ""
+        should_index_rag = False
+        if status_id == 29 and clean_comment:
+            should_index_rag = True
+        elif status_id == 30 and len(clean_comment) >= 35:
+            # Исключаем generic шаблоны отмены без полезной семантики
+            if not clean_comment.startswith("Заявка переведена в статус Отменена"):
+                should_index_rag = True
+
+        if should_index_rag:
             try:
                 task_data = await intraservice.get_single_task(
                     service_auth_b64, tid
@@ -364,7 +375,7 @@ async def apply_triage_action(
                         task_id=tid,
                         original_name=t_name,
                         problem=f"{t_name}. {t_desc}".strip(),
-                        solution=comment.strip(),
+                        solution=clean_comment,
                         service_id=s_id,
                         service_name=s_name,
                         status_name=st_name,
@@ -529,6 +540,7 @@ async def skip_session_tasks(payload: SkipSessionRequest):
         r = get_redis_client()
         for tid in payload.task_ids:
             await r.sadd("session:skipped_task_ids", str(tid))
+        await r.expire("session:skipped_task_ids", settings.SKIPPED_TASKS_REDIS_TTL)
         return {
             "status": "success",
             "skipped_count": len(payload.task_ids),

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Ticket, Status, Priority } from '../data/mock';
-import { statusConfig, priorityConfig, categoryLabel } from '../data/mock';
+import type { Ticket, Status } from '../data/mock';
+import { statusConfig, categoryLabel } from '../data/mock';
 import { fetchDiagnostics, applyTask, fetchTaskDetails, fetchTemplatesCatalog } from '../lib/tasks';
 import type { TaskDetails } from '../lib/types';
 
@@ -20,10 +20,10 @@ function formatTime(d: Date | string) {
 function getSlaClass(deadline: Date) {
   const ms = deadline.getTime() - Date.now();
   const h = ms / 3600000;
-  if (h < 0) return 'text-red-600 dark:text-red-400 font-semibold';
-  if (h < 1) return 'text-red-500 dark:text-red-400';
-  if (h < 3) return 'text-amber-600 dark:text-amber-400';
-  return 'text-green-600 dark:text-green-400';
+  if (h < 0) return 'text-rose-700 dark:text-rose-400 font-bold';
+  if (h < 1) return 'text-amber-700 dark:text-amber-400 font-bold';
+  if (h < 3) return 'text-neutral-700 dark:text-neutral-300 font-semibold';
+  return 'text-neutral-500 dark:text-neutral-400';
 }
 
 function formatSla(deadline: Date) {
@@ -40,13 +40,13 @@ type DiagStatus = 'ok' | 'fail' | 'checking' | 'idle';
 
 function DiagBadge({ status }: { status: DiagStatus }) {
   const cls = {
-    ok: 'bg-green-50 text-green-700 dark:bg-green-950/50 dark:text-green-300',
-    fail: 'bg-red-50 text-red-700 dark:bg-red-950/50 dark:text-red-300',
-    checking: 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300',
-    idle: 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400',
+    ok: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800',
+    fail: 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300 border border-rose-300 dark:border-rose-800',
+    checking: 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-300 dark:border-amber-800',
+    idle: 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700',
   }[status];
   const label = { ok: 'ОК', fail: 'Недоступен', checking: 'Проверка...', idle: '—' }[status];
-  return <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded ${cls}`}>{label}</span>;
+  return <span className={`text-[11.5px] font-mono px-2 py-0.5 rounded-md font-bold ${cls}`}>{label}</span>;
 }
 
 export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToast }: Props) {
@@ -128,7 +128,13 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     }
   };
 
+  // Quick Action with Guard (Audit C-1, Marks #6, #7)
   const handleQuickAction = async (actionType: string) => {
+    if (ticket.statusId === 29 || ticket.statusId === 30) {
+      onToast({ type: 'warning', message: `Заявка #${rawId} уже закрыта или отменена.` });
+      return;
+    }
+
     setSubmitting(true);
     try {
       if (actionType === 'redirect') {
@@ -159,7 +165,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           comment: comm,
           minutes: 10,
         });
-        onToast({ type: 'success', message: `Заявка #${rawId} переведена в Статус 48 (Ожидание устройства, каб. 112)` });
+        onToast({ type: 'success', message: `Заявка #${rawId}: статус обновлен («Ожидание устройства», каб. 112)` });
         onUpdateTicket(ticket.id, { status: 'waiting', statusId: 48, statusName: 'Ожидание устройства' });
       } else if (actionType === 'wlan') {
         const comm = ticket.aiSuggestion || 'Доступ к беспроводной корпоративной сети WLAN-WORKNET успешно предоставлен. Используйте логин и пароль от вашей учетной записи на ПК.';
@@ -168,7 +174,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           comment: comm,
           minutes: 10,
         });
-        onToast({ type: 'success', message: `Заявка #${rawId} закрыта (Доступ к Wi-Fi предоставлен)` });
+        onToast({ type: 'success', message: `Заявка #${rawId} выполнена (Доступ к Wi-Fi предоставлен)` });
         onUpdateTicket(ticket.id, { status: 'resolved', statusId: 29, statusName: 'Выполнена' });
         onClose();
       }
@@ -179,11 +185,18 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     }
   };
 
+  // Send action with Guard (Audit C-1, Marks #6, #7)
   const handleSendAction = async (targetStatusId: number) => {
     if (!replyText.trim()) {
-      onToast({ type: 'warning', message: 'Введите текст ответа или заметки' });
+      onToast({ type: 'warning', message: 'Введите текст комментария или ответа' });
       return;
     }
+
+    if (ticket.statusId === 29 || ticket.statusId === 30) {
+      onToast({ type: 'warning', message: `Заявка #${rawId} уже закрыта или отменена.` });
+      return;
+    }
+
     setSubmitting(true);
     try {
       await applyTask(rawId, {
@@ -194,14 +207,17 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       });
 
       const newStatus = targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : (targetStatusId === 35 || targetStatusId === 48 ? 'waiting' : 'in_progress');
+      const newStatusName = targetStatusId === 29 ? 'Выполнена' : (targetStatusId === 30 ? 'Отменена' : (targetStatusId === 27 ? 'В работе' : 'Ожидание'));
+
       onUpdateTicket(ticket.id, {
         status: newStatus,
         statusId: targetStatusId,
+        statusName: newStatusName,
       });
 
       onToast({
         type: 'success',
-        message: targetStatusId === 29 ? 'Заявка закрыта (Выполнена)' : (targetStatusId === 30 ? 'Заявка отменена' : 'Ответ успешно отправлен'),
+        message: targetStatusId === 29 ? 'Заявка закрыта (Выполнена)' : (targetStatusId === 30 ? 'Заявка отменена' : 'Комментарий успешно сохранен'),
       });
 
       setReplyText('');
@@ -226,7 +242,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         executor_ids: '8664,10502',
       });
       onUpdateTicket(ticket.id, { status: 'in_progress', statusId: 27, statusName: 'В работе' });
-      onToast({ type: 'success', message: `Заявка #${rawId} взята в работу (Беликов Ален)` });
+      onToast({ type: 'success', message: `Заявка #${rawId} взята в работу` });
       loadDetails();
     } catch (err: any) {
       onToast({ type: 'error', message: `Ошибка: ${err.message || err}` });
@@ -243,7 +259,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
   const panelClass = expanded
     ? 'fixed inset-0 z-30 flex flex-col bg-white dark:bg-neutral-950'
-    : 'w-[480px] shrink-0 flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950';
+    : 'w-[520px] shrink-0 flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950';
 
   const commentsList = details?.comments || [];
   const attachmentsList = details?.attachments || ticket.attachments || [];
@@ -251,95 +267,97 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   return (
     <div className={panelClass}>
       {/* Header */}
-      <div className="px-5 pt-4 pb-3 border-b border-neutral-100 dark:border-neutral-800 shrink-0">
+      <div className="px-5 pt-4 pb-3.5 border-b border-neutral-200 dark:border-neutral-800 shrink-0">
         <div className="flex items-start justify-between gap-2 mb-2">
           <div className="flex items-center gap-2">
             <button
               onClick={onClose}
-              className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors cursor-pointer"
+              className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors cursor-pointer p-1"
+              title="Закрыть инспектор"
             >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M10 4l-4 4 4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+                <path d="M10 4l-4 4 4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
             </button>
-            <span className="font-mono text-[12px] font-semibold text-neutral-500 dark:text-neutral-400">
+            <span className="font-mono text-[14px] font-bold text-neutral-600 dark:text-neutral-300">
               #{rawId}
             </span>
-            <span className={`text-[11px] px-1.5 py-0.5 rounded-sm font-medium ${statusConfig[ticket.status].className}`}>
+            <span className={`text-[12px] px-2.5 py-0.5 rounded-md font-bold ${statusConfig[ticket.status].className}`}>
               {ticket.statusName || statusConfig[ticket.status].label}
             </span>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <button
               onClick={handleTakeOwnership}
               disabled={submitting || ticket.statusId === 27}
-              className="px-2 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 border border-neutral-200 dark:border-neutral-700 rounded text-[11px] font-medium transition-colors disabled:opacity-50 cursor-pointer"
+              className="px-3 py-1.5 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 border border-neutral-300 dark:border-neutral-700 rounded-lg text-[12px] font-bold transition-colors disabled:opacity-50 cursor-pointer"
               title="Назначить на себя и перевести в работу"
             >
-              Взять себе
+              Взять в работу
             </button>
             <button
               onClick={() => setExpanded(e => !e)}
-              className="w-6 h-6 flex items-center justify-center rounded text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer border border-neutral-200/80 dark:border-neutral-800"
+              title={expanded ? 'Свернуть панель' : 'Развернуть на весь экран'}
             >
               {expanded ? (
-                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                  <path d="M8.5 1.5v3h3M4.5 11.5v-3h-3M8.5 11.5v-3h3M4.5 1.5v3h-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                <svg width="14" height="14" viewBox="0 0 13 13" fill="none">
+                  <path d="M8.5 1.5v3h3M4.5 11.5v-3h-3M8.5 11.5v-3h3M4.5 1.5v3h-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
               ) : (
-                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                  <path d="M1.5 4.5h3v-3M11.5 4.5h-3v-3M1.5 8.5h3v3M11.5 8.5h-3v3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                <svg width="14" height="14" viewBox="0 0 13 13" fill="none">
+                  <path d="M1.5 4.5h3v-3M11.5 4.5h-3v-3M1.5 8.5h3v3M11.5 8.5h-3v3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
               )}
             </button>
           </div>
         </div>
 
-        <h2 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-50 leading-snug">
+        <h2 className="text-[15px] font-bold text-neutral-900 dark:text-neutral-50 leading-snug">
           {ticket.title}
         </h2>
-        <div className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-1 flex items-center gap-1.5 flex-wrap">
+        <div className="text-[12px] text-neutral-500 dark:text-neutral-400 mt-1 flex items-center gap-1.5 flex-wrap font-medium">
           <span>{ticket.servicePath || ticket.serviceName}</span>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {/* Duplicate Banner */}
+        {/* Duplicate Banner (Marks #7: words instead of status ID) */}
         {(ticket.isDuplicate || ticket.ruleType === 'duplicate_task') && (
-          <div className="mx-5 mt-3 border border-amber-300 dark:border-amber-800/80 bg-amber-50/50 dark:bg-amber-950/30 rounded p-3 space-y-2">
+          <div className="mx-5 mt-3.5 border border-amber-300 dark:border-amber-700 bg-amber-50/70 dark:bg-amber-950/40 rounded-xl p-3.5 space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-amber-900 dark:text-amber-200 text-[12px] font-semibold">
+              <span className="text-amber-900 dark:text-amber-200 text-[13px] font-bold">
                 Повторная заявка (Дубликат)
               </span>
               {ticket.duplicateInfo?.master_task_id && (
-                <span className="text-[11px] font-mono bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 px-1.5 py-0.5 rounded border border-amber-300/60 dark:border-amber-700/60">
+                <span className="text-[11.5px] font-mono font-bold bg-amber-100 dark:bg-amber-900/80 text-amber-900 dark:text-amber-200 px-2 py-0.5 rounded-md border border-amber-300 dark:border-amber-700">
                   Master #{ticket.duplicateInfo.master_task_id}
                 </span>
               )}
             </div>
-            <p className="text-[12px] text-neutral-700 dark:text-neutral-300">
-              Заявитель уже имеет открытый инцидент по аналогичной теме.
+            <p className="text-[12.5px] text-neutral-800 dark:text-neutral-200 leading-relaxed">
+              Заявитель уже имеет открытую заявку по аналогичной проблеме.
             </p>
             <button
               onClick={() => handleQuickAction('duplicate')}
               disabled={submitting}
-              className="px-2.5 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 text-[11px] font-medium rounded transition-colors disabled:opacity-50 cursor-pointer"
+              className="px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 text-[12px] font-bold rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
             >
-              Отменить как дубликат (Статус 30)
+              Отменить как дубликат («Отменена»)
             </button>
           </div>
         )}
 
-        {/* 1-Click Smart Actions Bar */}
-        <div className="mx-5 mt-3 flex flex-wrap gap-1.5">
+        {/* 1-Click Smart Actions Bar (Marks #6, #7: Statuses in words) */}
+        <div className="mx-5 mt-3 flex flex-wrap gap-2">
           {(ticket.isRedirect || ticket.ruleType?.startsWith('redirect')) && (
             <button
               onClick={() => handleQuickAction('redirect')}
               disabled={submitting}
-              className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+              className="px-3 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 text-[12px] font-bold rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
             >
-              Редирект в {ticket.targetServiceName || 'соответствующий сервис'} (30)
+              Редирект в {ticket.targetServiceName || 'соответствующий сервис'} («Отменена»)
             </button>
           )}
 
@@ -347,9 +365,9 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <button
               onClick={() => handleQuickAction('hardware')}
               disabled={submitting}
-              className="px-2.5 py-1 bg-purple-50 dark:bg-purple-950/40 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-purple-800 dark:text-purple-300 border border-purple-200 dark:border-purple-800 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+              className="px-3 py-1.5 bg-purple-100 dark:bg-purple-950/60 hover:bg-purple-200 dark:hover:bg-purple-900/80 text-purple-950 dark:text-purple-200 border border-purple-300 dark:border-purple-800 text-[12px] font-bold rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
             >
-              В аппаратный ремонт (Статус 48)
+              В аппаратный ремонт («Ожидание устройства»)
             </button>
           )}
 
@@ -357,81 +375,83 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <button
               onClick={() => handleQuickAction('wlan')}
               disabled={submitting}
-              className="px-2.5 py-1 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+              className="px-3 py-1.5 bg-emerald-100 dark:bg-emerald-950/60 hover:bg-emerald-200 dark:hover:bg-emerald-900/80 text-emerald-950 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-800 text-[12px] font-bold rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
             >
-              Выдать доступ к Wi-Fi (Статус 29)
+              Выдать доступ к Wi-Fi («Выполнена»)
             </button>
           )}
         </div>
 
-        {/* AI / Rule Recommendation Card */}
+        {/* AI / Rule Recommendation Card (Audit M-1: dynamic expenses) */}
         {ticket.aiSuggestion && (
-          <div className="mx-5 mt-3 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded p-3">
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[11px] font-semibold text-neutral-800 dark:text-neutral-200 flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+          <div className="mx-5 mt-3.5 bg-neutral-50 dark:bg-neutral-900/80 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-blue-500" />
                 Рекомендация триажа ({ticket.ruleType || 'Auto-Rule'})
               </span>
-              <span className="text-[10px] font-mono text-neutral-400">5-10 мин</span>
+              <span className="text-[11px] font-mono text-neutral-500 dark:text-neutral-400 font-semibold">
+                Трудозатраты: ~{expenses} мин
+              </span>
             </div>
-            <p className="text-[12px] text-neutral-700 dark:text-neutral-300 leading-relaxed whitespace-pre-wrap">{ticket.aiSuggestion}</p>
+            <p className="text-[13px] text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap">{ticket.aiSuggestion}</p>
             <button
               onClick={() => setReplyText(ticket.aiSuggestion!)}
-              className="mt-2 text-[11px] text-blue-600 dark:text-blue-400 hover:underline font-medium cursor-pointer"
+              className="text-[12px] text-blue-600 dark:text-blue-400 hover:underline font-bold cursor-pointer inline-block pt-1"
             >
               Вставить в форму ответа →
             </button>
           </div>
         )}
 
-        {/* Requester & PC Card with Network Diag */}
+        {/* Requester & PC Card with Network Diag (Marks #4: Larger fonts) */}
         <div className="px-5 mt-4">
-          <div className="border border-neutral-200 dark:border-neutral-800 rounded p-3 space-y-2 bg-white dark:bg-neutral-900">
+          <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 space-y-2.5 bg-white dark:bg-neutral-900">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                 Заявитель и рабочее место
               </span>
               {ticket.host && (
                 <button
                   onClick={runDiag}
                   disabled={diagStatus.ping === 'checking'}
-                  className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline font-medium cursor-pointer"
+                  className="text-[12px] text-blue-600 dark:text-blue-400 hover:underline font-bold cursor-pointer"
                 >
                   {diagStatus.ping === 'checking' ? 'Проверка...' : 'Диагностика сети'}
                 </button>
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-2 text-[12px]">
+            <div className="grid grid-cols-2 gap-3 text-[13px]">
               <div>
-                <span className="text-neutral-400 block text-[10px]">ФИО заявителя</span>
-                <span className="text-neutral-800 dark:text-neutral-200 font-medium">{ticket.requesterName}</span>
+                <span className="text-neutral-400 block text-[11px] font-medium">ФИО заявителя</span>
+                <span className="text-neutral-900 dark:text-neutral-100 font-semibold">{ticket.requesterName}</span>
               </div>
               <div>
-                <span className="text-neutral-400 block text-[10px]">Телефон</span>
-                <span className="text-neutral-800 dark:text-neutral-200 font-mono">{ticket.requesterPhone || details?.phone || '—'}</span>
+                <span className="text-neutral-400 block text-[11px] font-medium">Телефон</span>
+                <span className="text-neutral-900 dark:text-neutral-100 font-mono font-semibold">{ticket.requesterPhone || details?.phone || '—'}</span>
               </div>
               <div>
-                <span className="text-neutral-400 block text-[10px]">Кабинет / Отдел</span>
-                <span className="text-neutral-800 dark:text-neutral-200">
+                <span className="text-neutral-400 block text-[11px] font-medium">Кабинет / Отдел</span>
+                <span className="text-neutral-800 dark:text-neutral-200 font-medium">
                   {[ticket.room || details?.room, ticket.department || details?.department].filter(Boolean).join(' · ') || '—'}
                 </span>
               </div>
               <div>
-                <span className="text-neutral-400 block text-[10px]">Имя ПК / Хост</span>
+                <span className="text-neutral-400 block text-[11px] font-medium">Имя ПК / Хост</span>
                 <div className="flex items-center gap-1.5">
-                  <span className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-[11px]">
+                  <span className="font-mono font-bold bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 rounded-md text-[12px] text-neutral-900 dark:text-neutral-100">
                     {ticket.host || details?.pc_name || 'Не указан'}
                   </span>
                   {ticket.host && (
                     <button
                       onClick={() => copyToClipboard(ticket.host)}
-                      className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 cursor-pointer"
+                      className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer p-0.5"
                       title="Скопировать имя ПК"
                     >
-                      <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                        <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.2"/>
-                        <path d="M1.5 7.5V1.5h6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                      <svg width="13" height="13" viewBox="0 0 11 11" fill="none">
+                        <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+                        <path d="M1.5 7.5V1.5h6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
                       </svg>
                     </button>
                   )}
@@ -441,18 +461,18 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
             {/* Network diagnostic results */}
             {ticket.host && (
-              <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between text-[11px]">
+              <div className="pt-2.5 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between text-[12px]">
                 <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1 font-mono">
-                    <span className="text-neutral-400">Ping:</span>
+                  <div className="flex items-center gap-1.5 font-mono">
+                    <span className="text-neutral-400 font-sans">Ping:</span>
                     <DiagBadge status={diagStatus.ping} />
                   </div>
-                  <div className="flex items-center gap-1 font-mono">
-                    <span className="text-neutral-400">SMB:445:</span>
+                  <div className="flex items-center gap-1.5 font-mono">
+                    <span className="text-neutral-400 font-sans">SMB:445:</span>
                     <DiagBadge status={diagStatus.smb} />
                   </div>
-                  <div className="flex items-center gap-1 font-mono">
-                    <span className="text-neutral-400">WinRM:</span>
+                  <div className="flex items-center gap-1.5 font-mono">
+                    <span className="text-neutral-400 font-sans">WinRM:</span>
                     <DiagBadge status={diagStatus.winrm} />
                   </div>
                 </div>
@@ -463,8 +483,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
         {/* Attachments Section */}
         {attachmentsList.length > 0 && (
-          <div className="mx-5 mt-4 border border-neutral-200 dark:border-neutral-800 rounded p-3">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 block mb-2">
+          <div className="mx-5 mt-4 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 block mb-2">
               Вложения и скриншоты ({attachmentsList.length})
             </span>
             <div className="space-y-1.5">
@@ -474,10 +494,10 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                   href={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="flex items-center justify-between p-2 rounded bg-neutral-50 dark:bg-neutral-900 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors text-[12px]"
+                  className="flex items-center justify-between p-2.5 rounded-lg bg-neutral-50 dark:bg-neutral-900 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors text-[13px]"
                 >
-                  <span className="truncate font-medium text-blue-600 dark:text-blue-400">{att.name}</span>
-                  <span className="text-[11px] text-neutral-400 font-mono shrink-0 ml-2">
+                  <span className="truncate font-semibold text-blue-600 dark:text-blue-400">{att.name}</span>
+                  <span className="text-[11.5px] text-neutral-400 font-mono shrink-0 ml-2">
                     {att.size ? `${Math.round(att.size / 1024)} КБ` : 'Скачать'}
                   </span>
                 </a>
@@ -488,17 +508,17 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
         {/* Description */}
         <div className="px-5 mt-5">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 block mb-2">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 block mb-2">
             Описание проблемы
           </p>
-          <div className="text-[13px] text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap font-sans bg-neutral-50 dark:bg-neutral-900/50 p-3 rounded border border-neutral-200 dark:border-neutral-800">
+          <div className="text-[14px] text-neutral-900 dark:text-neutral-100 leading-relaxed whitespace-pre-wrap font-sans bg-neutral-50 dark:bg-neutral-900/60 p-3.5 rounded-xl border border-neutral-200 dark:border-neutral-800">
             {(details?.description || ticket.description || 'Без описания').replace(/[#*`]/g, '').trim()}
           </div>
         </div>
 
         {/* Real Comments History (Lifetime) */}
         <div className="px-5 mt-6 mb-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 block mb-3">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 block mb-3">
             История переписки {loadingDetails ? '(Загрузка...)' : `(${commentsList.length})`}
           </p>
 
@@ -506,29 +526,29 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             {commentsList.map(c => (
               <div
                 key={c.id}
-                className={`p-3 rounded border text-[12px] ${
+                className={`p-3.5 rounded-xl border text-[13px] ${
                   c.is_private
-                    ? 'border-amber-200 dark:border-amber-900/50 bg-amber-50/50 dark:bg-amber-950/20'
+                    ? 'border-amber-300 dark:border-amber-800/60 bg-amber-50/60 dark:bg-amber-950/30'
                     : 'border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900'
                 }`}
               >
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center justify-between mb-1.5">
                   <div className="flex items-center gap-2">
-                    <span className="font-semibold text-neutral-900 dark:text-neutral-100">{c.author}</span>
+                    <span className="font-bold text-neutral-900 dark:text-neutral-100">{c.author}</span>
                     {c.is_private && (
-                      <span className="text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200 px-1 py-0.5 rounded font-medium">
-                        Внутренняя
+                      <span className="text-[11px] bg-amber-100 text-amber-900 dark:bg-amber-900/80 dark:text-amber-200 px-1.5 py-0.5 rounded font-bold">
+                        Скрытый комментарий
                       </span>
                     )}
                   </div>
-                  <span className="text-[11px] text-neutral-400 font-mono">{formatTime(c.created)}</span>
+                  <span className="text-[11.5px] text-neutral-400 font-mono">{formatTime(c.created)}</span>
                 </div>
-                <p className="text-neutral-700 dark:text-neutral-300 leading-relaxed whitespace-pre-wrap">{c.text}</p>
+                <p className="text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap">{c.text}</p>
               </div>
             ))}
 
             {commentsList.length === 0 && !loadingDetails && (
-              <div className="text-[12px] text-neutral-400 italic py-2">
+              <div className="text-[13px] text-neutral-400 italic py-3">
                 В этой заявке пока нет комментариев
               </div>
             )}
@@ -536,22 +556,22 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         </div>
       </div>
 
-      {/* Reply and Close Form */}
-      <div className="border-t border-neutral-200 dark:border-neutral-800 p-4 shrink-0 bg-white dark:bg-neutral-950 space-y-2.5">
+      {/* Reply and Close Form (Marks #6: Helpdesk Terminology) */}
+      <div className="border-t border-neutral-200 dark:border-neutral-800 p-4 shrink-0 bg-white dark:bg-neutral-950 space-y-3">
         {/* Top Controls: Mode & Template Selector */}
         <div className="flex items-center justify-between gap-2">
-          <div className="flex gap-1">
+          <div className="flex gap-1.5 bg-neutral-100 dark:bg-neutral-900 p-0.5 rounded-lg border border-neutral-200 dark:border-neutral-800">
             {(['reply', 'internal'] as const).map(mode => (
               <button
                 key={mode}
                 onClick={() => setReplyMode(mode)}
-                className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors cursor-pointer ${
+                className={`px-3 py-1 rounded-md text-[12px] font-semibold transition-colors cursor-pointer ${
                   replyMode === mode
-                    ? 'bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900'
-                    : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800'
+                    ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-2xs'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
                 }`}
               >
-                {mode === 'reply' ? 'Ответ заявителю' : 'Приватная заметка'}
+                {mode === 'reply' ? 'Комментарий для пользователя' : 'Скрытый комментарий'}
               </button>
             ))}
           </div>
@@ -561,7 +581,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <select
               value={selectedTemplateKey}
               onChange={e => handleTemplateSelect(e.target.value)}
-              className="text-[11px] bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded px-2 py-1 text-neutral-700 dark:text-neutral-300 outline-none max-w-[200px]"
+              className="text-[12px] bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg px-2.5 py-1 text-neutral-800 dark:text-neutral-200 outline-none max-w-[200px] font-medium"
             >
               <option value="">Выбрать шаблон...</option>
               {templates.map(t => (
@@ -573,47 +593,64 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           )}
         </div>
 
+        {/* AI Draft Badge Indicator (Audit E-1) */}
+        {ticket.aiSuggestion && (
+          <div className="flex items-center justify-between px-3 py-1 bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-lg text-[12px] text-blue-900 dark:text-blue-200">
+            <div className="flex items-center gap-1.5 font-medium">
+              <span className="text-blue-600 dark:text-blue-400 font-bold">✦</span>
+              <span>Подставлен черновик от AI / Rule Engine</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReplyText('')}
+              className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer font-bold"
+            >
+              Очистить
+            </button>
+          </div>
+        )}
+
         {/* Text Area */}
         <textarea
           value={replyText}
           onChange={e => setReplyText(e.target.value)}
-          placeholder={replyMode === 'reply' ? 'Напишите ответ заявителю...' : 'Внутренняя заметка для инженеров...'}
+          placeholder={replyMode === 'reply' ? 'Напишите комментарий для пользователя...' : 'Скрытый комментарий (только для инженеров)...'}
           rows={3}
-          className={`w-full px-3 py-2 text-[13px] rounded border bg-neutral-50 dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors resize-none ${
+          className={`w-full px-3.5 py-2.5 text-[13.5px] rounded-xl border bg-neutral-50 dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-colors resize-none ${
             replyMode === 'internal'
-              ? 'border-amber-200 dark:border-amber-900 bg-amber-50/50 dark:bg-amber-950/20'
+              ? 'border-amber-300 dark:border-amber-800 bg-amber-50/30 dark:bg-amber-950/20'
               : 'border-neutral-200 dark:border-neutral-800'
           }`}
         />
 
-        {/* Bottom Actions Bar */}
+        {/* Bottom Actions Bar (Marks #6, #7) */}
         <div className="flex items-center justify-between gap-2 pt-1">
-          <div className="flex items-center gap-1.5 text-[11px] text-neutral-500">
-            <span>Время (мин):</span>
+          <div className="flex items-center gap-2 text-[12px] text-neutral-600 dark:text-neutral-400 font-medium">
+            <span>Трудозатраты (мин):</span>
             <input
               type="number"
               value={expenses}
               onChange={e => setExpenses(Number(e.target.value))}
               min={0}
               max={240}
-              className="w-14 px-1.5 py-0.5 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded text-neutral-800 dark:text-neutral-200 text-center font-mono text-[11px]"
+              className="w-16 px-2 py-1 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg text-neutral-900 dark:text-neutral-100 text-center font-mono font-bold text-[12px]"
             />
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <button
               onClick={() => handleSendAction(27)}
               disabled={submitting || !replyText.trim()}
-              className="px-2.5 py-1.5 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded transition-colors disabled:opacity-40 cursor-pointer"
+              className="px-3.5 py-2 text-[12.5px] font-bold text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg transition-colors disabled:opacity-40 cursor-pointer"
             >
-              Отправить
+              В работу
             </button>
             <button
               onClick={() => handleSendAction(29)}
               disabled={submitting || !replyText.trim()}
-              className="px-3 py-1.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 text-[11px] font-medium rounded hover:bg-neutral-800 dark:hover:bg-neutral-200 transition-colors disabled:opacity-40 cursor-pointer"
+              className="px-4 py-2 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 text-[12.5px] font-bold rounded-lg hover:bg-neutral-800 dark:hover:bg-neutral-200 transition-colors disabled:opacity-40 cursor-pointer shadow-xs"
             >
-              Выполнить (29)
+              Выполнить заявку
             </button>
           </div>
         </div>

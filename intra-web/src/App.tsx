@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Ticket, Page, ToastMessage } from './data/mock';
-import type { ServiceSelection } from './components/Sidebar';
+import type { SidebarMode, ServiceSelection } from './components/Sidebar';
 import LoginPage from './pages/LoginPage';
 import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
@@ -14,7 +14,11 @@ function MainApp() {
   const { isLoggedIn, user, loading: authLoading, logout } = useAuth();
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [currentPage, setCurrentPage] = useState<Page>('queue');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => {
+    const saved = localStorage.getItem('intralink_sidebar_mode');
+    return (saved === 'compact' || saved === 'hidden' || saved === 'full') ? saved : 'full';
+  });
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -28,6 +32,22 @@ function MainApp() {
   const [loadingTickets, setLoadingTickets] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  const handleSetSidebarMode = useCallback((mode: SidebarMode) => {
+    setSidebarMode(mode);
+    localStorage.setItem('intralink_sidebar_mode', mode);
+  }, []);
+
+  const handleCycleSidebarMode = useCallback(() => {
+    setSidebarMode(prev => {
+      let next: SidebarMode = 'compact';
+      if (prev === 'full') next = 'compact';
+      else if (prev === 'compact') next = 'hidden';
+      else next = 'full';
+      localStorage.setItem('intralink_sidebar_mode', next);
+      return next;
+    });
+  }, []);
 
   // Apply dark class to html element
   useEffect(() => {
@@ -118,7 +138,8 @@ function MainApp() {
         }}
         theme={theme}
         onToggleTheme={() => setTheme(t => (t === 'light' ? 'dark' : 'light'))}
-        sidebarOpen={sidebarOpen}
+        sidebarMode={sidebarMode}
+        onSetSidebarMode={handleSetSidebarMode}
         tickets={tickets}
         rootServices={rootServices}
         subservicesByRoot={subservicesByRoot}
@@ -127,7 +148,6 @@ function MainApp() {
           setSelectedService(sel);
           setSelectedTicketId(null);
         }}
-        onOpenSearch={() => setCmdPaletteOpen(true)}
         username={user?.username}
         onLogout={logout}
       />
@@ -137,12 +157,14 @@ function MainApp() {
         <Topbar
           currentPage={currentPage}
           selectedTicket={selectedTicket}
-          sidebarOpen={sidebarOpen}
-          onToggleSidebar={() => setSidebarOpen(o => !o)}
+          sidebarMode={sidebarMode}
+          onCycleSidebarMode={handleCycleSidebarMode}
           onOpenCmdPalette={() => setCmdPaletteOpen(true)}
           onRefresh={loadQueue}
           selectedService={selectedService}
           onResetService={() => setSelectedService({ rootId: null, serviceId: null, name: null })}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
         />
 
         <main className="flex-1 overflow-hidden relative">
@@ -185,6 +207,7 @@ function MainApp() {
             onToast={addToast}
             selectedService={selectedService}
             onResetService={() => setSelectedService({ rootId: null, serviceId: null, name: null })}
+            searchQuery={searchQuery}
           />
         </main>
       </div>

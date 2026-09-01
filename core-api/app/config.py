@@ -111,6 +111,19 @@ class Settings(BaseSettings):
         description="ID разделов IntraService, которые глобально исключаются из системы",
     )
 
+    DEFAULT_EXECUTOR_IDS: str = Field(
+        "8664,10502",
+        description="ID исполнителей по умолчанию (Беликов Ален + Беликов Ален_assitant)",
+    )
+    PRIMARY_EXECUTOR_ID: int = Field(
+        8664,
+        description="ID основного исполнителя Helpdesk для списания трудозатрат",
+    )
+    SKIPPED_TASKS_REDIS_TTL: int = Field(
+        86400,
+        description="TTL в секундах (24 часа) для кэша пропущенных заявок в Redis",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )

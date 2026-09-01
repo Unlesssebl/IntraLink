@@ -112,7 +112,8 @@ async def get_ai_status():
                 "redirected": int(stats.get("redirected", 0)),
                 "replied": int(stats.get("replied", 0)),
                 "total": int(stats.get("total", 0)),
-                "last_reply_task_id": stats.get("last_reply_time", "N/A"),
+                "last_reply_time": stats.get("last_reply_time", "N/A"),
+                "last_reply_task_id": stats.get("last_reply_task_id", stats.get("last_reply_time", "N/A")),
             },
             "config": {
                 "auto_reply_service_ids": auto_reply_service_ids,
