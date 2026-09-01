@@ -13,7 +13,11 @@ from app.database.db import get_db
 from app.routers.deps import get_service_auth_b64, verify_api_key
 from app.services import intraservice
 from app.services.deduplication import DuplicateDetector
-from app.services.rag import index_task_knowledge, search_knowledge_base
+from app.services.rag import (
+    index_task_knowledge,
+    search_knowledge_base,
+    sync_historical_closed_tasks,
+)
 from app.services.rules.catalog import (
     ROOT_SERVICES,
     get_root_name,
@@ -76,6 +80,11 @@ class RAGIndexRequest(BaseModel):
     service_name: str
     status_name: str
     classification_data: dict[str, Any] | None = None
+
+
+class RAGSyncRequest(BaseModel):
+    days: int = Field(30, ge=1, le=365, description="Глубина выгрузки в днях")
+    limit: int = Field(50, ge=1, le=500, description="Лимит выгрузки задач")
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +456,24 @@ async def rag_index_endpoint(
             detail=f"Не удалось проиндексировать задачу #{payload.task_id} в RAG.",
         )
     return {"status": "success", "task_id": payload.task_id}
+
+
+@router.post("/rag/sync", status_code=status.HTTP_200_OK)
+async def rag_sync_endpoint(
+    payload: RAGSyncRequest,
+    service_auth_b64: str = Depends(get_service_auth_b64),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Массовая фоновая синхронизация закрытых заявок из IntraService в векторную базу pgvector.
+    """
+    result = await sync_historical_closed_tasks(
+        auth_b64=service_auth_b64,
+        db=db,
+        days=payload.days,
+        limit=payload.limit,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------

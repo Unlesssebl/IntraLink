@@ -132,6 +132,10 @@ async def test_apply_triage_action():
         new_callable=AsyncMock,
         return_value=True,
     ), patch(
+        "app.services.intraservice.get_single_task",
+        new_callable=AsyncMock,
+        return_value={"Id": 139001, "Name": "Тест", "Description": "Тест"},
+    ), patch(
         "app.routers.triage.index_task_knowledge",
         new_callable=AsyncMock,
         return_value=True,
@@ -153,3 +157,68 @@ async def test_apply_triage_action():
             data = resp.json()
             assert len(data["results"]) == 1
             assert data["results"][0]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_rag_sync_endpoint():
+    with patch(
+        "app.routers.triage.sync_historical_closed_tasks",
+        new_callable=AsyncMock,
+        return_value={
+            "status": "success",
+            "total_fetched": 10,
+            "total_closed": 5,
+            "indexed": 3,
+            "skipped": 2,
+        },
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/v1/triage/rag/sync",
+                headers=HEADERS,
+                json={"days": 14, "limit": 20},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "success"
+            assert data["indexed"] == 3
+
+
+@pytest.mark.asyncio
+async def test_execution_enqueue_and_get_job():
+    with patch("app.routers.execution.get_redis_client") as mock_redis_func:
+        mock_r = AsyncMock()
+        mock_r.set = AsyncMock(return_value=True)
+        mock_r.xadd = AsyncMock(return_value="1725180000-0")
+        mock_r.get = AsyncMock(
+            return_value='{"job_id":"job_123","action":"grant_wlan","status":"success"}'
+        )
+        mock_redis_func.return_value = mock_r
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp_enqueue = await client.post(
+                "/api/v1/execution/enqueue",
+                headers=HEADERS,
+                json={
+                    "action": "grant_wlan",
+                    "task_id": 139088,
+                    "params": {"identity": "test.user"},
+                },
+            )
+            assert resp_enqueue.status_code == 202
+            data_enq = resp_enqueue.json()
+            assert data_enq["status"] == "accepted"
+            assert "job_id" in data_enq
+
+            resp_status = await client.get(
+                "/api/v1/execution/jobs/job_123", headers=HEADERS
+            )
+            assert resp_status.status_code == 200
+            data_st = resp_status.json()
+            assert data_st["job_id"] == "job_123"
+            assert data_st["status"] == "success"
+

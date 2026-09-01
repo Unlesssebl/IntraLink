@@ -189,6 +189,16 @@ class CoreApiClient:
         async with session.post(url, json=payload) as resp:
             return resp.status == 200
 
+    async def sync_kb(self, days: int = 30, limit: int = 50) -> dict[str, Any]:
+        """Запускает синхронизацию закрытых заявок в RAG через Core API."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v1/triage/rag/sync"
+        payload = {"days": days, "limit": limit}
+        async with session.post(url, json=payload) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            return {"status": "error", "http_status": resp.status}
+
     async def get_services(self) -> list[dict[str, Any]]:
         """Получает список корневых сервисов 01..16."""
         session = await self._get_session()

@@ -107,8 +107,8 @@ class CredentialsRule(BaseRule):
             return RuleDecision(
                 template_key="wifi_access",
                 name="⚡ Автовыдача доступа WLAN в AD ➔ Выполнена (29)",
-                status_id=27,
-                status_name="В работе",
+                status_id=29,
+                status_name="Выполнена",
                 expenses=10,
                 comment=(
                     "Доступ к Wi-Fi предоставлен.\n"

@@ -771,31 +771,16 @@ DEFAULT_TEMPLATES_CATALOG = {
 }
 
 
+from app.services.template_engine import auto_detect_template, load_templates
+from app.services.deduplication import DuplicateDetector
+
+
 def _get_all_templates() -> dict[str, dict[str, Any]]:
     """
-    Загружает корпоративные шаблоны из helpdesk-agent/templates.json
-    с объединением с базовым каталогом.
+    Возвращает актуальный словарь шаблонов из централизованного template_engine.
     """
-    templates = dict(DEFAULT_TEMPLATES_CATALOG)
-    for folder_name in ["helpdesk-agent", "helpdesk_agent"]:
-        custom_json_path = (
-            Path(__file__).resolve().parent / ".." / ".." / folder_name / "templates.json"
-        )
-        if custom_json_path.exists():
-            with contextlib.suppress(Exception):
-                with custom_json_path.open(encoding="utf-8") as f:
-                    disk_data = json.load(f)
-                    for k, v in disk_data.items():
-                        if k not in templates:
-                            templates[k] = {
-                                "name": v.get("name", k),
-                                "status_id": v.get("status_id", 27),
-                                "status_name": f"{v.get('status_name', 'В работе')} ({v.get('status_id', 27)})",
-                                "expenses": v.get("expenses", 10),
-                                "template": v.get("template", ""),
-                                "badge_color": "primary" if v.get("status_id") == 48 else ("success" if v.get("status_id") == 29 else "warning"),
-                            }
-    return templates
+    return load_templates()
+
 
 
 @router.get("/admin/api/templates", dependencies=[Depends(verify_admin_jwt)])
@@ -1030,167 +1015,41 @@ def _format_comment(template: str, pc_name: str = "", target_service: str = "", 
 
 
 def _classify_queue_task(task: dict[str, Any], svc_info: dict[str, Any] | None = None, pc_name: str = "") -> dict[str, Any]:
-    templates = _get_all_templates()
-    name = (task.get("Name") or "").strip()
-    desc = (task.get("Description") or "").strip()
-    s_name = (svc_info.get("service_name") if svc_info else task.get("ServiceName")) or ""
-    r_name = (svc_info.get("root_service_name") if svc_info else "") or ""
-    full_text = f"{name} {desc} {s_name} {r_name}".lower()
+    decision = auto_detect_template(task)
+    fallback_svc = (svc_info.get("root_service_name") if svc_info else None) or task.get("ServiceName") or "1-я линия техподдержки"
+    
+    t_key = decision.get("template_key", "general")
+    rule_type = t_key
+    if rule_type == "wifi_access":
+        rule_type = "wlan_access"
+    elif rule_type == "wrong_service":
+        target_root = decision.get("target_root")
+        if target_root == "06":
+            rule_type = "redirect_1c"
+        elif target_root == "05":
+            rule_type = "redirect_directum"
+        elif target_root == "08":
+            rule_type = "redirect_security"
+        elif target_root == "03":
+            rule_type = "redirect_printers"
+        else:
+            rule_type = f"redirect_{target_root}" if target_root else "wrong_service"
 
-    # 1. Wi-Fi / WLAN
-    if any(w in full_text for w in ["wifi", "wi-fi", "вайфай", "вай-фай", "wlan", "беспроводн"]):
-        tmpl = templates.get("wifi_access", DEFAULT_TEMPLATES_CATALOG["wifi_access"])
-        return {
-            "rule_type": "wlan_access",
-            "template_key": "wifi_access",
-            "category_label": "Wi-Fi (WLAN-WORKNET)",
-            "ai_summary": "Запрос на предоставление корпоративного доступа к сети Wi-Fi (WLAN-WORKNET). Подготовлена инструкция и реквизиты авторизации (Статус 29: Выполнена).",
-            "target_service_name": "Wi-Fi доступ",
-            "is_redirect": False,
-            "has_ai_solution": True,
-            "score": 10,
-            "target_status_id": tmpl["status_id"],
-            "target_status_name": tmpl["status_name"],
-            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name),
-            "expenses": tmpl.get("expenses", 10),
-            "badge_color": "success",
-        }
-
-    # 2. 1C:Предприятие
-    if any(w in full_text for w in ["1с", "1c", "зуп", "утп", "erp", "бухгалтерия 8", "унф", "фреш"]) and not any(w in full_text for w in ["принтер", "печать", "зависает"]):
-        tmpl = templates.get("redirect_1c", DEFAULT_TEMPLATES_CATALOG["redirect_1c"])
-        target_svc = "06. 1C:Предприятие"
-        return {
-            "rule_type": "redirect_1c",
-            "template_key": "redirect_1c",
-            "category_label": "Редирект ➔ 06. 1С",
-            "ai_summary": "Вопрос по функционалу или ошибкам 1С (ЗУП/ERP/Бухгалтерия). Заявка зарегистрирована в первой линии, требуется перенаправление в 06. 1С (Статус 30: Отменена).",
-            "target_service_name": target_svc,
-            "is_redirect": True,
-            "has_ai_solution": True,
-            "score": 10,
-            "target_status_id": tmpl["status_id"],
-            "target_status_name": tmpl["status_name"],
-            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name, target_service=target_svc),
-            "expenses": tmpl.get("expenses", 5),
-            "badge_color": "warning",
-        }
-
-    # 3. Directum
-    if any(w in full_text for w in ["directum", "директум", "директуме"]):
-        tmpl = templates.get("redirect_directum", DEFAULT_TEMPLATES_CATALOG["redirect_directum"])
-        target_svc = "05. Directum"
-        return {
-            "rule_type": "redirect_directum",
-            "template_key": "redirect_directum",
-            "category_label": "Редирект ➔ 05. Directum",
-            "ai_summary": "Вопрос по СЭД Directum / B2B. Требуется перенаправление в службу поддержки Directum (Статус 30: Отменена).",
-            "target_service_name": target_svc,
-            "is_redirect": True,
-            "has_ai_solution": True,
-            "score": 10,
-            "target_status_id": tmpl["status_id"],
-            "target_status_name": tmpl["status_name"],
-            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name, target_service=target_svc),
-            "expenses": tmpl.get("expenses", 5),
-            "badge_color": "warning",
-        }
-
-    # 4. Обслуживание ПК, чистка, тормозит
-    if any(w in full_text for w in ["тормозит", "зависает", "чистк", "шумит", "пыл", "переустанов", "греется", "не включается", "синий экран", "глючит", "медленно"]):
-        tmpl = templates.get("hardware_repair", DEFAULT_TEMPLATES_CATALOG["hardware_repair"])
-        return {
-            "rule_type": "hardware_repair",
-            "template_key": "hardware_repair",
-            "category_label": "Ожидание устройства (Ремонт)",
-            "ai_summary": "Аппаратный сбой рабочей станции (шум, перегрев, сбои ОС, синий экран). Требуется доставка системного блока/ноутбука в каб. 112 на аппаратную диагностику (Статус 48: Ожидание устройства).",
-            "target_service_name": "Ремонт и обслуживание ПК (112 каб.)",
-            "is_redirect": False,
-            "has_ai_solution": True,
-            "score": 9,
-            "target_status_id": tmpl["status_id"],
-            "target_status_name": tmpl["status_name"],
-            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name),
-            "expenses": tmpl.get("expenses", 10),
-            "badge_color": "primary",
-        }
-
-    # 5. Сброс пароля / ИБ
-    if any(w in full_text for w in ["сброс парол", "забыл парол", "разблокиров", "учетн", "заблокирован"]):
-        tmpl = templates.get("redirect_security", DEFAULT_TEMPLATES_CATALOG["redirect_security"])
-        target_svc = "08. Информационная безопасность"
-        return {
-            "rule_type": "redirect_security",
-            "template_key": "redirect_security",
-            "category_label": "Редирект ➔ 08. ИБ",
-            "ai_summary": "Запрос на сброс/разблокировку пароля учетной записи или доступы. Требуется перенаправление в службу информационной безопасности (Статус 30: Отменена).",
-            "target_service_name": target_svc,
-            "is_redirect": True,
-            "has_ai_solution": True,
-            "score": 9,
-            "target_status_id": tmpl["status_id"],
-            "target_status_name": tmpl["status_name"],
-            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name, target_service=target_svc),
-            "expenses": tmpl.get("expenses", 5),
-            "badge_color": "warning",
-        }
-
-    # 6. SMB-блокировки файлов
-    if any(w in full_text for w in ["заблокирован", "занят другим пользователем", "блокировка файла", "сетевая папка"]):
-        tmpl = templates.get("file_lock_smb", DEFAULT_TEMPLATES_CATALOG["file_lock_smb"])
-        return {
-            "rule_type": "file_lock_smb",
-            "template_key": "file_lock_smb",
-            "category_label": "Файловые блокировки (SMB)",
-            "ai_summary": "Блокировка общего файла на сетевом диске/SMB другим пользователем. Подготовлен ответ по проверке открытых сессий (Статус 27: В работе).",
-            "target_service_name": "Файловые ресурсы",
-            "is_redirect": False,
-            "has_ai_solution": True,
-            "score": 8,
-            "target_status_id": tmpl["status_id"],
-            "target_status_name": tmpl["status_name"],
-            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name),
-            "expenses": tmpl.get("expenses", 10),
-            "badge_color": "info",
-        }
-
-    # 7. Оргтехника / Принтеры
-    if any(w in full_text for w in ["принтер", "мфу", "сканер", "картридж", "замяти", "не печатает"]):
-        tmpl = templates.get("redirect_printers", DEFAULT_TEMPLATES_CATALOG["redirect_printers"])
-        target_svc = "03. Оргтехника"
-        return {
-            "rule_type": "redirect_printers",
-            "template_key": "redirect_printers",
-            "category_label": "Оргтехника (03)",
-            "ai_summary": "Сбой печати, замятие бумаги или замена картриджа оргтехники. Рекомендуется перевод в раздел 03. Оргтехника (Статус 30: Отменена).",
-            "target_service_name": target_svc,
-            "is_redirect": True,
-            "has_ai_solution": True,
-            "score": 8,
-            "target_status_id": tmpl["status_id"],
-            "target_status_name": tmpl["status_name"],
-            "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name, target_service=target_svc),
-            "expenses": tmpl.get("expenses", 5),
-            "badge_color": "info",
-        }
-
-    # 8. Общее (Ручной разбор / Дефолт)
-    fallback_name = (svc_info.get("root_service_name") if svc_info else None) or s_name or "1-я линия техподдержки"
-    tmpl = templates.get("general", DEFAULT_TEMPLATES_CATALOG["general"])
+    st_id = decision.get("status_id", 27)
     return {
-        "rule_type": "general",
-        "template_key": "general",
-        "category_label": "1-я линия техподдержки",
-        "ai_summary": "Обращение первой линии техподдержки. Требуется экспертный анализ оператора и выбор индивидуального решения.",
-        "target_service_name": fallback_name,
-        "is_redirect": False,
-        "has_ai_solution": False,
-        "score": 6,
-        "target_status_id": tmpl["status_id"],
-        "target_status_name": tmpl["status_name"],
-        "suggested_comment": _format_comment(tmpl["template"], pc_name=pc_name),
-        "expenses": tmpl.get("expenses", 10),
-        "badge_color": "secondary",
+        "rule_type": rule_type,
+        "template_key": t_key,
+        "category_label": decision.get("name", "1-я линия техподдержки"),
+        "ai_summary": decision.get("name", "1-я линия техподдержки"),
+        "target_service_name": decision.get("target_service_name") or fallback_svc,
+        "is_redirect": decision.get("is_redirect", False) or st_id == 30,
+        "has_ai_solution": st_id in (29, 30, 48),
+        "score": 10 if (decision.get("is_redirect") or st_id in (29, 30)) else 7,
+        "target_status_id": st_id,
+        "target_status_name": decision.get("status_name", "В работе"),
+        "suggested_comment": decision.get("comment", ""),
+        "expenses": decision.get("expenses", 10),
+        "badge_color": decision.get("badge_color", "secondary"),
     }
 
 
@@ -1228,6 +1087,11 @@ async def get_triage_queue(filter_id: int = 984, limit: int = 50):
 
     svc_map, root_services, subservices_by_root = await _get_service_catalog_map()
 
+    # Детекция дубликатов
+    detector = DuplicateDetector()
+    duplicates = detector.find_duplicates(tasks)
+    dup_map = {d["duplicate_task_id"]: d for d in duplicates}
+
     items = []
     for t in tasks:
         t_id = t.get("Id")
@@ -1251,6 +1115,9 @@ async def get_triage_queue(filter_id: int = 984, limit: int = 50):
                     "content_type": f.get("ContentType") or "",
                     "url": f.get("Url") or f.get("DownloadUrl") or f"/admin/api/attachments/{f_id}",
                 })
+
+        is_dup = t_id in dup_map
+        dup_info = dup_map.get(t_id)
 
         items.append({
             "id": t_id,
@@ -1287,6 +1154,8 @@ async def get_triage_queue(filter_id: int = 984, limit: int = 50):
             "badge_color": cls_info["badge_color"],
             "has_attachments": len(attachments) > 0,
             "attachments": attachments,
+            "is_duplicate": is_dup,
+            "duplicate_info": dup_info,
         })
 
     return {
@@ -1295,6 +1164,7 @@ async def get_triage_queue(filter_id: int = 984, limit: int = 50):
         "root_services": root_services,
         "subservices_by_root": subservices_by_root,
         "tasks": items,
+        "duplicates": duplicates[:10],
     }
 
 

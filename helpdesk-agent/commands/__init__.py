@@ -11,6 +11,7 @@ from . import (
     session,
     tasks,
     triage,
+    worker,
 )
 
 COMMAND_MODULES = [
@@ -21,6 +22,7 @@ COMMAND_MODULES = [
     catalog,
     session,
     diagnose,
+    worker,
 ]
 
 
@@ -65,6 +67,9 @@ def register_all_commands(
         "reset-session": session.handle,
         # Диагностика
         "diagnose": diagnose.handle,
+        # Фоновый воркер исполнения
+        "worker": worker.handle,
+        "run-worker": worker.handle,
     }
 
     return dispatch

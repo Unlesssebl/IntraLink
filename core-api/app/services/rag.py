@@ -226,3 +226,96 @@ async def index_task_knowledge(
         logger.exception("Ошибка индексации заявки #%d в RAG: %s", task_id, e)
         await db.rollback()
         return False
+
+
+async def sync_historical_closed_tasks(
+    auth_b64: str,
+    db: AsyncSession,
+    days: int = 30,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """
+    Выгружает закрытые заявки из IntraService (StatusId in 29, 30),
+    извлекает финальный комментарий инженера и сохраняет их в векторную базу pgvector.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M")
+
+    params = {
+        "ChangedMoreThan": cutoff_str,
+        "pagesize": str(min(limit * 2, 100)),
+        "page": "1",
+        "include": "status,service",
+    }
+
+    raw_tasks = await intraservice.get_tasks(auth_b64=auth_b64, filters=params)
+    tasks_list = []
+    if isinstance(raw_tasks, dict):
+        tasks_list = raw_tasks.get("Tasks", [])
+    elif isinstance(raw_tasks, list):
+        tasks_list = raw_tasks
+
+    # Фильтруем закрытые заявки (29: Выполнена, 30: Отменена)
+    closed = [t for t in tasks_list if t.get("StatusId") in (29, 30)]
+    indexed_count = 0
+    skipped_count = 0
+
+    for t in closed[:limit]:
+        tid = t.get("Id")
+        if not tid:
+            continue
+
+        # Проверяем, есть ли уже в базе
+        stmt = select(TaskKnowledgeBase.task_id).where(
+            TaskKnowledgeBase.task_id == tid
+        )
+        res = await db.execute(stmt)
+        if res.scalar_one_or_none():
+            skipped_count += 1
+            continue
+
+        # Получаем историю переписки для нахождения финального решения
+        lifetime = await intraservice.get_task_lifetime(auth_b64, tid) or []
+        solution_text = ""
+        for item in reversed(lifetime):
+            comm = (item.get("Comment") or "").strip()
+            if comm and len(comm) > 10:
+                solution_text = comm
+                break
+
+        if not solution_text:
+            skipped_count += 1
+            continue
+
+        t_name = t.get("Name") or f"Заявка #{tid}"
+        t_desc = t.get("Description") or ""
+        s_id = t.get("ServiceId") or 0
+        s_name = t.get("ServiceName") or "Общие"
+        st_name = t.get("StatusName") or "Закрыта"
+
+        ok = await index_task_knowledge(
+            db=db,
+            task_id=tid,
+            original_name=t_name,
+            problem=f"{t_name}. {t_desc}".strip(),
+            solution=solution_text,
+            service_id=s_id,
+            service_name=s_name,
+            status_name=st_name,
+            classification_data={"synced_from_history": True, "days": days},
+        )
+        if ok:
+            indexed_count += 1
+        else:
+            skipped_count += 1
+
+    return {
+        "status": "success",
+        "total_fetched": len(tasks_list),
+        "total_closed": len(closed),
+        "indexed": indexed_count,
+        "skipped": skipped_count,
+    }
+

@@ -133,6 +133,27 @@ async def handle_start_db(args: Any) -> None:
         sys.exit(1)
 
 
+async def handle_sync_kb(args: Any) -> None:
+    client = CoreApiClient()
+    try:
+        days = getattr(args, "days", 30)
+        limit = getattr(args, "limit", 50)
+        print(
+            f"🔄 Запуск синхронизации закрытых заявок за последние {days} дн. (Лимит: {limit}) в RAG базу знаний..."
+        )
+        res = await client.sync_kb(days=days, limit=limit)
+        if res.get("status") == "success":
+            print("✓ Синхронизация успешно выполнена:")
+            print(f"  • Получено заявок из IntraService: {res.get('total_fetched', 0)}")
+            print(f"  • Закрытых инцидентов:             {res.get('total_closed', 0)}")
+            print(f"  • Новых проиндексировано в RAG:    {res.get('indexed', 0)}")
+            print(f"  • Пропущено (ранее добавлены):     {res.get('skipped', 0)}")
+        else:
+            print(f"⚠️ Ошибка синхронизации: {res}", file=sys.stderr)
+    finally:
+        await client.close()
+
+
 async def handle(args: Any) -> None:
     if args.command == "search-kb":
         await handle_search_kb(args)
@@ -141,4 +162,4 @@ async def handle(args: Any) -> None:
     elif args.command == "start-db":
         await handle_start_db(args)
     elif args.command == "sync-kb":
-        await handle_search_kb(args)
+        await handle_sync_kb(args)

@@ -24,14 +24,14 @@ class RuleEngine:
     def __init__(self, rules: list[BaseRule] | None = None):
         if rules is None:
             self._rules = [
-                ServiceRedirectRule(priority=10),
-                RAGConsensusRule(priority=15),
-                PhysicalDeliveryRule(priority=20),
-                CredentialsRule(priority=30),
-                FileLockRule(priority=40),
-                RemoteAccessRule(priority=50),
-                PrinterRule(priority=60),
-                OfflineHostRule(priority=70),
+                CredentialsRule(priority=10),
+                PhysicalDeliveryRule(priority=15),
+                FileLockRule(priority=20),
+                PrinterRule(priority=25),
+                RemoteAccessRule(priority=30),
+                OfflineHostRule(priority=35),
+                ServiceRedirectRule(priority=50),
+                RAGConsensusRule(priority=60),
                 StandardInWorkRule(priority=999),
             ]
         else:
