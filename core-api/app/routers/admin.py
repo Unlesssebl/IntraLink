@@ -1054,10 +1054,10 @@ def _classify_queue_task(task: dict[str, Any], svc_info: dict[str, Any] | None =
 
 
 @router.get("/admin/api/queue", dependencies=[Depends(verify_admin_jwt)])
-async def get_triage_queue(filter_id: int = 984, limit: int = 50):
+async def get_triage_queue(filter_id: int = 984, limit: int = 200):
     """
     Возвращает открытые заявки очереди 1-й линии с классификацией Rule Engine,
-    кастомными полями, шаблонами и предложенными действиями.
+    кастомными полями, шаблонами, исполнителями и предложенными действиями.
     """
     from app.services.crypto import decrypt_token
     from app.services.intraservice import get_tasks
@@ -1072,9 +1072,9 @@ async def get_triage_queue(filter_id: int = 984, limit: int = 50):
 
     auth_b64 = decrypt_token(auth_encrypted)
     params = {
-        "filterid": str(filter_id),
-        "include": "status,customfields,service,comments,attachments",
-        "pagesize": str(limit),
+        "filterid": str(filter_id or 984),
+        "include": "executorids,status,customfields,service,comments,attachments",
+        "pagesize": str(limit) if limit > 0 else "200",
         "page": "1",
     }
 
@@ -1119,6 +1119,22 @@ async def get_triage_queue(filter_id: int = 984, limit: int = 50):
         is_dup = t_id in dup_map
         dup_info = dup_map.get(t_id)
 
+        # Формируем строку исполнителей
+        executors_val = t.get("Executors") or t.get("Executor") or t.get("ExecutorName") or ""
+        if isinstance(executors_val, list):
+            executors_str = ", ".join(str(e.get("Name") or e.get("Login") or e) for e in executors_val)
+        elif isinstance(executors_val, dict):
+            executors_str = executors_val.get("Name") or executors_val.get("Login") or ""
+        else:
+            executors_str = str(executors_val or "")
+
+        executor_ids = t.get("ExecutorIds") or []
+        if not executors_str and executor_ids:
+            if isinstance(executor_ids, list):
+                executors_str = ", ".join(str(x) for x in executor_ids)
+            else:
+                executors_str = str(executor_ids)
+
         items.append({
             "id": t_id,
             "name": t.get("Name") or "Без темы",
@@ -1156,6 +1172,8 @@ async def get_triage_queue(filter_id: int = 984, limit: int = 50):
             "attachments": attachments,
             "is_duplicate": is_dup,
             "duplicate_info": dup_info,
+            "executors": executors_str,
+            "executor_ids": executor_ids,
         })
 
     return {
@@ -1190,12 +1208,21 @@ async def get_task_details(task_id: int):
     if not task_data:
         raise HTTPException(status_code=404, detail=f"Заявка #{task_id} не найдена")
 
-    lifetime = await get_task_lifetime(auth_b64, task_id) or []
-    
+    lifetime_raw = await get_task_lifetime(auth_b64, task_id)
+    lifetime: list[dict[str, Any]] = []
+    if isinstance(lifetime_raw, list):
+        lifetime = [item for item in lifetime_raw if isinstance(item, dict)]
+    elif isinstance(lifetime_raw, dict):
+        for key in ("TaskLifeTimes", "LifeTimes", "Items", "Events"):
+            val = lifetime_raw.get(key)
+            if isinstance(val, list):
+                lifetime = [item for item in val if isinstance(item, dict)]
+                break
+
     # Формируем список комментариев
     comments = []
     for item in lifetime:
-        if item.get("Comment"):
+        if isinstance(item, dict) and item.get("Comment"):
             comments.append({
                 "id": item.get("Id"),
                 "author": item.get("UserName") or item.get("UserLogin") or "Пользователь",

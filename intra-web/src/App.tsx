@@ -60,7 +60,7 @@ function MainApp() {
     setLoadingTickets(true);
     setQueueError(null);
     try {
-      const data = await fetchQueue(984, 100);
+      const data = await fetchQueue(984, 200);
       setTickets(data.tickets || []);
       setRootServices(data.rootServices || []);
       setSubservicesByRoot(data.subservicesByRoot || {});

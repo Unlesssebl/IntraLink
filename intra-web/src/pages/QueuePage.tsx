@@ -48,6 +48,14 @@ function formatSla(deadline: Date) {
   return `${m}м`;
 }
 
+function parseHostList(hostStr?: string): string[] {
+  if (!hostStr) return [];
+  return hostStr
+    .split(/[,;\s/]+/)
+    .map(h => h.trim())
+    .filter(Boolean);
+}
+
 export default function QueuePage({
   tickets,
   selectedTicketId,
@@ -63,6 +71,7 @@ export default function QueuePage({
   const [filterTab, setFilterTab] = useState<FilterTab>('all');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [inlineStatusTicketId, setInlineStatusTicketId] = useState<string | null>(null);
+  const [openHostTicketId, setOpenHostTicketId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<Status | null>(null);
   const [sortCol, setSortCol] = useState<'sla' | 'created' | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -281,7 +290,7 @@ export default function QueuePage({
       const res = await bulkApplyTasks(payload);
       const newStatus = targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : (targetStatusId === 35 ? 'waiting' : 'in_progress');
       selectedTickets.forEach(t => onUpdateTicket(t.id, { status: newStatus, statusId: targetStatusId, statusName: statusLabelName }));
-      
+
       onToast({
         type: 'success',
         message: `Успешно обработано: ${res.success_count} из ${payload.length} заявок`,
@@ -365,11 +374,10 @@ export default function QueuePage({
                 <button
                   key={v}
                   onClick={() => setView(v)}
-                  className={`px-3 py-1 rounded-md text-[12.5px] font-semibold transition-colors cursor-pointer ${
-                    view === v
-                      ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-2xs'
-                      : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
-                  }`}
+                  className={`px-3 py-1 rounded-md text-[12.5px] font-semibold transition-colors cursor-pointer ${view === v
+                    ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-2xs'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+                    }`}
                 >
                   {v === 'table' ? 'Таблица' : 'Канбан'}
                 </button>
@@ -386,19 +394,17 @@ export default function QueuePage({
                   <button
                     key={tab.key}
                     onClick={() => setFilterTab(tab.key)}
-                    className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[13px] font-medium transition-colors cursor-pointer ${
-                      isActive
-                        ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 font-bold border border-neutral-200/80 dark:border-neutral-700/80'
-                        : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-900 hover:text-neutral-900 dark:hover:text-neutral-100'
-                    }`}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[13px] font-medium transition-colors cursor-pointer ${isActive
+                      ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 font-bold border border-neutral-200/80 dark:border-neutral-700/80'
+                      : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-900 hover:text-neutral-900 dark:hover:text-neutral-100'
+                      }`}
                   >
                     <span>{tab.label}</span>
                     <span
-                      className={`text-[11px] tabular-nums font-sans px-1.5 py-0.2 rounded-full font-bold ${
-                        isActive
-                          ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                          : 'bg-neutral-200/80 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'
-                      }`}
+                      className={`text-[11px] tabular-nums font-sans px-1.5 py-0.2 rounded-full font-bold ${isActive
+                        ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                        : 'bg-neutral-200/80 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'
+                        }`}
                     >
                       {tab.count}
                     </span>
@@ -407,28 +413,14 @@ export default function QueuePage({
               })}
             </div>
           </div>
-
-          {/* Quick Refresh Icon */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onRefresh}
-              className="w-8 h-8 flex items-center justify-center rounded-lg text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer border border-neutral-200/60 dark:border-neutral-800"
-              title="Обновить очередь"
-            >
-              <svg width="14" height="14" viewBox="0 0 12 12" fill="none">
-                <path d="M10 2.5a4.5 4.5 0 11-7.8 4.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                <path d="M10 2.5v2.5H7.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
-          </div>
         </div>
 
-        {/* Table View (Marks #4, #5: Fixed Table Layout, stable row heights, larger fonts) */}
+        {/* Table View (Matching style and layout from image-2.png) */}
         {view === 'table' && (
-          <div className="flex-1 overflow-auto">
-            <table className="w-full text-[14px] border-collapse table-fixed">
-              <thead>
-                <tr className="border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50/80 dark:bg-neutral-900/80 sticky top-0 z-10">
+          <div className="flex-1 overflow-auto bg-white dark:bg-neutral-950">
+            <table className="w-full min-w-[1020px] text-[14px] border-collapse table-auto">
+              <thead className="sticky top-0 z-10 bg-white dark:bg-neutral-950 border-b border-neutral-200 dark:border-neutral-800">
+                <tr>
                   <th className="w-11 px-3.5 py-3 text-center">
                     <input
                       type="checkbox"
@@ -437,48 +429,56 @@ export default function QueuePage({
                       className="w-4 h-4 accent-blue-600 cursor-pointer rounded"
                     />
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[12px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                    Заявка и заявитель
+                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                    СТАТУС
                   </th>
-                  <th className="w-36 px-3.5 py-3 text-left text-[12px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                    Статус
+                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                    ЗАЯВКА
                   </th>
-                  <th className="w-44 px-3.5 py-3 text-left text-[12px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                    Категория / Сервис
+                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                    СЕРВИС
                   </th>
-                  <th className="w-32 px-3.5 py-3 text-left text-[12px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                    ПК / Хост
+                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                    ХОСТ
                   </th>
-                  <th className="w-28 px-3.5 py-3 text-left text-[12px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                    Действие
+                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                    ИСПОЛНИТЕЛЬ
+                  </th>
+                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                    ДЕЙСТВИЕ
                   </th>
                   <th
-                    className="w-24 px-3.5 py-3 text-left text-[12px] font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 cursor-pointer select-none group whitespace-nowrap"
+                    className="w-24 px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 cursor-pointer select-none group whitespace-nowrap"
                     onClick={() => toggleSort('sla')}
                   >
                     SLA<SortIcon col="sla" />
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800">
+              <tbody className="divide-y divide-neutral-100 dark:divide-neutral-850">
                 {sorted.map((ticket, index) => {
                   const isSelected = selected.has(ticket.id);
                   const isActive = selectedTicketId === ticket.id;
                   const isEven = index % 2 === 0;
 
                   const rowBg = isActive
-                    ? 'bg-blue-50/90 dark:bg-blue-950/60 border-l-4 border-l-blue-600 dark:border-l-blue-400'
+                    ? '!bg-blue-100/90 dark:!bg-blue-950/80 border-l-4 border-l-blue-600 dark:border-l-blue-500'
                     : isSelected
-                    ? 'bg-neutral-200/90 dark:bg-neutral-800'
-                    : isEven
-                    ? 'bg-white dark:bg-neutral-950'
-                    : 'bg-neutral-50/60 dark:bg-neutral-900/50';
+                      ? '!bg-neutral-200/90 dark:!bg-neutral-800'
+                      : isEven
+                        ? 'bg-[#f4f7fb] dark:bg-neutral-900/60'
+                        : 'bg-white dark:bg-neutral-950';
+
+                  const hostList = parseHostList(ticket.host);
+                  const primaryHost = hostList[0];
+                  const otherHosts = hostList.slice(1);
+                  const smartTagClass = "px-1.5 py-0.2 border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 rounded text-[11px] font-medium";
 
                   return (
                     <tr
                       key={ticket.id}
                       onClick={() => onSelectTicket(isActive ? null : ticket.id)}
-                      className={`cursor-pointer transition-colors outline-none hover:bg-blue-50/50 dark:hover:bg-neutral-800/80 h-[56px] ${rowBg}`}
+                      className={`cursor-pointer transition-colors outline-none hover:!bg-blue-50/70 dark:hover:!bg-neutral-800/80 h-[58px] border-b border-neutral-100 dark:border-neutral-850 ${rowBg}`}
                     >
                       {/* Checkbox */}
                       <td className="w-11 px-3.5 py-2.5 text-center" onClick={e => e.stopPropagation()}>
@@ -490,62 +490,16 @@ export default function QueuePage({
                         />
                       </td>
 
-                      {/* Ticket Title & Creator */}
-                      <td className="px-3.5 py-2.5 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-mono font-bold tabular-nums text-[13px] text-neutral-500 dark:text-neutral-400 shrink-0">
-                            #{ticket.rawId}
-                          </span>
-
-                          {/* Smart tag badges */}
-                          {ticket.isDuplicate && (
-                            <span className="px-2 py-0.5 border border-amber-300 dark:border-amber-700 bg-amber-100 dark:bg-amber-950/50 text-amber-900 dark:text-amber-200 rounded text-[11px] font-bold">
-                              дубликат
-                            </span>
-                          )}
-                          {ticket.isRedirect && (
-                            <span className="px-2 py-0.5 border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 rounded text-[11px] font-bold">
-                              редирект
-                            </span>
-                          )}
-                          {ticket.ruleType === 'hardware_repair' && (
-                            <span className="px-2 py-0.5 border border-purple-300 dark:border-purple-700 bg-purple-100 dark:bg-purple-950/50 text-purple-900 dark:text-purple-200 rounded text-[11px] font-bold">
-                              в ремонт
-                            </span>
-                          )}
-                          {(ticket.ruleType === 'wlan_access' || ticket.templateKey === 'wifi_access') && (
-                            <span className="px-2 py-0.5 border border-emerald-300 dark:border-emerald-700 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200 rounded text-[11px] font-bold">
-                              wi-fi
-                            </span>
-                          )}
-                          {ticket.hasAttachments && (
-                            <span className="text-neutral-400 text-[12px]" title="Есть вложения">📎</span>
-                          )}
-
-                          <span className="text-neutral-900 dark:text-neutral-100 font-semibold text-[14px] truncate max-w-md">
-                            {ticket.title}
-                          </span>
-                        </div>
-
-                        <div className="text-[12px] text-neutral-500 dark:text-neutral-400 mt-1 flex items-center gap-2 font-medium">
-                          <span className="font-semibold text-neutral-700 dark:text-neutral-300">{ticket.requesterName}</span>
-                          {ticket.room && <span>· каб. {ticket.room}</span>}
-                          {ticket.department && <span className="truncate max-w-[200px]">· {ticket.department}</span>}
-                        </div>
-                      </td>
-
-                      {/* Status Words (Marks #7) */}
+                      {/* Status Button (Moved first after checkbox) */}
                       <td
-                        className="w-36 px-3.5 py-2.5 whitespace-nowrap"
+                        className="px-3.5 py-2.5 whitespace-nowrap"
                         onClick={e => {
                           e.stopPropagation();
                           setInlineStatusTicketId(inlineStatusTicketId === ticket.id ? null : ticket.id);
                         }}
                       >
-                        <div className="relative">
-                          <span
-                            className={`text-[12px] px-2.5 py-1 rounded-md font-semibold cursor-pointer inline-block ${statusConfig[ticket.status].className}`}
-                          >
+                        <div className="relative inline-block">
+                          <span className="text-[12px] px-2.5 py-0.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 font-normal cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors shadow-2xs inline-block">
                             {ticket.statusName || statusConfig[ticket.status].label}
                           </span>
                           {inlineStatusTicketId === ticket.id && (
@@ -577,43 +531,141 @@ export default function QueuePage({
                         </div>
                       </td>
 
+                      {/* Ticket Title (Top) & Requester Info (Bottom), Tags next to Description */}
+                      <td className="px-3.5 py-2.5 min-w-[280px]">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-neutral-900 dark:text-neutral-100 font-bold text-[13.5px] truncate max-w-md">
+                            {ticket.title}
+                          </span>
+
+                          {/* Smart tag badges placed right beside title/description */}
+                          {ticket.isDuplicate && (
+                            <span className={smartTagClass}>
+                              дубликат
+                            </span>
+                          )}
+                          {ticket.isRedirect && (
+                            <span className={smartTagClass}>
+                              редирект
+                            </span>
+                          )}
+                          {ticket.ruleType === 'hardware_repair' && (
+                            <span className={smartTagClass}>
+                              в ремонт
+                            </span>
+                          )}
+                          {(ticket.ruleType === 'wlan_access' || ticket.templateKey === 'wifi_access') && (
+                            <span className={smartTagClass}>
+                              wi-fi
+                            </span>
+                          )}
+                          {ticket.hasAttachments && (
+                            <span className="text-neutral-400 text-[12px]" title="Есть вложения">📎</span>
+                          )}
+                        </div>
+
+                        <div className="text-[12px] text-neutral-500 dark:text-neutral-400 mt-0.5 flex items-center gap-1.5 font-normal">
+                          <span className="font-mono tabular-nums text-neutral-500 dark:text-neutral-400 shrink-0">
+                            #{ticket.rawId}
+                          </span>
+                          <span>·</span>
+                          <span>{ticket.requesterName}</span>
+                          {ticket.room && <span>· каб. {ticket.room}</span>}
+                          {ticket.department && <span className="truncate max-w-[200px]">· {ticket.department}</span>}
+                        </div>
+                      </td>
+
                       {/* Service / Category */}
-                      <td className="w-44 px-3.5 py-2.5 whitespace-nowrap">
-                        <span className="text-[13px] text-neutral-800 dark:text-neutral-200 font-medium truncate block" title={ticket.servicePath || ticket.serviceName}>
+                      <td className="px-3.5 py-2.5 whitespace-nowrap">
+                        <span className="text-[13px] text-neutral-800 dark:text-neutral-200 font-normal truncate block max-w-[220px]" title={ticket.servicePath || ticket.serviceName}>
                           {ticket.serviceName}
                         </span>
                       </td>
 
-                      {/* Host */}
-                      <td className="w-32 px-3.5 py-2.5 whitespace-nowrap">
-                        {ticket.host ? (
-                          <span className="font-mono font-bold text-[12px] bg-neutral-200/90 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 px-2 py-0.5 rounded-md">
-                            {ticket.host}
-                          </span>
+                      {/* Host (Clean Badge style from image-2.png) */}
+                      <td className="px-3.5 py-2.5 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                        {primaryHost ? (
+                          <div className="relative inline-flex items-center gap-1.5">
+                            <span
+                              onClick={() => {
+                                navigator.clipboard.writeText(primaryHost);
+                                onToast({ type: 'info', message: `Хост ${primaryHost} скопирован в буфер` });
+                              }}
+                              className="font-sans font-bold text-[12px] bg-neutral-200/80 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 px-2 py-0.5 rounded cursor-pointer hover:bg-neutral-300 dark:hover:bg-neutral-700 transition-colors tracking-wide"
+                              title="Нажмите, чтобы скопировать хост"
+                            >
+                              {primaryHost}
+                            </span>
+
+                            {otherHosts.length > 0 && (
+                              <div className="relative">
+                                <button
+                                  onClick={() => setOpenHostTicketId(openHostTicketId === ticket.id ? null : ticket.id)}
+                                  className="px-1.5 py-0.5 bg-blue-100 hover:bg-blue-200 dark:bg-blue-950/80 dark:hover:bg-blue-900 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700 rounded text-[11px] font-bold cursor-pointer transition-colors"
+                                  title="Показать все хосты"
+                                >
+                                  +{otherHosts.length} ▾
+                                </button>
+
+                                {openHostTicketId === ticket.id && (
+                                  <div className="absolute left-0 top-7 z-30 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-2xl p-2 min-w-[160px] space-y-1 animate-in fade-in zoom-in-95 duration-100">
+                                    <span className="text-[10px] uppercase font-bold text-neutral-400 block px-1">
+                                      Хосты ({hostList.length})
+                                    </span>
+                                    {hostList.map((h, i) => (
+                                      <div
+                                        key={i}
+                                        onClick={() => {
+                                          navigator.clipboard.writeText(h);
+                                          onToast({ type: 'info', message: `Хост ${h} скопирован` });
+                                          setOpenHostTicketId(null);
+                                        }}
+                                        className="flex items-center justify-between px-2 py-1 bg-neutral-50 dark:bg-neutral-800 hover:bg-blue-50 dark:hover:bg-blue-950/50 rounded cursor-pointer transition-colors"
+                                      >
+                                        <span className="font-sans font-bold text-[12px] text-neutral-800 dark:text-neutral-200">{h}</span>
+                                        <span className="text-[10px] text-neutral-400">копировать</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         ) : (
                           <span className="text-neutral-300 dark:text-neutral-700 text-[12px]">—</span>
                         )}
                       </td>
 
-                      {/* Quick Take Action (Marks #6) */}
-                      <td className="w-28 px-3.5 py-2.5 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                      {/* Executors Column */}
+                      <td className="px-3.5 py-2.5 whitespace-nowrap">
+                        {ticket.executors ? (
+                          <span className="text-[12.5px] text-neutral-800 dark:text-neutral-200 font-medium truncate block max-w-[150px]" title={ticket.executors}>
+                            {ticket.executors}
+                          </span>
+                        ) : (
+                          <span className="text-neutral-400 dark:text-neutral-500 text-[12px] font-normal">Не назначен</span>
+                        )}
+                      </td>
+
+                      {/* Action (В работу) */}
+                      <td className="px-3.5 py-2.5 whitespace-nowrap" onClick={e => e.stopPropagation()}>
                         {ticket.statusId === 27 ? (
-                          <span className="text-[12px] text-emerald-600 dark:text-emerald-400 font-bold">
+                          <span className="text-[12px] text-emerald-600 dark:text-emerald-400 font-medium">
                             В работе
                           </span>
                         ) : (
                           <button
                             onClick={() => handleInlineTake(ticket)}
-                            className="px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 border border-neutral-300 dark:border-neutral-700 rounded-md text-[12px] font-semibold transition-colors cursor-pointer"
+                            className="px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 border border-neutral-300/90 dark:border-neutral-700 rounded text-[12px] font-medium transition-colors cursor-pointer"
                           >
-                            + В работу
+                            В работу
                           </button>
                         )}
                       </td>
 
                       {/* SLA */}
                       <td className="w-24 px-3.5 py-2.5 whitespace-nowrap">
-                        <span className={`font-mono text-[12px] ${getSlaClass(ticket.slaDeadline)}`}>
+                        <span className={`text-[12px] ${ticket.slaDeadline.getTime() < Date.now() ? 'text-rose-600 dark:text-rose-400 font-normal' : 'text-neutral-600 dark:text-neutral-400 font-normal'}`}>
                           {formatSla(ticket.slaDeadline)}
                         </span>
                       </td>
@@ -627,7 +679,7 @@ export default function QueuePage({
             {sorted.length === 0 && (
               <div className="flex flex-col items-center justify-center py-24 text-neutral-400 dark:text-neutral-600">
                 <svg width="44" height="44" viewBox="0 0 24 24" fill="none" className="mb-3 opacity-40">
-                  <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
                 <p className="text-base font-bold text-neutral-700 dark:text-neutral-300">
                   {scopedTickets.length === 0
@@ -653,11 +705,10 @@ export default function QueuePage({
                 return (
                   <div
                     key={col.status}
-                    className={`w-80 shrink-0 flex flex-col rounded-xl border transition-colors ${
-                      dragOver === col.status
-                        ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 ring-2 ring-blue-500/20'
-                        : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900'
-                    }`}
+                    className={`w-80 shrink-0 flex flex-col rounded-xl border transition-colors ${dragOver === col.status
+                      ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 ring-2 ring-blue-500/20'
+                      : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900'
+                      }`}
                     onDragOver={e => {
                       e.preventDefault();
                       setDragOver(col.status);
@@ -669,11 +720,10 @@ export default function QueuePage({
                     }}
                   >
                     <div className="flex items-center gap-2 px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 shrink-0">
-                      <span className={`w-2.5 h-2.5 rounded-full ${
-                        col.status === 'new' ? 'bg-blue-500' :
+                      <span className={`w-2.5 h-2.5 rounded-full ${col.status === 'new' ? 'bg-blue-500' :
                         col.status === 'in_progress' ? 'bg-amber-500' :
-                        col.status === 'waiting' ? 'bg-purple-500' : 'bg-emerald-500'
-                      }`} />
+                          col.status === 'waiting' ? 'bg-purple-500' : 'bg-emerald-500'
+                        }`} />
                       <span className="text-[13.5px] font-bold text-neutral-800 dark:text-neutral-200">{col.label}</span>
                       <span className="ml-auto text-[12px] bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 px-2 py-0.5 rounded-full font-bold">
                         {colTickets.length}
@@ -687,11 +737,10 @@ export default function QueuePage({
                           draggable
                           onDragStart={e => e.dataTransfer.setData('ticketId', t.id)}
                           onClick={() => onSelectTicket(selectedTicketId === t.id ? null : t.id)}
-                          className={`bg-white dark:bg-neutral-800 rounded-lg border p-3.5 cursor-pointer transition-all shadow-xs ${
-                            selectedTicketId === t.id
-                              ? 'border-blue-500 dark:border-blue-400 ring-2 ring-blue-500/30'
-                              : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-600'
-                          }`}
+                          className={`bg-white dark:bg-neutral-800 rounded-lg border p-3.5 cursor-pointer transition-all shadow-xs ${selectedTicketId === t.id
+                            ? 'border-blue-500 dark:border-blue-400 ring-2 ring-blue-500/30'
+                            : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-600'
+                            }`}
                         >
                           <div className="flex items-start justify-between gap-2 mb-1.5">
                             <span className="font-mono font-bold text-[12px] text-neutral-500">#{t.rawId}</span>

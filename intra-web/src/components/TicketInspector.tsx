@@ -258,8 +258,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   };
 
   const panelClass = expanded
-    ? 'fixed inset-0 z-30 flex flex-col bg-white dark:bg-neutral-950'
-    : 'w-[520px] shrink-0 flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950';
+    ? 'fixed inset-0 z-40 flex flex-col bg-slate-100 dark:bg-neutral-950 animate-in fade-in duration-150'
+    : 'fixed top-0 bottom-0 right-0 z-30 w-[540px] max-w-[90vw] flex flex-col border-l-2 border-neutral-300 dark:border-neutral-700 bg-slate-100/98 dark:bg-neutral-950 shadow-2xl animate-in slide-in-from-right duration-200';
 
   const commentsList = details?.comments || [];
   const attachmentsList = details?.attachments || ticket.attachments || [];
@@ -267,7 +267,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   return (
     <div className={panelClass}>
       {/* Header */}
-      <div className="px-5 pt-4 pb-3.5 border-b border-neutral-200 dark:border-neutral-800 shrink-0">
+      <div className="px-5 pt-4 pb-3.5 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 shrink-0 shadow-2xs">
         <div className="flex items-start justify-between gap-2 mb-2">
           <div className="flex items-center gap-2">
             <button
@@ -322,10 +322,10 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto p-4 space-y-3.5">
         {/* Duplicate Banner (Marks #7: words instead of status ID) */}
         {(ticket.isDuplicate || ticket.ruleType === 'duplicate_task') && (
-          <div className="mx-5 mt-3.5 border border-amber-300 dark:border-amber-700 bg-amber-50/70 dark:bg-amber-950/40 rounded-xl p-3.5 space-y-2">
+          <div className="border border-amber-300 dark:border-amber-700 bg-amber-50/90 dark:bg-amber-950/40 rounded-xl p-3.5 space-y-2 shadow-xs">
             <div className="flex items-center justify-between">
               <span className="text-amber-900 dark:text-amber-200 text-[13px] font-bold">
                 Повторная заявка (Дубликат)
@@ -350,12 +350,12 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         )}
 
         {/* 1-Click Smart Actions Bar (Marks #6, #7: Statuses in words) */}
-        <div className="mx-5 mt-3 flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2">
           {(ticket.isRedirect || ticket.ruleType?.startsWith('redirect')) && (
             <button
               onClick={() => handleQuickAction('redirect')}
               disabled={submitting}
-              className="px-3 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 text-[12px] font-bold rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+              className="px-3 py-1.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-750 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 text-[12px] font-bold rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer shadow-xs"
             >
               Редирект в {ticket.targetServiceName || 'соответствующий сервис'} («Отменена»)
             </button>
@@ -365,7 +365,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <button
               onClick={() => handleQuickAction('hardware')}
               disabled={submitting}
-              className="px-3 py-1.5 bg-purple-100 dark:bg-purple-950/60 hover:bg-purple-200 dark:hover:bg-purple-900/80 text-purple-950 dark:text-purple-200 border border-purple-300 dark:border-purple-800 text-[12px] font-bold rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+              className="px-3 py-1.5 bg-purple-100 dark:bg-purple-950/60 hover:bg-purple-200 dark:hover:bg-purple-900/80 text-purple-950 dark:text-purple-200 border border-purple-300 dark:border-purple-800 text-[12px] font-bold rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer shadow-xs"
             >
               В аппаратный ремонт («Ожидание устройства»)
             </button>
@@ -375,7 +375,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <button
               onClick={() => handleQuickAction('wlan')}
               disabled={submitting}
-              className="px-3 py-1.5 bg-emerald-100 dark:bg-emerald-950/60 hover:bg-emerald-200 dark:hover:bg-emerald-900/80 text-emerald-950 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-800 text-[12px] font-bold rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+              className="px-3 py-1.5 bg-emerald-100 dark:bg-emerald-950/60 hover:bg-emerald-200 dark:hover:bg-emerald-900/80 text-emerald-950 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-800 text-[12px] font-bold rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer shadow-xs"
             >
               Выдать доступ к Wi-Fi («Выполнена»)
             </button>
@@ -384,7 +384,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
         {/* AI / Rule Recommendation Card (Audit M-1: dynamic expenses) */}
         {ticket.aiSuggestion && (
-          <div className="mx-5 mt-3.5 bg-neutral-50 dark:bg-neutral-900/80 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 space-y-1.5">
+          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 space-y-1.5 shadow-xs">
             <div className="flex items-center justify-between">
               <span className="text-[12px] font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-blue-500" />
@@ -405,85 +405,89 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         )}
 
         {/* Requester & PC Card with Network Diag (Marks #4: Larger fonts) */}
-        <div className="px-5 mt-4">
-          <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 space-y-2.5 bg-white dark:bg-neutral-900">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
-                Заявитель и рабочее место
-              </span>
-              {ticket.host && (
-                <button
-                  onClick={runDiag}
-                  disabled={diagStatus.ping === 'checking'}
-                  className="text-[12px] text-blue-600 dark:text-blue-400 hover:underline font-bold cursor-pointer"
-                >
-                  {diagStatus.ping === 'checking' ? 'Проверка...' : 'Диагностика сети'}
-                </button>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 text-[13px]">
-              <div>
-                <span className="text-neutral-400 block text-[11px] font-medium">ФИО заявителя</span>
-                <span className="text-neutral-900 dark:text-neutral-100 font-semibold">{ticket.requesterName}</span>
-              </div>
-              <div>
-                <span className="text-neutral-400 block text-[11px] font-medium">Телефон</span>
-                <span className="text-neutral-900 dark:text-neutral-100 font-mono font-semibold">{ticket.requesterPhone || details?.phone || '—'}</span>
-              </div>
-              <div>
-                <span className="text-neutral-400 block text-[11px] font-medium">Кабинет / Отдел</span>
-                <span className="text-neutral-800 dark:text-neutral-200 font-medium">
-                  {[ticket.room || details?.room, ticket.department || details?.department].filter(Boolean).join(' · ') || '—'}
-                </span>
-              </div>
-              <div>
-                <span className="text-neutral-400 block text-[11px] font-medium">Имя ПК / Хост</span>
-                <div className="flex items-center gap-1.5">
-                  <span className="font-mono font-bold bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 rounded-md text-[12px] text-neutral-900 dark:text-neutral-100">
-                    {ticket.host || details?.pc_name || 'Не указан'}
-                  </span>
-                  {ticket.host && (
-                    <button
-                      onClick={() => copyToClipboard(ticket.host)}
-                      className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer p-0.5"
-                      title="Скопировать имя ПК"
-                    >
-                      <svg width="13" height="13" viewBox="0 0 11 11" fill="none">
-                        <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.3"/>
-                        <path d="M1.5 7.5V1.5h6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                      </svg>
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Network diagnostic results */}
+        <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 space-y-2.5 bg-white dark:bg-neutral-900 shadow-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+              Заявитель и рабочее место
+            </span>
             {ticket.host && (
-              <div className="pt-2.5 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between text-[12px]">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1.5 font-mono">
-                    <span className="text-neutral-400 font-sans">Ping:</span>
-                    <DiagBadge status={diagStatus.ping} />
-                  </div>
-                  <div className="flex items-center gap-1.5 font-mono">
-                    <span className="text-neutral-400 font-sans">SMB:445:</span>
-                    <DiagBadge status={diagStatus.smb} />
-                  </div>
-                  <div className="flex items-center gap-1.5 font-mono">
-                    <span className="text-neutral-400 font-sans">WinRM:</span>
-                    <DiagBadge status={diagStatus.winrm} />
-                  </div>
-                </div>
-              </div>
+              <button
+                onClick={runDiag}
+                disabled={diagStatus.ping === 'checking'}
+                className="text-[12px] text-blue-600 dark:text-blue-400 hover:underline font-bold cursor-pointer"
+              >
+                {diagStatus.ping === 'checking' ? 'Проверка...' : 'Диагностика сети'}
+              </button>
             )}
           </div>
+
+          <div className="grid grid-cols-2 gap-3 text-[13px]">
+            <div>
+              <span className="text-neutral-400 block text-[11px] font-medium">ФИО заявителя</span>
+              <span className="text-neutral-900 dark:text-neutral-100 font-semibold">{ticket.requesterName}</span>
+            </div>
+            <div>
+              <span className="text-neutral-400 block text-[11px] font-medium">Телефон</span>
+              <span className="text-neutral-900 dark:text-neutral-100 font-mono font-semibold">{ticket.requesterPhone || details?.phone || '—'}</span>
+            </div>
+            <div>
+              <span className="text-neutral-400 block text-[11px] font-medium">Кабинет / Отдел</span>
+              <span className="text-neutral-800 dark:text-neutral-200 font-medium">
+                {[ticket.room || details?.room, ticket.department || details?.department].filter(Boolean).join(' · ') || '—'}
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-400 block text-[11px] font-medium">Имя ПК / Хост</span>
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono font-bold bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 rounded-md text-[12px] text-neutral-900 dark:text-neutral-100">
+                  {ticket.host || details?.pc_name || 'Не указан'}
+                </span>
+                {ticket.host && (
+                  <button
+                    onClick={() => copyToClipboard(ticket.host)}
+                    className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer p-0.5"
+                    title="Скопировать имя ПК"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 11 11" fill="none">
+                      <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+                      <path d="M1.5 7.5V1.5h6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                    </svg>
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="col-span-2">
+              <span className="text-neutral-400 block text-[11px] font-medium">Исполнители</span>
+              <span className="text-neutral-800 dark:text-neutral-200 font-medium text-[12.5px]">
+                {ticket.executors || 'Не назначен'}
+              </span>
+            </div>
+          </div>
+
+          {/* Network diagnostic results */}
+          {ticket.host && (
+            <div className="pt-2.5 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between text-[12px]">
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5 font-mono">
+                  <span className="text-neutral-400 font-sans">Ping:</span>
+                  <DiagBadge status={diagStatus.ping} />
+                </div>
+                <div className="flex items-center gap-1.5 font-mono">
+                  <span className="text-neutral-400 font-sans">SMB:445:</span>
+                  <DiagBadge status={diagStatus.smb} />
+                </div>
+                <div className="flex items-center gap-1.5 font-mono">
+                  <span className="text-neutral-400 font-sans">WinRM:</span>
+                  <DiagBadge status={diagStatus.winrm} />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Attachments Section */}
         {attachmentsList.length > 0 && (
-          <div className="mx-5 mt-4 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5">
+          <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 bg-white dark:bg-neutral-900 shadow-xs">
             <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 block mb-2">
               Вложения и скриншоты ({attachmentsList.length})
             </span>
@@ -494,7 +498,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                   href={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="flex items-center justify-between p-2.5 rounded-lg bg-neutral-50 dark:bg-neutral-900 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors text-[13px]"
+                  className="flex items-center justify-between p-2.5 rounded-lg bg-neutral-50 dark:bg-neutral-800/80 hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-colors text-[13px]"
                 >
                   <span className="truncate font-semibold text-blue-600 dark:text-blue-400">{att.name}</span>
                   <span className="text-[11.5px] text-neutral-400 font-mono shrink-0 ml-2">
@@ -507,29 +511,29 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         )}
 
         {/* Description */}
-        <div className="px-5 mt-5">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 block mb-2">
+        <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 shadow-xs space-y-2">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 block">
             Описание проблемы
           </p>
-          <div className="text-[14px] text-neutral-900 dark:text-neutral-100 leading-relaxed whitespace-pre-wrap font-sans bg-neutral-50 dark:bg-neutral-900/60 p-3.5 rounded-xl border border-neutral-200 dark:border-neutral-800">
+          <div className="text-[14px] text-neutral-900 dark:text-neutral-100 leading-relaxed whitespace-pre-wrap font-sans bg-neutral-50/80 dark:bg-neutral-950/60 p-3 rounded-lg border border-neutral-200/70 dark:border-neutral-800/70">
             {(details?.description || ticket.description || 'Без описания').replace(/[#*`]/g, '').trim()}
           </div>
         </div>
 
         {/* Real Comments History (Lifetime) */}
-        <div className="px-5 mt-6 mb-4">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 block mb-3">
+        <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 shadow-xs space-y-3">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 block">
             История переписки {loadingDetails ? '(Загрузка...)' : `(${commentsList.length})`}
           </p>
 
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             {commentsList.map(c => (
               <div
                 key={c.id}
                 className={`p-3.5 rounded-xl border text-[13px] ${
                   c.is_private
                     ? 'border-amber-300 dark:border-amber-800/60 bg-amber-50/60 dark:bg-amber-950/30'
-                    : 'border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900'
+                    : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-neutral-950/50'
                 }`}
               >
                 <div className="flex items-center justify-between mb-1.5">
@@ -548,7 +552,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             ))}
 
             {commentsList.length === 0 && !loadingDetails && (
-              <div className="text-[13px] text-neutral-400 italic py-3">
+              <div className="text-[13px] text-neutral-400 italic py-2">
                 В этой заявке пока нет комментариев
               </div>
             )}
@@ -557,7 +561,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       </div>
 
       {/* Reply and Close Form (Marks #6: Helpdesk Terminology) */}
-      <div className="border-t border-neutral-200 dark:border-neutral-800 p-4 shrink-0 bg-white dark:bg-neutral-950 space-y-3">
+      <div className="border-t border-neutral-200 dark:border-neutral-800 p-4 shrink-0 bg-white dark:bg-neutral-900 shadow-lg space-y-3">
         {/* Top Controls: Mode & Template Selector */}
         <div className="flex items-center justify-between gap-2">
           <div className="flex gap-1.5 bg-neutral-100 dark:bg-neutral-900 p-0.5 rounded-lg border border-neutral-200 dark:border-neutral-800">

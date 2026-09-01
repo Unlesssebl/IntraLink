@@ -56,6 +56,8 @@ export interface Ticket {
   hasAttachments?: boolean;
   attachments?: Array<{ id: number; name: string; size?: number; url?: string; content_type?: string }>;
   expenses?: number;
+  executors?: string;
+  executorIds?: Array<number | string>;
 }
 
 export interface ToastMessage {

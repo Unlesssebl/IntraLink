@@ -60,7 +60,7 @@ export default function Topbar({
 
         {/* Breadcrumbs */}
         <nav className="flex items-center gap-2 text-[14px] min-w-0">
-          <span className="text-neutral-400 dark:text-neutral-500 font-semibold">1-я линия</span>
+          <span className="text-neutral-400 dark:text-neutral-500 font-semibold">IntraLink</span>
           <span className="text-neutral-300 dark:text-neutral-700">/</span>
           
           {selectedService.name ? (
