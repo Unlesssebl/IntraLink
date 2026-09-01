@@ -1,30 +1,18 @@
 import logging
 from typing import Any
 
-try:
-    from .base import BaseRule, RuleDecision
-    from .credentials import CredentialsRule
-    from .file_locks import FileLockRule
-    from .offline_host import OfflineHostRule
-    from .physical_device import PhysicalDeliveryRule
-    from .printers import PrinterRule
-    from .rag_consensus import RAGConsensusRule
-    from .redirect import ServiceRedirectRule
-    from .remote_access import RemoteAccessRule
-    from .standard import StandardInWorkRule
-except (ImportError, ValueError):
-    from rules.base import BaseRule, RuleDecision
-    from rules.credentials import CredentialsRule
-    from rules.file_locks import FileLockRule
-    from rules.offline_host import OfflineHostRule
-    from rules.physical_device import PhysicalDeliveryRule
-    from rules.printers import PrinterRule
-    from rules.rag_consensus import RAGConsensusRule
-    from rules.redirect import ServiceRedirectRule
-    from rules.remote_access import RemoteAccessRule
-    from rules.standard import StandardInWorkRule
+from .base import BaseRule, RuleDecision
+from .credentials import CredentialsRule
+from .file_locks import FileLockRule
+from .offline_host import OfflineHostRule
+from .physical_device import PhysicalDeliveryRule
+from .printers import PrinterRule
+from .rag_consensus import RAGConsensusRule
+from .redirect import ServiceRedirectRule
+from .remote_access import RemoteAccessRule
+from .standard import StandardInWorkRule
 
-logger = logging.getLogger("helpdesk_agent.rules")
+logger = logging.getLogger("core_api.rules")
 
 
 class RuleEngine:

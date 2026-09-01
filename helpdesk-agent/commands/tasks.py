@@ -1,0 +1,304 @@
+"""
+Команды управления жизненным циклом конкретных заявок: task, apply, history, attachment, summary.
+"""
+
+import json
+import os
+import sys
+from typing import Any
+
+from core_api_client import CoreApiClient
+from executors.ad import ActiveDirectoryExecutor
+from llm.ollama_client import OllamaClient
+
+DOWNLOADS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "downloads"
+)
+
+
+def register_parser(subparsers: Any) -> None:
+    # task
+    p_t = subparsers.add_parser(
+        "task", help="Детальная карточка конкретной заявки"
+    )
+    p_t.add_argument("task_id", type=int, help="ID заявки")
+    p_t.add_argument("--json", action="store_true", help="Вывод в JSON")
+
+    # apply
+    p_a = subparsers.add_parser(
+        "apply",
+        help="Применение решения к заявке (или списку ID через запятую)",
+    )
+    p_a.add_argument(
+        "task_id",
+        type=str,
+        help="ID заявки или список ID через запятую (например 139088,138972)",
+    )
+    p_a.add_argument(
+        "--status", type=int, required=True, help="Целевой ID статуса"
+    )
+    p_a.add_argument(
+        "--comment", type=str, default="", help="Текст комментария"
+    )
+    p_a.add_argument(
+        "--expenses",
+        type=int,
+        default=0,
+        help="Списание трудозатрат в минутах",
+    )
+    p_a.add_argument(
+        "--executor",
+        type=str,
+        default="8664,10502",
+        help="ID исполнителей",
+    )
+    p_a.add_argument(
+        "--dry-run", action="store_true", help="Режим симуляции"
+    )
+
+    # history
+    p_h = subparsers.add_parser("history", help="История заявки")
+    p_h.add_argument("task_id", type=int, help="ID заявки")
+    p_h.add_argument("--json", action="store_true", help="Вывод в JSON")
+
+    # attachment
+    p_att = subparsers.add_parser(
+        "attachment", help="Скачивание вложений заявки"
+    )
+    p_att.add_argument("task_id", type=int, help="ID заявки")
+
+    # summary
+    p_s = subparsers.add_parser(
+        "summary",
+        help="AI-суммаризация истории и переписки инцидента через Qwen2.5:1.5B",
+    )
+    p_s.add_argument("task_id", type=int, help="ID заявки")
+    p_s.add_argument("--json", action="store_true", help="Вывод в JSON")
+
+
+async def handle_task(args: Any) -> None:
+    client = CoreApiClient()
+    try:
+        card = await client.get_task_card(args.task_id)
+        if not card or not card.get("task"):
+            print(f"❌ Заявка #{args.task_id} не найдена в IntraService.", file=sys.stderr)
+            sys.exit(1)
+
+        if getattr(args, "json", False):
+            print(json.dumps(card, ensure_ascii=False, indent=2))
+            return
+
+        task = card["task"]
+        history = card.get("history", [])
+        kb_matches = card.get("kb_matches", [])
+        action = card.get("suggested_action") or {}
+
+        meta = task.get("_field_meta") or {}
+        created = (task.get("Created") or "")[:16].replace("T", " ")
+
+        print(f"\n=======================================================")
+        print(f"🎫 КАРТОЧКА ЗАЯВКИ [#{args.task_id}](https://servicedesk.corporate.loc/Task/View/{args.task_id})")
+        print(f"=======================================================")
+        print(f"• Тема:        {task.get('Name')}")
+        print(f"• Раздел:      {task.get('ServiceName')} (ID: {task.get('ServiceId')})")
+        print(f"• Статус:      {task.get('StatusName')} (ID: {task.get('StatusId')})")
+        print(f"• Дата:        {created}")
+        print(f"• Заявитель:   {task.get('Creator')} (Логин: {task.get('CreatorLogin')})")
+        print(f"• Телефон:     {meta.get('phone') or task.get('CreatorPhone') or '—'}")
+        print(f"• Кабинет:     {meta.get('room') or '—'}")
+        print(f"• ПК / Хост:   {meta.get('pc_name') or '—'}")
+        print(f"\n📄 Описание:\n{task.get('Description') or '—'}\n")
+
+        if kb_matches:
+            print("📚 Похожие решения из базы знаний (RAG):")
+            for m in kb_matches:
+                print(f"  • [Кейс #{m['task_id']} | Сходство: {m['similarity_pct']}%] {m['name']}")
+                print(f"    Решение: {m['solution'][:100]}...\n")
+
+        print(f"🎯 Рекомендованное действие:")
+        print(f"  • Шаблон:       {action.get('name')}")
+        print(f"  • Целевой статус: {action.get('status_id')} ({action.get('expenses', 10)} мин)")
+        print(f"  • Комментарий:\n    {action.get('comment')}\n")
+    finally:
+        await client.close()
+
+
+async def handle_apply(args: Any) -> None:
+    client = CoreApiClient()
+    try:
+        raw_ids = str(args.task_id).split(",")
+        task_ids = [int(x.strip()) for x in raw_ids if x.strip().isdigit()]
+        if not task_ids:
+            print(f"❌ Некорректный ID заявки: '{args.task_id}'", file=sys.stderr)
+            sys.exit(1)
+
+        status_id = args.status
+        comment = args.comment
+        expenses = args.expenses
+        executor_ids = getattr(args, "executor", None) or "8664,10502"
+        dry_run = args.dry_run
+
+        print(f"=== Применение решения к заявкам: {', '.join(f'#{tid}' for tid in task_ids)} ===")
+        print(f"Целевой статус: {status_id} | Списание: {expenses} мин | Исполнители: {executor_ids}")
+
+        # Локальное исполнение Active Directory на Windows-станции
+        for task_id in task_ids:
+            task_card = await client.get_task_card(task_id)
+            task_data = task_card.get("task") if task_card else None
+
+            # 1. Автовыдача Wi-Fi в Active Directory
+            if status_id == 29 and any(w in (comment or "").lower() for w in ["wi-fi", "wifi", "вайфай", "вай-фай"]):
+                ad_exec = ActiveDirectoryExecutor()
+                identity = ad_exec.extract_identity_from_task(task_data or {})
+                if identity:
+                    print(f"⚡ [AD Execution] Проверка и выдача доступа в AD для '{identity}'...")
+                    ad_res = await ad_exec.grant_wlan_access_async(identity)
+                    if not ad_res.success:
+                        print(f"❌ СБОЙ AD: {ad_res.message}. Перевод в статус 29 отменен.", file=sys.stderr)
+                        status_id = 27
+                    else:
+                        print(f"✓ AD: {ad_res.message}")
+
+            # 2. Создание пользователя в Active Directory
+            if status_id == 29 and ("{password}" in (comment or "") or "учетная запись успешно создана" in (comment or "").lower()):
+                ad_exec = ActiveDirectoryExecutor()
+                details = ad_exec.extract_user_creation_details_from_task(task_data or {})
+                if details.get("surname") and details.get("name"):
+                    print(f"⚡ [AD Execution] Создание пользователя {details['surname']} {details['name']} в AD...")
+                    create_res = await ad_exec.create_user_account_async(
+                        surname=details["surname"],
+                        name=details["name"],
+                        patronymic=details.get("patronymic"),
+                        company=details.get("company"),
+                        department=details.get("department"),
+                        phone=details.get("phone"),
+                        pc_name=details.get("pc_name"),
+                        title=details.get("title"),
+                        creator_company=details.get("creator_company"),
+                        creator_dept=details.get("creator_department"),
+                    )
+                    if not create_res.success:
+                        print(f"❌ СБОЙ AD: {create_res.error}.", file=sys.stderr)
+                        status_id = 27
+                        comment = f"Не удалось автоматически создать учетную запись в AD: {create_res.error}."
+                    else:
+                        print(f"✓ AD: {create_res.message} (Логин: {create_res.sam_account_name})")
+                        comment = comment.replace("{password}", create_res.password)
+                        comment = comment.replace("{login}", create_res.sam_account_name)
+
+        # Вызов Core API apply
+        ok = await client.apply_decision(
+            task_ids=task_ids,
+            status_id=status_id,
+            comment=comment,
+            expenses=expenses,
+            executor_ids=executor_ids,
+            dry_run=dry_run,
+        )
+
+        if ok:
+            print(f"✓ УСПЕХ: Все изменения по заявкам успешно применены через Core API!")
+        else:
+            print(f"⚠️ Ошибка применения решений через Core API.", file=sys.stderr)
+            sys.exit(1)
+    finally:
+        await client.close()
+
+
+async def handle_history(args: Any) -> None:
+    client = CoreApiClient()
+    try:
+        history = await client.get_task_history(args.task_id)
+        if getattr(args, "json", False):
+            print(json.dumps(history, ensure_ascii=False, indent=2))
+            return
+
+        print(f"=== История заявки #{args.task_id} (Записей: {len(history)}) ===")
+        for h in history:
+            date = h.get("Created") or h.get("EventDate", "")
+            user = h.get("UserName") or h.get("Creator", "Система")
+            desc = h.get("Description") or h.get("EventName", "")
+            print(f"[{date}] {user}: {desc}")
+    finally:
+        await client.close()
+
+
+async def handle_attachment(args: Any) -> None:
+    client = CoreApiClient()
+    try:
+        task = await client.get_task_details(args.task_id)
+        if not task:
+            print(f"Заявка #{args.task_id} не найдена.")
+            return
+
+        attachments = task.get("_attachments_list", [])
+        if not attachments:
+            print(f"В заявке #{args.task_id} нет прикрепленных файлов.")
+            return
+
+        print(f"=== Вложения заявки #{args.task_id} ({len(attachments)}) ===")
+        for idx, att in enumerate(attachments, 1):
+            name = att.get("FileName", f"file_{idx}")
+            print(f"• [{idx}] Вложение: {name}")
+    finally:
+        await client.close()
+
+
+async def handle_summary(args: Any) -> None:
+    client = CoreApiClient()
+    ollama = OllamaClient()
+    try:
+        task_id = args.task_id
+        task_card = await client.get_task_card(task_id)
+        if not task_card or not task_card.get("task"):
+            print(f"❌ Заявка #{task_id} не найдена.", file=sys.stderr)
+            sys.exit(1)
+
+        task = task_card["task"]
+        history = task_card.get("history", [])
+
+        comments = []
+        for item in history:
+            txt = (item.get("Comment") or item.get("Description") or "").strip()
+            if txt:
+                comments.append({
+                    "UserName": item.get("UserName") or item.get("Creator") or "Пользователь",
+                    "Created": item.get("Created") or "",
+                    "Text": txt,
+                })
+
+        if not await ollama.is_available():
+            print("⚠️ Ollama недоступна на localhost:11434.", file=sys.stderr)
+            return
+
+        summary = await ollama.summarize_task_history(
+            task_id=task_id,
+            task_name=task.get("Name") or "",
+            task_desc=task.get("Description") or "",
+            comments=comments,
+        )
+
+        if getattr(args, "json", False):
+            print(json.dumps(summary.model_dump() if summary else {}, ensure_ascii=False, indent=2))
+            return
+
+        if summary:
+            print(f"\n### 📋 AI-Сводка по заявке #{task_id} ({ollama.model})\n")
+            print(f"• **Суть инцидента:** {summary.core_problem}")
+            print(f"• **Текущий статус:** {summary.current_status}")
+            print(f"• **Рекомендованный шаг:** {summary.recommended_next_step}\n")
+    finally:
+        await client.close()
+
+
+async def handle(args: Any) -> None:
+    if args.command == "task":
+        await handle_task(args)
+    elif args.command == "apply":
+        await handle_apply(args)
+    elif args.command == "history":
+        await handle_history(args)
+    elif args.command == "attachment":
+        await handle_attachment(args)
+    elif args.command == "summary":
+        await handle_summary(args)

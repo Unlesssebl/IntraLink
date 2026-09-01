@@ -1,33 +1,28 @@
 # Архитектура проекта IntraLink (intraservice-tg-bot)
 
-Данный документ описывает архитектуру системы, её ключевые компоненты, потоки данных и принципы взаимодействия между сервисами.
+Данный документ описывает целевую архитектуру системы, её ключевые компоненты, потоки данных и принципы взаимодействия между сервисами.
 
-> **Главная цель проекта** — создание единой, надежной платформы автоматизации выполнения заявок в IntraService. Система сочетает детерминированный движок правил (Rule Engine), локальный семантический RAG-поиск (FastEmbed + pgvector) и модули прямого исполнения задач в инфраструктуре (Active Directory, WinRM, SMB).
+> **Главная цель проекта** — создание единой, надежной платформы автоматизации обработки и выполнения заявок в IntraService. Система сочетает детерминированный движок правил (Rule Engine), централизованный семантический RAG-поиск (FastEmbed/Gemini + pgvector) и модули прямого исполнения задач в инфраструктуре Windows (Active Directory, WinRM, SMB).
 
 ---
 
 ## 🏗️ 1. Общий обзор системы
 
-Проект построен по **модульной архитектуре с единым ядром логики и исполнения**:
+Проект построен по **модульной сервисной архитектуре с единым источником правды (Single Source of Truth) в Core API**:
 
 | Сервис / Модуль | Технологии | Роль |
 |---|---|---|
-| **Core API** | FastAPI, SQLAlchemy 2.0, APScheduler, Redis | Шлюз к IntraService API, управление БД, фоновый опрос очереди, хостинг встроенной веб-панели управления (`intra-web`) |
-| **Telegram Bot** | aiogram 3.x, aiohttp | Мобильный интерфейс оператора и пользователей, доставка Push-уведомлений |
-| **Intra Web (Admin UI)** | React 19, Vite, Tailwind CSS v4 | Встроенная веб-панель мониторинга заявок, очередей и управления доступом |
-| **Helpdesk Agent & Execution Hub** | Python, FastEmbed, pgvector, PowerShell | Интерактивный CLI-кокпит оператора в среде Antigravity (AGY), детерминированный триаж, RAG и исполнение команд (AD WLAN, WinRM принтеры) |
-
-Каналы связи:
-- **HTTP REST** с заголовком `X-Bot-Api-Key` — для запросов от Telegram-бота к Core API.
-- **Redis Pub/Sub** — для асинхронной доставки событий мониторинга от Core API к Telegram-боту.
+| **Core API Gateway** | FastAPI, SQLAlchemy 2.0 (async), APScheduler, Redis, pgvector | Единый шлюз к IntraService API, хранилище состояния, движок правил (Rule Engine), централизованный RAG сервис, фоновый опрос очереди и хостинг веб-панели управления (`intra-web`) |
+| **Telegram Bot** | aiogram 3.x, aiohttp | Мобильный интерфейс оператора и заявителей, доставка Push-уведомлений через Redis Streams |
+| **Intra Web (Admin UI)** | React 19, Vite, Tailwind CSS v4 | Встроенная веб-панель мониторинга заявок, очередей и управления доступом (`/admin`) |
+| **Helpdesk Agent (Execution Node)** | Python, aiohttp, PowerShell, WinRM | Интерактивный CLI-кокпит оператора в среде Antigravity (AGY). Делегирует логику данных в Core API, исполняя физические операции в Windows-домене (AD WLAN, создание УЗ, диагностика хостов) |
 
 ---
 
-### 1.1. Схема компонентов и слоёв системы
+### 1.1. Схема взаимодействия компонентов
 
 ```mermaid
 flowchart TB
-    %% Определение стилей
     classDef userStyle fill:#2d3748,stroke:#4a5568,stroke-width:2px,color:#fff;
     classDef telegramStyle fill:#3182ce,stroke:#2b6cb0,stroke-width:2px,color:#fff;
     classDef handlerStyle fill:#dd6b20,stroke:#c05621,stroke-width:2px,color:#fff;
@@ -38,96 +33,93 @@ flowchart TB
 
     subgraph Clients ["Пользовательские интерфейсы"]
         User(["👤 Пользователь в Telegram"]):::userStyle
-        Admin(["👨‍💻 Инженер в Web / AGY IDE"]):::userStyle
+        Admin_Web(["👨‍💻 Оператор в Web UI"]):::userStyle
+        Admin_CLI(["⚡ Инженер в Antigravity CLI"]):::userStyle
     end
 
     subgraph Interface_Layer ["Слой интерфейсов"]
         TG_API["💬 Telegram Bot API"]:::telegramStyle
-        Intra_Web["🖥️ Intra Web (SPA /admin)"]:::serviceStyle
+        Intra_Web["🖥️ Intra Web SPA (/admin)"]:::serviceStyle
+        HD_CLI["🚀 helpdesk_tool.py (CLI)"]:::serviceStyle
     end
 
-    subgraph Bot_Service ["Telegram Bot Service (Python / aiogram)"]
-        direction TB
-        B_Main["🚀 main.py"]:::serviceStyle
-        B_Handlers["handlers/<br/>(auth, tickets, start)"]:::handlerStyle
-        API_Client["api_client.py<br/>(HTTP Core API клиент)"]:::serviceStyle
-        Redis_Listener["redis_listener.py<br/>(Redis Pub/Sub Subscriber)"]:::serviceStyle
+    subgraph Bot_Service ["Telegram Bot Service"]
+        B_Main["aiogram Bot"]:::serviceStyle
+        B_Client["api_client.py"]:::serviceStyle
     end
 
-    subgraph Broker_Layer ["Шина сообщений"]
-        Redis_Broker[("Redis Pub/Sub & Cache")]:::redisStyle
-    end
-
-    subgraph Core_API_Service ["Core API Service (Python / FastAPI)"]
-        direction TB
-        API_Main["🚀 main.py (Port 8000)"]:::serviceStyle
+    subgraph Helpdesk_Agent_Node ["Helpdesk Agent & Execution Node (Windows)"]
+        HD_Client["core_api_client.py<br/>(HTTP REST)"]:::serviceStyle
+        HD_Diag["diagnostics.py<br/>(Ping, DNS, SMB:445)"]:::serviceStyle
         
-        subgraph API_Routers ["Роутеры API (Endpoints)"]
-            R_Auth["auth.py<br/>(/api/v1/auth)"]:::handlerStyle
-            R_Tasks["tasks.py<br/>(/api/v1/tasks)"]:::handlerStyle
-            R_Admin["admin.py<br/>(/admin/api, /admin)"]:::handlerStyle
-        end
-
-        subgraph API_Services ["Службы & База данных"]
-            IS_Client["intraservice.py<br/>(aiohttp клиент)"]:::serviceStyle
-            Worker["worker.py<br/>(APScheduler + Redis Publisher)"]:::serviceStyle
-            DB_Module["db.py<br/>(SQLAlchemy async)"]:::dbStyle
+        subgraph Executors ["⚡ executors/ (Локальное исполнение)"]
+            EX_AD["ad.py<br/>(WLAN-WORKNET / New User)"]:::serviceStyle
+            EX_PRN["printers.py<br/>(WinRM / SMB Driver Store)"]:::serviceStyle
         end
     end
 
-    subgraph Helpdesk_Agent_Hub ["Helpdesk Agent & Execution Hub (AGY / CLI)"]
+    subgraph Core_API_Service ["Core API Service (FastAPI / Single Source of Truth)"]
         direction TB
-        HD_Tool["🚀 helpdesk_tool.py"]:::serviceStyle
-        HD_Rules["rules/<br/>(Credentials, Redirect, Duplicates)"]:::handlerStyle
-        HD_RAG["kb.py<br/>(FastEmbed + pgvector)"]:::dbStyle
-        HD_Diag["diagnostics.py<br/>(Ping, DNS, SMB:445, WinRM)"]:::serviceStyle
+        API_Main["FastAPI Router Hub"]:::serviceStyle
         
-        subgraph Executors ["⚡ executors/ (Модули исполнения)"]
-            EX_AD["ad.py<br/>(WLAN-WORKNET / AD Groups)"]:::serviceStyle
-            EX_PRN["printers.py<br/>(WinRM / SMB / WMI Bootstrap)"]:::serviceStyle
+        subgraph Routers ["API Роутеры (/api/v1/*)"]
+            R_Triage["triage.py<br/>(Batch, Apply, Duplicates, RAG)"]:::handlerStyle
+            R_Tasks["tasks.py & service_tasks.py"]:::handlerStyle
+            R_Auth["auth.py & admin.py"]:::handlerStyle
+        end
+
+        subgraph Core_Engines ["Централизованные сервисы"]
+            ENG_Rules["RuleEngine & Templates<br/>(Движок правил триажа)"]:::serviceStyle
+            ENG_RAG["rag.py<br/>(pgvector семантический поиск)"]:::dbStyle
+            IS_Client["intraservice.py<br/>(Circuit Breaker + Normalizer)"]:::serviceStyle
+            Worker["worker.py<br/>(APScheduler + Redis Streams)"]:::serviceStyle
         end
     end
 
-    subgraph DB_Layer ["Слой данных"]
-        Postgres_DB[("PostgreSQL 16 (App Data & pgvector RAG)")]:::dbStyle
+    subgraph Storage_Layer ["Слой данных и сообщений"]
+        Postgres_DB[("PostgreSQL 16 (Data + pgvector RAG)")]:::dbStyle
+        Redis_Broker[("Redis Streams & Cache")]:::redisStyle
     end
 
-    subgraph External_Systems ["Инфраструктура и внешние системы"]
+    subgraph External_Infrastructure ["Корпоративная инфраструктура"]
         IS_API["🌐 IntraService REST API"]:::externalStyle
         AD_Domain["🏢 Active Directory / WinRM (corporate.loc)"]:::externalStyle
     end
 
-    %% Связи
-    User <-->|Взаимодействие| TG_API
-    TG_API <-->|Polling| B_Main
-    B_Main --> B_Handlers
-    B_Handlers --> API_Client
-    API_Client <-->|REST HTTP| API_Main
-    Redis_Broker -->|task_events| Redis_Listener
+    %% Связи клиентов
+    User <--> TG_API
+    TG_API <--> B_Main
+    B_Main --> B_Client
+    B_Client <-->|HTTP REST (X-Bot-Api-Key)| API_Main
 
-    Admin <-->|Браузер (:8000/admin)| Intra_Web
-    Intra_Web <--> API_Main
-    Admin <-->|Команды /triage, /apply, /wlan| HD_Tool
+    Admin_Web <--> Intra_Web
+    Intra_Web <-->|REST API / JWT| API_Main
 
-    API_Main --> API_Routers
-    API_Routers --> IS_Client & DB_Module
-    Worker --> IS_Client & DB_Module & Redis_Broker
+    Admin_CLI <--> HD_CLI
+    HD_CLI --> HD_Client & HD_Diag & Executors
+    HD_Client <-->|HTTP REST (X-Bot-Api-Key)| API_Main
+    Executors <-->|PowerShell / WinRM / AD| AD_Domain
 
-    HD_Tool --> HD_Rules & HD_RAG & HD_Diag & Executors
-    HD_RAG <--> Postgres_DB
-    Executors <-->|AD / WinRM| AD_Domain
+    %% Связи внутри Core API
+    API_Main --> Routers
+    Routers --> ENG_Rules & ENG_RAG & IS_Client
+    Worker --> IS_Client & Redis_Broker
 
-    DB_Module <--> Postgres_DB
+    %% Связи с хранилищем и внешними системами
+    ENG_RAG <--> Postgres_DB
     IS_Client <--> IS_API
+    Redis_Broker -->|Events| B_Main
 ```
 
 ---
 
-## 🔒 2. Принципы надежности и исполнения
+## 🔒 2. Ключевые архитектурные принципы
 
-1. **Защита от слепого закрытия (Verified Execution Only):**
-   Статус `29 Выполнена` устанавливается **исключительно** после фактического успешного выполнения действия в инфраструктуре (добавление в группу AD `WLAN-WORKNET`, удаленная установка принтера по WinRM).
-2. **Двухэтапный жизненный цикл финализации (`apply` / `wlan`):**
+1. **Единый источник правды (No Standalone Fragmentation):**
+   Все правила триажа, шаблоны ответов заявителям, семантический поиск в базе знаний RAG и нормализация кастомных полей сосредоточены в `core-api`. Агент Helpdesk и веб-интерфейс используют единый backend REST API.
+2. **Защита от слепого закрытия (Verified Execution Only):**
+   Статус `29 Выполнена` устанавливается **исключительно** после фактического успешного выполнения действия в инфраструктуре (добавление в группу AD `WLAN-WORKNET`, создание пользователя в AD, установка принтера по WinRM).
+3. **Двухэтапный жизненный цикл финализации (`apply` / `wlan` / `create-user`):**
    Перевод в финальные статусы `29 Выполнена` или `30 Отменена` обязательно выполняется через статус `27 В работе` с фиксацией двух исполнителей (`Беликов Ален` - ID `8664` и `Беликов Ален_assitant` - ID `10502`) и списанием трудозатрат.
-3. **Single-DC Affinity для Active Directory:**
-   Операции записи (`Add-ADGroupMember`) и контрольной проверки (`MemberOf`) привязываются к одному контроллеру домена для исключения сбоев из-за задержек межсайтовой репликации.
+4. **Асинхронность и отказоустойчивость:**
+   Все системные вызовы PowerShell в CLI обернуты в `asyncio.to_thread`. Вызовы к внешнему IntraService защищены Circuit Breaker с экспоненциальным backoff.

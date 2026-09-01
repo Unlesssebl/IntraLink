@@ -12,9 +12,19 @@
 """
 
 import pytest
+import time
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
+
+
+@pytest.fixture(autouse=True)
+def reset_circuit():
+    """Сбрасывает состояние Circuit Breaker перед каждым тестом."""
+    from app.services.intraservice import circuit_breaker
+    circuit_breaker.reset()
+    yield
+    circuit_breaker.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -733,3 +743,172 @@ class TestAddTaskExpenses:
             result = await is_module.add_task_expenses("auth", task_id=42, minutes=30)
 
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# БЛОК 11: Circuit Breaker & Exponential Backoff
+# ---------------------------------------------------------------------------
+
+
+class TestCircuitBreaker:
+    """Тесты работы механизма Circuit Breaker и экспоненциального backoff."""
+
+    def test_initial_state_is_closed(self):
+        from app.services.intraservice import CircuitBreaker, CircuitState
+
+        cb = CircuitBreaker(failure_threshold=3, base_recovery_timeout=5.0)
+        assert cb.state == CircuitState.CLOSED
+        assert cb.can_execute() is True
+        assert cb.failure_count == 0
+
+    def test_success_resets_failures(self):
+        from app.services.intraservice import CircuitBreaker, CircuitState
+
+        cb = CircuitBreaker(failure_threshold=3)
+        cb.record_failure("Err 1")
+        cb.record_failure("Err 2")
+        assert cb.failure_count == 2
+
+        cb.record_success()
+        assert cb.failure_count == 0
+        assert cb.state == CircuitState.CLOSED
+
+    def test_trips_to_open_on_threshold(self):
+        from app.services.intraservice import CircuitBreaker, CircuitState
+
+        cb = CircuitBreaker(failure_threshold=3, base_recovery_timeout=10.0)
+        cb.record_failure("Err 1")
+        cb.record_failure("Err 2")
+        assert cb.state == CircuitState.CLOSED
+        assert cb.can_execute() is True
+
+        cb.record_failure("Err 3")
+        assert cb.state == CircuitState.OPEN
+        assert cb.can_execute() is False
+        assert cb.consecutive_trips == 1
+
+    def test_exponential_backoff_cooldown_calculation(self):
+        from app.services.intraservice import CircuitBreaker
+
+        cb = CircuitBreaker(
+            failure_threshold=2,
+            base_recovery_timeout=10.0,
+            max_recovery_timeout=100.0,
+            backoff_factor=2.0,
+        )
+        assert cb.current_cooldown == 10.0
+
+        # Срабатывание 1 (trip #1)
+        cb.record_failure()
+        cb.record_failure()
+        assert cb.consecutive_trips == 1
+        assert cb.current_cooldown == 10.0
+
+        # Переход в HALF_OPEN и повторный сбой (trip #2)
+        cb.state = cb.state.HALF_OPEN
+        cb.record_failure()
+        assert cb.consecutive_trips == 2
+        assert cb.current_cooldown == 20.0
+
+        # trip #3
+        cb.state = cb.state.HALF_OPEN
+        cb.record_failure()
+        assert cb.consecutive_trips == 3
+        assert cb.current_cooldown == 40.0
+
+        # trip #4
+        cb.state = cb.state.HALF_OPEN
+        cb.record_failure()
+        assert cb.consecutive_trips == 4
+        assert cb.current_cooldown == 80.0
+
+        # trip #5: ограничение max_recovery_timeout (100.0)
+        cb.state = cb.state.HALF_OPEN
+        cb.record_failure()
+        assert cb.consecutive_trips == 5
+        assert cb.current_cooldown == 100.0
+
+    def test_half_open_transition_after_timeout(self):
+        from app.services.intraservice import CircuitBreaker, CircuitState
+
+        cb = CircuitBreaker(failure_threshold=2, base_recovery_timeout=5.0)
+        cb.record_failure()
+        cb.record_failure()
+        assert cb.state == CircuitState.OPEN
+        assert cb.can_execute() is False
+
+        # Симулируем истечение времени
+        cb.last_state_change = time.monotonic() - 6.0
+        assert cb.can_execute() is True
+        assert cb.state == CircuitState.HALF_OPEN
+
+    def test_half_open_success_recovers_to_closed(self):
+        from app.services.intraservice import CircuitBreaker, CircuitState
+
+        cb = CircuitBreaker(failure_threshold=2, base_recovery_timeout=5.0)
+        cb.record_failure()
+        cb.record_failure()
+        cb.state = CircuitState.HALF_OPEN
+
+        cb.record_success()
+        assert cb.state == CircuitState.CLOSED
+        assert cb.failure_count == 0
+        assert cb.consecutive_trips == 0
+
+    @pytest.mark.asyncio
+    async def test_make_request_short_circuits_when_open(self):
+        import app.services.intraservice as is_module
+
+        is_module.circuit_breaker.state = is_module.CircuitState.OPEN
+        is_module.circuit_breaker.last_state_change = time.monotonic()
+
+        mock_session = MagicMock()
+        is_module._session = mock_session
+
+        res = await is_module._make_request("task")
+        assert res is None
+        # HTTP запрос не должен вызываться вообще
+        mock_session.request.assert_not_called()
+        is_module._session = None
+
+    @pytest.mark.asyncio
+    async def test_5xx_records_failure_and_trips_breaker(self):
+        import app.services.intraservice as is_module
+        from unittest.mock import patch
+
+        is_module.circuit_breaker.failure_threshold = 2
+
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.request.return_value = _make_mock_response(503, text_data="Service Unavailable")
+        is_module._session = mock_session
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            res1 = await is_module._make_request("task", max_retries=1)
+            assert res1 is None
+            assert is_module.circuit_breaker.failure_count == 1
+            assert is_module.circuit_breaker.state == is_module.CircuitState.CLOSED
+
+            res2 = await is_module._make_request("task", max_retries=1)
+            assert res2 is None
+            assert is_module.circuit_breaker.failure_count == 2
+            assert is_module.circuit_breaker.state == is_module.CircuitState.OPEN
+
+        is_module._session = None
+
+    @pytest.mark.asyncio
+    async def test_4xx_does_not_trip_circuit_breaker(self):
+        import app.services.intraservice as is_module
+
+        is_module.circuit_breaker.failure_threshold = 2
+
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.request.return_value = _make_mock_response(404, text_data="Not Found")
+        is_module._session = mock_session
+
+        res = await is_module._make_request("task/99999", max_retries=1)
+        assert res is None
+        assert is_module.circuit_breaker.failure_count == 0
+        assert is_module.circuit_breaker.state == is_module.CircuitState.CLOSED
+        is_module._session = None

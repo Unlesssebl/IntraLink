@@ -2,11 +2,10 @@ import re
 from typing import Any
 
 from .base import BaseRule, RuleDecision
-
-try:
-    from executors.ad import ActiveDirectoryExecutor, generate_sam_account_name
-except (ImportError, ValueError):
-    from helpdesk_agent.executors.ad import ActiveDirectoryExecutor, generate_sam_account_name
+from app.utils.ad_utils import (
+    generate_sam_account_name,
+    extract_user_creation_details_from_task,
+)
 
 
 class CredentialsRule(BaseRule):
@@ -65,7 +64,7 @@ class CredentialsRule(BaseRule):
             or (task.get("ServiceParentId") == 42 and service_id != 63)
         )
         if is_user_creation and not any(w in user_text for w in ["почт", "сброс", "заблокирован"]):
-            details = ActiveDirectoryExecutor.extract_user_creation_details_from_task(task)
+            details = extract_user_creation_details_from_task(task)
             surname = details.get("surname")
             emp_name = details.get("name")
             patronymic = details.get("patronymic")

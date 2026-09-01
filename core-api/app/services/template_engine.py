@@ -26,9 +26,9 @@ except (ImportError, ValueError):
     )
     from rules.redirect import ServiceRedirectRule
 
-logger = logging.getLogger("helpdesk_agent.template_engine")
+logger = logging.getLogger("core_api.template_engine")
 
-TEMPLATES_FILE = os.path.join(os.path.dirname(__file__), "templates.json")
+TEMPLATES_FILE = os.path.join(os.path.dirname(__file__), "rules", "templates.json")
 
 # Глобальный инстанс RuleEngine
 _default_engine = RuleEngine()
@@ -43,6 +43,14 @@ def load_templates() -> dict[str, dict[str, Any]]:
                 return json.load(f)
         except Exception as e:
             logger.error("Ошибка загрузки templates.json: %s", e)
+    # fallback
+    fallback_file = os.path.join(os.path.dirname(__file__), "templates.json")
+    if os.path.exists(fallback_file):
+        try:
+            with open(fallback_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error("Ошибка загрузки fallback templates.json: %s", e)
     return {}
 
 

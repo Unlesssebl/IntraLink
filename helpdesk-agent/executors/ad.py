@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -182,9 +183,9 @@ class ActiveDirectoryExecutor:
         self.target_wlan_group = target_wlan_group
 
     @staticmethod
-    def _run_ps_command(script: str, timeout: int = 25) -> dict[str, Any]:
+    def _run_ps_command_sync(script: str, timeout: int = 25) -> dict[str, Any]:
         """
-        Выполняет PowerShell-скрипт и возвращает распарсенный JSON результат.
+        Синхронно выполняет PowerShell-скрипт и возвращает распарсенный JSON результат.
         """
         cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
         try:
@@ -219,6 +220,21 @@ class ActiveDirectoryExecutor:
             return {"error": f"Ошибка парсинга JSON ответа PowerShell: {e}", "raw": res.stdout}
         except Exception as e:
             return {"error": f"Непредвиденная ошибка выполнения PowerShell: {e}"}
+
+    @classmethod
+    def _run_ps_command(cls, script: str, timeout: int = 25) -> dict[str, Any]:
+        """Синхронный метод для обратной совместимости."""
+        return cls._run_ps_command_sync(script, timeout)
+
+    @classmethod
+    async def _run_ps_command_async(
+        cls, script: str, timeout: int = 25
+    ) -> dict[str, Any]:
+        """
+        Асинхронная неблокирующая обертка выполнения PowerShell через asyncio.to_thread.
+        Предотвращает микрозадержки event loop при масштабировании.
+        """
+        return await asyncio.to_thread(cls._run_ps_command_sync, script, timeout)
 
     def search_user_profiles(self, identity: str, company: Optional[str] = None) -> list[ADUserProfile]:
         """
@@ -849,5 +865,63 @@ class ActiveDirectoryExecutor:
             display_name=display_name,
             password=gen_password,
             error=err_msg,
+        )
+
+    async def search_user_profiles_async(
+        self, identity: str, company: Optional[str] = None
+    ) -> list[ADUserProfile]:
+        """Асинхронный поиск пользователей в AD без блокировки event loop."""
+        return await asyncio.to_thread(self.search_user_profiles, identity, company)
+
+    async def get_user_status_async(
+        self, identity: str, company: Optional[str] = None
+    ) -> ADUserStatus:
+        """Асинхронная проверка статуса пользователя в AD."""
+        return await asyncio.to_thread(self.get_user_status, identity, company)
+
+    async def unlock_user_account_async(
+        self, identity: str
+    ) -> tuple[bool, str, Optional[ADUserProfile]]:
+        """Асинхронная разблокировка учетной записи в AD."""
+        return await asyncio.to_thread(self.unlock_user_account, identity)
+
+    async def add_user_to_group_async(
+        self, identity: str, group_name: str
+    ) -> ADExecutionResult:
+        """Асинхронное добавление пользователя в группу AD."""
+        return await asyncio.to_thread(self.add_user_to_group, identity, group_name)
+
+    async def grant_wlan_access_async(self, identity: str) -> ADExecutionResult:
+        """Асинхронная выдача доступа Wi-Fi (WLAN-WORKNET) в AD."""
+        return await asyncio.to_thread(self.grant_wlan_access, identity)
+
+    async def create_user_account_async(
+        self,
+        surname: str,
+        name: str,
+        patronymic: Optional[str] = None,
+        company: Optional[str] = None,
+        department: Optional[str] = None,
+        phone: Optional[str] = None,
+        pc_name: Optional[str] = None,
+        title: Optional[str] = None,
+        password: Optional[str] = None,
+        creator_company: Optional[str] = None,
+        creator_dept: Optional[str] = None,
+    ) -> ADUserCreationResult:
+        """Асинхронное создание учетной записи в AD."""
+        return await asyncio.to_thread(
+            self.create_user_account,
+            surname,
+            name,
+            patronymic,
+            company,
+            department,
+            phone,
+            pc_name,
+            title,
+            password,
+            creator_company,
+            creator_dept,
         )
 

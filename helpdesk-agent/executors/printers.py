@@ -47,9 +47,9 @@ class PrinterExecutor:
         return self._kb_data
 
     @staticmethod
-    def run_remote_powershell(target_pc: str, script: str, timeout: int = 40) -> dict[str, Any]:
+    def run_remote_powershell_sync(target_pc: str, script: str, timeout: int = 40) -> dict[str, Any]:
         """
-        Выполняет PowerShell скрипт на удаленной машине через WinRM / WMI.
+        Синхронно выполняет PowerShell скрипт на удаленной машине через WinRM / WMI.
         """
         ps_wrapper = f"""
         $ErrorActionPreference = 'Stop'
@@ -64,7 +64,14 @@ class PrinterExecutor:
         """
         cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_wrapper]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
             if res.returncode != 0:
                 return {"success": False, "error": res.stderr.strip()}
             out = res.stdout.strip()
@@ -77,15 +84,35 @@ class PrinterExecutor:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def check_printer_installed(self, target_pc: str, printer_name: str) -> bool:
+    @classmethod
+    async def run_remote_powershell(
+        cls, target_pc: str, script: str, timeout: int = 40
+    ) -> dict[str, Any]:
         """
-        Проверяет, установлен ли принтер на удаленной рабочей станции.
+        Асинхронная неблокирующая обертка над PowerShell через asyncio.to_thread.
+        Предотвращает микрозадержки event loop при масштабировании.
+        """
+        return await asyncio.to_thread(
+            cls.run_remote_powershell_sync, target_pc, script, timeout
+        )
+
+    def check_printer_installed_sync(self, target_pc: str, printer_name: str) -> bool:
+        """
+        Синхронная проверка установки принтера на удаленной рабочей станции.
         """
         script = f"Get-Printer -Name '*{printer_name}*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name"
-        res = self.run_remote_powershell(target_pc, script)
+        res = self.run_remote_powershell_sync(target_pc, script)
         return bool(res.get("success") and res.get("data"))
 
-    def install_network_printer(
+    async def check_printer_installed(self, target_pc: str, printer_name: str) -> bool:
+        """
+        Асинхронная проверка установки принтера на удаленной рабочей станции.
+        """
+        script = f"Get-Printer -Name '*{printer_name}*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name"
+        res = await self.run_remote_powershell(target_pc, script)
+        return bool(res.get("success") and res.get("data"))
+
+    def install_network_printer_sync(
         self,
         target_pc: str,
         printer_ip: str,
@@ -93,7 +120,7 @@ class PrinterExecutor:
         printer_name: str,
     ) -> PrinterExecutionResult:
         """
-        Удаленная установка сетевого принтера (создание TCP/IP порта + добавление очереди).
+        Синхронная удаленная установка сетевого принтера (создание TCP/IP порта + добавление очереди).
         """
         port_name = f"IP_{printer_ip}"
         script = f"""
@@ -107,7 +134,7 @@ class PrinterExecutor:
         }}
         Get-Printer -Name '{printer_name}' | Select-Object Name, PortName, DriverName
         """
-        res = self.run_remote_powershell(target_pc, script)
+        res = self.run_remote_powershell_sync(target_pc, script)
         if res.get("success"):
             return PrinterExecutionResult(
                 success=True,
@@ -121,4 +148,22 @@ class PrinterExecutor:
             printer_name=printer_name,
             message=f"Ошибка установки принтера: {res.get('error')}",
             error=res.get("error"),
+        )
+
+    async def install_network_printer(
+        self,
+        target_pc: str,
+        printer_ip: str,
+        driver_name: str,
+        printer_name: str,
+    ) -> PrinterExecutionResult:
+        """
+        Асинхронная неблокирующая установка сетевого принтера через asyncio.to_thread.
+        """
+        return await asyncio.to_thread(
+            self.install_network_printer_sync,
+            target_pc,
+            printer_ip,
+            driver_name,
+            printer_name,
         )
