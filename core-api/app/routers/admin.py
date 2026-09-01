@@ -1247,6 +1247,40 @@ async def get_task_details(task_id: int):
     }
 
 
+@router.get(
+    "/admin/api/tasks/{task_id}/attachments/{file_id}",
+    dependencies=[Depends(verify_admin_jwt)],
+)
+async def download_task_attachment(task_id: int, file_id: int):
+    """
+    Скачивает бинарный файл вложения задачи из IntraService.
+    """
+    from app.services.crypto import decrypt_token
+    from app.services.intraservice import download_attachment_file
+
+    r = get_redis_client()
+    auth_encrypted = await r.get("worker:service_auth_b64")
+    if not auth_encrypted:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервисный аккаунт не настроен",
+        )
+
+    auth_b64 = decrypt_token(auth_encrypted)
+    content = await download_attachment_file(auth_b64, task_id, file_id)
+    if content is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Вложение #{file_id} не найдено или недоступно",
+        )
+
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="attachment_{file_id}"'},
+    )
+
+
 @router.post("/admin/api/tasks/{task_id}/apply", dependencies=[Depends(verify_admin_jwt)])
 async def apply_task_action(task_id: int, payload: ApplyActionRequest):
     """

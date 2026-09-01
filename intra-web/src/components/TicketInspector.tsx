@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { Ticket, Status, Priority } from '../data/mock';
-import { statusConfig, priorityConfig, operators, categoryLabel } from '../data/mock';
-import { fetchDiagnostics, applyTask, enqueueExecution, searchRAG } from '../lib/tasks';
-import type { RAGMatchItem } from '../lib/types';
+import { statusConfig, priorityConfig, categoryLabel } from '../data/mock';
+import { fetchDiagnostics, applyTask, fetchTaskDetails, fetchTemplatesCatalog } from '../lib/tasks';
+import type { TaskDetails } from '../lib/types';
 
 interface Props {
   ticket: Ticket;
@@ -11,8 +11,10 @@ interface Props {
   onToast: (t: { type: 'success' | 'error' | 'warning' | 'info'; message: string }) => void;
 }
 
-function formatTime(d: Date) {
-  return d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+function formatTime(d: Date | string) {
+  const dateObj = typeof d === 'string' ? new Date(d) : d;
+  if (isNaN(dateObj.getTime())) return '';
+  return dateObj.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
 function getSlaClass(deadline: Date) {
@@ -48,25 +50,54 @@ function DiagBadge({ status }: { status: DiagStatus }) {
 }
 
 export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToast }: Props) {
+  const [details, setDetails] = useState<TaskDetails | null>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
   const [replyMode, setReplyMode] = useState<'reply' | 'internal'>('reply');
   const [replyText, setReplyText] = useState('');
+  const [expenses, setExpenses] = useState<number>(10);
   const [diagStatus, setDiagStatus] = useState<Record<string, DiagStatus>>({
     ping: 'idle', smb: 'idle', winrm: 'idle',
   });
-  const [statusOpen, setStatusOpen] = useState(false);
-  const [priorityOpen, setPriorityOpen] = useState(false);
-  const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [executingAction, setExecutingAction] = useState<string | null>(null);
-  const [ragLoading, setRagLoading] = useState(false);
-  const [ragMatches, setRagMatches] = useState<RAGMatchItem[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [templates, setTemplates] = useState<any[]>([]);
+  const [selectedTemplateKey, setSelectedTemplateKey] = useState<string>('');
 
-  const rawId = parseInt(ticket.id.replace(/\D/g, ''), 10);
+  const rawId = ticket.rawId || parseInt(ticket.id.replace(/\D/g, ''), 10);
 
-  // Auto-search RAG on ticket change
+  // Load Task Details (comments, attachments, custom fields) from real API
+  const loadDetails = useCallback(async () => {
+    if (!rawId) return;
+    setLoadingDetails(true);
+    try {
+      const data = await fetchTaskDetails(rawId);
+      setDetails(data);
+    } catch (err: any) {
+      console.warn('Не удалось загрузить подробности заявки:', err);
+    } finally {
+      setLoadingDetails(false);
+    }
+  }, [rawId]);
+
+  // Load Templates catalog
   useEffect(() => {
-    setRagMatches([]);
-  }, [ticket.id]);
+    fetchTemplatesCatalog().then(res => {
+      if (res && res.templates) setTemplates(res.templates);
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    setReplyText('');
+    setDiagStatus({ ping: 'idle', smb: 'idle', winrm: 'idle' });
+    loadDetails();
+  }, [ticket.id, loadDetails]);
+
+  // Auto-fill suggested comment if available
+  useEffect(() => {
+    if (ticket.aiSuggestion && !replyText) {
+      setReplyText(ticket.aiSuggestion);
+    }
+  }, [ticket.id, ticket.aiSuggestion]);
 
   const runDiag = async () => {
     if (!ticket.host) {
@@ -81,117 +112,127 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         smb: res.smb_ok ? 'ok' : 'fail',
         winrm: res.winrm_ok ? 'ok' : 'fail',
       });
-      onToast({ type: 'info', message: `Диагностика ${ticket.host} завершена` });
+      onToast({ type: 'info', message: `Диагностика ${ticket.host}: ${res.is_online ? 'В сети' : 'Недоступен'}` });
     } catch {
       setDiagStatus({ ping: 'fail', smb: 'fail', winrm: 'fail' });
+      onToast({ type: 'error', message: `Ошибка диагностики хоста ${ticket.host}` });
     }
   };
 
-  const loadRagMatches = async () => {
-    setRagLoading(true);
-    try {
-      const res = await searchRAG(ticket.title, 3);
-      setRagMatches(res.matches || []);
-      if (!res.matches || res.matches.length === 0) {
-        onToast({ type: 'info', message: 'В базе знаний RAG нет точных совпадений' });
-      }
-    } catch (err) {
-      console.warn('RAG search error:', err);
-    } finally {
-      setRagLoading(false);
+  const handleTemplateSelect = (key: string) => {
+    setSelectedTemplateKey(key);
+    const tmpl = templates.find(t => t.key === key);
+    if (tmpl) {
+      setReplyText(tmpl.template);
+      if (tmpl.expenses) setExpenses(tmpl.expenses);
     }
   };
 
   const handleQuickAction = async (actionType: string) => {
-    setExecutingAction(actionType);
+    setSubmitting(true);
     try {
-      if (actionType === 'wlan') {
-        await enqueueExecution({
-          action: 'grant_wlan',
-          task_id: rawId,
-          params: { identity: ticket.requesterName },
-          auto_close_ticket: true,
-        });
-        onToast({ type: 'success', message: 'Задача выдачи Wi-Fi поставлена в Execution Broker' });
-        onUpdateTicket(ticket.id, { status: 'resolved' });
-      } else if (actionType === 'create_user') {
-        await enqueueExecution({
-          action: 'create_user',
-          task_id: rawId,
-          params: {},
-          auto_close_ticket: true,
-        });
-        onToast({ type: 'success', message: 'Создание УЗ в AD передано в Execution Broker' });
-        onUpdateTicket(ticket.id, { status: 'resolved' });
-      } else if (actionType === 'redirect') {
-        const comm = ticket.aiSuggestion || `Заявка отменена, т. к. создана не в подходящем разделе. Требуется оставить заявку в подходящем разделе: ${ticket.targetServiceName || 'соответствующий сервис'}.`;
+      if (actionType === 'redirect') {
+        const comm = ticket.aiSuggestion || `Заявка отменена, т. к. создана не в подходящем разделе. Требуется оставить заявку в подходящем разделе: ${ticket.targetServiceName || 'соответствующий сервис'}. По вопросам звоните на 49-87.`;
         await applyTask(rawId, {
           status_id: 30,
           comment: comm,
           minutes: 5,
         });
-        onToast({ type: 'success', message: `Заявка перенаправлена в ${ticket.targetServiceName || 'целевой раздел'}` });
-        onUpdateTicket(ticket.id, { status: 'resolved' });
+        onToast({ type: 'success', message: `Заявка #${rawId} перенаправлена в ${ticket.targetServiceName || 'целевой раздел'}` });
+        onUpdateTicket(ticket.id, { status: 'resolved', statusId: 30, statusName: 'Отменена' });
+        onClose();
+      } else if (actionType === 'duplicate') {
+        const masterId = ticket.duplicateInfo?.master_task_id || '';
+        const comm = `Заявка отменена как повторная (дубликат инцидента #${masterId}). Все работы ведутся в основной заявке. По вопросам звоните на 49-87.`;
+        await applyTask(rawId, {
+          status_id: 30,
+          comment: comm,
+          minutes: 5,
+        });
+        onToast({ type: 'success', message: `Заявка #${rawId} отменена как дубликат #${masterId}` });
+        onUpdateTicket(ticket.id, { status: 'resolved', statusId: 30, statusName: 'Отменена' });
+        onClose();
       } else if (actionType === 'hardware') {
-        const comm = ticket.aiSuggestion || 'Приносите системный блок / ноутбук в АБК-3, каб. 112 на аппаратную диагностику и обслуживание.';
+        const comm = ticket.aiSuggestion || 'Приносите системный блок / ноутбук в АБК 3, 112 каб. на аппаратную диагностику и обслуживание.';
         await applyTask(rawId, {
           status_id: 48,
           comment: comm,
           minutes: 10,
         });
-        onToast({ type: 'success', message: 'Переведено в Статус 48 (Ожидание устройства, каб. 112)' });
-        onUpdateTicket(ticket.id, { status: 'waiting' });
-      } else if (actionType === 'duplicate') {
-        const masterId = ticket.duplicateInfo?.master_task_id || '';
-        const comm = `Заявка отменена как повторная (дубликат инцидента #${masterId}). Все работы ведутся в основной заявке.`;
+        onToast({ type: 'success', message: `Заявка #${rawId} переведена в Статус 48 (Ожидание устройства, каб. 112)` });
+        onUpdateTicket(ticket.id, { status: 'waiting', statusId: 48, statusName: 'Ожидание устройства' });
+      } else if (actionType === 'wlan') {
+        const comm = ticket.aiSuggestion || 'Доступ к беспроводной корпоративной сети WLAN-WORKNET успешно предоставлен. Используйте логин и пароль от вашей учетной записи на ПК.';
         await applyTask(rawId, {
-          status_id: 30,
+          status_id: 29,
           comment: comm,
-          minutes: 5,
+          minutes: 10,
         });
-        onToast({ type: 'success', message: `Заявка отменена как дубликат #${masterId}` });
-        onUpdateTicket(ticket.id, { status: 'resolved' });
+        onToast({ type: 'success', message: `Заявка #${rawId} закрыта (Доступ к Wi-Fi предоставлен)` });
+        onUpdateTicket(ticket.id, { status: 'resolved', statusId: 29, statusName: 'Выполнена' });
+        onClose();
       }
     } catch (err: any) {
-      onToast({ type: 'error', message: `Ошибка выполнения: ${err.message || err}` });
+      onToast({ type: 'error', message: `Ошибка: ${err.message || err}` });
     } finally {
-      setExecutingAction(null);
+      setSubmitting(false);
     }
   };
 
-  const handleSend = async (close = false) => {
-    if (!replyText.trim()) return;
-    const targetStatusId = close ? 4 : (ticket.status === 'new' ? 2 : undefined);
-
-    if (rawId && !isNaN(rawId)) {
-      try {
-        await applyTask(rawId, {
-          status_id: targetStatusId || 2,
-          comment: replyText,
-          minutes: 15,
-          is_private: replyMode === 'internal',
-        });
-      } catch (err: any) {
-        console.warn('API error:', err);
-      }
+  const handleSendAction = async (targetStatusId: number) => {
+    if (!replyText.trim()) {
+      onToast({ type: 'warning', message: 'Введите текст ответа или заметки' });
+      return;
     }
+    setSubmitting(true);
+    try {
+      await applyTask(rawId, {
+        status_id: targetStatusId,
+        comment: replyText.trim(),
+        minutes: expenses,
+        is_private: replyMode === 'internal',
+      });
 
-    onUpdateTicket(ticket.id, {
-      timeline: [
-        ...ticket.timeline,
-        {
-          id: `t${Date.now()}`,
-          type: replyMode,
-          author: 'Оператор',
-          content: replyText,
-          timestamp: new Date(),
-        },
-      ],
-      ...(close ? { status: 'resolved' } : (ticket.status === 'new' ? { status: 'in_progress' } : {})),
-    });
-    setReplyText('');
-    onToast({ type: 'success', message: replyMode === 'reply' ? 'Ответ отправлен заявителю' : 'Внутренняя заметка сохранена' });
-    if (close) onUpdateTicket(ticket.id, { status: 'resolved' });
+      const newStatus = targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : (targetStatusId === 35 || targetStatusId === 48 ? 'waiting' : 'in_progress');
+      onUpdateTicket(ticket.id, {
+        status: newStatus,
+        statusId: targetStatusId,
+      });
+
+      onToast({
+        type: 'success',
+        message: targetStatusId === 29 ? 'Заявка закрыта (Выполнена)' : (targetStatusId === 30 ? 'Заявка отменена' : 'Ответ успешно отправлен'),
+      });
+
+      setReplyText('');
+      loadDetails();
+      if (targetStatusId === 29 || targetStatusId === 30) {
+        onClose();
+      }
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Ошибка сохранения: ${err.message || err}` });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleTakeOwnership = async () => {
+    setSubmitting(true);
+    try {
+      await applyTask(rawId, {
+        status_id: 27,
+        comment: 'Взято в работу инженером 1-й линии',
+        minutes: 5,
+        executor_ids: '8664,10502',
+      });
+      onUpdateTicket(ticket.id, { status: 'in_progress', statusId: 27, statusName: 'В работе' });
+      onToast({ type: 'success', message: `Заявка #${rawId} взята в работу (Беликов Ален)` });
+      loadDetails();
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Ошибка: ${err.message || err}` });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const copyToClipboard = (v: string) => {
@@ -202,7 +243,10 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
   const panelClass = expanded
     ? 'fixed inset-0 z-30 flex flex-col bg-white dark:bg-neutral-950'
-    : 'w-[460px] shrink-0 flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950';
+    : 'w-[480px] shrink-0 flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950';
+
+  const commentsList = details?.comments || [];
+  const attachmentsList = details?.attachments || ticket.attachments || [];
 
   return (
     <div className={panelClass}>
@@ -212,18 +256,32 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           <div className="flex items-center gap-2">
             <button
               onClick={onClose}
-              className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors"
+              className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors cursor-pointer"
             >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                 <path d="M10 4l-4 4 4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
             </button>
-            <span className="font-mono text-[12px] text-neutral-400 dark:text-neutral-500">{ticket.id}</span>
+            <span className="font-mono text-[12px] font-semibold text-neutral-500 dark:text-neutral-400">
+              #{rawId}
+            </span>
+            <span className={`text-[11px] px-1.5 py-0.5 rounded-sm font-medium ${statusConfig[ticket.status].className}`}>
+              {ticket.statusName || statusConfig[ticket.status].label}
+            </span>
           </div>
-          <div className="flex items-center gap-1">
+
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleTakeOwnership}
+              disabled={submitting || ticket.statusId === 27}
+              className="px-2 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 border border-neutral-200 dark:border-neutral-700 rounded text-[11px] font-medium transition-colors disabled:opacity-50 cursor-pointer"
+              title="Назначить на себя и перевести в работу"
+            >
+              Взять себе
+            </button>
             <button
               onClick={() => setExpanded(e => !e)}
-              className="w-6 h-6 flex items-center justify-center rounded text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+              className="w-6 h-6 flex items-center justify-center rounded text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
             >
               {expanded ? (
                 <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
@@ -237,305 +295,183 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             </button>
           </div>
         </div>
-        <h2 className="text-[15px] font-semibold text-neutral-900 dark:text-neutral-50 leading-snug">
+
+        <h2 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-50 leading-snug">
           {ticket.title}
         </h2>
+        <div className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-1 flex items-center gap-1.5 flex-wrap">
+          <span>{ticket.servicePath || ticket.serviceName}</span>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
         {/* Duplicate Banner */}
         {(ticket.isDuplicate || ticket.ruleType === 'duplicate_task') && (
-          <div className="mx-5 mt-4 border border-amber-300 dark:border-amber-800/80 bg-amber-50/50 dark:bg-amber-950/30 rounded p-3 space-y-2">
+          <div className="mx-5 mt-3 border border-amber-300 dark:border-amber-800/80 bg-amber-50/50 dark:bg-amber-950/30 rounded p-3 space-y-2">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="text-amber-600 dark:text-amber-400 shrink-0">
-                  <rect x="1.5" y="1.5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
-                  <path d="M4.5 4.5h6a1.5 1.5 0 011.5 1.5v6a1.5 1.5 0 01-1.5 1.5h-6A1.5 1.5 0 013 12" stroke="currentColor" strokeWidth="1.2"/>
-                </svg>
-                <span className="text-amber-900 dark:text-amber-200 text-[12px] font-semibold">Повторная заявка (Дубликат)</span>
-              </div>
+              <span className="text-amber-900 dark:text-amber-200 text-[12px] font-semibold">
+                Повторная заявка (Дубликат)
+              </span>
               {ticket.duplicateInfo?.master_task_id && (
                 <span className="text-[11px] font-mono bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 px-1.5 py-0.5 rounded border border-amber-300/60 dark:border-amber-700/60">
                   Master #{ticket.duplicateInfo.master_task_id}
                 </span>
               )}
             </div>
-            <p className="text-[12px] text-neutral-700 dark:text-neutral-300 leading-relaxed">
-              Данная заявка дублирует ранее созданный инцидент от того же заявителя.
+            <p className="text-[12px] text-neutral-700 dark:text-neutral-300">
+              Заявитель уже имеет открытый инцидент по аналогичной теме.
             </p>
             <button
               onClick={() => handleQuickAction('duplicate')}
-              disabled={executingAction !== null}
-              className="px-2.5 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 text-[11px] font-medium rounded transition-colors disabled:opacity-50"
+              disabled={submitting}
+              className="px-2.5 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 text-[11px] font-medium rounded transition-colors disabled:opacity-50 cursor-pointer"
             >
               Отменить как дубликат (Статус 30)
             </button>
           </div>
         )}
 
-        {/* Smart Actions Bar */}
+        {/* 1-Click Smart Actions Bar */}
         <div className="mx-5 mt-3 flex flex-wrap gap-1.5">
-          {(ticket.ruleType === 'wlan_access' || ticket.templateKey === 'wifi_access') && (
-            <button
-              onClick={() => handleQuickAction('wlan')}
-              disabled={executingAction !== null}
-              className="px-2.5 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50"
-            >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <path d="M1 4.5C3.8 2 8.2 2 11 4.5M2.5 6.5c2-1.8 5-1.8 7 0M4.5 8.5c1-0.9 2-0.9 3 0M6 10.5h.01" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-              </svg>
-              Выдать Wi-Fi в AD (Статус 29)
-            </button>
-          )}
-
-          {(ticket.ruleType === 'user_created' || ticket.templateKey === 'user_created') && (
-            <button
-              onClick={() => handleQuickAction('create_user')}
-              disabled={executingAction !== null}
-              className="px-2.5 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50"
-            >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <circle cx="5" cy="4" r="2" stroke="currentColor" strokeWidth="1.2"/>
-                <path d="M1.5 10c0-1.8 1.5-3 3.5-3s3.5 1.2 3.5 3M9.5 4v4M7.5 6h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-              </svg>
-              Создать УЗ в AD
-            </button>
-          )}
-
           {(ticket.isRedirect || ticket.ruleType?.startsWith('redirect')) && (
             <button
               onClick={() => handleQuickAction('redirect')}
-              disabled={executingAction !== null}
-              className="px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 border border-neutral-200 dark:border-neutral-700 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              disabled={submitting}
+              className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
             >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <path d="M9.5 2.5L2.5 9.5M9.5 2.5H4.5M9.5 2.5V7.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-              Редирект в {ticket.targetServiceName || 'сервис'}
+              Редирект в {ticket.targetServiceName || 'соответствующий сервис'} (30)
             </button>
           )}
 
           {ticket.ruleType === 'hardware_repair' && (
             <button
               onClick={() => handleQuickAction('hardware')}
-              disabled={executingAction !== null}
-              className="px-2.5 py-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 border border-neutral-200 dark:border-neutral-700 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              disabled={submitting}
+              className="px-2.5 py-1 bg-purple-50 dark:bg-purple-950/40 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-purple-800 dark:text-purple-300 border border-purple-200 dark:border-purple-800 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
             >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <path d="M7.5 1.5a3 3 0 00-3.8 3.8L1 8l3 3 2.7-2.7a3 3 0 003.8-3.8l-2 2-1-1 2-2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
-              </svg>
-              В каб. 112 (Статус 48)
+              В аппаратный ремонт (Статус 48)
+            </button>
+          )}
+
+          {(ticket.ruleType === 'wlan_access' || ticket.templateKey === 'wifi_access') && (
+            <button
+              onClick={() => handleQuickAction('wlan')}
+              disabled={submitting}
+              className="px-2.5 py-1 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-[11px] font-medium rounded flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              Выдать доступ к Wi-Fi (Статус 29)
             </button>
           )}
         </div>
 
-        {/* AI suggestion */}
-        {ticket.aiConfidence !== null && ticket.aiSuggestion && (
+        {/* AI / Rule Recommendation Card */}
+        {ticket.aiSuggestion && (
           <div className="mx-5 mt-3 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded p-3">
             <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-2">
-                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" className="text-neutral-700 dark:text-neutral-300 shrink-0">
-                  <path d="M6.5 1.5L8 5H11.5L8.5 7.2 9.5 10.5 6.5 8.5 3.5 10.5 4.5 7.2 1.5 5H5L6.5 1.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
-                </svg>
-                <span className="text-[11px] font-semibold text-neutral-800 dark:text-neutral-200">
-                  Рекомендация триажа · {ticket.ruleType || 'Rule Engine'}
-                </span>
-              </div>
-              <span className="text-[11px] font-mono text-neutral-500">
-                {ticket.expenses ? `${ticket.expenses} мин` : ''}
+              <span className="text-[11px] font-semibold text-neutral-800 dark:text-neutral-200 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                Рекомендация триажа ({ticket.ruleType || 'Auto-Rule'})
               </span>
+              <span className="text-[10px] font-mono text-neutral-400">5-10 мин</span>
             </div>
             <p className="text-[12px] text-neutral-700 dark:text-neutral-300 leading-relaxed whitespace-pre-wrap">{ticket.aiSuggestion}</p>
-            <div className="flex items-center gap-3 mt-2">
-              <button
-                onClick={() => { setReplyText(ticket.aiSuggestion!); setReplyMode('reply'); }}
-                className="text-[11px] text-neutral-900 dark:text-neutral-100 hover:underline font-medium"
-              >
-                Вставить в ответ →
-              </button>
-              <button
-                onClick={loadRagMatches}
-                disabled={ragLoading}
-                className="text-[11px] text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 font-medium"
-              >
-                {ragLoading ? 'Поиск RAG...' : 'Поиск аналогичных решений в RAG'}
-              </button>
-            </div>
+            <button
+              onClick={() => setReplyText(ticket.aiSuggestion!)}
+              className="mt-2 text-[11px] text-blue-600 dark:text-blue-400 hover:underline font-medium cursor-pointer"
+            >
+              Вставить в форму ответа →
+            </button>
           </div>
         )}
 
-        {/* RAG Matches List */}
-        {ragMatches.length > 0 && (
-          <div className="mx-5 mt-3 border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 rounded p-3 space-y-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-              Похожие решения в базе знаний RAG
-            </span>
-            {ragMatches.map(m => (
-              <div key={m.task_id} className="text-[12px] border-t border-neutral-200 dark:border-neutral-800 pt-1.5">
-                <div className="flex items-center justify-between text-neutral-900 dark:text-neutral-100 font-medium mb-0.5">
-                  <span>#{m.task_id} · {m.name}</span>
-                  <span className="font-mono text-[11px] text-neutral-600 dark:text-neutral-400">{m.similarity_pct}%</span>
-                </div>
-                <p className="text-neutral-600 dark:text-neutral-400 line-clamp-2 text-[11px]">{m.solution}</p>
-                <button
-                  onClick={() => { setReplyText(m.solution); setReplyMode('reply'); }}
-                  className="mt-1 text-[10px] text-neutral-700 dark:text-neutral-300 hover:underline font-medium"
-                >
-                  Скопировать решение в ответ →
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Properties */}
+        {/* Requester & PC Card with Network Diag */}
         <div className="px-5 mt-4">
-          <div className="space-y-0.5">
-            <PropRow label="Статус">
-              <div className="relative">
-                <button
-                  onClick={() => setStatusOpen(o => !o)}
-                  className={`text-[12px] px-2 py-0.5 rounded-sm font-medium ${statusConfig[ticket.status].className}`}
-                >
-                  {statusConfig[ticket.status].label}
-                </button>
-                {statusOpen && (
-                  <div className="absolute left-0 top-6 z-20 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded shadow-lg py-1 min-w-[140px]">
-                    {(['new', 'in_progress', 'waiting', 'resolved'] as Status[]).map(s => (
-                      <button
-                        key={s}
-                        onClick={() => { onUpdateTicket(ticket.id, { status: s }); setStatusOpen(false); }}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800 text-[12px]"
-                      >
-                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${priorityConfig.critical.dotClass}`} style={{ background: undefined }} />
-                        <span className={`px-1.5 py-0.5 rounded-sm font-medium ${statusConfig[s].className}`}>
-                          {statusConfig[s].label}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </PropRow>
-
-            <PropRow label="Приоритет">
-              <div className="relative">
-                <button
-                  onClick={() => setPriorityOpen(o => !o)}
-                  className={`text-[12px] px-2 py-0.5 rounded-sm font-medium flex items-center gap-1.5 ${priorityConfig[ticket.priority].className}`}
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full ${priorityConfig[ticket.priority].dotClass}`} />
-                  {priorityConfig[ticket.priority].label}
-                </button>
-                {priorityOpen && (
-                  <div className="absolute left-0 top-6 z-20 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded shadow-lg py-1 min-w-[140px]">
-                    {(['critical', 'high', 'medium', 'low'] as Priority[]).map(p => (
-                      <button
-                        key={p}
-                        onClick={() => { onUpdateTicket(ticket.id, { priority: p }); setPriorityOpen(false); }}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800 text-[12px]"
-                      >
-                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${priorityConfig[p].dotClass}`} />
-                        <span>{priorityConfig[p].label}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </PropRow>
-
-            <PropRow label="Исполнитель">
-              <div className="relative">
-                <button
-                  onClick={() => setAssigneeOpen(o => !o)}
-                  className="text-[12px] text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 transition-colors"
-                >
-                  {ticket.assigneeId
-                    ? operators.find(o => o.id === ticket.assigneeId)?.name ?? '—'
-                    : <span className="text-blue-600 dark:text-blue-400">+ Назначить</span>
-                  }
-                </button>
-                {assigneeOpen && (
-                  <div className="absolute left-0 top-6 z-20 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded shadow-lg py-1 min-w-[160px]">
-                    <button
-                      onClick={() => { onUpdateTicket(ticket.id, { assigneeId: 'op1' }); setAssigneeOpen(false); onToast({ type: 'success', message: 'Заявка взята в работу' }); }}
-                      className="w-full px-3 py-1.5 text-left text-[12px] text-blue-600 hover:bg-neutral-50 dark:hover:bg-neutral-800 font-medium"
-                    >
-                      Взять себе
-                    </button>
-                    {operators.map(op => (
-                      <button
-                        key={op.id}
-                        onClick={() => { onUpdateTicket(ticket.id, { assigneeId: op.id }); setAssigneeOpen(false); }}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800"
-                      >
-                        <div className="w-5 h-5 bg-neutral-200 dark:bg-neutral-700 rounded-full flex items-center justify-center text-[9px] font-semibold text-neutral-600 dark:text-neutral-300">
-                          {op.initials}
-                        </div>
-                        <span className="text-[12px] text-neutral-700 dark:text-neutral-300">{op.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </PropRow>
-
-            <PropRow label="Заявитель">
-              <span className="text-[12px] text-neutral-700 dark:text-neutral-300">{ticket.requesterName}</span>
-            </PropRow>
-
-            <PropRow label="Телефон">
-              <span className="text-[12px] font-mono text-neutral-600 dark:text-neutral-400">{ticket.requesterPhone || '—'}</span>
-            </PropRow>
-
-            <PropRow label="Хост / IP">
-              <div className="flex items-center gap-1.5">
-                <span className="font-mono text-[11px] bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 px-1.5 py-0.5 rounded">
-                  {ticket.host || 'Не указан'}
-                </span>
-                {ticket.ip && (
-                  <span className="font-mono text-[11px] bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-500 px-1.5 py-0.5 rounded">
-                    {ticket.ip}
-                  </span>
-                )}
-                {ticket.host && (
-                  <button onClick={() => copyToClipboard(ticket.host)} className="text-neutral-300 hover:text-neutral-500 dark:text-neutral-700 dark:hover:text-neutral-400 transition-colors">
-                    <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                      <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.2"/>
-                      <path d="M1.5 7.5V1.5h6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-                    </svg>
-                  </button>
-                )}
-              </div>
-            </PropRow>
-
-            <PropRow label="Категория">
-              <span className="text-[12px] text-neutral-700 dark:text-neutral-300">{categoryLabel[ticket.category]}</span>
-            </PropRow>
-
-            <PropRow label="SLA">
-              <span className={`text-[12px] font-mono ${getSlaClass(ticket.slaDeadline)}`}>
-                {formatSla(ticket.slaDeadline)}
+          <div className="border border-neutral-200 dark:border-neutral-800 rounded p-3 space-y-2 bg-white dark:bg-neutral-900">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                Заявитель и рабочее место
               </span>
-            </PropRow>
+              {ticket.host && (
+                <button
+                  onClick={runDiag}
+                  disabled={diagStatus.ping === 'checking'}
+                  className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline font-medium cursor-pointer"
+                >
+                  {diagStatus.ping === 'checking' ? 'Проверка...' : 'Диагностика сети'}
+                </button>
+              )}
+            </div>
 
-            <PropRow label="Создана">
-              <span className="text-[12px] text-neutral-500 dark:text-neutral-400">{formatTime(ticket.createdAt)}</span>
-            </PropRow>
+            <div className="grid grid-cols-2 gap-2 text-[12px]">
+              <div>
+                <span className="text-neutral-400 block text-[10px]">ФИО заявителя</span>
+                <span className="text-neutral-800 dark:text-neutral-200 font-medium">{ticket.requesterName}</span>
+              </div>
+              <div>
+                <span className="text-neutral-400 block text-[10px]">Телефон</span>
+                <span className="text-neutral-800 dark:text-neutral-200 font-mono">{ticket.requesterPhone || details?.phone || '—'}</span>
+              </div>
+              <div>
+                <span className="text-neutral-400 block text-[10px]">Кабинет / Отдел</span>
+                <span className="text-neutral-800 dark:text-neutral-200">
+                  {[ticket.room || details?.room, ticket.department || details?.department].filter(Boolean).join(' · ') || '—'}
+                </span>
+              </div>
+              <div>
+                <span className="text-neutral-400 block text-[10px]">Имя ПК / Хост</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-[11px]">
+                    {ticket.host || details?.pc_name || 'Не указан'}
+                  </span>
+                  {ticket.host && (
+                    <button
+                      onClick={() => copyToClipboard(ticket.host)}
+                      className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 cursor-pointer"
+                      title="Скопировать имя ПК"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                        <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+                        <path d="M1.5 7.5V1.5h6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Network diagnostic results */}
+            {ticket.host && (
+              <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between text-[11px]">
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1 font-mono">
+                    <span className="text-neutral-400">Ping:</span>
+                    <DiagBadge status={diagStatus.ping} />
+                  </div>
+                  <div className="flex items-center gap-1 font-mono">
+                    <span className="text-neutral-400">SMB:445:</span>
+                    <DiagBadge status={diagStatus.smb} />
+                  </div>
+                  <div className="flex items-center gap-1 font-mono">
+                    <span className="text-neutral-400">WinRM:</span>
+                    <DiagBadge status={diagStatus.winrm} />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
         {/* Attachments Section */}
-        {ticket.attachments && ticket.attachments.length > 0 && (
+        {attachmentsList.length > 0 && (
           <div className="mx-5 mt-4 border border-neutral-200 dark:border-neutral-800 rounded p-3">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-600 block mb-2">
-              Вложения ({ticket.attachments.length})
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 block mb-2">
+              Вложения и скриншоты ({attachmentsList.length})
             </span>
             <div className="space-y-1.5">
-              {ticket.attachments.map(att => (
+              {attachmentsList.map(att => (
                 <a
                   key={att.id}
-                  href={att.url || `/admin/api/attachments/${att.id}`}
+                  href={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
                   target="_blank"
                   rel="noreferrer"
                   className="flex items-center justify-between p-2 rounded bg-neutral-50 dark:bg-neutral-900 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors text-[12px]"
@@ -550,130 +486,138 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           </div>
         )}
 
-        {/* Network diagnostics */}
-        <div className="mx-5 mt-4 border border-neutral-200 dark:border-neutral-800 rounded p-3">
-          <div className="flex items-center justify-between mb-2.5">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-600">
-              Диагностика хоста
-            </span>
-            <button
-              onClick={runDiag}
-              className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline font-medium"
-            >
-              Обновить
-            </button>
-          </div>
-          <div className="space-y-1.5">
-            {[
-              { name: 'Ping', key: 'ping' },
-              { name: 'SMB/445', key: 'smb' },
-              { name: 'WinRM/5985', key: 'winrm' },
-            ].map(({ name, key }) => (
-              <div key={key} className="flex items-center justify-between">
-                <span className="font-mono text-[12px] text-neutral-600 dark:text-neutral-400">{name}</span>
-                <DiagBadge status={diagStatus[key] as DiagStatus} />
-              </div>
-            ))}
-          </div>
-        </div>
-
         {/* Description */}
         <div className="px-5 mt-5">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-600 mb-2">
-            Описание
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 block mb-2">
+            Описание проблемы
           </p>
-          <div className="text-[13px] text-neutral-700 dark:text-neutral-300 leading-relaxed whitespace-pre-wrap font-sans">
-            {ticket.description.replace(/[#*`]/g, '').replace(/\n+/g, '\n').trim()}
+          <div className="text-[13px] text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap font-sans bg-neutral-50 dark:bg-neutral-900/50 p-3 rounded border border-neutral-200 dark:border-neutral-800">
+            {(details?.description || ticket.description || 'Без описания').replace(/[#*`]/g, '').trim()}
           </div>
         </div>
 
-        {/* Timeline */}
-        <div className="px-5 mt-6 mb-2">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-600 mb-3">
-            История
+        {/* Real Comments History (Lifetime) */}
+        <div className="px-5 mt-6 mb-4">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400 block mb-3">
+            История переписки {loadingDetails ? '(Загрузка...)' : `(${commentsList.length})`}
           </p>
+
           <div className="space-y-3">
-            {ticket.timeline.map(event => (
-              <div key={event.id} className="flex gap-3">
-                <div className="flex flex-col items-center">
-                  <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${
-                    event.type === 'reply' ? 'bg-blue-400' :
-                    event.type === 'internal' ? 'bg-amber-400' :
-                    event.type === 'status_change' ? 'bg-neutral-400' :
-                    'bg-neutral-300'
-                  }`} />
-                  <div className="w-px flex-1 bg-neutral-100 dark:bg-neutral-800 mt-1" />
-                </div>
-                <div className="flex-1 pb-3 min-w-0">
-                  <div className="flex items-baseline gap-2 mb-0.5">
-                    <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-300">{event.author}</span>
-                    <span className="text-[11px] text-neutral-400 dark:text-neutral-600">{formatTime(event.timestamp)}</span>
-                    {event.type === 'internal' && (
-                      <span className="text-[10px] bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400 px-1 rounded font-medium">внутренняя</span>
+            {commentsList.map(c => (
+              <div
+                key={c.id}
+                className={`p-3 rounded border text-[12px] ${
+                  c.is_private
+                    ? 'border-amber-200 dark:border-amber-900/50 bg-amber-50/50 dark:bg-amber-950/20'
+                    : 'border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-neutral-900 dark:text-neutral-100">{c.author}</span>
+                    {c.is_private && (
+                      <span className="text-[10px] bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-200 px-1 py-0.5 rounded font-medium">
+                        Внутренняя
+                      </span>
                     )}
                   </div>
-                  <p className="text-[12px] text-neutral-600 dark:text-neutral-400 leading-relaxed">{event.content}</p>
+                  <span className="text-[11px] text-neutral-400 font-mono">{formatTime(c.created)}</span>
                 </div>
+                <p className="text-neutral-700 dark:text-neutral-300 leading-relaxed whitespace-pre-wrap">{c.text}</p>
               </div>
             ))}
+
+            {commentsList.length === 0 && !loadingDetails && (
+              <div className="text-[12px] text-neutral-400 italic py-2">
+                В этой заявке пока нет комментариев
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Reply editor */}
-      <div className="border-t border-neutral-200 dark:border-neutral-800 p-4 shrink-0 bg-white dark:bg-neutral-950">
-        <div className="flex gap-1 mb-2.5">
-          {(['reply', 'internal'] as const).map(mode => (
-            <button
-              key={mode}
-              onClick={() => setReplyMode(mode)}
-              className={`px-2.5 py-1 rounded text-[12px] font-medium transition-colors ${
-                replyMode === mode
-                  ? 'bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900'
-                  : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800'
-              }`}
+      {/* Reply and Close Form */}
+      <div className="border-t border-neutral-200 dark:border-neutral-800 p-4 shrink-0 bg-white dark:bg-neutral-950 space-y-2.5">
+        {/* Top Controls: Mode & Template Selector */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex gap-1">
+            {(['reply', 'internal'] as const).map(mode => (
+              <button
+                key={mode}
+                onClick={() => setReplyMode(mode)}
+                className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors cursor-pointer ${
+                  replyMode === mode
+                    ? 'bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800'
+                }`}
+              >
+                {mode === 'reply' ? 'Ответ заявителю' : 'Приватная заметка'}
+              </button>
+            ))}
+          </div>
+
+          {/* Quick template dropdown */}
+          {templates.length > 0 && (
+            <select
+              value={selectedTemplateKey}
+              onChange={e => handleTemplateSelect(e.target.value)}
+              className="text-[11px] bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded px-2 py-1 text-neutral-700 dark:text-neutral-300 outline-none max-w-[200px]"
             >
-              {mode === 'reply' ? 'Ответ заявителю' : 'Внутренняя заметка'}
-            </button>
-          ))}
+              <option value="">Выбрать шаблон...</option>
+              {templates.map(t => (
+                <option key={t.key} value={t.key}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
+
+        {/* Text Area */}
         <textarea
           value={replyText}
           onChange={e => setReplyText(e.target.value)}
-          placeholder={replyMode === 'reply' ? 'Напишите ответ заявителю...' : 'Внутренняя заметка для команды...'}
+          placeholder={replyMode === 'reply' ? 'Напишите ответ заявителю...' : 'Внутренняя заметка для инженеров...'}
           rows={3}
-          className={`w-full px-3 py-2 text-[13px] rounded border bg-neutral-50 dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 transition-colors resize-none ${
+          className={`w-full px-3 py-2 text-[13px] rounded border bg-neutral-50 dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors resize-none ${
             replyMode === 'internal'
               ? 'border-amber-200 dark:border-amber-900 bg-amber-50/50 dark:bg-amber-950/20'
               : 'border-neutral-200 dark:border-neutral-800'
           }`}
         />
-        <div className="flex items-center gap-2 mt-2">
-          <button
-            onClick={() => handleSend(false)}
-            disabled={!replyText.trim()}
-            className="px-3 py-1.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 text-[12px] font-medium rounded hover:bg-neutral-700 dark:hover:bg-neutral-300 disabled:opacity-40 transition-colors"
-          >
-            Отправить
-          </button>
-          <button
-            onClick={() => handleSend(true)}
-            disabled={!replyText.trim()}
-            className="px-3 py-1.5 text-[12px] font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 border border-neutral-200 dark:border-neutral-700 rounded hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-40 transition-colors"
-          >
-            Отправить и закрыть
-          </button>
+
+        {/* Bottom Actions Bar */}
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <div className="flex items-center gap-1.5 text-[11px] text-neutral-500">
+            <span>Время (мин):</span>
+            <input
+              type="number"
+              value={expenses}
+              onChange={e => setExpenses(Number(e.target.value))}
+              min={0}
+              max={240}
+              className="w-14 px-1.5 py-0.5 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded text-neutral-800 dark:text-neutral-200 text-center font-mono text-[11px]"
+            />
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => handleSendAction(27)}
+              disabled={submitting || !replyText.trim()}
+              className="px-2.5 py-1.5 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded transition-colors disabled:opacity-40 cursor-pointer"
+            >
+              Отправить
+            </button>
+            <button
+              onClick={() => handleSendAction(29)}
+              disabled={submitting || !replyText.trim()}
+              className="px-3 py-1.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 text-[11px] font-medium rounded hover:bg-neutral-800 dark:hover:bg-neutral-200 transition-colors disabled:opacity-40 cursor-pointer"
+            >
+              Выполнить (29)
+            </button>
+          </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function PropRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center min-h-7">
-      <span className="w-28 text-[12px] text-neutral-400 dark:text-neutral-600 shrink-0">{label}</span>
-      <div className="flex-1">{children}</div>
     </div>
   );
 }

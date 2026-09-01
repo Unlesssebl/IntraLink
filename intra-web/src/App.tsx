@@ -1,12 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Ticket, Page, ToastMessage } from './data/mock';
-import { mockTickets } from './data/mock';
+import type { ServiceSelection } from './components/Sidebar';
 import LoginPage from './pages/LoginPage';
 import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
 import QueuePage from './pages/QueuePage';
-import AutomationPage from './pages/AutomationPage';
-import SettingsPage from './pages/SettingsPage';
 import CommandPalette from './components/CommandPalette';
 import ToastContainer from './components/Toast';
 import { AuthProvider, useAuth } from './lib/auth';
@@ -20,30 +18,36 @@ function MainApp() {
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [rootServices, setRootServices] = useState<Array<{ id: number; name: string }>>([]);
+  const [subservicesByRoot, setSubservicesByRoot] = useState<Record<number, Array<{ id: number; name: string; parent_id?: number }>>>({});
+  const [selectedService, setSelectedService] = useState<ServiceSelection>({
+    rootId: null,
+    serviceId: null,
+    name: null,
+  });
   const [loadingTickets, setLoadingTickets] = useState(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const [operatorStatus, setOperatorStatus] = useState<'online' | 'away' | 'offline'>('online');
 
   // Apply dark class to html element
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
   }, [theme]);
 
-  // Load tickets from real API when logged in
+  // Load live tickets and services from real API when logged in
   const loadQueue = useCallback(async () => {
     if (!isLoggedIn) return;
     setLoadingTickets(true);
+    setQueueError(null);
     try {
       const data = await fetchQueue(984, 100);
-      if (data.tickets && data.tickets.length > 0) {
-        setTickets(data.tickets);
-      } else {
-        // Fallback to mock data if empty during testing
-        setTickets(mockTickets);
-      }
-    } catch (err) {
-      console.warn('Не удалось загрузить реальные заявки, используем демо-данные:', err);
-      setTickets(mockTickets);
+      setTickets(data.tickets || []);
+      setRootServices(data.rootServices || []);
+      setSubservicesByRoot(data.subservicesByRoot || {});
+    } catch (err: any) {
+      console.error('Ошибка загрузки очереди заявок:', err);
+      setQueueError(err.message || 'Не удалось загрузить очередь заявок');
+      setTickets([]);
     } finally {
       setLoadingTickets(false);
     }
@@ -72,7 +76,7 @@ function MainApp() {
   }, [cmdPaletteOpen, selectedTicketId]);
 
   const addToast = useCallback((t: Omit<ToastMessage, 'id'>) => {
-    setToasts(prev => [...prev, { id: `toast-${Date.now()}`, ...t }]);
+    setToasts(prev => [...prev, { id: `toast-${Date.now()}-${Math.random()}`, ...t }]);
   }, []);
 
   const dismissToast = useCallback((id: string) => {
@@ -88,7 +92,13 @@ function MainApp() {
   if (authLoading) {
     return (
       <div className="h-full flex items-center justify-center bg-neutral-50 dark:bg-neutral-950 text-neutral-500">
-        <div className="text-sm">Загрузка системы...</div>
+        <div className="flex items-center gap-2 text-sm">
+          <svg className="animate-spin h-4 w-4 text-neutral-600 dark:text-neutral-400" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+          <span>Загрузка системы...</span>
+        </div>
       </div>
     );
   }
@@ -99,7 +109,7 @@ function MainApp() {
 
   return (
     <div className="h-full flex overflow-hidden bg-neutral-50 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
-      {/* Sidebar */}
+      {/* Sidebar with Real Service Catalog */}
       <Sidebar
         currentPage={currentPage}
         onNavigate={page => {
@@ -109,15 +119,20 @@ function MainApp() {
         theme={theme}
         onToggleTheme={() => setTheme(t => (t === 'light' ? 'dark' : 'light'))}
         sidebarOpen={sidebarOpen}
-        operatorStatus={operatorStatus}
-        onStatusChange={setOperatorStatus}
         tickets={tickets}
+        rootServices={rootServices}
+        subservicesByRoot={subservicesByRoot}
+        selectedService={selectedService}
+        onSelectService={sel => {
+          setSelectedService(sel);
+          setSelectedTicketId(null);
+        }}
         onOpenSearch={() => setCmdPaletteOpen(true)}
         username={user?.username}
         onLogout={logout}
       />
 
-      {/* Main content */}
+      {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <Topbar
           currentPage={currentPage}
@@ -125,29 +140,56 @@ function MainApp() {
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen(o => !o)}
           onOpenCmdPalette={() => setCmdPaletteOpen(true)}
+          onRefresh={loadQueue}
+          selectedService={selectedService}
+          onResetService={() => setSelectedService({ rootId: null, serviceId: null, name: null })}
         />
 
-        <main className="flex-1 overflow-hidden">
-          {currentPage === 'queue' && (
-            <QueuePage
-              tickets={tickets}
-              selectedTicketId={selectedTicketId}
-              onSelectTicket={setSelectedTicketId}
-              onUpdateTicket={updateTicket}
-              onToast={addToast}
-            />
+        <main className="flex-1 overflow-hidden relative">
+          {loadingTickets && (
+            <div className="absolute inset-0 bg-white/60 dark:bg-neutral-950/60 z-20 flex items-center justify-center backdrop-blur-2xs">
+              <div className="flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-400 bg-white dark:bg-neutral-900 px-4 py-2 rounded-lg border border-neutral-200 dark:border-neutral-800 shadow-md">
+                <svg className="animate-spin h-4 w-4 text-blue-500" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                </svg>
+                <span>Обновление очереди...</span>
+              </div>
+            </div>
           )}
-          {currentPage === 'automation' && <AutomationPage />}
-          {currentPage === 'settings' && (
-            <SettingsPage
-              theme={theme}
-              onToggleTheme={() => setTheme(t => (t === 'light' ? 'dark' : 'light'))}
-            />
+
+          {queueError && (
+            <div className="m-4 p-4 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 flex items-center justify-between">
+              <div className="flex items-center gap-2.5 text-sm text-red-800 dark:text-red-200">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0">
+                  <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5"/>
+                  <path d="M8 4.5v4.5M8 11.5v.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
+                <span>{queueError}</span>
+              </div>
+              <button
+                onClick={loadQueue}
+                className="px-3 py-1 bg-red-800 dark:bg-red-200 text-white dark:text-red-950 rounded text-xs font-semibold hover:bg-red-700 transition-colors cursor-pointer"
+              >
+                Повторить
+              </button>
+            </div>
           )}
+
+          <QueuePage
+            tickets={tickets}
+            selectedTicketId={selectedTicketId}
+            onSelectTicket={setSelectedTicketId}
+            onUpdateTicket={updateTicket}
+            onRefresh={loadQueue}
+            onToast={addToast}
+            selectedService={selectedService}
+            onResetService={() => setSelectedService({ rootId: null, serviceId: null, name: null })}
+          />
         </main>
       </div>
 
-      {/* Command palette */}
+      {/* Command Palette */}
       {cmdPaletteOpen && (
         <CommandPalette
           tickets={tickets}
@@ -158,13 +200,13 @@ function MainApp() {
             setCmdPaletteOpen(false);
           }}
           onNavigate={page => {
-            setCurrentPage(page as Page);
+            setCurrentPage(page);
             setCmdPaletteOpen(false);
           }}
         />
       )}
 
-      {/* Toasts */}
+      {/* Toast Notifications */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

@@ -413,12 +413,17 @@ async def download_attachment_file(
     """
     Скачивает бинарное содержимое прикрепленного файла задачи из IntraService.
     """
-    session = await _get_session()
-    headers = {"Authorization": f"Basic {auth_b64}"}
+    global _session
+    if _session is None or _session.closed:
+        await init_session()
+    assert _session is not None
+
+    decrypted_auth = decrypt_token(auth_b64)
+    headers = {"Authorization": f"Basic {decrypted_auth}"}
     url = f"{settings.INTRASERVICE_URL.rstrip('/')}/api/task/{task_id}/attachment/{file_id}"
 
     try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30.0)) as response:
+        async with _session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30.0)) as response:
             if response.status == 200:
                 return await response.read()
             logger.warning(
