@@ -158,14 +158,19 @@ core_api.db-journal
 /core-api-data/
 core-api/chroma_db/
 helpdesk_agent/knowledge_base.json
+helpdesk-agent/knowledge_base.json
 helpdesk_agent/.session_state.json
+helpdesk-agent/.session_state.json
 helpdesk_agent/*.tmp
+helpdesk-agent/*.tmp
+helpdesk_agent/downloads/
+helpdesk-agent/downloads/
 *.log
 .secrets/
 
-# Node.js
+# Node.js / Web
 node_modules/
-admin-ui/dist/
+intra-web/dist/
 
 # Codegraph / Agent artifacts
 .codegraph/
