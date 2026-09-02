@@ -1,0 +1,334 @@
+"""
+Канонический роутер администрирования базы знаний RAG (Knowledge Base Admin).
+Включает модерацию прецедентов, черный список (Blacklisting), статистику покрытия,
+иерархическое дерево каталога услуг и прямую синхронизацию без внешних зомби-сервисов.
+"""
+
+import asyncio
+import json
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database.db import AsyncSessionLocal, TaskKnowledgeBase, get_db
+from app.routers.admin_settings import require_admin_auth
+from app.routers.deps import get_service_auth_b64
+from app.services.rag import sync_historical_closed_tasks
+from app.services.worker import get_redis_client
+
+logger = logging.getLogger("intralink.kb_admin")
+
+router = APIRouter(
+    prefix="/api/v1/admin/kb",
+    tags=["Knowledge Base Administration"],
+    dependencies=[Depends(require_admin_auth)],
+)
+
+
+def build_service_tree(flat_services: list[dict]) -> list[dict]:
+    """Сборка плоского списка услуг IntraService в иерархическое дерево."""
+    nodes = {s["id"]: {**s, "children": []} for s in flat_services if "id" in s}
+    tree = []
+    for _s_id, node in nodes.items():
+        parent_id = node.get("parent_id")
+        if parent_id and parent_id in nodes:
+            nodes[parent_id]["children"].append(node)
+        else:
+            tree.append(node)
+    return tree
+
+
+class KBSyncRequest(BaseModel):
+    days: int = Field(30, ge=1, le=365, description="Глубина сбора закрытых заявок в днях")
+    limit: int = Field(100, ge=1, le=1000, description="Максимальное количество заявок для индексации")
+
+
+class KBExampleItem(BaseModel):
+    task_id: int
+    original_name: str
+    problem: str
+    solution: str
+    service_id: int
+    service_name: str
+    status_name: str
+
+
+class KBExamplesResponse(BaseModel):
+    total: int
+    page: int
+    limit: int
+    examples: list[KBExampleItem]
+
+
+# ---------------------------------------------------------------------------
+# 1. Дерево услуг каталога
+# ---------------------------------------------------------------------------
+
+
+@router.get("/services-tree", status_code=status.HTTP_200_OK)
+async def get_services_tree() -> list[dict[str, Any]]:
+    """
+    Возвращает каталог услуг в виде иерархического дерева с дочерними элементами.
+    Данные берутся из кэша Redis (при отсутствии выполняется автосинхронизация).
+    """
+    try:
+        r = get_redis_client()
+        catalog_str = await r.get("worker:service_catalog")
+
+        if not catalog_str:
+            from app.services.worker import sync_service_catalog
+
+            await sync_service_catalog()
+            catalog_str = await r.get("worker:service_catalog")
+
+        if not catalog_str:
+            return []
+
+        if isinstance(catalog_str, bytes):
+            catalog_str = catalog_str.decode("utf-8")
+
+        flat_catalog = json.loads(catalog_str)
+        return build_service_tree(flat_catalog)
+    except Exception as e:
+        logger.exception("Ошибка при построении дерева услуг: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось построить дерево услуг: {e}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# 2. Просмотр и пагинация базы знаний (Examples)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/examples", response_model=KBExamplesResponse, status_code=status.HTTP_200_OK)
+async def get_kb_examples(
+    page: int = Query(1, ge=1, description="Номер страницы"),
+    limit: int = Query(20, ge=1, le=100, description="Количество на страницу"),
+    service_id: int | None = Query(None, description="Фильтр по ID услуги"),
+    search: str | None = Query(None, description="Текстовый поиск по проблеме или решению"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Просмотр проиндексированных прецедентов RAG (исключая черный список).
+    Поддерживает пагинацию, фильтр по разделу каталога и полнотекстовый поиск.
+    """
+    try:
+        offset = (page - 1) * limit
+        query = select(TaskKnowledgeBase).where(TaskKnowledgeBase.is_blacklisted.is_(False))
+
+        if service_id is not None:
+            query = query.where(TaskKnowledgeBase.service_id == service_id)
+
+        if search and search.strip():
+            term = f"%{search.strip()}%"
+            query = query.where(
+                (TaskKnowledgeBase.problem.ilike(term))
+                | (TaskKnowledgeBase.solution.ilike(term))
+                | (TaskKnowledgeBase.original_name.ilike(term))
+            )
+
+        # Считаем общее число записей
+        count_query = select(func.count(TaskKnowledgeBase.task_id)).where(
+            TaskKnowledgeBase.is_blacklisted.is_(False)
+        )
+        if service_id is not None:
+            count_query = count_query.where(TaskKnowledgeBase.service_id == service_id)
+        if search and search.strip():
+            term = f"%{search.strip()}%"
+            count_query = count_query.where(
+                (TaskKnowledgeBase.problem.ilike(term))
+                | (TaskKnowledgeBase.solution.ilike(term))
+                | (TaskKnowledgeBase.original_name.ilike(term))
+            )
+
+        total = await db.scalar(count_query) or 0
+
+        # Выборка страницы
+        query = query.order_by(TaskKnowledgeBase.task_id.desc()).offset(offset).limit(limit)
+        result = await db.execute(query)
+        rows = result.scalars().all()
+
+        # Подтягиваем названия разделов из кэша
+        service_names_map: dict[int, str] = {}
+        try:
+            r = get_redis_client()
+            cat_raw = await r.get("worker:service_catalog")
+            if cat_raw:
+                if isinstance(cat_raw, bytes):
+                    cat_raw = cat_raw.decode("utf-8")
+                flat = json.loads(cat_raw)
+                service_names_map = {item["id"]: item.get("name", "") for item in flat if "id" in item}
+        except Exception as e_redis:
+            logger.debug("Не удалось получить каталог услуг для обогащения имен: %s", e_redis)
+
+        examples: list[KBExampleItem] = []
+        for r in rows:
+            s_name = r.service_name or service_names_map.get(r.service_id, f"Услуга #{r.service_id}")
+            examples.append(
+                KBExampleItem(
+                    task_id=r.task_id,
+                    original_name=r.original_name or "",
+                    problem=r.problem or "",
+                    solution=r.solution or "",
+                    service_id=r.service_id or 0,
+                    service_name=s_name,
+                    status_name=r.status_name or "",
+                )
+            )
+
+        return KBExamplesResponse(
+            total=total,
+            page=page,
+            limit=limit,
+            examples=examples,
+        )
+    except Exception as e:
+        logger.exception("Ошибка при чтении базы знаний RAG: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка сервера при чтении базы знаний: {e}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# 3. Модерация: Добавление в черный список (Blacklisting)
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/examples/{task_id}", status_code=status.HTTP_200_OK)
+async def delete_or_blacklist_kb_example(
+    task_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Модерация базы знаний: занесение задачи в черный список (Blacklist).
+    Очищает эмбеддинг и текстовые поля, исключая повторные галлюцинации и ошибочные рекомендации.
+    """
+    try:
+        query = select(TaskKnowledgeBase).where(TaskKnowledgeBase.task_id == task_id)
+        result = await db.execute(query)
+        example = result.scalar_one_or_none()
+
+        if not example:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Заявка #{task_id} не найдена в базе знаний.",
+            )
+
+        example.is_blacklisted = True
+        example.embedding = None
+        example.problem = ""
+        example.solution = ""
+
+        await db.commit()
+        logger.info("Задача #%d успешно занесена в черный список базы знаний RAG", task_id)
+        return {
+            "status": "success",
+            "task_id": task_id,
+            "message": f"Задача #{task_id} занесена в черный список RAG.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Ошибка при занесении задачи #%d в черный список: %s", task_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось занести задачу в черный список: {e}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# 4. Статистика покрытия базы знаний
+# ---------------------------------------------------------------------------
+
+
+@router.get("/stats", status_code=status.HTTP_200_OK)
+async def get_kb_statistics(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """
+    Возвращает матрицу покрытия базы знаний: количество прецедентов
+    в разрезе услуг и статусов закрытия (исключая черный список).
+    """
+    try:
+        query = (
+            select(
+                TaskKnowledgeBase.service_id,
+                TaskKnowledgeBase.status_name,
+                func.count(TaskKnowledgeBase.task_id),
+            )
+            .where(TaskKnowledgeBase.is_blacklisted.is_(False))
+            .group_by(TaskKnowledgeBase.service_id, TaskKnowledgeBase.status_name)
+        )
+
+        result = await db.execute(query)
+        rows = result.all()
+
+        services_stats: dict[str, dict[str, Any]] = {}
+        total_examples = 0
+
+        for s_id, status_name, cnt in rows:
+            s_key = str(s_id)
+            if s_key not in services_stats:
+                services_stats[s_key] = {"total": 0, "by_status": {}}
+            services_stats[s_key]["by_status"][status_name or "Без статуса"] = cnt
+            services_stats[s_key]["total"] += cnt
+            total_examples += cnt
+
+        # Получаем количество заблокированных (Blacklisted)
+        blacklisted_query = select(func.count(TaskKnowledgeBase.task_id)).where(
+            TaskKnowledgeBase.is_blacklisted.is_(True)
+        )
+        blacklisted_count = await db.scalar(blacklisted_query) or 0
+
+        return {
+            "total_active_examples": total_examples,
+            "total_blacklisted_examples": blacklisted_count,
+            "services_count": len(services_stats),
+            "services": services_stats,
+        }
+    except Exception as e:
+        logger.exception("Ошибка при сборе статистики базы знаний: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка при сборе статистики базы знаний: {e}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# 5. Прямая синхронизация базы знаний (In-Process Sync)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/sync", status_code=status.HTTP_200_OK)
+async def trigger_kb_sync(
+    payload: KBSyncRequest,
+    service_auth_b64: str = Depends(get_service_auth_b64),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Запуск прямой синхронизации закрытых заявок из IntraService в векторную базу pgvector.
+    Работает in-process в Core API без ожидания внешних сервисов.
+    """
+    try:
+        result = await sync_historical_closed_tasks(
+            auth_b64=service_auth_b64,
+            db=db,
+            days=payload.days,
+            limit=payload.limit,
+        )
+        return {
+            "status": "success",
+            "message": f"Синхронизация базы знаний завершена за последние {payload.days} дней.",
+            "details": result,
+        }
+    except Exception as e:
+        logger.exception("Ошибка при выполнении синхронизации базы знаний: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка синхронизации базы знаний: {e}",
+        )

@@ -14,10 +14,10 @@ from app.routers import (
     admin,
     admin_settings,
     ai,
-    ai_worker,
     auth,
     commands,
     events,
+    kb_admin,
     rules_admin,
     self_service,
     service_tasks,
@@ -140,8 +140,8 @@ app.include_router(commands.router)
 app.include_router(events.router)
 app.include_router(admin.router)
 app.include_router(admin_settings.router)
+app.include_router(kb_admin.router)
 app.include_router(self_service.router)
-app.include_router(ai_worker.router)
 
 # Статические файлы интерактивной презентации (при наличии)
 PRESENTATIONS_DIR = Path("/app/docs/presentations")

@@ -17,6 +17,7 @@
   * Прямое управление доменными объектами Active Directory по протоколу LDAPS (порт 636) через Linux Core API (`active_directory.py`).
   * Хранение конфигурации и зашифрованных учетных данных (Fernet) в таблице `system_settings` (`admin_settings.py`).
   * Резервный Fallback One-Liner генератор для экспресс-установки оборудования (`self_service.py`).
+  * Модерация и администрирование базы знаний RAG (просмотр прецедентов, Blacklisting, статистика, дерево услуг) в `kb_admin.py`.
   * Хостинг скомпилированного двухконтурного React 19 SPA (`/operator-panel` и `/admin`).
 
 * **Фоновый демон опроса (`app.poller`):**
