@@ -95,7 +95,7 @@ class Settings(BaseSettings):
         "http://localhost:4000/v1", description="Базовый URL для LiteLLM Proxy"
     )
     GEMINI_MODEL: str = Field(
-        "gemini-2.5-flash", description="Имя LLM модели для классификации и извлечения"
+        "gemini-3.5-flash", description="Имя LLM модели для классификации и извлечения"
     )
     EMBEDDING_MODEL: str = Field(
         "gemini-embedding-2", description="Имя модели эмбеддингов"
