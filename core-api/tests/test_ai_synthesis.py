@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.services.ai.schemas import DataCircuit, RoutedInferenceResponse
 from app.services.ai_synthesis import (
     _synthesize_deterministic_fallback,
@@ -145,7 +146,7 @@ async def test_synthesize_triage_resolution_green_ai_hub():
 
     mock_resp = RoutedInferenceResponse(
         circuit=DataCircuit.GREEN,
-        model="gemini-2.5-flash",
+        model=settings.GEMINI_MODEL,
         text="Здравствуйте! Шрифты успешно установлены. Проверьте отображение.",
         sanitized_entities_count=0,
         cached=False,

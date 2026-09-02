@@ -120,6 +120,14 @@ class Settings(BaseSettings):
     OLLAMA_NUM_PARALLEL: int = Field(
         2, description="Лимит параллельных сессий инференса Ollama"
     )
+    FASTEMBED_MODEL: str = Field(
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        description="Имя локальной модели FastEmbed для векторных эмбеддингов",
+    )
+    RERANKER_MODEL: str = Field(
+        "BAAI/bge-reranker-base",
+        description="Имя локальной Cross-Encoder модели для реранкинга кандидатов RAG",
+    )
 
     AUTO_REPLY_SERVICE_IDS: list[int] = Field(
         default=[], description="ID разделов IntraService для автоматических AI-ответов"

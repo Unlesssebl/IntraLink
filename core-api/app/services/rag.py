@@ -24,9 +24,12 @@ def get_local_embed_model():
         try:
             from fastembed import TextEmbedding
 
-            _fastembed_model = TextEmbedding(
-                model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+            model_name = getattr(
+                settings,
+                "FASTEMBED_MODEL",
+                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
             )
+            _fastembed_model = TextEmbedding(model_name=model_name)
         except Exception as e:
             logger.debug("Ошибка инициализации fastembed: %s", e)
     return _fastembed_model
@@ -39,9 +42,10 @@ def get_local_reranker_model():
         try:
             from fastembed import TextCrossEncoder
 
-            _fastembed_reranker = TextCrossEncoder(
-                model_name="BAAI/bge-reranker-base"
+            model_name = getattr(
+                settings, "RERANKER_MODEL", "BAAI/bge-reranker-base"
             )
+            _fastembed_reranker = TextCrossEncoder(model_name=model_name)
         except Exception as e:
             logger.debug(
                 "Ошибка инициализации FastEmbed TextCrossEncoder: %s", e

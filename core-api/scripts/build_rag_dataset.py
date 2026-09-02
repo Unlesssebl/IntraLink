@@ -14,7 +14,6 @@ from app.config import settings
 from app.services import intraservice
 from app.services.worker import get_redis_client
 from app.database.db import AsyncSessionLocal, TaskKnowledgeBase, init_db
-from app.services.embeddings import get_embedding
 
 # Настройка логирования
 logging.basicConfig(
