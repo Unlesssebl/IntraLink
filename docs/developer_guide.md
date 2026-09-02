@@ -112,23 +112,35 @@ uv run python helpdesk-cli/helpdesk.py summary 145001
 
 ---
 
-## 🧪 5. Тестирование и проверка качества
+## 🧪 5. Тестирование и учетные данные
 
 ```bash
 # Запуск всех юнит-тестов Core API:
-uv run pytest core-api/tests/ -v
+python -m pytest core-api/tests/ -v
 
 # Проверка сборки фронтенда intra-web:
 cd intra-web && npm run build
 ```
 
+### Тестовые учетные данные исполнителя (IntraService Sandbox):
+- **Логин:** `IntraService_dev`
+- **Пароль:** `85_wW8EuOyYaw+xv6`
+
 ---
 
-## 📝 6. Правила написания кода для AI-агентов
+## 📝 6. Стандарты написания кода (Backend Guidelines)
 
-1. **Строгая асинхронность:** Все сетевые и дисковые операции выполняются через `async`/`await` (`aiohttp`, `asyncpg`, `aioredis`).
-2. **Сессии aiohttp:** Используйте долгоживущие сессии `aiohttp.ClientSession`, привязанные к `lifespan` сервиса. Закрывайте сессии в `finally`.
-3. **Безопасность:** Не хардкодить пароли и токены. Не логировать сырые пароли пользователей.
+1. **Строгая асинхронность:** Все сетевые, дисковые и БД операции выполняются строго через `async`/`await`:
+   - База данных: `SQLAlchemy AsyncSession` (`asyncpg`).
+   - HTTP: долгоживущие сессии `aiohttp.ClientSession` с закрытием в `finally`.
+   - Redis: `redis.asyncio` (`aioredis`) с контекстными менеджерами `async with redis.pubsub() as pubsub:`.
+2. **Формат дат и часовые пояса:** 
+   - Внутреннее время всегда в **UTC**.
+   - При передаче временных фильтров в IntraService API (`CreatedMoreThan`, `ChangedMoreThan`) обязательно конвертировать дату в локальный TZ IntraService (`settings.INTRASERVICE_TZ`, по умолчанию `Europe/Moscow`) в формате `YYYY-MM-DD HH:MM`.
+3. **Безопасность:**
+   - Pre-Shared Key `X-Bot-Api-Key` проверять строго через `secrets.compare_digest` в `deps.py` для защиты от Timing Attacks.
+   - Не слушать на `0.0.0.0` вне Docker-контейнеров (при локальном запуске — только `127.0.0.1`).
+   - Доменные учетные данные шифровать Fernet перед сохранением в Redis.
 4. **Документация:**
    - Пути в документации — **только относительные** (`docs/architecture.md`, без `file:///...`).
-   - Документировать архитектурные решения и инварианты («ПОЧЕМУ»), не дублировать код внутренних эндпоинтов (для них источник правды — FastAPI OpenAPI `/docs`).
+   - Документировать архитектурные решения и инварианты («ПОЧЕМУ»), не дублировать автогенерируемый OpenAPI (`/docs`).

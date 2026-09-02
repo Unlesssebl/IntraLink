@@ -79,26 +79,7 @@ docs/
 
 ---
 
-## 3. Правила написания кода
-
-### Асинхронность
-Все I/O операции — **строго асинхронные** (`async`/`await`):
-- База данных: `SQLAlchemy AsyncSession`
-- HTTP: `aiohttp.ClientSession`
-- Redis: `aioredis` async API
-
-### Управление HTTP-сессиями aiohttp
-Используйте **долгоживущие** `aiohttp.ClientSession`, привязанные к `lifespan` приложения с обязательным закрытием в `finally`.
-
-### Управление соединениями Redis Pub/Sub
-Используйте контекстный менеджер `async with redis.pubsub() as pubsub:` и явный `await redis.close()` в `finally`.
-
-### Формат дат
-При передаче временных фильтров в API (`CreatedMoreThan`, `ChangedMoreThan`) используйте формат `YYYY-MM-DD HH:MM` в локальном TZ IntraService (`parse_api_date(date_str)`).
-
----
-
-## 4. Правила безопасности (запреты)
+## 3. Правила безопасности (запреты)
 
 | Запрет | Причина |
 |---|---|
@@ -111,20 +92,14 @@ docs/
 
 ---
 
-## 5. Аутентификация между сервисами
+## 4. Аутентификация между сервисами
 
-- **Бот → Core API:** Pre-shared ключ в заголовке `X-Bot-Api-Key: <key>`. Проверка в `core-api/app/routers/deps.py`.
+- **Бот / CLI → Core API:** Pre-shared ключ в заголовке `X-Bot-Api-Key: <key>`. Проверка в `core-api/app/routers/deps.py`.
 - **Core API → IntraService:** Basic Auth (`Authorization: Basic <base64(login:password)>`).
 
 ---
 
-## 6. Тесты
+## 5. Документация для разработки (Developer Guide)
 
-Тесты находятся в `core-api/tests/`. Запуск:
-```bash
-python -m pytest tests/ -v
-```
-
-### Учетные данные исполнителя Helpdesk (intraservice)
-Логин: `IntraService_dev`
-Пароль: `85_wW8EuOyYaw+xv6`
+Подробные стандарты написания бэкенд-кода (`async`/`await`, `aiohttp`, `SQLAlchemy AsyncSession`), часовые пояса, запуск тестов `pytest` и тестовые учетные записи зафиксированы в:
+👉 [`docs/developer_guide.md`](docs/developer_guide.md)
