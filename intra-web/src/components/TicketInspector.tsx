@@ -597,31 +597,31 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-3 text-[13px]">
-            <div>
-              <span className="text-neutral-400 block text-[11px] font-medium">ФИО заявителя</span>
-              <span className="text-neutral-900 dark:text-neutral-100 font-semibold">{ticket.requesterName}</span>
-            </div>
-            <div>
-              <span className="text-neutral-400 block text-[11px] font-medium">Телефон</span>
-              <span className="text-neutral-900 dark:text-neutral-100 font-mono font-semibold">{ticket.requesterPhone || details?.phone || '—'}</span>
-            </div>
-            <div>
-              <span className="text-neutral-400 block text-[11px] font-medium">Кабинет / Отдел</span>
-              <span className="text-neutral-800 dark:text-neutral-200 font-medium">
-                {[ticket.room || details?.room, ticket.department || details?.department].filter(Boolean).join(' · ') || '—'}
+          <div className="flex flex-wrap gap-2 text-[13px]">
+            <div className="flex-1 min-w-[180px] bg-neutral-50/90 dark:bg-neutral-800/50 border border-neutral-200/80 dark:border-neutral-800 rounded-lg p-2.5">
+              <span className="text-neutral-400 block text-[11px] font-medium mb-0.5">ФИО заявителя</span>
+              <span className="text-neutral-900 dark:text-neutral-100 font-semibold leading-tight block truncate" title={ticket.requesterName}>
+                {ticket.requesterName || '—'}
               </span>
             </div>
-            <div>
-              <span className="text-neutral-400 block text-[11px] font-medium">Имя ПК / Хост</span>
+
+            <div className="flex-1 min-w-[130px] bg-neutral-50/90 dark:bg-neutral-800/50 border border-neutral-200/80 dark:border-neutral-800 rounded-lg p-2.5">
+              <span className="text-neutral-400 block text-[11px] font-medium mb-0.5">Телефон</span>
+              <span className="text-neutral-900 dark:text-neutral-100 font-mono font-semibold block">
+                {ticket.requesterPhone || details?.phone || '—'}
+              </span>
+            </div>
+
+            <div className="flex-1 min-w-[160px] bg-neutral-50/90 dark:bg-neutral-800/50 border border-neutral-200/80 dark:border-neutral-800 rounded-lg p-2.5">
+              <span className="text-neutral-400 block text-[11px] font-medium mb-0.5">Имя ПК / Хост</span>
               <div className="flex items-center gap-1.5">
-                <span className="font-mono font-bold bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 rounded-md text-[12px] text-neutral-900 dark:text-neutral-100">
+                <span className="font-mono font-bold bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 px-2 py-0.5 rounded text-[12px] text-neutral-900 dark:text-neutral-100 truncate">
                   {ticket.host || details?.pc_name || 'Не указан'}
                 </span>
                 {ticket.host && (
                   <button
                     onClick={() => copyToClipboard(ticket.host)}
-                    className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer p-0.5"
+                    className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer p-0.5 shrink-0"
                     title="Скопировать имя ПК"
                   >
                     <svg width="13" height="13" viewBox="0 0 11 11" fill="none">
@@ -632,9 +632,19 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                 )}
               </div>
             </div>
-            <div className="col-span-2">
-              <span className="text-neutral-400 block text-[11px] font-medium">Исполнители</span>
-              <span className="text-neutral-800 dark:text-neutral-200 font-medium text-[12.5px]">
+
+            {([ticket.room || details?.room, ticket.department || details?.department].some(Boolean)) && (
+              <div className="flex-1 min-w-[180px] bg-neutral-50/90 dark:bg-neutral-800/50 border border-neutral-200/80 dark:border-neutral-800 rounded-lg p-2.5">
+                <span className="text-neutral-400 block text-[11px] font-medium mb-0.5">Кабинет / Отдел</span>
+                <span className="text-neutral-800 dark:text-neutral-200 font-medium block truncate" title={[ticket.room || details?.room, ticket.department || details?.department].filter(Boolean).join(' · ')}>
+                  {[ticket.room || details?.room, ticket.department || details?.department].filter(Boolean).join(' · ')}
+                </span>
+              </div>
+            )}
+
+            <div className="w-full bg-neutral-50/90 dark:bg-neutral-800/50 border border-neutral-200/80 dark:border-neutral-800 rounded-lg p-2.5">
+              <span className="text-neutral-400 block text-[11px] font-medium mb-0.5">Исполнители</span>
+              <span className="text-neutral-800 dark:text-neutral-200 font-medium text-[12.5px] block">
                 {ticket.executors || 'Не назначен'}
               </span>
             </div>

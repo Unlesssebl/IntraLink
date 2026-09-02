@@ -39,6 +39,7 @@ docs/
 - `poller` (`core-api/app/poller.py`) — автономный фоновый демон опроса IntraService с распределенным Leader Lock.
 - `execution-worker/` — фоновый headless-демон исполнения в среде Windows (Active Directory, WinRM, WMI, принтеры).
 - `helpdesk-cli/` — **машинный инструментарий и SDK исключительно для AI-агента Antigravity (AGY)**.
+- `shared/` — **единый пакет общих утилит (SSOT)** нормализации оборудования (`normalizer.py`), сетевой экспресс-диагностики (`diagnostics.py`) и сериализации (`json_utils.py`).
 - `telegram-bot/` — aiogram 3.x (мобильный пейджер + HitL кнопки одобрения).
 
 Каналы связи:
@@ -72,6 +73,12 @@ docs/
 
 ### Жадная загрузка (Eager Loading) кастомных полей
 `check_updates` использует жадную загрузку кастомных полей (`include=customfields`) при массовом опросе задач для исключения узких мест при диспетчеризации.
+
+### Единый пакет shared (Single Source of Truth)
+Все общие алгоритмы нормализации сетевых устройств (`normalizer.py`), экспресс-диагностики (`diagnostics.py`) и сериализации (`json_utils.py`) живут строго в пакете `shared/`. Создание изолированных копий этих модулей в `helpdesk-cli` или `execution-worker` запрещено.
+
+### Изоляция Poller Lifecycle
+Встроенный APScheduler в `core-api` управляется параметром `ENABLE_INTERNAL_SCHEDULER` (по умолчанию `False`). Опрос очереди IntraService в Docker выполняет исключительно демон `poller` (`app.poller`) с распределенным Leader Lock, предотвращая дублирование запросов.
 
 ### Специализированные навыки (Skills)
 - **Установка принтеров и WinRM/WMI:** [`.agents/skills/printer-orchestration/SKILL.md`](.agents/skills/printer-orchestration/SKILL.md)
