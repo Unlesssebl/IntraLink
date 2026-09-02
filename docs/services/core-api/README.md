@@ -1,65 +1,66 @@
-# Core API Gateway & Background Worker
+# ⚡ Core API Gateway & Poller Daemon (`core-api`)
 
-Сервис `core-api` — центральный шлюз системы IntraLink на базе **FastAPI**, **SQLAlchemy (Async)** и **APScheduler**.
-
----
-
-## 📌 Основные функции
-
-1. **API Gateway к IntraService:**
-   * Проксирование и инкапсуляция запросов к REST API IntraService.
-   * Безопасное хранение зашифрованных учетных данных пользователей (Fernet).
-   * Авторизация входящих запросов от Telegram-бота по заголовку `X-Bot-Api-Key`.
-   * Авторизация веб-панели управления по JWT-сессиям (`admin_session` cookie).
-
-2. **Фоновый воркер опроса (`app/services/worker.py`):**
-   * Периодический опрос IntraService от имени сервисного аккаунта (`check_updates`).
-   * Кэширование каталога услуг в Redis (`worker:service_catalog`).
-   * Публикация событий о новых задачах и изменениях статусов в Redis Pub/Sub (`task_events`).
-   * AI-классификация новых заявок и автоматическая маршрутизация.
-   * Управление процессами автоматической установки принтеров.
-
-3. **Раздача встроенной панели управления (Admin UI):**
-   * Хостинг скомпилированного SPA (`/admin`) из папки `static/admin/`.
+Центральный шлюз состояния, правил и интеграции системы **IntraLink** на базе **FastAPI**, **SQLAlchemy 2.0 (Async)**, **pgvector** и **Redis**.
 
 ---
 
-## 📖 Контракт API (OpenAPI / Swagger)
+## 📌 Зона ответственности
 
-Актуальный контракт API генерируется автоматически фреймворком FastAPI:
+* **Единый источник правды (SSOT):**
+  * Проксирование и изоляция вызовов к REST API IntraService.
+  * Безопасное хранение зашифрованных учетных данных пользователей (Fernet).
+  * Централизованный Rule Engine и хранение канонических шаблонов триажа (PostgreSQL).
+  * Двухэтапный Hybrid RAG (`FastEmbed` + `pgvector` HNSW + Cross-Encoder Reranker).
+  * Многоконтурный AI Hub (DLP-маскирование, Redis PII Vault, роутинг RED/YELLOW/GREEN).
+  * Защитные механизмы: `Distributed Host Concurrency Locks` (`safety.py`) и `Dead Man's Switch`.
+  * Фоновая экспресс-телеметрия хостов с нулевой задержкой (`host_telemetry.py`).
+  * Хостинг скомпилированного React 19 SPA (`/admin`).
+
+* **Фоновый демон опроса (`app.poller`):**
+  * Автономный процесс (отдельный Docker-контейнер), опрашивающий IntraService от сервисного аккаунта.
+  * Распределенный Leader Lock в Redis (`lock:poller_leader`, TTL 15s) для защиты от Split-Brain при масштабировании.
+  * Гарантированная публикация событий в Redis Streams (`stream:intraservice_events`).
+
+---
+
+## 📖 Контракт API (Self-Documenting)
+
+Актуальный контракт API поддерживается автоматически фреймворком FastAPI на основе Pydantic-схем:
 * **Интерактивная документация Swagger UI:** `http://localhost:8000/docs`
 * **Спецификация OpenAPI JSON:** `http://localhost:8000/openapi.json`
 * **ReDoc:** `http://localhost:8000/redoc`
 
-Pydantic-схемы запросов и ответов находятся в `app/models/schemas.py`, а роутеры — в `app/routers/`:
-* `auth.py` — авторизация пользователей (`/api/v1/auth/login`, `/logout`).
-* `tasks.py` — операции с заявками (`/api/v1/tasks`, комментарии, статусы, трудозатраты).
-* `users.py` — профиль пользователя (`/api/v1/users/me`).
-* `service_tasks.py` — сервисные операции (`/api/v1/service/...`).
-* `ai.py` — централизованный AI Hub с многоконтурным роутингом (`/api/v1/ai/generate`, `/sanitize-preview`, `/summarize`, `/analyze`).
-* `triage.py` — пакетный триаж очереди, дедупликация и RAG (`/api/v1/triage/batch`, `/apply`, `/rag/*`).
-* `admin.py` — API веб-панели администратора (`/admin/api/...`).
-* `ai_worker.py` — управление RAG-базой и AI-классификацией (`/admin/api/ai-worker/...`).
+---
+
+## 🔐 Аутентификация
+
+* **Внутренние сервисы (`telegram-bot`, `helpdesk-cli`):** Pre-shared ключ в заголовке `X-Bot-Api-Key: <key>`.
+* **Веб-панель управления (`/admin`):** HTTP-only сессионная cookie с JWT-токеном (`admin_session`), получаемая через `POST /admin/api/login`.
+* **Внешний IntraService:** Basic Auth (`Authorization: Basic <base64>`).
 
 ---
 
 ## ⚙️ Конфигурация
 
-Все параметры конфигурации описаны в `app/config.py` и считываются из переменных окружения или `.env`:
-* `INTRASERVICE_URL` — базовый URL инсталляции IntraService.
-* `DATABASE_URL` — строка подключения PostgreSQL (`postgresql+asyncpg://...`).
-* `REDIS_URL` — URL Redis брокера (`redis://localhost:6379/0`).
-* `BOT_API_KEY` — pre-shared ключ для взаимодействия с Telegram-ботом.
-* `ENCRYPTION_KEY` — ключ симметричного шифрования Fernet для паролей в БД.
-* `INTRASERVICE_SERVICE_LOGIN` / `INTRASERVICE_SERVICE_PASSWORD` — сервисный аккаунт для фонового опроса.
-* `JWT_SECRET` — ключ для подписи токенов администратора.
-* `LITELLM_BASE_URL` / `LITELLM_API_KEY` — параметры шлюза LLM и эмбеддингов.
+Все переменные окружения задокументированы с примерами значений в файле:
+👉 **[`core-api/.env.example`](../../../core-api/.env.example)**
 
 ---
 
-## 🧪 Запуск тестов
+## 🚀 Запуск сервиса
 
+### Через Docker Compose (вместе с poller, postgres, redis, ollama):
+```bash
+docker compose up -d
+```
+
+### Локально для разработки:
 ```bash
 cd core-api
-python -m pytest tests/ -v
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+### Запуск тестов:
+```bash
+uv run pytest core-api/tests/ -v
 ```

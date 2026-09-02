@@ -10,12 +10,15 @@
 
 Проект построен по **модульной сервисной архитектуре с единым источником правды (Single Source of Truth) в Core API**:
 
-| Сервис / Модуль | Технологии | Роль |
+| Сервис / Модуль | Стек технологий | Роль в системе |
 |---|---|---|
-| **Core API Gateway** | FastAPI, SQLAlchemy 2.0 (async), APScheduler, Redis, pgvector | Единый шлюз к IntraService API, хранилище состояния, движок правил (Rule Engine), централизованный RAG сервис, фоновый опрос очереди и хостинг веб-панели управления (`intra-web`) |
-| **Telegram Bot** | aiogram 3.x, aiohttp | Мобильный интерфейс оператора и заявителей, доставка Push-уведомлений через Redis Streams |
-| **Intra Web (Admin UI)** | React 19, Vite, Tailwind CSS v4 | Встроенная веб-панель мониторинга заявок, очередей и управления доступом (`/admin`) |
-| **Helpdesk Agent (Execution Node)** | Python, aiohttp, PowerShell, WinRM | Интерактивный CLI-кокпит оператора в среде Antigravity (AGY). Делегирует логику данных в Core API, исполняя физические операции в Windows-домене (AD WLAN, создание УЗ, диагностика хостов) |
+| **Core API Gateway** | FastAPI, SQLAlchemy 2.0 (async), pgvector, Redis | Единый шлюз состояния, движок правил (Rule Engine), AI Hub (DLP/PII Vault), семантический RAG, хостинг React SPA (`/admin`) |
+| **Poller Service** | Python, aiohttp, Redis Leader Lock | Автономный фоновый демон опроса IntraService с распределенным замком лидера (`lock:poller_leader`) против Split-Brain |
+| **Execution Worker** | Python, Redis Streams, PowerShell, WinRM | Windows Headless Daemon исполнения задач в домене (`WLAN-WORKNET`, создание УЗ, принтеры) через Consumer Group `execution_group` |
+| **Helpdesk CLI** | Python, aiohttp, Typer | Машинный инструментарий (Tooling SDK) исключительно для AI-агента Antigravity (AGY) при обработке слэш-команд |
+| **Shared (SSOT)** | Python, orjson | Единый пакет общих алгоритмов нормализации оборудования (`normalizer.py`), экспресс-диагностики (`diagnostics.py`) и сериализации |
+| **Telegram Bot** | aiogram 3.x, aiohttp | Мобильный пейджер и HITL-согласования с гарантированной доставкой через Redis Streams (`stream:intraservice_events`) и `XAUTOCLAIM` |
+| **Intra Web (Admin UI)** | React 19, Vite, Tailwind CSS v4 | Встроенная веб-панель мониторинга очередей, логов и управления доступом (`/admin`) |
 
 ---
 
@@ -24,91 +27,79 @@
 ```mermaid
 flowchart TB
     classDef userStyle fill:#2d3748,stroke:#4a5568,stroke-width:2px,color:#fff;
-    classDef telegramStyle fill:#3182ce,stroke:#2b6cb0,stroke-width:2px,color:#fff;
-    classDef handlerStyle fill:#dd6b20,stroke:#c05621,stroke-width:2px,color:#fff;
-    classDef serviceStyle fill:#319795,stroke:#2c7a7b,stroke-width:2px,color:#fff;
+    classDef clientStyle fill:#3182ce,stroke:#2b6cb0,stroke-width:2px,color:#fff;
+    classDef coreStyle fill:#1a365d,stroke:#2b6cb0,stroke-width:2px,color:#fff;
+    classDef workerStyle fill:#22543d,stroke:#2f855a,stroke-width:2px,color:#fff;
     classDef dbStyle fill:#805ad5,stroke:#6b46c1,stroke-width:2px,color:#fff;
-    classDef externalStyle fill:#e53e3e,stroke:#9b2c2c,stroke-width:2px,color:#fff;
+    classDef extStyle fill:#742a2a,stroke:#9b2c2c,stroke-width:2px,color:#fff;
     classDef redisStyle fill:#c53030,stroke:#9b2c2c,stroke-width:2px,color:#fff;
 
-    subgraph Clients ["Пользовательские интерфейсы"]
+    subgraph Clients ["Интерфейсные слои"]
         User(["👤 Пользователь в Telegram"]):::userStyle
         Admin_Web(["👨‍💻 Оператор в Web UI"]):::userStyle
-        Admin_CLI(["⚡ Инженер в Antigravity CLI"]):::userStyle
+        AGY_Agent(["🤖 AI-агент Antigravity (AGY)"]):::userStyle
     end
 
-    subgraph Interface_Layer ["Слой интерфейсов"]
-        TG_API["💬 Telegram Bot API"]:::telegramStyle
-        Intra_Web["🖥️ Intra Web SPA (/admin)"]:::serviceStyle
-        HD_CLI["🚀 helpdesk.py (CLI)"]:::serviceStyle
+    subgraph Interface_Layer ["Слой интерфейсов и SDK"]
+        TG_Bot["💬 Telegram Bot (aiogram 3.x)"]:::clientStyle
+        Intra_Web["🖥️ Intra Web SPA (/admin)"]:::clientStyle
+        HD_CLI["🛠️ helpdesk-cli (AGY Tooling SDK)"]:::clientStyle
     end
 
-    subgraph Bot_Service ["Telegram Bot Service"]
-        B_Main["aiogram Bot"]:::serviceStyle
-        B_Client["api_client.py"]:::serviceStyle
+    subgraph Core_Layer ["Core API Gateway & Poller (SSOT)"]
+        API_Main["⚡ FastAPI Gateway Hub"]:::coreStyle
+        Poller_Daemon["👑 Poller Daemon (Leader Lock)"]:::coreStyle
+        Rule_Engine["⚙️ Rule Engine & SSOT Templates"]:::coreStyle
+        AI_Hub["🛡️ AI Hub & DLP Sanitizer"]:::coreStyle
+        RAG_Engine["🧠 Hybrid RAG (pgvector + FastEmbed)"]:::coreStyle
     end
 
-    subgraph Helpdesk_Agent_Node ["Helpdesk Agent & Execution Node (Windows)"]
-        HD_Client["core_api_client.py<br/>(HTTP REST)"]:::serviceStyle
-        HD_Diag["diagnostics.py<br/>(Ping, DNS, SMB:445)"]:::serviceStyle
-        
-        subgraph Executors ["⚡ executors/ (Локальное исполнение)"]
-            EX_AD["ad.py<br/>(WLAN-WORKNET / New User)"]:::serviceStyle
-            EX_PRN["printers.py<br/>(WinRM / SMB Driver Store)"]:::serviceStyle
-        end
+    subgraph Execution_Layer ["Слой исполнения (Windows Node)"]
+        Win_Worker["⚙️ Execution Worker (Consumer Group)"]:::workerStyle
+        AD_Exec["🏢 AD Executor (WLAN, User)"]:::workerStyle
+        Prn_Exec["🖨️ Printer Executor (WinRM, SMB)"]:::workerStyle
     end
 
-    subgraph Core_API_Service ["Core API Service (FastAPI / Single Source of Truth)"]
-        direction TB
-        API_Main["FastAPI Router Hub"]:::serviceStyle
-        
-        subgraph Routers ["API Роутеры (/api/v1/*)"]
-            R_Triage["triage.py<br/>(Batch, Apply, Duplicates, RAG)"]:::handlerStyle
-            R_Tasks["tasks.py & service_tasks.py"]:::handlerStyle
-            R_Auth["auth.py & admin.py"]:::handlerStyle
-        end
-
-        subgraph Core_Engines ["Централизованные сервисы"]
-            ENG_Rules["RuleEngine & Templates<br/>(Движок правил триажа)"]:::serviceStyle
-            ENG_RAG["rag.py<br/>(pgvector семантический поиск)"]:::dbStyle
-            IS_Client["intraservice.py<br/>(Circuit Breaker + Normalizer)"]:::serviceStyle
-            Worker["worker.py<br/>(APScheduler + Redis Streams)"]:::serviceStyle
-        end
-    end
-
-    subgraph Storage_Layer ["Слой данных и сообщений"]
-        Postgres_DB[("PostgreSQL 16 (Data + pgvector RAG)")]:::dbStyle
-        Redis_Broker[("Redis Streams & Cache")]:::redisStyle
+    subgraph Storage_Layer ["Слой данных и очередей"]
+        Postgres_DB[("PostgreSQL 16 (pgvector HNSW)")]:::dbStyle
+        Redis_Broker[("Redis 7 (Streams, Locks, PII Vault)")]:::redisStyle
+        Ollama_Local[("Ollama (Qwen2.5:1.5B / bge-m3)")]:::dbStyle
     end
 
     subgraph External_Infrastructure ["Корпоративная инфраструктура"]
-        IS_API["🌐 IntraService REST API"]:::externalStyle
-        AD_Domain["🏢 Active Directory / WinRM (corporate.loc)"]:::externalStyle
+        IS_API["🌐 IntraService REST API"]:::extStyle
+        AD_Domain["🏢 Active Directory / WinRM (corporate.loc)"]:::extStyle
     end
 
-    %% Связи клиентов
-    User <--> TG_API
-    TG_API <--> B_Main
-    B_Main --> B_Client
-    B_Client <-->|HTTP REST (X-Bot-Api-Key)| API_Main
-
+    %% Клиенты к интерфейсам
+    User <--> TG_Bot
     Admin_Web <--> Intra_Web
-    Intra_Web <-->|REST API / JWT| API_Main
+    AGY_Agent <--> HD_CLI
 
-    Admin_CLI <--> HD_CLI
-    HD_CLI --> HD_Client & HD_Diag & Executors
-    HD_Client <-->|HTTP REST (X-Bot-Api-Key)| API_Main
-    Executors <-->|PowerShell / WinRM / AD| AD_Domain
+    %% Интерфейсы к Core API
+    TG_Bot <-->|HTTP REST (X-Bot-Api-Key)| API_Main
+    Intra_Web <-->|REST API / JWT Session| API_Main
+    HD_CLI <-->|HTTP REST (X-Bot-Api-Key)| API_Main
 
-    %% Связи внутри Core API
-    API_Main --> Routers
-    Routers --> ENG_Rules & ENG_RAG & IS_Client
-    Worker --> IS_Client & Redis_Broker
+    %% Внутри Core
+    API_Main --> Rule_Engine & AI_Hub & RAG_Engine
+    Poller_Daemon -->|Leader Lock / SET NX EX| Redis_Broker
+    Poller_Daemon -->|Polling / Service Account| IS_API
+    Poller_Daemon -->|stream:intraservice_events| Redis_Broker
 
-    %% Связи с хранилищем и внешними системами
-    ENG_RAG <--> Postgres_DB
-    IS_Client <--> IS_API
-    Redis_Broker -->|Events| B_Main
+    %% Core к хранилищу
+    RAG_Engine <--> Postgres_DB
+    API_Main <--> Postgres_DB
+    AI_Hub -->|RED Zone| Ollama_Local
+    API_Main -->|Host Locks / Dead Man's Switch| Redis_Broker
+    API_Main -->|stream:execution_queue| Redis_Broker
+
+    %% Очереди исполнения и доставки
+    Redis_Broker -->|stream:intraservice_events (XAUTOCLAIM)| TG_Bot
+    Redis_Broker -->|stream:execution_queue| Win_Worker
+    Win_Worker --> AD_Exec & Prn_Exec
+    AD_Exec & Prn_Exec --> AD_Domain
+    Win_Worker -->|HTTP REST / Complete| API_Main
 ```
 
 ---

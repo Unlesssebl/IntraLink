@@ -75,7 +75,7 @@ description: >-
 ### Этап 1. Сбор контекста и профилирование (Zero-Assumption Inspection)
 1. Агент анализирует ключевые манифесты и точки входа:
    - Конфигурации зависимостей: `pyproject.toml`, `requirements.txt`, `Pipfile`, `docker-compose.yml`.
-   - Архитектурные манифесты: [`docs/architecture.md`](docs/architecture.md).
+   - Архитектурные манифесты: [`docs/architecture.md`](../../../docs/architecture.md).
    - Точки входа сервисов и воркеров (`main.py`, `worker.py`, `orchestrator.py`).
 2. Сопоставляет текущую реализацию с целевыми метриками (Latency, Concurrency, Memory Footprint, MTBF).
 

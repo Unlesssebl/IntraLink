@@ -106,7 +106,47 @@ docs/
 
 ---
 
-## 5. Документация для разработки (Developer Guide)
+## 5. Инженерные инварианты кодогенерации (для AI-кодера)
 
-Подробные стандарты написания бэкенд-кода (`async`/`await`, `aiohttp`, `SQLAlchemy AsyncSession`), часовые пояса, запуск тестов `pytest` и тестовые учетные записи зафиксированы в:
-👉 [`docs/developer_guide.md`](docs/developer_guide.md)
+1. **Асинхронность и неблокирующий I/O:**
+   - Все контроллеры FastAPI и сервисы пишутся строго асинхронно (`async def`).
+   - Любые блокирующие операции (запуск subprocess/PowerShell, WMI-запросы, тяжелые расчеты) **обязательно** выносить в поток через `await asyncio.to_thread(...)`.
+2. **SQLAlchemy 2.0 (Async):**
+   - Использовать исключительно современный синтаксис 2.0: `await session.execute(select(...))` и `scalars()`.
+   - Запрещено использовать устаревший синтаксис `session.query(...)`.
+   - Сессии создавать через `AsyncSessionLocal()` с `expire_on_commit=False`.
+3. **Pydantic v2:**
+   - Использовать `model_validate(...)`, `model_dump(mode="json")`.
+   - Не использовать устаревшие методы Pydantic v1 (`.dict()`, `.parse_obj()`).
+4. **Единый пакет сериализации и утилит (SSOT):**
+   - Для сериализации JSON использовать `shared.json_utils` (`json_dumps`, `json_loads` на базе `orjson`).
+   - Для парсинга хостов и сетевых проверок импортировать `shared.normalizer` и `shared.diagnostics`.
+5. **Современная типизация Python 3.11+:**
+   - Использовать встроенные объединения типов (`str | None` вместо `Optional[str]`) и стандартные коллекции (`list[dict]`, `dict[str, Any]` вместо `typing.List`, `typing.Dict`).
+6. **Правила обработки ошибок:**
+   - В API-роутерах выбрасывать `HTTPException(status_code=..., detail=...)`.
+   - В фоновых демонах (`poller`, `execution-worker`) непредвиденные исключения перехватывать через `try...except Exception as e: logger.exception(...)`, предотвращая аварийное падение процесса.
+
+---
+
+## 6. Верификация и запуск тестов
+
+> [!IMPORTANT]
+> При запуске тестов `core-api` **обязательно** задавать `PYTHONPATH`, включающий корень монорепозитория и `core-api` (для разрешения импортов `shared` и `app`):
+
+```powershell
+# Запуск тестов Core API (PowerShell / Windows)
+$env:PYTHONPATH=".;core-api"; uv run pytest core-api/tests/ -v
+
+# Запуск тестов Shared пакета
+uv run pytest shared/ -v
+```
+
+---
+
+## 7. Документация и правила подсистем
+
+- **Специализированные правила кодинга:** [`.agents/rules/backend.md`](.agents/rules/backend.md)
+- **Правила и рецепты тестирования:** [`.agents/rules/testing.md`](.agents/rules/testing.md)
+- **Архитектура системы:** [`docs/architecture.md`](docs/architecture.md)
+- **Руководство разработчика:** [`docs/developer_guide.md`](docs/developer_guide.md)

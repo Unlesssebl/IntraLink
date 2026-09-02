@@ -115,5 +115,5 @@ graph TD
 
 ## 7. Безопасность и разграничение доступа
 
-- Доступ ко всем эндпоинтам `/admin/api/*` защищен HttpOnly JWT-токеном сессии `admin_session`, валидируемым через [`verify_admin_jwt`](../../core-api/README.md).
+- Доступ ко всем эндпоинтам `/admin/api/*` защищен HttpOnly JWT-токеном сессии `admin_session`, валидируемым через [`verify_admin_jwt`](../core-api/README.md).
 - Пароли и сервисные ключи сохраняются в Redis исключительно в зашифрованном виде (Fernet через ключ `settings.ENCRYPTION_KEY`).

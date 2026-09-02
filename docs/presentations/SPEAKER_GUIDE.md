@@ -3,9 +3,9 @@
 Данный документ содержит полный структурированный сценарий выступления, тезисы, числовые аргументы, описание реальных экранов системы и блок ответов на вопросы руководства / ИТ-директора к презентации **IntraLink AI**.
 
 Файлы презентации:
-- **PowerPoint (.pptx):** [`docs/presentations/IntraLink_AI_Presentation_Latest.pptx`](file:///c:/Users/belikov.a/Desktop/%D0%90%D0%BA%D1%82%D1%8B,%20%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D1%8B/Work/%21Projects/intraservice-tg-bot/docs/presentations/IntraLink_AI_Presentation_Latest.pptx)
-- **Интерактивная Web-версия (HTML5):** [`docs/presentations/index.html`](file:///c:/Users/belikov.a/Desktop/%D0%90%D0%BA%D1%82%D1%8B,%20%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D1%8B/Work/%21Projects/intraservice-tg-bot/docs/presentations/index.html)
-- **Папка скриншотов:** [`docs/presentations/screenshots/`](file:///c:/Users/belikov.a/Desktop/%D0%90%D0%BA%D1%82%D1%8B,%20%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D1%8B/Work/%21Projects/intraservice-tg-bot/docs/presentations/screenshots/)
+- **PowerPoint (.pptx):** [`IntraLink_AI_Presentation_Latest.pptx`](IntraLink_AI_Presentation_Latest.pptx)
+- **Интерактивная Web-версия (HTML5):** [`index.html`](index.html)
+- **Папка скриншотов:** [`screenshots/`](screenshots/)
 
 ---
 
