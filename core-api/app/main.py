@@ -1,8 +1,11 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.database.db import init_db
 from app.routers import admin, auth, service_tasks, tasks, users, ai_worker, triage, execution
@@ -60,6 +63,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Разрешение CORS для локальных веб-клиентов и интерфейсов
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^https?://.*$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Подключение роутеров с единым префиксом версии API v1
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(tasks.router, prefix="/api/v1")
@@ -69,6 +81,15 @@ app.include_router(triage.router)
 app.include_router(execution.router)
 app.include_router(admin.router)
 app.include_router(ai_worker.router)
+
+# Статические файлы интерактивной презентации (при наличии)
+PRESENTATIONS_DIR = Path("/app/docs/presentations")
+if not PRESENTATIONS_DIR.exists():
+    PRESENTATIONS_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "presentations"
+
+if PRESENTATIONS_DIR.exists():
+    app.mount("/presentation", StaticFiles(directory=str(PRESENTATIONS_DIR), html=True), name="presentation")
+    app.mount("/presentations", StaticFiles(directory=str(PRESENTATIONS_DIR), html=True), name="presentations")
 
 
 @app.get("/", include_in_schema=False)

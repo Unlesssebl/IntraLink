@@ -30,6 +30,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Копирование исходного кода бэкенда
 COPY core-api/ .
+COPY docs/presentations/ ./docs/presentations/
 
 # Копирование скомпилированного singlefile HTML из этапа сборки фронтенда
 COPY --from=frontend-builder /app/core-api/app/static/admin/index.html ./app/static/admin/index.html

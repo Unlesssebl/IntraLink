@@ -12,7 +12,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
 
   redis:
     image: redis:7-alpine
@@ -22,14 +22,14 @@ services:
     volumes:
       - redis_data:/data
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
 
   ollama:
     image: ollama/ollama:latest
     container_name: intralink_ollama
     restart: always
     ports:
-      - "11434:11434"
+      - "127.0.0.1:${OLLAMA_PORT:-11435}:11434"
     volumes:
       - ollama_data:/root/.ollama
     environment:
@@ -52,6 +52,8 @@ services:
     restart: always
     ports:
       - "${CORE_API_PORT:-8000}:8000"
+    volumes:
+      - ./docs/presentations:/app/docs/presentations:ro
     env_file:
       - ./core-api/.env
     environment:

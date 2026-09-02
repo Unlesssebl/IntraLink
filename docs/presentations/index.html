@@ -1,0 +1,1688 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IntraLink AI — Интеллектуальная трансформация Helpdesk 1-й линии</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #06090e;
+            --bg-card: rgba(15, 23, 42, 0.82);
+            --bg-card-hover: rgba(30, 41, 59, 0.92);
+            --border-card: rgba(255, 255, 255, 0.09);
+            --border-card-hover: rgba(255, 255, 255, 0.22);
+            
+            --text-title: #ffffff;
+            --text-body: #cbd5e1;
+            --text-muted: #94a3b8;
+            
+            --accent-blue: #38bdf8;
+            --accent-blue-glow: rgba(56, 189, 248, 0.3);
+            --accent-green: #34d399;
+            --accent-green-glow: rgba(52, 211, 153, 0.3);
+            --accent-amber: #fbbf24;
+            --accent-amber-glow: rgba(251, 191, 36, 0.3);
+            --accent-rose: #f87171;
+            --accent-rose-glow: rgba(248, 113, 113, 0.3);
+            --accent-purple: #c084fc;
+            --accent-purple-glow: rgba(192, 132, 252, 0.3);
+            
+            --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+            --radius-main: 16px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-base);
+            color: var(--text-title);
+            font-family: var(--font-sans);
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            display: flex;
+            flex-direction: column;
+            user-select: none;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ─── Background Ambient Mesh ─── */
+        .ambient-bg {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;
+            overflow: hidden;
+            background-color: var(--bg-base);
+        }
+
+        .ambient-grid {
+            position: absolute;
+            inset: 0;
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 50px 50px;
+        }
+
+        .ambient-glow {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(100px);
+            animation: ambientFloat 14s ease-in-out infinite alternate;
+        }
+
+        .glow-1 {
+            width: 650px; height: 650px;
+            background: radial-gradient(circle, rgba(56, 189, 248, 0.22), transparent 70%);
+            top: -160px; left: -100px;
+            animation-delay: 0s;
+        }
+
+        .glow-2 {
+            width: 550px; height: 550px;
+            background: radial-gradient(circle, rgba(192, 132, 252, 0.18), transparent 70%);
+            bottom: -120px; right: -80px;
+            animation-delay: -5s;
+        }
+
+        .glow-3 {
+            width: 450px; height: 450px;
+            background: radial-gradient(circle, rgba(52, 211, 153, 0.14), transparent 70%);
+            top: 45%; left: 48%;
+            animation-delay: -9s;
+        }
+
+        @keyframes ambientFloat {
+            0% { transform: translate(0, 0) scale(1); }
+            100% { transform: translate(45px, -35px) scale(1.1); }
+        }
+
+        /* ─── Progress Bar ─── */
+        .progress-line {
+            height: 3px;
+            background: rgba(255, 255, 255, 0.06);
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 300;
+        }
+
+        .progress-active {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple), var(--accent-green));
+            width: 6.66%;
+            transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.6);
+        }
+
+        /* ─── Slide Deck Structure ─── */
+        .presentation-deck {
+            flex: 1;
+            position: relative;
+            width: 100%;
+            overflow: hidden;
+            z-index: 1;
+        }
+
+        .slide {
+            position: absolute;
+            inset: 0;
+            padding: 2.2rem 4rem 1.8rem;
+            display: flex;
+            flex-direction: column;
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(16px) scale(0.985);
+            transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .slide.active {
+            opacity: 1;
+            pointer-events: auto;
+            transform: none;
+        }
+
+        /* ─── Slide Header ─── */
+        .slide-header {
+            margin-bottom: 1.3rem;
+            flex-shrink: 0;
+        }
+
+        .category-badge {
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: var(--accent-blue);
+            background: rgba(56, 189, 248, 0.12);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            padding: 0.28rem 0.8rem;
+            border-radius: 100px;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.6rem;
+        }
+
+        .category-badge::before {
+            content: "";
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: var(--accent-blue);
+            box-shadow: 0 0 8px var(--accent-blue);
+        }
+
+        .slide-title {
+            font-size: 2.1rem;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            line-height: 1.15;
+            margin-bottom: 0.4rem;
+            color: var(--text-title);
+        }
+
+        .slide-subtitle {
+            font-size: 1rem;
+            color: var(--text-body);
+            line-height: 1.5;
+            max-width: 950px;
+        }
+
+        /* ─── Layout Grids (Fixed Class Names) ─── */
+        .grid-3-cols {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1.25rem;
+            flex: 1;
+            min-height: 0;
+            width: 100%;
+        }
+
+        .grid-2-cols {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.35rem;
+            flex: 1;
+            min-height: 0;
+            width: 100%;
+        }
+
+        .grid-4-cols {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1.15rem;
+            flex: 1;
+            min-height: 0;
+            width: 100%;
+        }
+
+        .grid-showcase-layout {
+            display: grid;
+            grid-template-columns: 1fr 1.45fr;
+            gap: 1.45rem;
+            flex: 1;
+            min-height: 0;
+            width: 100%;
+        }
+
+        /* ─── Premium Cards ─── */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: var(--radius-main);
+            padding: 1.3rem 1.45rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.7rem;
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+            transition: all 0.25s ease;
+            position: relative;
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        .card:hover {
+            background: var(--bg-card-hover);
+            border-color: var(--border-card-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+
+        .card-icon {
+            font-size: 1.6rem;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+
+        .card-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-shrink: 0;
+            color: var(--text-title);
+        }
+
+        .card-body {
+            font-size: 0.9rem;
+            line-height: 1.6;
+            color: var(--text-body);
+            display: flex;
+            flex-direction: column;
+            gap: 0.55rem;
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        .card-body b {
+            color: var(--text-title);
+            font-weight: 600;
+        }
+
+        .card-body p {
+            display: flex;
+            gap: 0.45rem;
+        }
+
+        .card-body p::before {
+            content: "›";
+            color: var(--text-muted);
+            flex-shrink: 0;
+            font-size: 1.1em;
+            line-height: 1.3;
+        }
+
+        .card-divider {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--border-card), transparent);
+            margin: 0.2rem 0;
+            flex-shrink: 0;
+        }
+
+        /* ─── Color Accent Borders & Glows ─── */
+        .accent-blue   { border-top: 2px solid var(--accent-blue); box-shadow: 0 0 20px var(--accent-blue-glow); }
+        .accent-green  { border-top: 2px solid var(--accent-green); box-shadow: 0 0 20px var(--accent-green-glow); }
+        .accent-amber  { border-top: 2px solid var(--accent-amber); box-shadow: 0 0 20px var(--accent-amber-glow); }
+        .accent-rose   { border-top: 2px solid var(--accent-rose); box-shadow: 0 0 20px var(--accent-rose-glow); }
+        .accent-purple { border-top: 2px solid var(--accent-purple); box-shadow: 0 0 20px var(--accent-purple-glow); }
+
+        .text-blue   { color: var(--accent-blue); }
+        .text-green  { color: var(--accent-green); }
+        .text-amber  { color: var(--accent-amber); }
+        .text-rose   { color: var(--accent-rose); }
+        .text-purple { color: var(--accent-purple); }
+
+        /* ─── Large Metrics ─── */
+        .metric-val {
+            font-size: 2.8rem;
+            font-weight: 900;
+            letter-spacing: -0.04em;
+            line-height: 1;
+        }
+
+        .metric-lbl {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            margin-top: 0.2rem;
+            font-weight: 500;
+        }
+
+        /* ─── Highlight Banner Boxes ─── */
+        .highlight-box {
+            border-radius: 10px;
+            padding: 0.65rem 0.95rem;
+            font-size: 0.85rem;
+            color: var(--text-title);
+            font-weight: 600;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .hl-blue   { background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.25); color: #e0f2fe; }
+        .hl-green  { background: rgba(52, 211, 153, 0.12); border: 1px solid rgba(52, 211, 153, 0.25); color: #d1fae5; }
+        .hl-amber  { background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.25); color: #fef3c7; }
+        .hl-rose   { background: rgba(248, 113, 113, 0.12); border: 1px solid rgba(248, 113, 113, 0.25); color: #fee2e2; }
+        .hl-purple { background: rgba(192, 132, 252, 0.12); border: 1px solid rgba(192, 132, 252, 0.25); color: #f3e8ff; }
+
+        /* ─── Badges and Tags ─── */
+        .tag-pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.22rem 0.65rem;
+            border-radius: 100px;
+            font-size: 0.74rem;
+            font-weight: 600;
+            font-family: var(--font-mono);
+        }
+
+        .tag-blue   { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); border: 1px solid rgba(56, 189, 248, 0.3); }
+        .tag-green  { background: rgba(52, 211, 153, 0.15); color: var(--accent-green); border: 1px solid rgba(52, 211, 153, 0.3); }
+        .tag-amber  { background: rgba(251, 191, 36, 0.15); color: var(--accent-amber); border: 1px solid rgba(251, 191, 36, 0.3); }
+        .tag-purple { background: rgba(192, 132, 252, 0.15); color: var(--accent-purple); border: 1px solid rgba(192, 132, 252, 0.3); }
+
+        .tags-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.45rem;
+            flex-shrink: 0;
+        }
+
+        code {
+            font-family: var(--font-mono);
+            font-size: 0.82em;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            padding: 0.15em 0.45em;
+            border-radius: 4px;
+            color: var(--accent-blue);
+        }
+
+        /* ─── Screenshot Showcase Container ─── */
+        .showcase-window {
+            background: rgba(10, 15, 28, 0.85);
+            border: 1px solid var(--border-card);
+            border-radius: var(--radius-main);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(14px);
+            min-height: 0;
+        }
+
+        .window-topbar {
+            background: rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid var(--border-card);
+            padding: 0.48rem 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-shrink: 0;
+        }
+
+        .window-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+        .dot-red { background: #ff5f57; }
+        .dot-yellow { background: #febc2e; }
+        .dot-green { background: #28c840; }
+
+        .window-address {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 5px;
+            padding: 0.22rem 0.65rem;
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            margin: 0 0.5rem;
+        }
+
+        .showcase-img-wrap {
+            flex: 1;
+            overflow: hidden;
+            cursor: zoom-in;
+            min-height: 0;
+            background: #020408;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .showcase-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: top left;
+            transition: transform 0.4s ease;
+            display: block;
+        }
+
+        .showcase-img:hover { transform: scale(1.025); }
+
+        .window-caption {
+            padding: 0.55rem 0.95rem;
+            border-top: 1px solid var(--border-card);
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0;
+            background: rgba(0, 0, 0, 0.25);
+        }
+
+        /* ─── Title Slide Special Layout ─── */
+        .title-slide-layout {
+            display: grid;
+            grid-template-columns: 1.1fr 0.9fr;
+            gap: 3.5rem;
+            padding: 3rem 4.5rem;
+            align-items: center;
+            height: 100%;
+        }
+
+        .title-left-col {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .hero-heading {
+            font-size: 4.4rem;
+            font-weight: 900;
+            letter-spacing: -0.04em;
+            line-height: 0.95;
+            margin-bottom: 0.8rem;
+            background: linear-gradient(135deg, #ffffff 40%, #94a3b8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero-subtitle {
+            font-size: 1.35rem;
+            font-weight: 700;
+            color: var(--accent-blue);
+            margin-bottom: 1.1rem;
+            line-height: 1.35;
+        }
+
+        .hero-description {
+            font-size: 0.98rem;
+            color: var(--text-body);
+            line-height: 1.65;
+            margin-bottom: 1.6rem;
+        }
+
+        .title-right-col {
+            display: flex;
+            flex-direction: column;
+            gap: 0.9rem;
+        }
+
+        .hero-metric-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: var(--radius-main);
+            padding: 1.15rem 1.4rem;
+            display: flex;
+            align-items: center;
+            gap: 1.25rem;
+            backdrop-filter: blur(14px);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.35);
+            transition: all 0.2s ease;
+        }
+
+        .hero-metric-card:hover {
+            transform: translateX(4px);
+            border-color: var(--border-card-hover);
+        }
+
+        .hero-mc-icon {
+            font-size: 2.1rem;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+
+        .hero-mc-val {
+            font-size: 2.4rem;
+            font-weight: 900;
+            letter-spacing: -0.04em;
+            line-height: 1;
+        }
+
+        .hero-mc-lbl {
+            font-size: 0.82rem;
+            color: var(--text-body);
+            margin-top: 0.2rem;
+            font-weight: 500;
+        }
+
+        /* ─── Architecture Flow Layers ─── */
+        .arch-layers-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 0.85rem;
+            flex: 1;
+            min-height: 0;
+        }
+
+        .arch-layer-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: var(--radius-main);
+            padding: 1.05rem 1.35rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 1.1rem;
+            backdrop-filter: blur(16px);
+            flex: 1;
+            min-height: 0;
+            transition: all 0.25s ease;
+        }
+
+        .arch-layer-card:hover {
+            background: var(--bg-card-hover);
+            border-color: var(--border-card-hover);
+        }
+
+        .arch-num-badge {
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+            font-weight: 800;
+            padding: 0.32rem 0.55rem;
+            border-radius: 6px;
+            flex-shrink: 0;
+            line-height: 1;
+            margin-top: 0.15rem;
+        }
+
+        .arch-content-col { flex: 1; min-width: 0; }
+
+        .arch-title-row {
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 0.45rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .arch-chips-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.45rem;
+        }
+
+        .tech-chip {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            padding: 0.28rem 0.65rem;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: var(--text-body);
+            font-weight: 500;
+        }
+
+        /* ─── Checklists ─── */
+        .clean-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.48rem;
+        }
+
+        .clean-list-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.55rem;
+            font-size: 0.88rem;
+            color: var(--text-body);
+            line-height: 1.5;
+        }
+
+        .clean-list-item .list-icon {
+            flex-shrink: 0;
+            margin-top: 0.08em;
+            font-size: 0.9em;
+        }
+
+        .clean-list-item b {
+            color: var(--text-title);
+            font-weight: 600;
+        }
+
+        /* ─── Conclusion & QA Slide ─── */
+        .conclusion-slide-layout {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 3.5rem;
+            padding: 3rem 4.5rem;
+            align-items: center;
+            height: 100%;
+        }
+
+        .grid-2x2-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.85rem;
+            flex: 1;
+        }
+
+        .stat-box {
+            text-align: center;
+            padding: 0.8rem;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .stat-box-val {
+            font-size: 2.1rem;
+            font-weight: 900;
+            letter-spacing: -0.03em;
+            line-height: 1;
+        }
+
+        .stat-box-lbl {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+            font-weight: 500;
+        }
+
+        /* ─── Bottom Navigation Bar ─── */
+        .bottom-nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 3rem;
+            background: rgba(6, 9, 14, 0.92);
+            border-top: 1px solid var(--border-card);
+            backdrop-filter: blur(20px);
+            z-index: 100;
+            flex-shrink: 0;
+            gap: 1rem;
+        }
+
+        .nav-brand {
+            font-family: var(--font-mono);
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .nav-brand span {
+            color: var(--accent-blue);
+            font-weight: 700;
+        }
+
+        .nav-btn {
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text-body);
+            border: 1px solid var(--border-card);
+            border-radius: 8px;
+            padding: 0.42rem 1.1rem;
+            font-family: var(--font-sans);
+            font-size: 0.84rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .nav-btn:hover {
+            background: rgba(255, 255, 255, 0.12);
+            border-color: var(--border-card-hover);
+            color: var(--text-title);
+        }
+
+        .nav-btn-primary {
+            background: rgba(56, 189, 248, 0.16);
+            border-color: rgba(56, 189, 248, 0.4);
+            color: var(--accent-blue);
+        }
+
+        .nav-btn-primary:hover {
+            background: rgba(56, 189, 248, 0.28);
+            color: #ffffff;
+        }
+
+        .slide-counter-badge {
+            font-family: var(--font-mono);
+            font-size: 0.82rem;
+            color: var(--text-body);
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--border-card);
+            border-radius: 8px;
+            padding: 0.38rem 0.85rem;
+            min-width: 80px;
+            text-align: center;
+            font-weight: 600;
+        }
+
+        .dots-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .dot-indicator {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.18);
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .dot-indicator.active {
+            background: var(--accent-blue);
+            width: 18px;
+            border-radius: 4px;
+            box-shadow: 0 0 8px var(--accent-blue);
+        }
+
+        /* ─── Speaker Notes Panel ─── */
+        .notes-floating-box {
+            position: fixed;
+            bottom: 75px;
+            right: 25px;
+            width: 400px;
+            max-height: 300px;
+            background: rgba(15, 23, 42, 0.96);
+            border: 1px solid var(--border-card-hover);
+            border-radius: var(--radius-main);
+            padding: 1.2rem;
+            font-size: 0.9rem;
+            line-height: 1.6;
+            color: var(--text-body);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
+            display: none;
+            overflow-y: auto;
+            z-index: 200;
+            backdrop-filter: blur(24px);
+        }
+
+        .notes-floating-box.visible { display: block; }
+
+        .notes-header-row {
+            font-weight: 800;
+            color: var(--accent-blue);
+            font-family: var(--font-mono);
+            font-size: 0.74rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 0.7rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* ─── Modal Lightbox ─── */
+        .image-modal-lightbox {
+            display: none;
+            position: fixed;
+            z-index: 500;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.92);
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            backdrop-filter: blur(8px);
+        }
+
+        .image-modal-lightbox.active { display: flex; }
+
+        .modal-full-img {
+            max-width: 92%;
+            max-height: 92%;
+            border-radius: var(--radius-main);
+            border: 1px solid var(--border-card-hover);
+            box-shadow: 0 30px 90px rgba(0, 0, 0, 0.95);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Ambient Mesh Background -->
+    <div class="ambient-bg">
+        <div class="ambient-grid"></div>
+        <div class="ambient-glow glow-1"></div>
+        <div class="ambient-glow glow-2"></div>
+        <div class="ambient-glow glow-3"></div>
+    </div>
+
+    <!-- Progress Line -->
+    <div class="progress-line">
+        <div class="progress-active" id="progressActive"></div>
+    </div>
+
+    <!-- Main Slide Deck -->
+    <div class="presentation-deck">
+
+        <!-- ══════════════════════════════════
+             SLIDE 1: TITLE
+        ══════════════════════════════════ -->
+        <div class="slide title-slide-layout active" data-notes="Добрый день, коллеги и руководство! Сегодня я представляю результаты внедрения интеллектуальной системы IntraLink AI. Наша цель — кардинальное ускорение 1-й линии поддержки, снижение рутинной нагрузки на инженеров и соблюдение жестких SLA с помощью современных AI-технологий в закрытом On-Premise контуре.">
+            <div class="title-left-col">
+                <div style="margin-bottom: 0.9rem;">
+                    <div class="category-badge">Next-Gen Enterprise Helpdesk &amp; AI Hub</div>
+                </div>
+                <h1 class="hero-heading">IntraLink AI</h1>
+                <h2 class="hero-subtitle">Интеллектуальная трансформация<br>Helpdesk 1-й линии</h2>
+                <p class="hero-description">Автоматизация триажа, семантическая RAG-база знаний (pgvector), локальная LLM-суммаризация, компьютерное зрение и роботизация инфраструктурных задач — всё в закрытом On-Premise контуре компании.</p>
+                <div class="tags-row">
+                    <span class="tag-pill tag-blue">🔒 100% On-Premise</span>
+                    <span class="tag-pill tag-green">⚡ Redis Streams</span>
+                    <span class="tag-pill tag-purple">🧠 pgvector RAG</span>
+                    <span class="tag-pill tag-amber">🤖 Ollama LLM</span>
+                </div>
+            </div>
+
+            <div class="title-right-col">
+                <div class="hero-metric-card accent-green">
+                    <div class="hero-mc-icon">📉</div>
+                    <div>
+                        <div class="hero-mc-val text-green">-94%</div>
+                        <div class="hero-mc-lbl">Сокращение MTTR (среднее время решения)</div>
+                    </div>
+                </div>
+                <div class="hero-metric-card accent-blue">
+                    <div class="hero-mc-icon">🛡️</div>
+                    <div>
+                        <div class="hero-mc-val text-blue">100%</div>
+                        <div class="hero-mc-lbl">On-Premise — никаких утечек данных в облако</div>
+                    </div>
+                </div>
+                <div class="hero-metric-card accent-purple">
+                    <div class="hero-mc-icon">⏱️</div>
+                    <div>
+                        <div class="hero-mc-val text-purple">160 ч</div>
+                        <div class="hero-mc-lbl">Экономия рабочего времени инженеров в месяц</div>
+                    </div>
+                </div>
+                <div class="hero-metric-card accent-amber">
+                    <div class="hero-mc-icon">🚀</div>
+                    <div>
+                        <div class="hero-mc-val text-amber">0.3с</div>
+                        <div class="hero-mc-lbl">Мгновенные push-оповещения через Redis Streams</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 2: PROBLEMS
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="Посмотрим на типичный день 1-й линии техподдержки. Более 45% всего рабочего времени уходит на механические манипуляции. 10 000 закрытых кейсов заперты в архиве, а очередь засорена дубликатами.">
+            <div class="slide-header">
+                <div class="category-badge">Текущие вызовы</div>
+                <h1 class="slide-title">Узкие места традиционной 1-й линии</h1>
+                <p class="slide-subtitle">С чем сталкивается ИТ-отдел при классическом ручном обслуживании заявок в Helpdesk</p>
+            </div>
+            <div class="grid-3-cols">
+                <div class="card accent-rose">
+                    <div class="card-icon">⚙️</div>
+                    <div class="card-title text-rose">1. Высокая доля рутины</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p><b>40–50% заявок</b> — типовые задачи: Wi-Fi, пароли, принтеры, базовые консультации.</p>
+                        <p>До <b>15 минут</b> на ручные операции: открыть тикет, сменить статус, вставить шаблон, списать трудозатраты.</p>
+                        <p>В пиковые часы накапливается очередь («завал»), срываются регламентные нормативы SLA.</p>
+                    </div>
+                    <div class="highlight-box hl-rose">💸 Потери &gt; 6 ч/день на монотонный ручной ввод</div>
+                </div>
+
+                <div class="card accent-amber">
+                    <div class="card-icon">📦</div>
+                    <div class="card-title text-amber">2. Потеря накопленного опыта</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p><b>10 000+ закрытых кейсов</b> заперты в архиве без возможности быстрого семантического поиска.</p>
+                        <p>Новый инженер заново исследует сбой, который уже решался коллегой на прошлой неделе.</p>
+                        <p>Рост <b>MTTR сложных инцидентов</b> из-за долгого ручного поиска готовых инструкций.</p>
+                    </div>
+                    <div class="highlight-box hl-amber">🧠 10 000+ кейсов «заморожены» без доступа</div>
+                </div>
+
+                <div class="card accent-blue">
+                    <div class="card-icon">🗑️</div>
+                    <div class="card-title text-blue">3. Дубли и мусорный поток</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p><b>До 25% входящего потока</b> — повторные заявки-дубликаты от нетерпеливых пользователей.</p>
+                        <p>Ошибочные направления: тикеты для АХО, безопасности или бухгалтерии — в ИТ-очередь.</p>
+                        <p>Ручная отмена и разъяснения отнимают драгоценные часы у ведущих специалистов.</p>
+                    </div>
+                    <div class="highlight-box hl-blue">🔁 Каждый 4-й тикет — дубль или не по адресу</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 3: ARCHITECTURE
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="Архитектура объединяет три уровня: мгновенные интерфейсы для инженера (Telegram и Web Cockpit), единый центр интеллекта Core API с базой pgvector и локальной LLM, а также модули прямого исполнения в Active Directory и Windows-домене.">
+            <div class="slide-header">
+                <div class="category-badge">Архитектура решения</div>
+                <h1 class="slide-title">Комплексная AI-экосистема IntraLink</h1>
+                <p class="slide-subtitle">Единый интеллектуальный мозг, детерминированные правила и прямое исполнение</p>
+            </div>
+            <div class="arch-layers-stack">
+                <div class="arch-layer-card accent-blue">
+                    <div class="arch-num-badge" style="background: rgba(56, 189, 248, 0.15); color: var(--accent-blue);">01</div>
+                    <div class="arch-content-col">
+                        <div class="arch-title-row text-blue">📱 Слой восприятия и интерфейсов инженера</div>
+                        <div class="arch-chips-row">
+                            <span class="tech-chip">Telegram Bot (Push 0.3с)</span>
+                            <span class="tech-chip">Web SPA Admin Panel /admin</span>
+                            <span class="tech-chip">Antigravity Cockpit CLI</span>
+                            <span class="tech-chip">Redis Streams Consumer Group</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="arch-layer-card accent-purple">
+                    <div class="arch-num-badge" style="background: rgba(192, 132, 252, 0.15); color: var(--accent-purple);">02</div>
+                    <div class="arch-content-col">
+                        <div class="arch-title-row text-purple">🧠 Интеллектуальное ядро — Core API &amp; AI Hub</div>
+                        <div class="arch-chips-row">
+                            <span class="tech-chip">Rule Engine (Триаж / SLA)</span>
+                            <span class="tech-chip">RAG Engine (pgvector + FastEmbed)</span>
+                            <span class="tech-chip">Local LLM Ollama (Qwen2.5:1.5B)</span>
+                            <span class="tech-chip">Vision OCR (Скриншоты / BSOD / 1C)</span>
+                            <span class="tech-chip">PostgreSQL 16</span>
+                            <span class="tech-chip">Redis 7</span>
+                            <span class="tech-chip">FastAPI AsyncIO</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="arch-layer-card accent-green">
+                    <div class="arch-num-badge" style="background: rgba(52, 211, 153, 0.15); color: var(--accent-green);">03</div>
+                    <div class="arch-content-col">
+                        <div class="arch-title-row text-green">⚡ Уровень исполнения в инфраструктуре (Zero-Click)</div>
+                        <div class="arch-chips-row">
+                            <span class="tech-chip">Active Directory PowerShell</span>
+                            <span class="tech-chip">WLAN-WORKNET (Wi-Fi доступ)</span>
+                            <span class="tech-chip">WinRM / WMI (удалённое управление)</span>
+                            <span class="tech-chip">SMB (драйверы принтеров)</span>
+                            <span class="tech-chip">Ping / DNS / Port диагностика</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 4: QUEUE DASHBOARD
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="На экране — рабочий диспетчерский пульт IntraLink. Инженер видит очередь заявок с автоматической категоризацией, таймерами SLA и извлечёнными именами компьютеров.">
+            <div class="slide-header">
+                <div class="category-badge">Демонстрация системы</div>
+                <h1 class="slide-title">Интеллектуальный реестр и диспетчерский пульт</h1>
+                <p class="slide-subtitle">Оперативный контроль потока заявок в реальном времени со смарт-фильтрацией</p>
+            </div>
+            <div class="grid-showcase-layout">
+                <div class="card accent-blue">
+                    <div class="card-icon">🎛️</div>
+                    <div class="card-title text-blue">Возможности пульта</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p><b>Смарт-фильтры по 11 направлениям:</b> Все, Wi-Fi, 1C, Доступы, Принтеры, Ремонт, Сеть, Почта, Оборудование.</p>
+                        <p><b>Цветовая шкала SLA:</b> Подсветка тикетов с приближающимся дедлайном (Critical / Urgent / Normal).</p>
+                        <p><b>Автопривязка ПК и контактов:</b> Извлечение имени ПК (<code>NB-0081</code>, <code>PC-114</code>) из текста заявки.</p>
+                        <p><b>Real-time обновления</b> через Redis Streams без перезагрузки страницы.</p>
+                    </div>
+                    <div class="tags-row">
+                        <span class="tag-pill tag-blue">11 направлений</span>
+                        <span class="tag-pill tag-green">Real-time</span>
+                        <span class="tag-pill tag-amber">SLA таймеры</span>
+                    </div>
+                </div>
+
+                <div class="showcase-window">
+                    <div class="window-topbar">
+                        <div class="window-dot dot-red"></div>
+                        <div class="window-dot dot-yellow"></div>
+                        <div class="window-dot dot-green"></div>
+                        <div class="window-address">http://localhost:8000/admin</div>
+                    </div>
+                    <div class="showcase-img-wrap" onclick="openLightboxModal('screenshots/01_queue_dashboard.png')">
+                        <img src="screenshots/01_queue_dashboard.png" class="showcase-img" alt="Queue Dashboard">
+                    </div>
+                    <div class="window-caption">
+                        <span>Рабочий вид диспетчерского пульта (/admin)</span>
+                        <span class="text-blue">🔍 Клик для зума</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 5: RAG
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="Первая AI-фича — RAG. Когда падает сложная заявка, инженер за 50 миллисекунд получает 3 самых успешных кейса аналогичных решений в прошлом, экономя до 30 минут на исследование.">
+            <div class="slide-header">
+                <div class="category-badge">AI Feature 01</div>
+                <h1 class="slide-title">Семантический RAG-поиск в базе решений</h1>
+                <p class="slide-subtitle">Мгновенное извлечение готовых инструкций из 10 000+ архивных кейсов</p>
+            </div>
+            <div class="grid-2-cols">
+                <div class="card accent-purple">
+                    <div class="card-icon">🔍</div>
+                    <div class="card-title text-purple">Как работает технология RAG</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p><b>Автосинхронизация (<code>/sync</code>):</b> Каждая закрытая заявка векторизуется моделью FastEmbed и сохраняется в pgvector.</p>
+                        <p><b>Семантическое понимание сути:</b> Поиск находит решения по смыслу — понимает синонимы, опечатки, разное описание сбоя.</p>
+                        <p><b>Скорость отклика:</b> Поиск по 10 000+ кейсам занимает <b>менее 50 мс</b>.</p>
+                    </div>
+                    <div class="highlight-box hl-purple">⚡ FastEmbed + pgvector — поиск за 50 мс</div>
+                </div>
+
+                <div class="card accent-green">
+                    <div class="card-icon">💼</div>
+                    <div class="card-title text-green">Бизнес-эффект и выгода</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p class="text-green" style="font-weight: 700;">• Сокращение времени диагностики сложных сбоев с 30 минут до 1 минуты.</p>
+                        <p><b>Быстрый онбординг новичков:</b> начинающий инженер сразу видит шаги решения от ведущих экспертов.</p>
+                        <p><b>Стандартизация качества:</b> пользователи получают выверенные инструкции.</p>
+                        <p><b>Zero Cloud Leakage:</b> все векторные базы работают строго на сервере компании.</p>
+                    </div>
+                    <div class="highlight-box hl-green">🔒 Полная приватность — Zero Cloud Leakage</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 6: INSPECTOR
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="AI-инспектор сам понял суть обращения, сгенерировал корректный ответ заявителю и сразу предупредил инженера о наличии дубликата тикета #139929.">
+            <div class="slide-header">
+                <div class="category-badge">AI Feature 02</div>
+                <h1 class="slide-title">Инспектор тикета и генерация черновиков</h1>
+                <p class="slide-subtitle">Контекстный анализ заявки, обнаружение дубликатов и персонализированные ответы</p>
+            </div>
+            <div class="grid-showcase-layout">
+                <div class="card accent-purple">
+                    <div class="card-icon">🤖</div>
+                    <div class="card-title text-purple">Интеллект инспектора</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p><b>Авто-генерация ответов:</b> Формирует персонализированный черновик с именем заявителя и регламентными шагами.</p>
+                        <p><b>Авто-определение дубликата:</b> Инспектор подсвечивает: <em>«Обнаружен дубликат #139929»</em> с кнопкой объединения.</p>
+                        <p><b>Режимы отправки:</b> Комментарий, перевод в ожидание или автозакрытие со списанием трудозатрат.</p>
+                    </div>
+                    <div class="tags-row">
+                        <span class="tag-pill tag-purple">Авто-черновик</span>
+                        <span class="tag-pill tag-blue">Дубликаты</span>
+                    </div>
+                </div>
+
+                <div class="showcase-window">
+                    <div class="window-topbar">
+                        <div class="window-dot dot-red"></div>
+                        <div class="window-dot dot-yellow"></div>
+                        <div class="window-dot dot-green"></div>
+                        <div class="window-address">localhost:8000/admin — AI Inspector</div>
+                    </div>
+                    <div class="showcase-img-wrap" onclick="openLightboxModal('screenshots/04_auto_reply_ai.png')">
+                        <img src="screenshots/04_auto_reply_ai.png" class="showcase-img" alt="Auto Reply AI">
+                    </div>
+                    <div class="window-caption">
+                        <span>AI-генерация ответа и предупреждение о дубликате</span>
+                        <span class="text-blue">🔍 Клик для зума</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 7: DUPLICATES
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="Около 25-30% заявок — повторные дубли либо заявки не по адресу. IntraLink автоматически связывает дубли с основным тикетом и отменяет их.">
+            <div class="slide-header">
+                <div class="category-badge">AI Feature 03</div>
+                <h1 class="slide-title">Фильтрация шума: умные дубликаты и авто-редирект</h1>
+                <p class="slide-subtitle">Автоматическая очистка очереди от повторов и ошибочно направленных тикетов</p>
+            </div>
+            <div class="grid-2-cols">
+                <div class="card accent-amber">
+                    <div class="card-icon">🔗</div>
+                    <div class="card-title text-amber">Автоматическое слияние дубликатов</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p><b>Проблема:</b> Пользователи создают 2–3 одинаковые заявки через портал, почту и телефон.</p>
+                        <p><b>AI-Решение (<code>/duplicates</code>):</b> Алгоритм находит семантические и временные совпадения, определяет Master Ticket, переводит копии в «Отменена» и оставляет комментарий со ссылкой на главный тикет.</p>
+                    </div>
+                    <div class="highlight-box hl-amber">✅ Полное исключение двойной работы разными инженерами</div>
+                </div>
+
+                <div class="card accent-blue">
+                    <div class="card-icon">🔀</div>
+                    <div class="card-title text-blue">Интеллектуальный редирект сервисов</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p><b>Проблема:</b> Заявки на ремонт мебели, пропуска или замену ламп ошибочно попадают в очередь ИТ-отдела.</p>
+                        <p><b>AI-Решение (<code>/redirect</code>):</b> Система распознаёт нецелевой сервис, отменяет ошибочный тикет и отправляет заявителю точную ссылку на нужный отдел (АХО, СБ, Кадры).</p>
+                    </div>
+                    <div class="highlight-box hl-blue">🎯 Очередь ИТ чиста от непрофильных задач</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 8: NETWORK DIAG
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="Модуль экспресс-диагностики сети. При нажатии кнопки система за 1 секунду проверяет Ping, DNS, порт SMB и WinRM.">
+            <div class="slide-header">
+                <div class="category-badge">AI Feature 04</div>
+                <h1 class="slide-title">Экспресс-диагностика сети и рабочих станций</h1>
+                <p class="slide-subtitle">Мгновенная проверка доступности хоста заявителя по сетевым протоколам</p>
+            </div>
+            <div class="grid-showcase-layout">
+                <div class="card accent-blue">
+                    <div class="card-icon">📡</div>
+                    <div class="card-title text-blue">Сетевой сканер (<code>/diag</code>)</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p><b>Параллельная 4-точечная проверка:</b></p>
+                        <div class="clean-list">
+                            <div class="clean-list-item"><span class="list-icon">🟢</span><span><b>ICMP Ping</b> — базовая сетевая связность</span></div>
+                            <div class="clean-list-item"><span class="list-icon">🔵</span><span><b>DNS Resolve</b> — соответствие IP и имени ПК</span></div>
+                            <div class="clean-list-item"><span class="list-icon">🟣</span><span><b>SMB Port 445</b> — файловый доступ</span></div>
+                            <div class="clean-list-item"><span class="list-icon">🟡</span><span><b>WinRM Port 5985</b> — удалённое управление</span></div>
+                        </div>
+                        <p><b>Скорость:</b> Все проверки выполняются параллельно менее чем за 1 секунду.</p>
+                    </div>
+                    <div class="highlight-box hl-blue">⚡ Инженер знает статус ПК ещё до звонка пользователю</div>
+                </div>
+
+                <div class="showcase-window">
+                    <div class="window-topbar">
+                        <div class="window-dot dot-red"></div>
+                        <div class="window-dot dot-yellow"></div>
+                        <div class="window-dot dot-green"></div>
+                        <div class="window-address">AGY CLI — /diag NB-0081</div>
+                    </div>
+                    <div class="showcase-img-wrap" onclick="openLightboxModal('screenshots/03_network_diagnostics.png')">
+                        <img src="screenshots/03_network_diagnostics.png" class="showcase-img" alt="Network Diagnostics">
+                    </div>
+                    <div class="window-caption">
+                        <span>Сетевая экспресс-диагностика рабочего места</span>
+                        <span class="text-blue">🔍 Клик для зума</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 9: VISION + LLM
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="Мультимодальный стек. Модуль /screen считывает ошибки со скриншотов пользователей. Qwen2.5 сжимает длинные переписки в три четких пункта за 1.3 секунды.">
+            <div class="slide-header">
+                <div class="category-badge">AI Feature 05</div>
+                <h1 class="slide-title">Компьютерное зрение и локальная нейросеть</h1>
+                <p class="slide-subtitle">Мультимодальный анализ скриншотов и моментальная суммаризация диалогов</p>
+            </div>
+            <div class="grid-2-cols">
+                <div class="card accent-blue">
+                    <div class="card-icon">👁️</div>
+                    <div class="card-title text-blue">Vision OCR: Анализ скриншотов (<code>/screen</code>)</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p>Автоскачивание вложений из IntraService по номеру заявки.</p>
+                        <p><b>Распознавание системных окон:</b> ошибки 1С, синие экраны (BSOD), сетевые ошибки Windows, сбои драйверов.</p>
+                        <p>Формирование гипотезы Root Cause и чек-листа решения <b>до первого контакта</b> с пользователем.</p>
+                    </div>
+                    <div class="highlight-box hl-blue">🖼️ BSOD / 1С / Сетевые ошибки — автораспознавание</div>
+                </div>
+
+                <div class="card accent-purple">
+                    <div class="card-icon">💬</div>
+                    <div class="card-title text-purple">Локальная LLM: Суммаризация (Ollama)</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p><b>Модель:</b> Qwen2.5:1.5B в изолированном Docker-контейнере.</p>
+                        <p><b>Сжатие переписки:</b> Анализирует длинную ветку из 10+ комментариев за 1.3 секунды.</p>
+                        <p><b>Структурированная выжимка:</b></p>
+                        <div class="clean-list">
+                            <div class="clean-list-item"><span class="list-icon">①</span><span>Суть проблемы</span></div>
+                            <div class="clean-list-item"><span class="list-icon">②</span><span>Что уже делалось</span></div>
+                            <div class="clean-list-item"><span class="list-icon">③</span><span>Текущий блокер</span></div>
+                        </div>
+                    </div>
+                    <div class="highlight-box hl-purple">🔒 100% приватность — данные не уходят в облако</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 10: INFRA AUTOMATION
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="Главная сила IntraLink — реальное исполнение. Выдача доступа в Active Directory и установка принтера по WinRM выполняются в 1 клик.">
+            <div class="slide-header">
+                <div class="category-badge">AI Feature 06</div>
+                <h1 class="slide-title">Роботизация инфраструктуры (Zero-Click Execution)</h1>
+                <p class="slide-subtitle">Автоматическое применение изменений в Active Directory и Windows-домене</p>
+            </div>
+            <div class="grid-3-cols">
+                <div class="card accent-green">
+                    <div class="card-icon">🌐</div>
+                    <div class="card-title text-green">1. Active Directory (Wi-Fi / УЗ)</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p>Выдача корпоративного Wi-Fi (<code>WLAN-WORKNET</code>) за <b>2 секунды</b>.</p>
+                        <p>Нормализация ФИО/инициалов и поиск учётной записи в домене.</p>
+                        <p>Single-DC Affinity: исключение проблем репликации между контроллерами.</p>
+                    </div>
+                </div>
+
+                <div class="card accent-purple">
+                    <div class="card-icon">🖨️</div>
+                    <div class="card-title text-purple">2. Оргтехника (WinRM / SMB)</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p>Удалённая установка драйверов принтеров <b>без визита</b> к рабочему месту.</p>
+                        <p>База моделей оргтехники и автоматическое сопоставление сетевых портов.</p>
+                        <p>WMI bootstrap и Fail-Fast диагностика портов.</p>
+                    </div>
+                </div>
+
+                <div class="card accent-blue">
+                    <div class="card-icon">✅</div>
+                    <div class="card-title text-blue">3. Verified Execution Only</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p>Статус «Выполнена» выставляется <b>только после успешного кода возврата</b> от контроллера домена.</p>
+                        <p>Автоматическое списание трудозатрат и протоколирование аудита.</p>
+                    </div>
+                    <div class="highlight-box hl-blue">🛡️ Не выполнено = статус не меняется</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 11: KANBAN
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="Помимо классического списка, доступен визуальный Канбан-пайплайн. Он позволяет дежурному инженеру и тимлиду наглядно оценивать распределение нагрузки.">
+            <div class="slide-header">
+                <div class="category-badge">Процессное управление</div>
+                <h1 class="slide-title">Канбан-пайплайн и гибкое ведение очереди</h1>
+                <p class="slide-subtitle">Визуализация жизненного цикла заявок по стадиям обработки 1-й линии</p>
+            </div>
+            <div class="grid-showcase-layout">
+                <div class="card accent-green">
+                    <div class="card-icon">📊</div>
+                    <div class="card-title text-green">Преимущества Канбан</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p><b>Колонки стадий:</b> Новые → В работе → Требует уточнения → Выполнены.</p>
+                        <p><b>Контроль завалов:</b> Руководитель группы сразу видит, на какой стадии скапливаются тикеты.</p>
+                        <p><b>Быстрый фокус:</b> Клик по карточке мгновенно открывает инспектор и варианты решения.</p>
+                    </div>
+                    <div class="tags-row">
+                        <span class="tag-pill tag-green">Drag &amp; Drop</span>
+                        <span class="tag-pill tag-blue">WIP Лимиты</span>
+                        <span class="tag-pill tag-amber">Узкие места</span>
+                    </div>
+                </div>
+
+                <div class="showcase-window">
+                    <div class="window-topbar">
+                        <div class="window-dot dot-red"></div>
+                        <div class="window-dot dot-yellow"></div>
+                        <div class="window-dot dot-green"></div>
+                        <div class="window-address">localhost:8000/admin — Kanban View</div>
+                    </div>
+                    <div class="showcase-img-wrap" onclick="openLightboxModal('screenshots/05_kanban_pipeline.png')">
+                        <img src="screenshots/05_kanban_pipeline.png" class="showcase-img" alt="Kanban Pipeline">
+                    </div>
+                    <div class="window-caption">
+                        <span>Канбан-доска стадий обработки очереди обращений</span>
+                        <span class="text-blue">🔍 Клик для зума</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 12: SECURITY
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="Для руководства и ИБ принципиален вопрос безопасности: система работает строго внутри периметра, все пароли зашифрованы Fernet, каждое действие логируется.">
+            <div class="slide-header">
+                <div class="category-badge">Безопасность и комплаенс</div>
+                <h1 class="slide-title">Enterprise-Grade безопасность и защита данных</h1>
+                <p class="slide-subtitle">100% On-Premise, криптографическая защита и строгий аудит действий</p>
+            </div>
+            <div class="grid-3-cols">
+                <div class="card accent-green">
+                    <div class="card-icon">🏢</div>
+                    <div class="card-title text-green">1. Изолированный контур</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p>Полный On-Premise хостинг (Docker, Postgres 16, Redis 7, Core API).</p>
+                        <p>Никакие персональные данные, пароли или тексты заявок не отправляются в публичные облачные LLM.</p>
+                    </div>
+                    <div class="highlight-box hl-green">🔒 Данные никогда не покидают периметр компании</div>
+                </div>
+
+                <div class="card accent-blue">
+                    <div class="card-icon">🔐</div>
+                    <div class="card-title text-blue">2. Криптография Fernet</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p>Доменные учётные данные шифруются симметричным ключом Fernet.</p>
+                        <p>Бот не хранит пароли пользователей локально.</p>
+                        <p>Защита от Timing Attacks (<code>secrets.compare_digest</code>).</p>
+                    </div>
+                    <div class="highlight-box hl-blue">🛡️ AES-128 + Docker Secrets</div>
+                </div>
+
+                <div class="card accent-purple">
+                    <div class="card-icon">📋</div>
+                    <div class="card-title text-purple">3. Строгий аудит и SLA</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p>Двойное логирование: основной инженер + ассистент.</p>
+                        <p>Фиксация каждого изменения в истории IntraService с точным списанием времени.</p>
+                        <p>Полная прозрачность для службы ИБ.</p>
+                    </div>
+                    <div class="highlight-box hl-purple">📊 Каждое действие — в логе с меткой времени</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 13: ROI
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="Главный итог в цифрах: время реакции сократилось на 96%, MTTR сложных инцидентов — на 94%, а суммарная экономия достигает 160 человеко-часов в месяц.">
+            <div class="slide-header">
+                <div class="category-badge">Измеримые результаты</div>
+                <h1 class="slide-title">ROI и ключевые метрики эффективности</h1>
+                <p class="slide-subtitle">Реальные показатели внедрения на ежедневной рабочей нагрузке 1-й линии</p>
+            </div>
+            <div class="grid-4-cols">
+                <div class="card accent-green">
+                    <div class="card-icon">⚡</div>
+                    <div class="card-title text-green">Время реакции</div>
+                    <div class="card-divider"></div>
+                    <div class="metric-val text-green">-96%</div>
+                    <div class="metric-lbl">На типовой тикет (Wi-Fi, принтер)</div>
+                    <div class="card-body" style="font-size: 0.84rem; margin-top: 0.4rem;">
+                        <p>Было: ~25 мин ручной работы</p>
+                        <p>Стало: 1.5 мин автоматически</p>
+                    </div>
+                </div>
+
+                <div class="card accent-blue">
+                    <div class="card-icon">🎯</div>
+                    <div class="card-title text-blue">MTTR сложных</div>
+                    <div class="card-divider"></div>
+                    <div class="metric-val text-blue">-94%</div>
+                    <div class="metric-lbl">Сложные инциденты с RAG</div>
+                    <div class="card-body" style="font-size: 0.84rem; margin-top: 0.4rem;">
+                        <p>Было: 30 мин диагностики</p>
+                        <p>Стало: &lt;2 мин с RAG-поиском</p>
+                    </div>
+                </div>
+
+                <div class="card accent-purple">
+                    <div class="card-icon">🤖</div>
+                    <div class="card-title text-purple">Авторежим</div>
+                    <div class="card-divider"></div>
+                    <div class="metric-val text-purple">1 клик</div>
+                    <div class="metric-lbl">Очередь полуавтоматически</div>
+                    <div class="card-body" style="font-size: 0.84rem; margin-top: 0.4rem;">
+                        <p>Без ручного набора текста</p>
+                        <p>Шаблоны + автозакрытие</p>
+                    </div>
+                </div>
+
+                <div class="card accent-amber">
+                    <div class="card-icon">💰</div>
+                    <div class="card-title text-amber">Экономия времени</div>
+                    <div class="card-divider"></div>
+                    <div class="metric-val text-amber">160 ч</div>
+                    <div class="metric-lbl">Высвобождается 1 FTE в месяц</div>
+                    <div class="card-body" style="font-size: 0.84rem; margin-top: 0.4rem;">
+                        <p>Для инфраструктурных проектов</p>
+                        <p>Развития и оптимизации</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 14: ROADMAP
+        ══════════════════════════════════ -->
+        <div class="slide" data-notes="Роадмап включает 3 этапа. Фундамент уже работает: RAG, триаж, AD и локальная LLM внедрены. В ближайших планах — бот самообслуживания и голосовые заявки.">
+            <div class="slide-header">
+                <div class="category-badge">Стратегия развития</div>
+                <h1 class="slide-title">Дорожная карта развития IntraLink AI</h1>
+                <p class="slide-subtitle">Ключевые направления масштабирования платформы на следующие кварталы</p>
+            </div>
+            <div class="grid-3-cols">
+                <div class="card accent-green">
+                    <div class="card-icon">✅</div>
+                    <div class="card-title text-green">Этап 1: Реализовано</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <div class="clean-list">
+                            <div class="clean-list-item" style="color: var(--accent-green);"><span class="list-icon">✓</span><span>FastAPI Core Gateway &amp; Web UI</span></div>
+                            <div class="clean-list-item" style="color: var(--accent-green);"><span class="list-icon">✓</span><span>RAG база знаний pgvector + FastEmbed</span></div>
+                            <div class="clean-list-item" style="color: var(--accent-green);"><span class="list-icon">✓</span><span>Пакетный триаж очереди (<code>/triage</code>)</span></div>
+                            <div class="clean-list-item" style="color: var(--accent-green);"><span class="list-icon">✓</span><span>Авто-дубликаты и авто-редирект</span></div>
+                            <div class="clean-list-item" style="color: var(--accent-green);"><span class="list-icon">✓</span><span>Роботизация AD WLAN &amp; WinRM</span></div>
+                            <div class="clean-list-item" style="color: var(--accent-green);"><span class="list-icon">✓</span><span>Локальная LLM суммаризация Qwen2.5</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card accent-blue">
+                    <div class="card-icon">🔭</div>
+                    <div class="card-title text-blue">Этап 2: Ближайший квартал</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p>Интерактивный AI-саппорт в Telegram для пользователей (самообслуживание).</p>
+                        <p>Аудио-транскрипция голосовых заявок и звонков (Whisper local).</p>
+                        <p>Расширение библиотеки драйверов оргтехники и SNMP-мониторинг картриджей.</p>
+                    </div>
+                    <div class="tags-row">
+                        <span class="tag-pill tag-blue">Whisper ASR</span>
+                        <span class="tag-pill tag-purple">Self-Service Bot</span>
+                    </div>
+                </div>
+
+                <div class="card accent-purple">
+                    <div class="card-icon">🚀</div>
+                    <div class="card-title text-purple">Этап 3: Перспектива</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body">
+                        <p>Предиктивная аналитика сбоев рабочих станций до создания тикета заявителем.</p>
+                        <p>Автоматический аудит узких мест ИТ-процессов.</p>
+                        <p>Кросс-сервисная интеграция с 1C и корпоративной телефонией.</p>
+                    </div>
+                    <div class="tags-row">
+                        <span class="tag-pill tag-amber">Predictive AI</span>
+                        <span class="tag-pill tag-green">1C Integration</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════
+             SLIDE 15: CONCLUSION
+        ══════════════════════════════════ -->
+        <div class="slide conclusion-slide-layout" data-notes="IntraLink AI превратил 1-ю линию поддержки из перегруженного узкого горлышка в прозрачный, защищённый и быстрый сервис. Готов ответить на вопросы и провести живую демонстрацию.">
+            <div class="title-left-col">
+                <div style="margin-bottom: 0.9rem;">
+                    <div class="category-badge">Заключение &amp; Q&amp;A</div>
+                </div>
+                <h1 class="hero-heading">IntraLink AI</h1>
+                <h2 class="hero-subtitle" style="color: var(--accent-green);">Интеллект. Скорость.<br>Безопасность.</h2>
+                <p class="hero-description">IntraLink AI превратил 1-ю линию поддержки из перегруженного узкого горлышка в прозрачный, защищённый и быстрый сервис.<br><br>Готовы ответить на ваши вопросы и продемонстрировать систему в действии.</p>
+                <div class="tags-row">
+                    <span class="tag-pill tag-green">✅ В продакшене</span>
+                    <span class="tag-pill tag-blue">📈 ROI &gt;1600%</span>
+                    <span class="tag-pill tag-purple">🔒 On-Premise</span>
+                </div>
+            </div>
+
+            <div class="title-right-col">
+                <div class="card accent-blue" style="flex: 0;">
+                    <div class="card-icon">🌐</div>
+                    <div class="card-title text-blue">Контакты и ресурсы системы</div>
+                    <div class="card-divider"></div>
+                    <div class="card-body" style="font-family: var(--font-mono); font-size: 0.85rem; gap: 0.6rem;">
+                        <p><b>Веб-панель:</b></p>
+                        <div style="padding-left: 0.6rem; color: var(--accent-blue);">http://localhost:8000/admin</div>
+                        <p><b>Документация:</b></p>
+                        <div style="padding-left: 0.6rem; color: var(--text-muted);">docs/architecture.md</div>
+                    </div>
+                </div>
+
+                <div class="card accent-green" style="flex: 1;">
+                    <div class="card-icon">📊</div>
+                    <div class="card-title text-green">Итоговые цифры внедрения</div>
+                    <div class="card-divider"></div>
+                    <div class="grid-2x2-stats">
+                        <div class="stat-box">
+                            <div class="stat-box-val text-green">-96%</div>
+                            <div class="stat-box-lbl">Время реакции</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-box-val text-blue">160 ч</div>
+                            <div class="stat-box-lbl">Экономия / мес</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-box-val text-purple">10k+</div>
+                            <div class="stat-box-lbl">Кейсов в RAG</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-box-val text-amber">0.3с</div>
+                            <div class="stat-box-lbl">Push-уведомления</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /presentation-deck -->
+
+    <!-- Bottom Navigation Bar -->
+    <div class="bottom-nav">
+        <div class="nav-brand">
+            <span>IntraLink AI</span>
+            <span style="color: var(--text-muted);">Presentation</span>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 0.8rem;">
+            <button class="nav-btn" id="prevBtn" onclick="prevSlide()">← Назад</button>
+            <div class="dots-row" id="dotsContainer"></div>
+            <button class="nav-btn nav-btn-primary" id="nextBtn" onclick="nextSlide()">Вперёд →</button>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 0.6rem;">
+            <div class="slide-counter-badge" id="slideCounterBadge">1 / 15</div>
+            <button class="nav-btn" onclick="toggleSpeakerNotes()" title="Заметки докладчика (N)">📝</button>
+        </div>
+    </div>
+
+    <!-- Speaker Notes Floating Box -->
+    <div class="notes-floating-box" id="notesFloatingBox">
+        <div class="notes-header-row">
+            <span>📝 Заметки докладчика</span>
+            <span style="cursor: pointer; opacity: 0.6;" onclick="toggleSpeakerNotes()">✕</span>
+        </div>
+        <div id="notesContentText">Заметки загружаются...</div>
+    </div>
+
+    <!-- Lightbox Modal -->
+    <div class="image-modal-lightbox" id="imageModalLightbox" onclick="closeLightboxModal()">
+        <img class="modal-full-img" id="modalFullImg" src="" alt="Screenshot">
+    </div>
+
+    <script>
+        const slideElements = document.querySelectorAll('.slide');
+        const progressActive = document.getElementById('progressActive');
+        const slideCounterBadge = document.getElementById('slideCounterBadge');
+        const notesFloatingBox = document.getElementById('notesFloatingBox');
+        const notesContentText = document.getElementById('notesContentText');
+        const imageModalLightbox = document.getElementById('imageModalLightbox');
+        const modalFullImg = document.getElementById('modalFullImg');
+        const dotsContainer = document.getElementById('dotsContainer');
+
+        let currentSlideIdx = 0;
+        const totalSlideCount = slideElements.length;
+
+        // Render dot navigation
+        for (let i = 0; i < totalSlideCount; i++) {
+            const dot = document.createElement('div');
+            dot.className = 'dot-indicator' + (i === 0 ? ' active' : '');
+            dot.title = `Слайд ${i + 1}`;
+            dot.addEventListener('click', () => navigateToSlide(i));
+            dotsContainer.appendChild(dot);
+        }
+
+        function navigateToSlide(index) {
+            slideElements.forEach((s, idx) => s.classList.toggle('active', idx === index));
+            currentSlideIdx = index;
+            progressActive.style.width = `${((index + 1) / totalSlideCount) * 100}%`;
+            slideCounterBadge.textContent = `${index + 1} / ${totalSlideCount}`;
+
+            // Update active dots
+            const allDots = dotsContainer.querySelectorAll('.dot-indicator');
+            allDots.forEach((d, idx) => d.classList.toggle('active', idx === index));
+
+            // Load speaker notes
+            const notes = slideElements[index].getAttribute('data-notes') || 'Заметки к слайду отсутствуют.';
+            notesContentText.textContent = notes;
+        }
+
+        function nextSlide() {
+            if (currentSlideIdx < totalSlideCount - 1) navigateToSlide(currentSlideIdx + 1);
+        }
+
+        function prevSlide() {
+            if (currentSlideIdx > 0) navigateToSlide(currentSlideIdx - 1);
+        }
+
+        function toggleSpeakerNotes() {
+            notesFloatingBox.classList.toggle('visible');
+        }
+
+        function openLightboxModal(src) {
+            modalFullImg.src = src;
+            imageModalLightbox.classList.add('active');
+        }
+
+        function closeLightboxModal() {
+            imageModalLightbox.classList.remove('active');
+        }
+
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (imageModalLightbox.classList.contains('active')) {
+                if (e.key === 'Escape') closeLightboxModal();
+                return;
+            }
+            if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
+                e.preventDefault();
+                nextSlide();
+            } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+                e.preventDefault();
+                prevSlide();
+            } else if (['n', 'N', 'т', 'Т'].includes(e.key)) {
+                toggleSpeakerNotes();
+            }
+        });
+
+        // Initialize first slide
+        navigateToSlide(0);
+    </script>
+</body>
+</html>
