@@ -6,10 +6,16 @@ import {
   testLdapsSettings,
   saveHelpdeskSettings,
   saveLocalAdminSettings,
+  fetchKbStats,
+  fetchKbExamples,
+  blacklistKbExample,
+  triggerKbSync,
   type LdapsConfigDTO,
   type HelpdeskConfigDTO,
   type LocalAdminConfigDTO,
   type ConnectionTestResult,
+  type KBExampleItem,
+  type KBStatsResponse,
 } from '../lib/adminApi';
 
 interface AdminPanelPageProps {
@@ -23,12 +29,24 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [loginError, setLoginError] = useState<string | null>(null);
 
   // Settings State
-  const [activeTab, setActiveTab] = useState<'ldaps' | 'helpdesk' | 'security'>('ldaps');
+  const [activeTab, setActiveTab] = useState<'ldaps' | 'helpdesk' | 'kb' | 'security'>('ldaps');
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Knowledge Base State
+  const [kbStats, setKbStats] = useState<KBStatsResponse | null>(null);
+  const [kbExamples, setKbExamples] = useState<KBExampleItem[]>([]);
+  const [kbTotal, setKbTotal] = useState<number>(0);
+  const [kbPage, setKbPage] = useState<number>(1);
+  const [kbLimit] = useState<number>(10);
+  const [kbSearch, setKbSearch] = useState<string>('');
+  const [kbLoading, setKbLoading] = useState<boolean>(false);
+  const [kbSyncLoading, setKbSyncLoading] = useState<boolean>(false);
+  const [kbSyncDays, setKbSyncDays] = useState<number>(30);
+  const [blacklistingTaskId, setBlacklistingTaskId] = useState<number | null>(null);
 
   const [ldapsConfig, setLdapsConfig] = useState<LdapsConfigDTO>({
     server: 'dc.corporate.loc',
@@ -113,6 +131,78 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
       setStatusMessage({ type: 'error', text: err.message || 'Ошибка сохранения данных локального админа' });
     } finally {
       setSaveLoading(false);
+    }
+  };
+
+  // KB Handlers
+  const loadKbData = useCallback(
+    async (authToken: string, page = 1, search = '') => {
+      setKbLoading(true);
+      try {
+        const [stats, examplesData] = await Promise.all([
+          fetchKbStats(authToken).catch(() => null),
+          fetchKbExamples(authToken, page, kbLimit, undefined, search),
+        ]);
+        if (stats) setKbStats(stats);
+        setKbExamples(examplesData.examples || []);
+        setKbTotal(examplesData.total || 0);
+        setKbPage(examplesData.page || 1);
+      } catch (err: any) {
+        console.error('Ошибка загрузки данных базы знаний:', err);
+      } finally {
+        setKbLoading(false);
+      }
+    },
+    [kbLimit]
+  );
+
+  useEffect(() => {
+    if (token && activeTab === 'kb') {
+      loadKbData(token, kbPage, kbSearch);
+    }
+  }, [token, activeTab, kbPage]);
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (token) {
+      setKbPage(1);
+      loadKbData(token, 1, kbSearch);
+    }
+  };
+
+  const handleBlacklistExample = async (taskId: number) => {
+    if (!token) return;
+    if (
+      !window.confirm(
+        `Вы уверены, что хотите занести задачу #${taskId} в черный список RAG? Она перестанет участвовать в семантическом поиске.`
+      )
+    ) {
+      return;
+    }
+    setBlacklistingTaskId(taskId);
+    try {
+      await blacklistKbExample(token, taskId);
+      setStatusMessage({ type: 'success', text: `Задача #${taskId} занесена в черный список RAG.` });
+      await loadKbData(token, kbPage, kbSearch);
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Ошибка добавления в черный список' });
+    } finally {
+      setBlacklistingTaskId(null);
+    }
+  };
+
+  const handleTriggerSync = async () => {
+    if (!token) return;
+    setKbSyncLoading(true);
+    setStatusMessage(null);
+    try {
+      const res = await triggerKbSync(token, kbSyncDays, 100);
+      setStatusMessage({ type: 'success', text: res.message || 'Синхронизация завершена' });
+      await loadKbData(token, 1, kbSearch);
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Ошибка синхронизации' });
+    } finally {
+      setKbSyncLoading(false);
     }
   };
 
@@ -338,6 +428,21 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
             </svg>
             <span>Параметры инженеров и очереди</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('kb')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 cursor-pointer ${
+              activeTab === 'kb'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+            }`}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+            </svg>
+            <span>База знаний (RAG)</span>
           </button>
 
           <button
@@ -674,7 +779,261 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
           </div>
         )}
 
-        {/* Tab 3: Security & Fallback One-Liner */}
+        {/* Tab 3: Knowledge Base RAG & Moderation */}
+        {activeTab === 'kb' && (
+          <div className="space-y-6">
+            {/* Top Metric Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 shadow-sm flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-medium text-neutral-400">Активных прецедентов RAG</p>
+                  <p className="text-2xl font-bold text-neutral-100 mt-1">
+                    {kbStats?.total_active_examples ?? kbTotal}
+                  </p>
+                  <span className="text-[10px] text-emerald-400 mt-0.5 block">Участвуют в AI-поиске</span>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+                  </svg>
+                </div>
+              </div>
+
+              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 shadow-sm flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-medium text-neutral-400">В черном списке (Blacklist)</p>
+                  <p className="text-2xl font-bold text-red-400 mt-1">
+                    {kbStats?.total_blacklisted_examples ?? 0}
+                  </p>
+                  <span className="text-[10px] text-neutral-500 mt-0.5 block">Исключены модератором</span>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+                  </svg>
+                </div>
+              </div>
+
+              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 shadow-sm flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-medium text-neutral-400">Охвачено категорий</p>
+                  <p className="text-2xl font-bold text-neutral-100 mt-1">
+                    {kbStats?.services_count ?? 0}
+                  </p>
+                  <span className="text-[10px] text-neutral-500 mt-0.5 block">Разделов каталога</span>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+                    <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            {/* Sync & Search Control Panel */}
+            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-base font-semibold">Синхронизация и Модерация</h2>
+                  <p className="text-xs text-neutral-400 mt-0.5">
+                    Управление векторными знаниями pgvector: обучение по закрытым заявкам и удаление ошибок.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-neutral-400">Глубина:</span>
+                    <select
+                      value={kbSyncDays}
+                      onChange={e => setKbSyncDays(Number(e.target.value))}
+                      className="px-2.5 py-1.5 bg-neutral-950 border border-neutral-700 rounded-lg text-xs text-neutral-200 focus:outline-none focus:border-blue-500 cursor-pointer"
+                    >
+                      <option value={14}>14 дней</option>
+                      <option value={30}>30 дней</option>
+                      <option value={60}>60 дней</option>
+                      <option value={90}>90 дней</option>
+                      <option value={180}>180 дней</option>
+                    </select>
+                  </div>
+
+                  <button
+                    onClick={handleTriggerSync}
+                    disabled={kbSyncLoading}
+                    className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-xs font-medium shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {kbSyncLoading ? (
+                      <>
+                        <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                        <span>Обучение...</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+                        </svg>
+                        <span>Запустить синхронизацию</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Search input */}
+              <form onSubmit={handleSearchSubmit} className="flex gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type="text"
+                    value={kbSearch}
+                    onChange={e => setKbSearch(e.target.value)}
+                    placeholder="Поиск по теме, сути проблемы или тексту решения..."
+                    className="w-full pl-9 pr-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-blue-500"
+                  />
+                  <svg
+                    className="absolute left-3 top-2.5 text-neutral-500"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                </div>
+                <button
+                  type="submit"
+                  disabled={kbLoading}
+                  className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded-xl text-xs font-medium border border-neutral-700 transition-colors cursor-pointer"
+                >
+                  Найти
+                </button>
+                {kbSearch && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setKbSearch('');
+                      if (token) {
+                        setKbPage(1);
+                        loadKbData(token, 1, '');
+                      }
+                    }}
+                    className="px-3 py-2 text-xs text-neutral-400 hover:text-neutral-200 transition-colors cursor-pointer"
+                  >
+                    Сброс
+                  </button>
+                )}
+              </form>
+            </div>
+
+            {/* Knowledge Base Examples Table */}
+            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-6 py-4 border-b border-neutral-800 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-semibold">Проиндексированные прецеденты</h3>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-neutral-800 text-neutral-300">
+                    {kbTotal} записей
+                  </span>
+                </div>
+                {kbLoading && (
+                  <span className="text-xs text-neutral-400 flex items-center gap-1.5">
+                    <span className="w-3 h-3 border-2 border-neutral-400/30 border-t-neutral-400 rounded-full animate-spin"></span>
+                    Загрузка...
+                  </span>
+                )}
+              </div>
+
+              {kbExamples.length === 0 && !kbLoading ? (
+                <div className="p-12 text-center text-neutral-500 text-xs">
+                  {kbSearch ? 'По вашему запросу прецедентов не найдено.' : 'База знаний пока пуста. Запустите синхронизацию выше.'}
+                </div>
+              ) : (
+                <div className="divide-y divide-neutral-800/60">
+                  {kbExamples.map(item => (
+                    <div key={item.task_id} className="p-5 hover:bg-neutral-800/30 transition-colors space-y-2.5">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-center gap-2.5">
+                          <span className="px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-mono font-semibold">
+                            #{item.task_id}
+                          </span>
+                          <span className="text-xs font-semibold text-neutral-200">
+                            {item.original_name || 'Без названия'}
+                          </span>
+                          <span className="px-2 py-0.5 rounded text-[10px] bg-neutral-800 text-neutral-400">
+                            {item.service_name}
+                          </span>
+                        </div>
+
+                        <button
+                          onClick={() => handleBlacklistExample(item.task_id)}
+                          disabled={blacklistingTaskId === item.task_id}
+                          title="Занести в черный список RAG"
+                          className="px-2.5 py-1 text-[11px] font-medium text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded-lg border border-red-900/40 transition-colors flex items-center gap-1 cursor-pointer"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+                          </svg>
+                          <span>{blacklistingTaskId === item.task_id ? 'Блокировка...' : 'В черный список'}</span>
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                        <div className="p-3 bg-neutral-950/60 rounded-xl border border-neutral-800/80">
+                          <p className="text-[10px] uppercase font-semibold text-neutral-500 tracking-wider mb-1">
+                            Суть проблемы / Запрос
+                          </p>
+                          <p className="text-neutral-300 leading-relaxed line-clamp-3">
+                            {item.problem || '—'}
+                          </p>
+                        </div>
+
+                        <div className="p-3 bg-emerald-950/10 rounded-xl border border-emerald-900/20">
+                          <p className="text-[10px] uppercase font-semibold text-emerald-500 tracking-wider mb-1">
+                            Решение / Ответ
+                          </p>
+                          <p className="text-neutral-300 leading-relaxed line-clamp-3">
+                            {item.solution || '—'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Pagination Bar */}
+              {kbTotal > kbLimit && (
+                <div className="px-6 py-3 border-t border-neutral-800 flex items-center justify-between text-xs text-neutral-400">
+                  <span>
+                    Страница {kbPage} из {Math.ceil(kbTotal / kbLimit)}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setKbPage(prev => Math.max(prev - 1, 1))}
+                      disabled={kbPage <= 1 || kbLoading}
+                      className="px-3 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-300 rounded-lg border border-neutral-700 transition-colors cursor-pointer"
+                    >
+                      ← Назад
+                    </button>
+                    <button
+                      onClick={() => setKbPage(prev => (prev * kbLimit < kbTotal ? prev + 1 : prev))}
+                      disabled={kbPage * kbLimit >= kbTotal || kbLoading}
+                      className="px-3 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-300 rounded-lg border border-neutral-700 transition-colors cursor-pointer"
+                    >
+                      Вперед →
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Tab 4: Security & Fallback One-Liner */}
         {activeTab === 'security' && (
           <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-6">
             <div>

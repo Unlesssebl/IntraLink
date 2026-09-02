@@ -126,3 +126,108 @@ export async function saveLocalAdminSettings(token: string, payload: LocalAdminC
   }
   return res.json();
 }
+
+export interface KBExampleItem {
+  task_id: number;
+  original_name: string;
+  problem: string;
+  solution: string;
+  service_id: number;
+  service_name: string;
+  status_name: string;
+}
+
+export interface KBExamplesResponse {
+  total: number;
+  page: number;
+  limit: number;
+  examples: KBExampleItem[];
+}
+
+export interface KBStatsResponse {
+  total_active_examples: number;
+  total_blacklisted_examples: number;
+  services_count: number;
+  services: Record<string, { total: number; by_status: Record<string, number> }>;
+}
+
+export interface KBSyncResponse {
+  status: string;
+  message: string;
+  details?: Record<string, any>;
+}
+
+export async function fetchKbStats(token: string): Promise<KBStatsResponse> {
+  const res = await fetch('/api/v1/admin/kb/stats', {
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Сессия администратора истекла');
+    throw new Error('Не удалось загрузить статистику базы знаний');
+  }
+  return res.json();
+}
+
+export async function fetchKbExamples(
+  token: string,
+  page = 1,
+  limit = 20,
+  serviceId?: number,
+  search?: string
+): Promise<KBExamplesResponse> {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+  });
+  if (serviceId) params.set('service_id', String(serviceId));
+  if (search && search.trim()) params.set('search', search.trim());
+
+  const res = await fetch(`/api/v1/admin/kb/examples?${params.toString()}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Сессия администратора истекла');
+    throw new Error('Не удалось загрузить прецеденты базы знаний');
+  }
+  return res.json();
+}
+
+export async function blacklistKbExample(
+  token: string,
+  taskId: number
+): Promise<{ status: string; task_id: number; message: string }> {
+  const res = await fetch(`/api/v1/admin/kb/examples/${taskId}`, {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Сессия администратора истекла');
+    throw new Error(`Не удалось занести задачу #${taskId} в черный список`);
+  }
+  return res.json();
+}
+
+export async function triggerKbSync(token: string, days = 30, limit = 100): Promise<KBSyncResponse> {
+  const res = await fetch('/api/v1/admin/kb/sync', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ days, limit }),
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Сессия администратора истекла');
+    throw new Error('Не удалось запустить синхронизацию базы знаний');
+  }
+  return res.json();
+}

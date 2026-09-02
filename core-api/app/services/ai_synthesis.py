@@ -55,7 +55,7 @@ def canonize_task_solution(
     if lifetime:
         # Идем от последних комментариев к первым
         for item in reversed(lifetime):
-            comm = clean_html(item.get("Comment") or "").strip()
+            comm = clean_html(item.get("Comment") or item.get("Text") or "").strip()
             # Пропускаем пустые, системные статусные сообщения и авто-логи
             if not comm or len(comm) < 10:
                 continue
