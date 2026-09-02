@@ -175,3 +175,45 @@ flowchart LR
    - Перед отправкой в Cloud Gemini сущности заменяются на обратимые маркеры (`{{USER_1}}`, `{{INTERNAL_IP_1}}`), а маппинг сохраняется в **Redis PII Vault**. В ответе модели маркеры автоматически восстанавливаются (**Rehydration**).
 3. 🟢 **Открытый контур (GREEN / Cloud Direct)**:
    - Применяется для публичных вопросов, синтаксиса скриптов и общих регламентов. Запрос направляется в Gemini Cloud напрямую.
+
+---
+
+## 🛡️ 4. Защитные механизмы (Safety & Resiliency)
+
+- **Distributed Host Concurrency Locks (`safety.py`):**
+  - Распределенная блокировка в Redis (`lock:host:<pc_name>`, TTL 30s) с уникальным токеном владельца и Lua-скриптом безопасного снятия.
+  - Предотвращает гонки параллельных WinRM/WMI сессий к одному хосту и исключает системные сбои `0x80338029`.
+- **Аварийный тормоз (Dead Man's Switch):**
+  - Скользящее окно Redis ZSET (`ratelimit:triage:apply`) блокирует массовые применения > 10 заявок/мин без явного подтверждения инженером (`confirmed_by_human=True`).
+
+---
+
+## 📡 5. Фоновая экспресс-телеметрия хостов (Fail-Fast Pre-fetch)
+
+- **Сетевой каскад (`host_telemetry.py`):**
+  - Fast ICMP Ping (таймаут 400 мс) $\rightarrow$ при оффлайне моментальный возврат `OFFLINE` без блокировки WMI.
+  - TCP-пробы портов `5985` (WinRM) и `445` (SMB) с таймаутом 300 мс.
+  - Ограничение сетевой нагрузки: `subnet_rate_limit` (не более 3 одновременных зондов на подсеть `/24`).
+- **Сбор системных метрик:**
+  - При открытом WinRM под защитой `host_concurrency_lock` собираются: остаток диска `C:`, службы `Spooler` и `1C:Enterprise`, активный пользователь.
+  - Кэширование в Redis (`diag:<task_id>`, TTL 10 мин) обеспечивает мгновенный вывод телеметрии (0ms latency).
+
+---
+
+## 🧠 6. Двухэтапный Advanced Hybrid RAG и Канонизация базы знаний
+
+```mermaid
+flowchart LR
+    Q["Запрос заявителя"] --> QD["Query Distillation (<10ms)"]
+    QD --> Dense["Dense pgvector (3072-dim)"]
+    QD --> Sparse["Sparse tsvector (Коды ошибок, Модели, Службы)"]
+    Dense --> RRF["Reciprocal Rank Fusion (k=60)"]
+    Sparse --> RRF
+    RRF --> CE["Cross-Encoder Reranker (BAAI/bge-reranker)"]
+    CE --> Synth["Response Synthesis (Инженер Беликов Ален)"]
+```
+
+1. **Query Distillation:** отсечение эмоционального шума и выделение кодов ошибок (`0x80070005`, `0x0000011b`), моделей оборудования и служб.
+2. **Hybrid Retrieval (Dense + Sparse RRF):** параллельный векторный поиск в `pgvector` и полнотекстовый поиск по техническим термам с объединением по формуле $RRF\_Score = \sum \frac{1}{60 + rank_i}$.
+3. **Cross-Encoder Reranking:** локальная переоценка пар `(query, document)` через `BAAI/bge-reranker-base` в неблокирующем потоке (`asyncio.to_thread`) с порогом $\ge 0.85$.
+4. **Auto-KB Canonization & Synthesis:** автоматическое извлечение триады `[Проблема] ➔ [Первопричина] ➔ [Решение]` из переписки закрытых заявок и генерация ответов в каноническом стиле инженера Беликова Алена.

@@ -147,6 +147,18 @@ class Settings(BaseSettings):
         86400,
         description="TTL в секундах (24 часа) для кэша пропущенных заявок в Redis",
     )
+    HOST_LOCK_DEFAULT_TTL: int = Field(
+        30,
+        description="TTL в секундах для распределенной блокировки хоста (WinRM/WMI)",
+    )
+    TRIAGE_APPLY_MAX_PER_MINUTE: int = Field(
+        10,
+        description="Порог аварийного тормоза Dead Man's Switch для применения решений (заявок/мин)",
+    )
+    TRIAGE_APPLY_RATE_LIMIT_WINDOW: int = Field(
+        60,
+        description="Окно rate limiter для применения решений в триаже (в секундах)",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"

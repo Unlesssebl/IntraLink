@@ -147,6 +147,13 @@ async def _check_new_tasks_global(
 
                     notifications.append(payload)
                     db_user.last_task_id = max(db_user.last_task_id or 0, task["Id"])
+
+                    # Запуск фонового Fail-Fast Pre-fetch телеметрии хоста в Redis (0ms latency SLA)
+                    try:
+                        from app.services.host_telemetry import prefetch_task_telemetry
+                        asyncio.create_task(prefetch_task_telemetry(task))
+                    except Exception as e_prefetch:
+                        logger.debug("Ошибка запуска pre-fetch телеметрии для заявки #%s: %s", task.get("Id"), e_prefetch)
     return notifications
 
 

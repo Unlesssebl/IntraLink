@@ -2,6 +2,7 @@
 Роутер централизованного триажа, пакетной обработки очередей и RAG для Web UI и Helpdesk Agent.
 """
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -24,6 +25,18 @@ from app.services.rules.catalog import (
     ROOT_SERVICES,
     get_root_name,
     get_root_number_for_service_id,
+)
+from app.services.ai_synthesis import (
+    canonize_task_solution,
+    synthesize_triage_resolution,
+)
+from app.services.host_telemetry import (
+    get_task_telemetry,
+    prefetch_task_telemetry,
+)
+from app.services.safety import (
+    DeadMansSwitchError,
+    enforce_triage_apply_rate_limit,
 )
 from app.services.template_engine import (
     auto_detect_template,
@@ -58,6 +71,10 @@ class ApplyTriageRequest(BaseModel):
         description="ID исполнителей по умолчанию",
     )
     dry_run: bool = Field(False, description="Режим симуляции")
+    confirmed_by_human: bool = Field(
+        False,
+        description="Явное подтверждение оператора для обхода аварийного лимита (Dead Man's Switch)",
+    )
 
 
 class SkipSessionRequest(BaseModel):
@@ -226,6 +243,12 @@ async def get_triage_batch(
         is_dup = t_id in dup_map
         dup_info = dup_map.get(t_id)
 
+        # Экспресс-телеметрия хоста из кэша (0ms)
+        telemetry = await get_task_telemetry(t_id)
+        if telemetry is None:
+            # Запускаем фоновый pre-fetch для заполнения кэша
+            asyncio.create_task(prefetch_task_telemetry(t))
+
         meta = t.get("_field_meta") or {}
         result_items.append({
             "task": t,
@@ -246,6 +269,7 @@ async def get_triage_batch(
             "is_duplicate": is_dup,
             "duplicate_info": dup_info,
             "kb_matches": kb_matches,
+            "telemetry": telemetry,
             "circuit": circuit_dec.circuit.value,
             "circuit_reason": circuit_dec.reason,
             "requires_sanitization": circuit_dec.requires_sanitization,
@@ -268,7 +292,7 @@ async def get_task_details_card(
 ):
     """
     Возвращает детальную карточку задачи с нормализованными полями,
-    историей переписки, RAG-совпадениями и авто-рекомендацией.
+    историей переписки, RAG-совпадениями, телеметрией и авто-рекомендацией.
     """
     task = await intraservice.get_single_task(service_auth_b64, task_id)
     if not task:
@@ -281,6 +305,11 @@ async def get_task_details_card(
     history = (
         await intraservice.get_task_lifetime(service_auth_b64, task_id) or []
     )
+
+    # Экспресс-телеметрия хоста
+    telemetry = await get_task_telemetry(task_id)
+    if telemetry is None:
+        telemetry = await prefetch_task_telemetry(task)
 
     # Поиск по RAG
     t_name = task.get("Name") or ""
@@ -299,11 +328,21 @@ async def get_task_details_card(
         metadata=RoutingMetadata(service_id=task.get("ServiceId")),
     )
 
+    # AI-синтез решения от имени инженера
+    ai_resolution = await synthesize_triage_resolution(
+        task=task,
+        kb_matches=kb_matches,
+        telemetry=telemetry,
+        circuit=circuit_dec.circuit,
+    )
+
     return {
         "task": task,
         "history": history,
         "kb_matches": kb_matches,
+        "telemetry": telemetry,
         "suggested_action": decision,
+        "ai_suggested_resolution": ai_resolution,
         "circuit": circuit_dec.circuit.value,
         "circuit_reason": circuit_dec.reason,
         "requires_sanitization": circuit_dec.requires_sanitization,
@@ -329,6 +368,23 @@ async def apply_triage_action(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Список task_ids не может быть пустым.",
         )
+
+    # Защитный механизм: Dead Man's Switch (Rate Limiter)
+    if not payload.dry_run:
+        try:
+            await enforce_triage_apply_rate_limit(
+                ticket_count=len(task_ids),
+                confirmed_by_human=payload.confirmed_by_human,
+            )
+        except DeadMansSwitchError as e:
+            logger.warning(
+                "Аварийный тормоз (Dead Man's Switch) сработал на /triage/apply: %s",
+                e,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=str(e),
+            )
 
     status_id = payload.status_id
     comment = payload.comment
