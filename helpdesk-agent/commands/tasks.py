@@ -8,8 +8,8 @@ import sys
 from typing import Any
 
 from core_api_client import CoreApiClient
-from executors.ad import ActiveDirectoryExecutor
 from llm.ollama_client import OllamaClient
+
 
 DOWNLOADS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "downloads"
@@ -141,68 +141,54 @@ async def handle_apply(args: Any) -> None:
         print(f"=== Применение решения к заявкам: {', '.join(f'#{tid}' for tid in task_ids)} ===")
         print(f"Целевой статус: {status_id} | Списание: {expenses} мин | Исполнители: {executor_ids}")
 
-        # Локальное исполнение Active Directory на Windows-станции
+        # Маршрутизация через Command Bus для доменных действий и Core API
         for task_id in task_ids:
-            task_card = await client.get_task_card(task_id)
-            task_data = task_card.get("task") if task_card else None
-
-            # 1. Автовыдача Wi-Fi в Active Directory
+            # 1. Автовыдача Wi-Fi в Active Directory через Command Bus
             if status_id == 29 and any(w in (comment or "").lower() for w in ["wi-fi", "wifi", "вайфай", "вай-фай"]):
-                ad_exec = ActiveDirectoryExecutor()
-                identity = ad_exec.extract_identity_from_task(task_data or {})
-                if identity:
-                    print(f"⚡ [AD Execution] Проверка и выдача доступа в AD для '{identity}'...")
-                    ad_res = await ad_exec.grant_wlan_access_async(identity)
-                    if not ad_res.success:
-                        print(f"❌ СБОЙ AD: {ad_res.message}. Перевод в статус 29 отменен.", file=sys.stderr)
-                        status_id = 27
-                    else:
-                        print(f"✓ AD: {ad_res.message}")
+                print(f"⚡ [Command Bus] Постановка задачи Wi-Fi для #{task_id}...")
+                cmd_res = await client.submit_command(
+                    command_type="grant_wlan",
+                    target={"task_id": task_id},
+                    params={"auto_close": True, "executor_ids": executor_ids},
+                    mode="dry_run" if dry_run else "auto",
+                    source="cli",
+                )
+                if cmd_res and cmd_res.get("status") in ("accepted", "dry_run_success"):
+                    print(f"✓ Задача Wi-Fi #{task_id} зарегистрирована в Command Bus ({cmd_res.get('job_id', 'dry_run')})")
+                    continue
 
-            # 2. Создание пользователя в Active Directory
-            if status_id == 29 and ("{password}" in (comment or "") or "учетная запись успешно создана" in (comment or "").lower()):
-                ad_exec = ActiveDirectoryExecutor()
-                details = ad_exec.extract_user_creation_details_from_task(task_data or {})
-                if details.get("surname") and details.get("name"):
-                    print(f"⚡ [AD Execution] Создание пользователя {details['surname']} {details['name']} в AD...")
-                    create_res = await ad_exec.create_user_account_async(
-                        surname=details["surname"],
-                        name=details["name"],
-                        patronymic=details.get("patronymic"),
-                        company=details.get("company"),
-                        department=details.get("department"),
-                        phone=details.get("phone"),
-                        pc_name=details.get("pc_name"),
-                        title=details.get("title"),
-                        creator_company=details.get("creator_company"),
-                        creator_dept=details.get("creator_department"),
-                    )
-                    if not create_res.success:
-                        print(f"❌ СБОЙ AD: {create_res.error}.", file=sys.stderr)
-                        status_id = 27
-                        comment = f"Не удалось автоматически создать учетную запись в AD: {create_res.error}."
-                    else:
-                        print(f"✓ AD: {create_res.message} (Логин: {create_res.sam_account_name})")
-                        comment = comment.replace("{password}", create_res.password)
-                        comment = comment.replace("{login}", create_res.sam_account_name)
+            # 2. Создание пользователя в Active Directory через Command Bus
+            elif status_id == 29 and ("{password}" in (comment or "") or "учетная запись успешно создана" in (comment or "").lower()):
+                print(f"⚡ [Command Bus] Постановка задачи создания пользователя для #{task_id}...")
+                cmd_res = await client.submit_command(
+                    command_type="create_user",
+                    target={"task_id": task_id},
+                    params={"auto_close": True, "executor_ids": executor_ids},
+                    mode="dry_run" if dry_run else "auto",
+                    source="cli",
+                )
+                if cmd_res and cmd_res.get("status") in ("accepted", "dry_run_success"):
+                    print(f"✓ Задача New User #{task_id} зарегистрирована в Command Bus ({cmd_res.get('job_id', 'dry_run')})")
+                    continue
 
-        # Вызов Core API apply
-        ok = await client.apply_decision(
-            task_ids=task_ids,
-            status_id=status_id,
-            comment=comment,
-            expenses=expenses,
-            executor_ids=executor_ids,
-            dry_run=dry_run,
-        )
+            # Обычные заявки (смена статуса, комментарий, списание)
+            ok = await client.apply_decision(
+                task_ids=[task_id],
+                status_id=status_id,
+                comment=comment or "",
+                expenses=expenses,
+                executor_ids=executor_ids,
+                dry_run=dry_run,
+            )
+            if ok:
+                print(f"✓ Заявка #{task_id}: решение успешно применено через Core API.")
+            else:
+                print(f"❌ Ошибка применения решения для #{task_id}.", file=sys.stderr)
 
-        if ok:
-            print(f"✓ УСПЕХ: Все изменения по заявкам успешно применены через Core API!")
-        else:
-            print(f"⚠️ Ошибка применения решений через Core API.", file=sys.stderr)
-            sys.exit(1)
+        print(f"🎯 Обработка пачки завершена.")
     finally:
         await client.close()
+
 
 
 async def handle_history(args: Any) -> None:

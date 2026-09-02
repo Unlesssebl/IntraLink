@@ -221,18 +221,111 @@ class CoreApiClient:
             return []
 
     async def skip_tasks(
-        self, task_ids: list[int], reason: str = "operator_skipped"
+        self,
+        task_ids: list[int],
+        reason: str = "operator_skipped",
+        operator_id: str | None = None,
     ) -> bool:
         """Помечает задачи как пропущенные в Redis через Core API."""
         session = await self._get_session()
         url = f"{self.base_url}/api/v1/triage/session/skip"
-        payload = {"task_ids": task_ids, "reason": reason}
+        payload = {
+            "task_ids": task_ids,
+            "reason": reason,
+            "operator_id": operator_id,
+        }
         async with session.post(url, json=payload) as resp:
             return resp.status == 200
 
-    async def reset_session(self) -> bool:
+    async def reset_session(self, operator_id: str | None = None) -> bool:
         """Сбрасывает сессию пропущенных задач в Core API."""
         session = await self._get_session()
         url = f"{self.base_url}/api/v1/triage/session/reset"
-        async with session.post(url) as resp:
+        params = {"operator_id": operator_id} if operator_id else {}
+        async with session.post(url, params=params) as resp:
             return resp.status == 200
+
+    async def submit_command(
+        self,
+        command_type: str,
+        target: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        mode: str = "auto",
+        priority: int = 5,
+        idempotency_key: str | None = None,
+        initiator: str | None = None,
+        source: str = "cli",
+        auto_close_ticket: bool = True,
+    ) -> dict[str, Any]:
+        """Отправляет команду в единую шину Command Bus."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v1/commands"
+        payload = {
+            "type": command_type,
+            "target": target or {},
+            "params": params or {},
+            "mode": mode,
+            "priority": priority,
+            "idempotency_key": idempotency_key,
+            "initiator": initiator,
+            "source": source,
+            "auto_close_ticket": auto_close_ticket,
+        }
+        async with session.post(url, json=payload) as resp:
+            if resp.status in (200, 202):
+                return await resp.json()
+            err_text = await resp.text()
+            logger.error("Ошибка submit_command (HTTP %d): %s", resp.status, err_text)
+            return {"status": "error", "error": err_text}
+
+    async def get_command_status(self, job_id: str) -> dict[str, Any] | None:
+        """Получает статус выполнения команды по job_id."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v1/commands/{job_id}"
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            return None
+
+    async def confirm_command(
+        self,
+        job_id: str,
+        decision: str = "approve",
+        reason: str | None = None,
+        operator: str | None = None,
+    ) -> dict[str, Any]:
+        """Отправляет решение оператора (HITL) по ожидающей задаче."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v1/commands/{job_id}/confirm"
+        payload = {"decision": decision, "reason": reason, "operator": operator}
+        async with session.post(url, json=payload) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            return {"status": "error", "http_status": resp.status}
+
+    async def get_audit_log(
+        self,
+        status_filter: str | None = None,
+        command_type: str | None = None,
+        initiator: str | None = None,
+        task_id: int | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Получает историю выполнения команд из audit log."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v1/commands"
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if status_filter:
+            params["status"] = status_filter
+        if command_type:
+            params["command_type"] = command_type
+        if initiator:
+            params["initiator"] = initiator
+        if task_id:
+            params["task_id"] = task_id
+        async with session.get(url, params=params) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            return {"total": 0, "items": []}
+

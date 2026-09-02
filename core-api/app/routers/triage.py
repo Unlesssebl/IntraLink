@@ -64,6 +64,7 @@ class SkipSessionRequest(BaseModel):
         ..., description="Список ID заявок для пропуска в текущей смене"
     )
     reason: str = Field("operator_skipped", description="Причина пропуска")
+    operator_id: str | None = Field(None, description="Идентификатор оператора")
 
 
 class RAGSearchRequest(BaseModel):
@@ -93,16 +94,24 @@ class RAGSyncRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def get_skipped_task_ids() -> set[int]:
-    """Возвращает множество ID пропущенных заявок из Redis."""
+async def get_skipped_task_ids(operator_id: str | None = None) -> set[int]:
+    """Возвращает множество ID пропущенных заявок из Redis для указанного оператора."""
     try:
         r = get_redis_client()
-        raw = await r.smembers("session:skipped_task_ids")
-        if raw:
-            return {int(x) for x in raw if str(x).isdigit()}
+        keys_to_check = ["session:skipped_task_ids"]
+        if operator_id:
+            keys_to_check.insert(0, f"session:{operator_id}:skipped_task_ids")
+
+        result = set()
+        for key in keys_to_check:
+            raw = await r.smembers(key)
+            if raw:
+                result.update({int(x) for x in raw if str(x).isdigit()})
+        return result
     except Exception as e:
         logger.debug("Ошибка чтения session:skipped_task_ids из Redis: %s", e)
     return set()
+
 
 
 # ---------------------------------------------------------------------------
@@ -532,21 +541,29 @@ async def get_triage_templates():
 
 
 @router.post("/session/skip", status_code=status.HTTP_200_OK)
-async def skip_session_tasks(payload: SkipSessionRequest):
+async def skip_session_tasks(
+    payload: SkipSessionRequest,
+    operator: str = Depends(verify_admin_or_api_key),
+):
     """
     Помечает заявки как пропущенные в текущей смене оператора.
     """
+    op = payload.operator_id or operator
+    redis_key = f"session:{op}:skipped_task_ids" if op and op != "bot_or_cli" else "session:skipped_task_ids"
+
     try:
         r = get_redis_client()
         for tid in payload.task_ids:
+            await r.sadd(redis_key, str(tid))
             await r.sadd("session:skipped_task_ids", str(tid))
-        await r.expire("session:skipped_task_ids", settings.SKIPPED_TASKS_REDIS_TTL)
+        await r.expire(redis_key, settings.SKIPPED_TASKS_REDIS_TTL)
         return {
             "status": "success",
             "skipped_count": len(payload.task_ids),
+            "operator": op,
         }
     except Exception as e:
-        logger.exception("Ошибка сохранения session:skipped_task_ids: %s", e)
+        logger.exception("Ошибка сохранения %s: %s", redis_key, e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка Redis: {e}",
@@ -554,17 +571,24 @@ async def skip_session_tasks(payload: SkipSessionRequest):
 
 
 @router.post("/session/reset", status_code=status.HTTP_200_OK)
-async def reset_session_tasks():
+async def reset_session_tasks(
+    operator_id: str | None = Query(None, description="Идентификатор оператора"),
+    operator: str = Depends(verify_admin_or_api_key),
+):
     """
     Сбрасывает сессионный кэш пропущенных заявок.
     """
+    op = operator_id or operator
     try:
         r = get_redis_client()
         await r.delete("session:skipped_task_ids")
-        return {"status": "success", "message": "Сессия сброшена"}
+        if op:
+            await r.delete(f"session:{op}:skipped_task_ids")
+        return {"status": "success", "message": "Сессия сброшена", "operator": op}
     except Exception as e:
-        logger.exception("Ошибка сброса session:skipped_task_ids: %s", e)
+        logger.exception("Ошибка сброса сессии: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка Redis: {e}",
         )
+

@@ -42,6 +42,27 @@ def clean_html(raw_html: str | None) -> str:
     return " ".join(text_clean.split()).strip()
 
 
+_rag_session: aiohttp.ClientSession | None = None
+
+
+async def get_rag_http_session() -> aiohttp.ClientSession:
+    """Возвращает переиспользуемую HTTP-сессию для векторизации."""
+    global _rag_session
+    if _rag_session is None or _rag_session.closed:
+        timeout = aiohttp.ClientTimeout(total=4.0)
+        connector = aiohttp.TCPConnector(limit=20, ttl_dns_cache=300)
+        _rag_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+    return _rag_session
+
+
+async def close_rag_session() -> None:
+    """Закрывает HTTP-сессию векторизации."""
+    global _rag_session
+    if _rag_session and not _rag_session.closed:
+        await _rag_session.close()
+        _rag_session = None
+
+
 async def get_embedding_vector(text_input: str) -> list[float] | None:
     """
     Генерирует вектор эмбеддинга заданной размерности (3072 dim через LiteLLM Proxy / Gemini
@@ -50,6 +71,8 @@ async def get_embedding_vector(text_input: str) -> list[float] | None:
     clean_text = clean_html(text_input).strip()[:4000]
     if not clean_text:
         return None
+
+    session = await get_rag_http_session()
 
     # 1. Попытка через LiteLLM Proxy
     if settings.LITELLM_BASE_URL:
@@ -60,16 +83,12 @@ async def get_embedding_vector(text_input: str) -> list[float] | None:
                 "input": [clean_text],
                 "model": settings.EMBEDDING_MODEL,
             }
-            timeout = aiohttp.ClientTimeout(total=4.0)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    url, headers=headers, json=payload
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        vec = data.get("data", [{}])[0].get("embedding")
-                        if vec and len(vec) == settings.EMBEDDING_DIMENSION:
-                            return vec
+            async with session.post(url, headers=headers, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    vec = data.get("data", [{}])[0].get("embedding")
+                    if vec and len(vec) == settings.EMBEDDING_DIMENSION:
+                        return vec
         except Exception:
             pass
 
@@ -81,18 +100,17 @@ async def get_embedding_vector(text_input: str) -> list[float] | None:
                 "model": "models/text-embedding-004",
                 "content": {"parts": [{"text": clean_text}]},
             }
-            timeout = aiohttp.ClientTimeout(total=4.0)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, json=payload) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        vec = data.get("embedding", {}).get("values", [])
-                        if vec and len(vec) == settings.EMBEDDING_DIMENSION:
-                            return vec
+            async with session.post(url, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    vec = data.get("embedding", {}).get("values", [])
+                    if vec and len(vec) == settings.EMBEDDING_DIMENSION:
+                        return vec
         except Exception:
             pass
 
     return None
+
 
 
 async def search_knowledge_base(

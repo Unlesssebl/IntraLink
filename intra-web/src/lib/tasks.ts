@@ -307,26 +307,114 @@ export async function enqueueExecution(payload: {
   params?: Record<string, any>;
   auto_close_ticket?: boolean;
 }): Promise<{ status: string; job_id: string; action: string; task_id?: number }> {
-  return apiFetch('/api/v1/execution/enqueue', {
+  return apiFetch('/api/v1/commands', {
     method: 'POST',
     body: JSON.stringify({
-      action: payload.action,
-      task_id: payload.task_id,
+      type: payload.action,
+      target: { task_id: payload.task_id },
       params: payload.params || {},
       auto_close_ticket: payload.auto_close_ticket ?? true,
+      source: 'web',
     }),
+  });
+}
+
+export async function submitCommand(payload: {
+  type: string;
+  target?: Record<string, any>;
+  params?: Record<string, any>;
+  mode?: 'auto' | 'confirm' | 'dry_run';
+  priority?: number;
+  idempotency_key?: string;
+  auto_close_ticket?: boolean;
+}): Promise<{ status: string; job_id: string; command_type: string; task_id?: number }> {
+  return apiFetch('/api/v1/commands', {
+    method: 'POST',
+    body: JSON.stringify({
+      type: payload.type,
+      target: payload.target || {},
+      params: payload.params || {},
+      mode: payload.mode || 'auto',
+      priority: payload.priority || 5,
+      idempotency_key: payload.idempotency_key,
+      auto_close_ticket: payload.auto_close_ticket ?? true,
+      source: 'web',
+    }),
+  });
+}
+
+export async function confirmCommand(
+  jobId: string,
+  decision: 'approve' | 'reject',
+  reason?: string
+): Promise<{ status: string; job_id: string; decision: string }> {
+  return apiFetch(`/api/v1/commands/${jobId}/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, reason }),
+  });
+}
+
+export async function cancelCommand(
+  jobId: string,
+  reason?: string
+): Promise<{ status: string; job_id: string }> {
+  return apiFetch(`/api/v1/commands/${jobId}/cancel?reason=${encodeURIComponent(reason || 'Отменено')}`, {
+    method: 'POST',
   });
 }
 
 export async function getExecutionJobStatus(jobId: string): Promise<{
   job_id: string;
-  action: string;
-  task_id: number;
-  status: 'queued' | 'running' | 'success' | 'failed';
+  action?: string;
+  command_type?: string;
+  task_id?: number;
+  status: 'queued' | 'running' | 'confirm_required' | 'success' | 'failed' | 'cancelled';
   error_message?: string;
   result?: any;
 }> {
-  return apiFetch(`/api/v1/execution/jobs/${jobId}`);
+  return apiFetch(`/api/v1/commands/${jobId}`);
+}
+
+export function streamJobEvents(
+  jobId: string,
+  callbacks: {
+    onProgress?: (data: { phase: string; pct: number; detail?: string }) => void;
+    onConfirmRequired?: (data: { prompt: string; details: any }) => void;
+    onResult?: (data: { status: string; message?: string; data?: any }) => void;
+    onError?: (err: any) => void;
+  }
+): () => void {
+  const es = new EventSource(`/api/v1/events/stream?job_id=${jobId}`);
+
+  es.addEventListener('progress', (e) => {
+    try {
+      const parsed = JSON.parse(e.data);
+      if (callbacks.onProgress) callbacks.onProgress(parsed.data || parsed);
+    } catch {}
+  });
+
+  es.addEventListener('confirm_required', (e) => {
+    try {
+      const parsed = JSON.parse(e.data);
+      if (callbacks.onConfirmRequired) callbacks.onConfirmRequired(parsed.data || parsed);
+    } catch {}
+  });
+
+  es.addEventListener('result', (e) => {
+    try {
+      const parsed = JSON.parse(e.data);
+      if (callbacks.onResult) callbacks.onResult(parsed.data || parsed);
+      es.close();
+    } catch {}
+  });
+
+  es.addEventListener('error', (err) => {
+    if (callbacks.onError) callbacks.onError(err);
+  });
+
+  return () => {
+    es.close();
+  };
 }
 
 export async function pollExecutionJob(
@@ -347,13 +435,14 @@ export async function pollExecutionJob(
     if (job.status === 'success') {
       return job as any;
     }
-    if (job.status === 'failed') {
-      throw new Error(job.error_message || 'Ошибка при удаленном выполнении действия в домене');
+    if (job.status === 'failed' || job.status === 'cancelled') {
+      throw new Error(job.error_message || 'Ошибка или отмена при выполнении действия');
     }
     await new Promise(resolve => setTimeout(resolve, intervalMs));
   }
-  throw new Error('Таймаут ожидания выполнения задачи в домене (превышено 25 сек). Задача осталась в очереди воркера.');
+  throw new Error('Таймаут ожидания выполнения задачи в домене. Задача осталась в очереди воркера.');
 }
+
 
 // ---------------------------------------------------------------------------
 // Settings & System Health Management
