@@ -28,13 +28,13 @@ dependencies = [
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
-extraPaths = ["core-api", "telegram-bot", "execution-worker", "helpdesk-cli"]
+extraPaths = ["core-api", "telegram-bot", "execution-worker", "helpdesk-cli", "shared"]
 exclude = ["**/__pyrefly_virtual__"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["core-api/tests"]
-pythonpath = ["core-api"]
+pythonpath = ["core-api", "shared"]
 
 [dependency-groups]
 dev = [
@@ -47,7 +47,7 @@ dev = [
 project-excludes = [
     "**/__pyrefly_virtual__/**",
 ]
-search_path = ["core-api", "telegram-bot", "execution-worker", "helpdesk-cli"]
+search_path = ["core-api", "telegram-bot", "execution-worker", "helpdesk-cli", "shared"]
 
 
 

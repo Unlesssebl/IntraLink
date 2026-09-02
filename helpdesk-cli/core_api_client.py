@@ -32,8 +32,11 @@ class CoreApiClient:
                 "X-Bot-Api-Key": self.api_key,
                 "Content-Type": "application/json",
             }
+            connector = aiohttp.TCPConnector(
+                limit=20, ttl_dns_cache=300, keepalive_timeout=30.0
+            )
             self._session = aiohttp.ClientSession(
-                headers=headers, timeout=self.timeout
+                headers=headers, timeout=self.timeout, connector=connector
             )
         return self._session
 

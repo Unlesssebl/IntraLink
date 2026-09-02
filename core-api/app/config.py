@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     POLLING_INTERVAL: int = Field(
         30, description="Интервал периодического опроса в секундах"
     )
+    ENABLE_INTERNAL_SCHEDULER: bool = Field(
+        False,
+        description=(
+            "Запуск встроенного планировщика APScheduler в процессе Core API "
+            "(по умолчанию False, так как опрос выполняет отдельный контейнер poller)"
+        ),
+    )
     ENCRYPTION_KEY: str | None = Field(
         None,
         description=(
@@ -100,6 +107,9 @@ class Settings(BaseSettings):
     )
     OLLAMA_MODEL: str = Field(
         "qwen2.5:1.5b", description="Имя локальной языковой модели для суммаризации"
+    )
+    OLLAMA_EMBEDDING_MODEL: str = Field(
+        "bge-m3", description="Имя локальной модели Ollama для генерации эмбеддингов"
     )
     OLLAMA_TIMEOUT: float = Field(
         30.0, description="Таймаут в секундах для запросов инференса Ollama"

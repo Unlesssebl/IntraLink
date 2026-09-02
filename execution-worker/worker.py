@@ -119,12 +119,26 @@ class WindowsExecutionWorker:
                 await asyncio.sleep(2.0)
 
     async def _process_job_safe(self, msg_id: str, data: dict[str, Any]) -> None:
-        """Безопасная конкурентная обработка задачи с подтверждением доставки XACK."""
+        """Безопасная конкурентная обработка задачи с подтверждением доставки XACK и записью в DLQ при сбое."""
         async with self._concurrency_sem:
             try:
                 await self._process_job(msg_id, data)
             except Exception as e:
                 logger.error("Критический сбой обработки задачи msg_id=%s: %s", msg_id, e)
+                # Dead-Letter Queue (DLQ): сохранение сбойной задачи для аудита
+                if self.redis:
+                    try:
+                        dlq_payload = {
+                            "msg_id": msg_id,
+                            "job_id": data.get("job_id", "unknown"),
+                            "error": str(e),
+                            "timestamp": str(time.time()),
+                            "raw_data": json.dumps(data, ensure_ascii=False),
+                        }
+                        await self.redis.xadd("stream:execution_failed", dlq_payload, maxlen=5000)
+                        logger.info("Задача %s отправлена в Dead-Letter Queue (stream:execution_failed)", msg_id)
+                    except Exception as dlq_err:
+                        logger.debug("Ошибка записи в DLQ stream: %s", dlq_err)
             finally:
                 if self.redis:
                     try:

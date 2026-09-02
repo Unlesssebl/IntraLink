@@ -121,13 +121,38 @@ async def get_embedding_vector(text_input: str) -> list[float] | None:
         except Exception:
             pass
 
-    # 3. Fallback: локальный FastEmbed в отдельном пуле потоков (non-blocking Event Loop)
+    # 3. Попытка через локальный сервис Ollama (/api/embed или /api/embeddings)
+    if getattr(settings, "OLLAMA_BASE_URL", None):
+        try:
+            ollama_url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/embed"
+            payload = {
+                "model": getattr(settings, "OLLAMA_EMBEDDING_MODEL", "bge-m3"),
+                "input": clean_text,
+            }
+            async with session.post(ollama_url, json=payload, timeout=aiohttp.ClientTimeout(total=4.0)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    embeddings = data.get("embeddings")
+                    if embeddings and len(embeddings) > 0:
+                        vec = embeddings[0]
+                        if len(vec) == settings.EMBEDDING_DIMENSION:
+                            return vec
+        except Exception:
+            pass
+
+    # 4. Fallback: локальный FastEmbed в отдельном пуле потоков (non-blocking Event Loop)
     try:
         vec = await asyncio.to_thread(_get_fastembed_vector_sync, clean_text)
         if vec:
-            return vec
-    except Exception:
-        pass
+            if len(vec) == settings.EMBEDDING_DIMENSION:
+                return vec
+            logger.warning(
+                "Размерность вектора FastEmbed (%d) не совпадает с EMBEDDING_DIMENSION (%d). Пропуск.",
+                len(vec),
+                settings.EMBEDDING_DIMENSION,
+            )
+    except Exception as e:
+        logger.debug("Ошибка генерации вектора FastEmbed: %s", e)
 
     return None
 

@@ -69,19 +69,26 @@ async def lifespan(_app: FastAPI):
     except Exception as e:
         logger.exception("Ошибка при инициализации HTTP-сессии: %s", e)
 
-    try:
-        await start_worker()
-    except Exception as e:
-        logger.exception("Ошибка при запуске фонового воркера: %s", e)
+    if settings.ENABLE_INTERNAL_SCHEDULER:
+        logger.info("Запуск встроенного планировщика APScheduler в Core API...")
+        try:
+            await start_worker()
+        except Exception as e:
+            logger.exception("Ошибка при запуске встроенного воркера: %s", e)
+    else:
+        logger.info(
+            "Встроенный планировщик APScheduler отключен (опрос выполняет внешний сервис poller)."
+        )
 
     yield
     # Действия при остановке приложения
     logger.info("Остановка приложения Core API...")
     invalidation_task.cancel()
-    try:
-        await stop_worker()
-    except Exception as e:
-        logger.exception("Ошибка при остановке фонового воркера: %s", e)
+    if settings.ENABLE_INTERNAL_SCHEDULER:
+        try:
+            await stop_worker()
+        except Exception as e:
+            logger.exception("Ошибка при остановке фонового воркера: %s", e)
 
     logger.info("Закрытие HTTP-сессий IntraService, RAG и AI Hub...")
     try:
