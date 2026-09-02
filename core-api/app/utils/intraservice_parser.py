@@ -6,7 +6,11 @@ import logging
 import re
 from typing import Any
 
-from app.utils.normalizer import is_valid_pc_name, normalize_pc_name
+from app.utils.normalizer import (
+    is_valid_pc_name,
+    normalize_pc_name,
+    extract_pc_names_from_text,
+)
 
 logger = logging.getLogger("core_api.intraservice_parser")
 
@@ -149,6 +153,19 @@ def enrich_task_data(task: dict[str, Any] | None) -> dict[str, Any] | None:
     # Парсим кастомные поля
     custom_xml = res.get("Data")
     parsed_fields = parse_custom_fields(custom_xml)
+
+    # Дополнительный интеллектуальный поиск хоста в теме и описании задачи
+    if not parsed_fields.get("pc_name"):
+        text_hosts = extract_pc_names_from_text(
+            f"{res.get('Name', '')} {res.get('Description', '')}"
+        )
+        if text_hosts:
+            parsed_fields["pc_name"] = text_hosts[0]
+            if "friendly" in parsed_fields and isinstance(
+                parsed_fields["friendly"], dict
+            ):
+                parsed_fields["friendly"]["Имя ПК"] = text_hosts[0]
+
     res["_parsed_fields"] = parsed_fields.get("friendly", {})
     res["_field_meta"] = parsed_fields
 

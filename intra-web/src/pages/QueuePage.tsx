@@ -810,11 +810,12 @@ export default function QueuePage({
                       </td>
 
                       {/* Host (Clean Badge style) */}
-                      <td className="px-3.5 py-2.5 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                      <td className="px-3.5 py-2.5 whitespace-nowrap">
                         {primaryHost ? (
                           <div className="relative inline-flex items-center gap-1.5">
                             <span
-                              onClick={() => {
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 navigator.clipboard.writeText(primaryHost);
                                 onToast({ type: 'info', message: `Хост ${primaryHost} скопирован в буфер` });
                               }}
@@ -827,7 +828,10 @@ export default function QueuePage({
                             {otherHosts.length > 0 && (
                               <div className="relative">
                                 <button
-                                  onClick={() => setOpenHostTicketId(openHostTicketId === ticket.id ? null : ticket.id)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setOpenHostTicketId(openHostTicketId === ticket.id ? null : ticket.id);
+                                  }}
                                   className="px-1.5 py-0.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 rounded text-[11px] font-mono font-bold cursor-pointer transition-colors"
                                   title="Показать все хосты"
                                 >
@@ -835,14 +839,18 @@ export default function QueuePage({
                                 </button>
 
                                 {openHostTicketId === ticket.id && (
-                                  <div className="absolute left-0 top-7 z-30 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-2xl p-2 min-w-[160px] space-y-1 animate-in fade-in zoom-in-95 duration-100">
+                                  <div
+                                    onClick={e => e.stopPropagation()}
+                                    className="absolute left-0 top-7 z-30 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-2xl p-2 min-w-[160px] space-y-1 animate-in fade-in zoom-in-95 duration-100"
+                                  >
                                     <span className="text-[10px] uppercase font-bold text-neutral-400 block px-1">
                                       Хосты ({hostList.length})
                                     </span>
                                     {hostList.map((h, i) => (
                                       <div
                                         key={i}
-                                        onClick={() => {
+                                        onClick={(e) => {
+                                          e.stopPropagation();
                                           navigator.clipboard.writeText(h);
                                           onToast({ type: 'info', message: `Хост ${h} скопирован` });
                                           setOpenHostTicketId(null);

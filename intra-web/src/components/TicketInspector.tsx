@@ -53,6 +53,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   const [diagStatus, setDiagStatus] = useState<Record<string, DiagStatus>>({
     ping: 'idle', smb: 'idle', winrm: 'idle',
   });
+  const [multiHostDiag, setMultiHostDiag] = useState<Record<string, { ping: DiagStatus; smb: DiagStatus; winrm: DiagStatus; rtt?: string | null; isOnline?: boolean }>>({});
   const [expanded, setExpanded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [templates, setTemplates] = useState<any[]>([]);
@@ -64,6 +65,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   const actionsMenuRef = useRef<HTMLDivElement>(null);
   const rawId = ticket.rawId || parseInt(ticket.id.replace(/\D/g, ''), 10);
   const effectiveHost = ticket.host || details?.pc_name || '';
+  const hostList = effectiveHost ? Array.from(new Set(effectiveHost.split(/[,;|\s]+/).map(h => h.trim()).filter(Boolean))) : [];
 
   // Load Task Details (comments, attachments, custom fields) from Core API
   const loadDetails = useCallback(async () => {
@@ -107,27 +109,58 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     setConfirmingCancel(false);
     setExpenses(ticket.aiPlan?.expensesMinutes || ticket.expenses || 10);
     setDiagStatus({ ping: 'idle', smb: 'idle', winrm: 'idle' });
+    setMultiHostDiag({});
     loadDetails();
   }, [ticket.id, ticket.aiPlan, ticket.aiSuggestion, ticket.expenses, loadDetails]);
 
   // Network diagnostic runner
-  const runDiag = async () => {
-    if (!effectiveHost) {
+  const runDiag = async (targetHost?: string) => {
+    const hostToTest = targetHost || effectiveHost;
+    if (!hostToTest) {
       onToast({ type: 'warning', message: 'Имя ПК/хоста не указано в заявке' });
       return;
     }
+
     setDiagStatus({ ping: 'checking', smb: 'checking', winrm: 'checking' });
+    
+    // Если тестируем все хосты
+    const initialMulti: typeof multiHostDiag = {};
+    hostList.forEach(h => {
+      initialMulti[h] = { ping: 'checking', smb: 'checking', winrm: 'checking' };
+    });
+    setMultiHostDiag(initialMulti);
+
     try {
-      const res = await fetchDiagnostics(effectiveHost);
+      const res = await fetchDiagnostics(hostToTest);
       setDiagStatus({
         ping: res.is_online ? 'ok' : 'fail',
         smb: res.smb_ok ? 'ok' : 'fail',
         winrm: res.winrm_ok ? 'ok' : 'fail',
       });
-      onToast({ type: 'info', message: `Диагностика ${effectiveHost}: ${res.is_online ? 'В сети' : 'Недоступен'}` });
+
+      if (res.hosts && res.hosts.length > 0) {
+        const nextMulti: typeof multiHostDiag = {};
+        res.hosts.forEach(h => {
+          nextMulti[h.host] = {
+            ping: h.is_online ? 'ok' : 'fail',
+            smb: h.smb_ok ? 'ok' : 'fail',
+            winrm: h.winrm_ok ? 'ok' : 'fail',
+            rtt: h.avg_rtt,
+            isOnline: !!h.is_online,
+          };
+        });
+        setMultiHostDiag(nextMulti);
+      }
+
+      onToast({
+        type: 'info',
+        message: res.hosts && res.hosts.length > 1
+          ? `Диагностика (${res.hosts.length} ПК): ${res.is_online ? 'Есть доступные ПК' : 'Все офлайн'}`
+          : `Диагностика ${hostToTest}: ${res.is_online ? 'В сети' : 'Недоступен'}`,
+      });
     } catch {
       setDiagStatus({ ping: 'fail', smb: 'fail', winrm: 'fail' });
-      onToast({ type: 'error', message: `Ошибка диагностики хоста ${effectiveHost}` });
+      onToast({ type: 'error', message: `Ошибка диагностики хоста ${hostToTest}` });
     }
   };
 
@@ -422,7 +455,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         </span>
         {effectiveHost && (
           <button
-            onClick={runDiag}
+            onClick={() => runDiag()}
             disabled={diagStatus.ping === 'checking'}
             className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-semibold cursor-pointer inline-flex items-center gap-1"
           >
@@ -482,46 +515,69 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           </div>
         )}
 
-        {/* Workstation Host & Diagnostics — only rendered when host is known */}
+        {/* Workstation Hosts & Diagnostics — rendered when host is known */}
         {effectiveHost && (
           <div className="w-full bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 rounded-lg p-2.5 space-y-2">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center justify-between gap-2 flex-wrap pb-1 border-b border-neutral-200/60 dark:border-neutral-700/60">
               <div className="flex items-center gap-2">
                 <div className="w-6 h-6 rounded-md bg-amber-100 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
                   <IconMonitor size={13} />
                 </div>
                 <div>
-                  <span className="text-neutral-400 block text-[9.5px] uppercase font-bold tracking-wider">Рабочая станция / ПК</span>
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-mono font-bold text-[12px] text-neutral-900 dark:text-neutral-100">
-                      {effectiveHost}
-                    </span>
-                    <button
-                      onClick={() => copyToClipboard(effectiveHost)}
-                      className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer p-0.5"
-                      title="Скопировать имя ПК"
-                    >
-                      <IconCopy size={12} />
-                    </button>
-                  </div>
+                  <span className="text-neutral-400 block text-[9.5px] uppercase font-bold tracking-wider">
+                    {hostList.length > 1 ? `Рабочие станции (${hostList.length} ПК)` : 'Рабочая станция / ПК'}
+                  </span>
                 </div>
               </div>
 
-              {/* Diagnostics inline badges */}
-              <div className="flex items-center gap-2 text-[11px] font-mono">
-                <div className="flex items-center gap-1">
-                  <span className="text-neutral-400 font-sans text-[10px]">Ping:</span>
-                  <DiagBadge status={diagStatus.ping} />
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-neutral-400 font-sans text-[10px]">SMB:</span>
-                  <DiagBadge status={diagStatus.smb} />
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-neutral-400 font-sans text-[10px]">WinRM:</span>
-                  <DiagBadge status={diagStatus.winrm} />
-                </div>
-              </div>
+              {hostList.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => runDiag()}
+                  className="px-2 py-0.5 text-[11px] font-medium rounded-md bg-neutral-200/80 dark:bg-neutral-700/80 hover:bg-blue-600 hover:text-white dark:hover:bg-blue-600 text-neutral-700 dark:text-neutral-200 transition-colors cursor-pointer"
+                >
+                  Проверить все
+                </button>
+              )}
+            </div>
+
+            {/* List of host chips with individual status */}
+            <div className="space-y-1.5">
+              {hostList.map((h) => {
+                const hostDiag = multiHostDiag[h] || (hostList.length === 1 ? { ping: diagStatus.ping, smb: diagStatus.smb, winrm: diagStatus.winrm } : { ping: 'idle', smb: 'idle', winrm: 'idle' });
+                return (
+                  <div key={h} className="flex items-center justify-between gap-2 flex-wrap bg-white/70 dark:bg-neutral-900/60 px-2.5 py-1.5 rounded-md border border-neutral-200/50 dark:border-neutral-800">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono font-bold text-[12px] text-neutral-900 dark:text-neutral-100">
+                        {h}
+                      </span>
+                      <button
+                        onClick={() => copyToClipboard(h)}
+                        className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer p-0.5"
+                        title="Скопировать имя ПК"
+                      >
+                        <IconCopy size={12} />
+                      </button>
+                    </div>
+
+                    {/* Diagnostics inline badges for this specific host */}
+                    <div className="flex items-center gap-2 text-[11px] font-mono">
+                      <div className="flex items-center gap-1">
+                        <span className="text-neutral-400 font-sans text-[10px]">Ping:</span>
+                        <DiagBadge status={hostDiag.ping} />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-neutral-400 font-sans text-[10px]">SMB:</span>
+                        <DiagBadge status={hostDiag.smb} />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-neutral-400 font-sans text-[10px]">WinRM:</span>
+                        <DiagBadge status={hostDiag.winrm} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

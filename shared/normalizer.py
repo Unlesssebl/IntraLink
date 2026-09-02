@@ -367,3 +367,39 @@ def resolve_printer_candidates(raw_name: str | None, company: str = "", dept: st
         candidates.extend([f"ittp{digits}", f"kzmp{digits}", f"kmkp{digits}", f"tktp{digits}", f"tlkp{digits}"])
 
     return list(dict.fromkeys(candidates))
+
+
+def extract_pc_names_from_text(text: str | None) -> list[str]:
+    """
+    Извлекает и нормализует все имена ПК и IP-адреса, встречающиеся в произвольном тексте (тема, описание, комментарии).
+    """
+    if not text:
+        return []
+
+    found = []
+    # 1. Поиск токенов с префиксами ПК (NTEMW1234, KMK0089, ZTE1234, ткт1005 и т.п.)
+    token_pattern = re.compile(r"(?i)\b(?:[a-zа-яё]{2,6}[-_]?[0-9]{2,6})\b")
+    for m in token_pattern.finditer(text):
+        token = m.group(0)
+        norm = normalize_pc_name(token)
+        if norm and is_valid_pc_name(norm) and norm not in found:
+            found.append(norm)
+
+    # 2. Поиск конструкций с маркерами ПК (ПК: 1234, хост 1234, компьютер №1234, ноут NTEMW1234)
+    marker_pattern = re.compile(
+        r"(?i)(?:пк|комп|хост|ноут|pc|host|компьютер|arm|арм)\s*[:#№.\-]?\s*([a-zа-яё0-9\-_]{2,15})"
+    )
+    for m in marker_pattern.finditer(text):
+        token = m.group(1).strip()
+        norm = normalize_pc_name(token)
+        if norm and is_valid_pc_name(norm) and norm not in found:
+            found.append(norm)
+
+    # 3. Поиск корпоративных IP-адресов подсети
+    ip_pattern = re.compile(r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+    for m in ip_pattern.finditer(text):
+        ip_addr = m.group(0)
+        if ip_addr not in found:
+            found.append(ip_addr)
+
+    return found

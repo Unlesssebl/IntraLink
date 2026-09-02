@@ -1,11 +1,25 @@
-export interface HostDiagnostics {
-  host?: string;
+export interface SingleHostDiagnostics {
+  host: string;
+  resolved_ip?: string | null;
   is_online: boolean | null;
   avg_rtt: string | null;
   smb_ok?: boolean;
   winrm_ok?: boolean;
+  rpc_ok?: boolean;
+  status_label?: string;
+}
+
+export interface HostDiagnostics {
+  host?: string;
+  resolved_ip?: string | null;
+  is_online: boolean | null;
+  avg_rtt: string | null;
+  smb_ok?: boolean;
+  winrm_ok?: boolean;
+  rpc_ok?: boolean;
   loading?: boolean;
   status_label?: string;
+  hosts?: SingleHostDiagnostics[];
 }
 
 export interface TaskAttachment {
