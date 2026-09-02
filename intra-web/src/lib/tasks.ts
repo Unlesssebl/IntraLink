@@ -53,7 +53,7 @@ export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
   if (isWifi) {
     return {
       actionType: 'grant_wlan',
-      actionBadge: '⚡ Wi-Fi ➔ 29',
+      actionBadge: 'Wi-Fi → 29',
       actionTitle: 'Выдача доступа к Wi-Fi в AD (WLAN-WORKNET)',
       targetStatusId: 29,
       targetStatusName: 'Выполнена',
@@ -73,7 +73,7 @@ export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
     const masterId = (task as any).duplicate_info?.master_task_id || '';
     return {
       actionType: 'duplicate',
-      actionBadge: `👥 Дубликат #${masterId || '...'} ➔ 30`,
+      actionBadge: `Дубликат #${masterId || '...'} → 30`,
       actionTitle: `Отмена дубликата (привязка к #${masterId || '...'})`,
       targetStatusId: 30,
       targetStatusName: 'Отменена',
@@ -89,7 +89,7 @@ export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
     const targetSvc = task.target_service_name || 'соответствующий раздел';
     return {
       actionType: 'redirect',
-      actionBadge: '🔀 Редирект ➔ 30',
+      actionBadge: 'Редирект → 30',
       actionTitle: `Перенаправление в «${targetSvc}»`,
       targetStatusId: 30,
       targetStatusName: 'Отменена',
@@ -104,7 +104,7 @@ export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
   if (isRepair) {
     return {
       actionType: 'hardware_repair',
-      actionBadge: '🔧 Ремонт ➔ Каб. 112 (48)',
+      actionBadge: 'Ремонт → Каб. 112 (48)',
       actionTitle: 'Приглашение на диагностику в каб. 112',
       targetStatusId: 48,
       targetStatusName: 'Ожидание устройства',
@@ -119,7 +119,7 @@ export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
   if (isOffline) {
     return {
       actionType: 'offline_host',
-      actionBadge: '🔌 ПК офлайн ➔ 35',
+      actionBadge: 'ПК офлайн → 35',
       actionTitle: 'Запрос включения ПК у заявителя',
       targetStatusId: 35,
       targetStatusName: 'Требует уточнения',
@@ -134,7 +134,7 @@ export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
   if (is1c) {
     return {
       actionType: 'clear_1c_cache',
-      actionBadge: '🔄 1С Кэш ➔ 27',
+      actionBadge: '1С Кэш → 27',
       actionTitle: 'Очистка кэша и сессий 1С на рабочей станции',
       targetStatusId: 27,
       targetStatusName: 'В работе',
@@ -149,7 +149,7 @@ export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
   if (isPrinter) {
     return {
       actionType: 'install_printer',
-      actionBadge: '🖨️ Принтер ➔ 27',
+      actionBadge: 'Принтер → 27',
       actionTitle: 'Диагностика и настройка печати / МФУ',
       targetStatusId: 27,
       targetStatusName: 'В работе',
@@ -163,7 +163,7 @@ export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
 
   return {
     actionType: 'standard',
-    actionBadge: `⚡ ${task.target_status_name || 'В работу (27)'}`,
+    actionBadge: `${task.target_status_name || 'В работу (27)'}`,
     actionTitle: `Перевод в статус «${task.target_status_name || 'В работе'}»`,
     targetStatusId: task.target_status_id || 27,
     targetStatusName: task.target_status_name || 'В работе',
