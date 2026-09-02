@@ -92,25 +92,46 @@ export const categoryLabel: Record<Category, string> = {
   email: 'Почта',
 };
 
+export const getStatusDotClass = (statusIdOrName: number | Status | string): string => {
+  if (typeof statusIdOrName === 'number') {
+    switch (statusIdOrName) {
+      case 26: return 'bg-blue-500'; // Открыта (Синий)
+      case 27: return 'bg-cyan-500'; // В работе (Бирюзовый/Cyan)
+      case 35:
+      case 36:
+      case 37:
+      case 48: return 'bg-amber-500'; // Ожидание (Оранжевый)
+      case 29: return 'bg-emerald-500'; // Выполнена (Зеленый)
+      case 30: return 'bg-neutral-500 dark:bg-neutral-400'; // Отменена (Тёмно-серый)
+      default: return 'bg-blue-500';
+    }
+  }
+  if (statusIdOrName === 'new') return 'bg-blue-500';
+  if (statusIdOrName === 'in_progress') return 'bg-cyan-500';
+  if (statusIdOrName === 'waiting') return 'bg-amber-500';
+  if (statusIdOrName === 'resolved') return 'bg-emerald-500';
+  return 'bg-blue-500';
+};
+
 export const statusConfig: Record<Status, { label: string; className: string; dotClass: string }> = {
   new: {
-    label: 'Новая',
-    className: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200/80 dark:border-neutral-700/80',
+    label: 'Открыта',
+    className: 'bg-blue-50/90 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300 border-blue-200/80 dark:border-blue-800/60',
     dotClass: 'bg-blue-500',
   },
   in_progress: {
     label: 'В работе',
-    className: 'bg-amber-50/70 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border border-amber-200/60 dark:border-amber-800/40',
-    dotClass: 'bg-amber-500',
+    className: 'bg-cyan-50/90 text-cyan-800 dark:bg-cyan-950/60 dark:text-cyan-300 border-cyan-200/80 dark:border-cyan-800/60',
+    dotClass: 'bg-cyan-500',
   },
   waiting: {
     label: 'Ожидание',
-    className: 'bg-purple-50/70 dark:bg-purple-950/30 text-purple-800 dark:text-purple-300 border border-purple-200/60 dark:border-purple-800/40',
-    dotClass: 'bg-purple-400',
+    className: 'bg-amber-50/90 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border-amber-200/80 dark:border-amber-800/60',
+    dotClass: 'bg-amber-500',
   },
   resolved: {
-    label: 'Решена',
-    className: 'bg-emerald-50/70 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/40',
+    label: 'Выполнена',
+    className: 'bg-emerald-50/90 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300 border-emerald-200/80 dark:border-emerald-800/60',
     dotClass: 'bg-emerald-500',
   },
 };

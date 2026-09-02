@@ -9,6 +9,7 @@ import {
   deleteTelegramUser,
   restartWorkerService,
 } from '../lib/tasks';
+import { IconSun, IconMoon } from '../components/Icons';
 
 interface Props {
   theme: 'light' | 'dark';
@@ -423,9 +424,19 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
             </div>
             <button
               onClick={onToggleTheme}
-              className="px-2.5 py-1 text-xs font-medium bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded hover:bg-neutral-100 dark:hover:bg-neutral-700 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-700 cursor-pointer shadow-2xs transition-colors text-neutral-800 dark:text-neutral-200"
             >
-              {theme === 'dark' ? '☀️ Светлая' : '🌙 Тёмная'}
+              {theme === 'dark' ? (
+                <>
+                  <IconSun size={13} className="text-amber-500" />
+                  <span>Светлая</span>
+                </>
+              ) : (
+                <>
+                  <IconMoon size={13} className="text-indigo-500" />
+                  <span>Тёмная</span>
+                </>
+              )}
             </button>
           </div>
 

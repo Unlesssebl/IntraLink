@@ -1,8 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Ticket, Status } from '../data/mock';
-import { statusConfig } from '../data/mock';
+import { statusConfig, getStatusDotClass } from '../data/mock';
 import { fetchDiagnostics, applyTask, fetchTaskDetails, fetchTemplatesCatalog, enqueueExecution, pollExecutionJob } from '../lib/tasks';
 import type { TaskDetails } from '../lib/types';
+import {
+  IconUser,
+  IconPhone,
+  IconMonitor,
+  IconBuilding,
+  IconCopy,
+  IconPaperclip,
+  IconPencil,
+  IconSparkles,
+  IconRefresh,
+  IconExternalLink,
+  IconChevronDown,
+  IconClose,
+} from './Icons';
 
 interface Props {
   ticket: Ticket;
@@ -392,17 +406,291 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   };
 
   const panelClass = expanded
-    ? 'fixed inset-0 z-40 flex flex-col bg-neutral-100 dark:bg-neutral-950 animate-in fade-in duration-150'
-    : 'fixed top-0 bottom-0 right-0 z-30 w-[520px] max-w-[92vw] flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-neutral-50/98 dark:bg-neutral-950 shadow-xl animate-in slide-in-from-right duration-200';
+    ? 'fixed inset-0 z-40 flex flex-col bg-neutral-100 dark:bg-neutral-950 animate-in fade-in duration-150 overflow-hidden'
+    : 'fixed top-0 bottom-0 right-0 z-30 w-[540px] max-w-[94vw] flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-2xl animate-in slide-in-from-right duration-200';
 
   const commentsList = details?.comments || [];
   const attachmentsList = details?.attachments || ticket.attachments || [];
   const mainAction = getMainActionConfig();
 
+  // Adaptive Requester & Equipment Card Component
+  const renderRequesterEquipmentCard = () => (
+    <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 bg-white dark:bg-neutral-900 shadow-xs space-y-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[10.5px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+          Заявитель и оборудование
+        </span>
+        {effectiveHost && (
+          <button
+            onClick={runDiag}
+            disabled={diagStatus.ping === 'checking'}
+            className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-semibold cursor-pointer inline-flex items-center gap-1"
+          >
+            <IconRefresh size={11} className={diagStatus.ping === 'checking' ? 'animate-spin' : ''} />
+            <span>{diagStatus.ping === 'checking' ? 'Проверка...' : 'Диагностика сети'}</span>
+          </button>
+        )}
+      </div>
+
+      {/* Adaptive chips layout (Marks #2) */}
+      <div className="flex flex-wrap gap-2 text-[12px]">
+        {/* Requester name */}
+        <div className="flex-1 min-w-[190px] bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 rounded-lg p-2.5 flex items-start gap-2">
+          <div className="w-6 h-6 rounded-md bg-blue-100 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300 flex items-center justify-center shrink-0 mt-0.5">
+            <IconUser size={13} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <span className="text-neutral-400 block text-[9.5px] uppercase font-bold tracking-wider mb-0.5">Заявитель</span>
+            <span className="text-neutral-900 dark:text-neutral-100 font-semibold block truncate" title={ticket.requesterName}>
+              {ticket.requesterName || 'Не указан'}
+            </span>
+            {ticket.requesterLogin && (
+              <span className="text-[10.5px] font-mono text-neutral-400 block truncate">
+                @{ticket.requesterLogin}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Phone (rendered if present) */}
+        {(ticket.requesterPhone || details?.phone) && (
+          <div className="bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 rounded-lg p-2.5 flex items-start gap-2 min-w-[130px]">
+            <div className="w-6 h-6 rounded-md bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 flex items-center justify-center shrink-0 mt-0.5">
+              <IconPhone size={13} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <span className="text-neutral-400 block text-[9.5px] uppercase font-bold tracking-wider mb-0.5">Телефон</span>
+              <span className="text-neutral-900 dark:text-neutral-100 font-mono font-semibold block">
+                {ticket.requesterPhone || details?.phone}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Location (Room / Department rendered if present) */}
+        {(ticket.room || details?.room || ticket.department || details?.department) && (
+          <div className="flex-1 min-w-[190px] bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 rounded-lg p-2.5 flex items-start gap-2">
+            <div className="w-6 h-6 rounded-md bg-purple-100 dark:bg-purple-950/80 text-purple-700 dark:text-purple-300 flex items-center justify-center shrink-0 mt-0.5">
+              <IconBuilding size={13} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <span className="text-neutral-400 block text-[9.5px] uppercase font-bold tracking-wider mb-0.5">Размещение</span>
+              <span className="text-neutral-800 dark:text-neutral-200 font-medium block truncate" title={[ticket.room || details?.room ? `каб. ${ticket.room || details?.room}` : '', ticket.department || details?.department].filter(Boolean).join(' · ')}>
+                {[ticket.room || details?.room ? `каб. ${ticket.room || details?.room}` : '', ticket.department || details?.department].filter(Boolean).join(' · ')}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Workstation Host & Diagnostics — only rendered when host is known */}
+        {effectiveHost && (
+          <div className="w-full bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 rounded-lg p-2.5 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-md bg-amber-100 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
+                  <IconMonitor size={13} />
+                </div>
+                <div>
+                  <span className="text-neutral-400 block text-[9.5px] uppercase font-bold tracking-wider">Рабочая станция / ПК</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono font-bold text-[12px] text-neutral-900 dark:text-neutral-100">
+                      {effectiveHost}
+                    </span>
+                    <button
+                      onClick={() => copyToClipboard(effectiveHost)}
+                      className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer p-0.5"
+                      title="Скопировать имя ПК"
+                    >
+                      <IconCopy size={12} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Diagnostics inline badges */}
+              <div className="flex items-center gap-2 text-[11px] font-mono">
+                <div className="flex items-center gap-1">
+                  <span className="text-neutral-400 font-sans text-[10px]">Ping:</span>
+                  <DiagBadge status={diagStatus.ping} />
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-neutral-400 font-sans text-[10px]">SMB:</span>
+                  <DiagBadge status={diagStatus.smb} />
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-neutral-400 font-sans text-[10px]">WinRM:</span>
+                  <DiagBadge status={diagStatus.winrm} />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  // AI Plan recommendation card
+  const renderAiPlanCard = () => (
+    ticket.aiPlan ? (
+      <div className="border border-blue-200 dark:border-blue-900/60 rounded-xl p-3 bg-blue-50/50 dark:bg-blue-950/20 shadow-xs space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full shrink-0 animate-pulse ${getStatusDotClass(ticket.aiPlan.targetStatusId)}`} />
+            <span className="text-[12px] font-bold text-neutral-800 dark:text-neutral-200">План решения AI</span>
+            <span className="text-[11px] font-medium px-2 py-0.5 rounded-lg border border-neutral-200/90 dark:border-neutral-750 bg-neutral-100/80 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200">
+              {ticket.aiPlan.actionBadge}
+            </span>
+          </div>
+          <span className="text-[10.5px] font-mono font-semibold text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/50 px-1.5 py-0.2 rounded">
+            Уверенность {Math.round(ticket.aiPlan.confidenceScore * 100)}%
+          </span>
+        </div>
+
+        <div className="text-[12.5px] text-neutral-800 dark:text-neutral-200">
+          <div className="font-semibold mb-1 text-neutral-900 dark:text-neutral-100">
+            {ticket.aiPlan.actionTitle}
+          </div>
+          <div className="bg-white/90 dark:bg-neutral-900/80 p-2 rounded-lg border border-neutral-200/80 dark:border-neutral-800 text-[12px] text-neutral-700 dark:text-neutral-300 italic leading-relaxed">
+            «{ticket.aiPlan.comment}»
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between pt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+          <div>
+            Статус: <strong className="text-neutral-700 dark:text-neutral-300">{ticket.aiPlan.targetStatusName}</strong> · Списание: <strong>{ticket.aiPlan.expensesMinutes} мин</strong>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setReplyText(ticket.aiPlan?.comment || '');
+              setExpenses(ticket.aiPlan?.expensesMinutes || 10);
+              setSelectedStatusOverride(ticket.aiPlan?.targetStatusId || null);
+              onToast({ type: 'info', message: 'План подставлен в редактор для правок' });
+            }}
+            className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-semibold cursor-pointer inline-flex items-center gap-1"
+          >
+            <IconPencil size={11} />
+            <span>Редактировать</span>
+          </button>
+        </div>
+      </div>
+    ) : null
+  );
+
+  // Attachments section
+  const renderAttachments = () => (
+    attachmentsList.length > 0 ? (
+      <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 bg-white dark:bg-neutral-900 shadow-xs space-y-2">
+        <div className="flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wider text-neutral-400">
+          <IconPaperclip size={12} />
+          <span>Вложения и скриншоты ({attachmentsList.length})</span>
+        </div>
+
+        {attachmentsList.some(att => /\.(png|jpe?g|bmp|webp|gif)$/i.test(att.name || '')) && (
+          <div className="grid grid-cols-2 gap-2">
+            {attachmentsList.filter(att => /\.(png|jpe?g|bmp|webp|gif)$/i.test(att.name || '')).map(att => (
+              <a
+                key={att.id}
+                href={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
+                target="_blank"
+                rel="noreferrer"
+                className="group relative block rounded-lg overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 hover:ring-2 hover:ring-blue-500 transition-all"
+              >
+                <img
+                  src={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
+                  alt={att.name}
+                  className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-200"
+                  loading="lazy"
+                  onError={(e) => {
+                    (e.target as HTMLElement).style.display = 'none';
+                  }}
+                />
+                <div className="p-1 bg-white/95 dark:bg-neutral-900/95 text-[10.5px] font-mono truncate text-neutral-700 dark:text-neutral-300 flex items-center gap-1">
+                  <IconPaperclip size={10} className="shrink-0 text-neutral-400" />
+                  <span className="truncate">{att.name}</span>
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
+
+        <div className="space-y-1">
+          {attachmentsList.map(att => (
+            <a
+              key={att.id}
+              href={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center justify-between p-2 rounded-lg bg-neutral-50 dark:bg-neutral-800/60 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors text-[12px]"
+            >
+              <span className="truncate font-medium text-blue-600 dark:text-blue-400">{att.name}</span>
+              <span className="text-[11px] text-neutral-400 font-mono shrink-0 ml-2">
+                {att.size ? `${Math.round(att.size / 1024)} КБ` : 'Скачать'}
+              </span>
+            </a>
+          ))}
+        </div>
+      </div>
+    ) : null
+  );
+
+  // Problem description section
+  const renderDescription = () => (
+    <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 shadow-xs space-y-1.5">
+      <span className="text-[10.5px] font-bold uppercase tracking-wider text-neutral-400 block">
+        Описание проблемы
+      </span>
+      <div className="text-[13px] text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap font-sans bg-neutral-50/80 dark:bg-neutral-950/60 p-2.5 rounded-lg border border-neutral-200/70 dark:border-neutral-800/70">
+        {(details?.description || ticket.description || 'Без описания').replace(/[#*`]/g, '').trim()}
+      </div>
+    </div>
+  );
+
+  // Lifetime Comments section
+  const renderCommentsHistory = (expandedMode = false) => (
+    <div className={`bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 shadow-xs space-y-2 ${expandedMode ? 'flex flex-col flex-1 min-h-0' : ''}`}>
+      <span className="text-[10.5px] font-bold uppercase tracking-wider text-neutral-400 block shrink-0">
+        История переписки {loadingDetails ? '(Загрузка...)' : `(${commentsList.length})`}
+      </span>
+
+      <div className={`space-y-2 overflow-y-auto pr-1 ${expandedMode ? 'flex-1 min-h-0' : 'max-h-[350px]'}`}>
+        {commentsList.map(c => (
+          <div
+            key={c.id}
+            className={`p-2.5 rounded-lg border text-[12px] ${
+              c.is_private
+                ? 'border-amber-200 dark:border-amber-800/60 bg-amber-50/50 dark:bg-amber-950/20'
+                : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-neutral-950/40'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-1.5">
+                <span className="font-semibold text-neutral-900 dark:text-neutral-100">{c.author}</span>
+                {c.is_private && (
+                  <span className="text-[10px] bg-amber-100 text-amber-900 dark:bg-amber-900/80 dark:text-amber-200 px-1 py-0.2 rounded font-bold">
+                    Скрытый
+                  </span>
+                )}
+              </div>
+              <span className="text-[10.5px] text-neutral-400 font-mono">{formatTime(c.created)}</span>
+            </div>
+            <p className="text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap">{c.text}</p>
+          </div>
+        ))}
+
+        {commentsList.length === 0 && !loadingDetails && (
+          <div className="text-[12px] text-neutral-400 italic py-2 text-center">
+            В этой заявке пока нет комментариев
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div className={panelClass}>
       {/* 1. Header */}
-      <div className="px-4 py-3 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 shrink-0">
+      <div className="px-4 py-3 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 shrink-0 sticky top-0 z-20">
         <div className="flex items-center justify-between gap-2 mb-1.5">
           <div className="flex items-center gap-2 flex-wrap">
             <button
@@ -417,21 +705,20 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <span className="font-mono text-[13.5px] font-bold text-neutral-800 dark:text-neutral-200">
               #{rawId}
             </span>
-            <span className={`h-6 px-2 rounded-md font-semibold text-[11.5px] flex items-center justify-center ${statusConfig[ticket.status].className}`}>
-              {ticket.statusName || statusConfig[ticket.status].label}
+            <span className={`h-6 px-2.5 rounded-full font-semibold text-[11px] inline-flex items-center gap-1.5 ${statusConfig[ticket.status].className}`}>
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${statusConfig[ticket.status].dotClass}`} />
+              <span>{ticket.statusName || statusConfig[ticket.status].label}</span>
             </span>
             {(ticket.isDuplicate || ticket.ruleType === 'duplicate_task') && (
               <a
                 href={`/admin/api/tasks/${ticket.duplicateInfo?.master_task_id || rawId}/open`}
                 target="_blank"
                 rel="noreferrer"
-                className="h-6 px-2 rounded-md font-semibold text-[11px] bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-800/70 hover:bg-amber-100 transition-colors flex items-center gap-1 cursor-pointer"
+                className="h-6 px-2 rounded-md font-semibold text-[11px] bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-800/70 hover:bg-amber-100 transition-colors inline-flex items-center gap-1 cursor-pointer"
                 title={`Открыть основную заявку #${ticket.duplicateInfo?.master_task_id || ''}`}
               >
                 <span>Дубликат №{ticket.duplicateInfo?.master_task_id || '—'}</span>
-                <svg width="9" height="9" viewBox="0 0 16 16" fill="none">
-                  <path d="M6 3h7v7M13 3L6 10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
+                <IconExternalLink size={9} />
               </a>
             )}
           </div>
@@ -441,13 +728,11 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
               href={`/admin/api/tasks/${rawId}/open`}
               target="_blank"
               rel="noreferrer"
-              className="h-6 px-2 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700 rounded-md text-[11.5px] font-medium transition-colors flex items-center gap-1 cursor-pointer"
+              className="h-6 px-2.5 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700 rounded-md text-[11.5px] font-medium transition-colors inline-flex items-center gap-1 cursor-pointer"
               title="Открыть заявку в IntraService"
             >
               <span>IntraService</span>
-              <svg width="10" height="10" viewBox="0 0 16 16" fill="none">
-                <path d="M6 3h7v7M13 3L6 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <IconExternalLink size={10} />
             </a>
             <button
               onClick={() => setExpanded(e => !e)}
@@ -475,246 +760,32 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         </div>
       </div>
 
-      {/* 2. Scrollable Body Content */}
-      <div className="flex-1 overflow-y-auto p-3.5 space-y-3">
-        {/* Unified AI Recommendation Card */}
-        {ticket.aiPlan && (
-          <div className="border border-blue-200 dark:border-blue-900/60 rounded-xl p-3 bg-blue-50/50 dark:bg-blue-950/20 shadow-xs space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[12px] font-bold text-blue-700 dark:text-blue-300">План решения AI</span>
-                <span className={`text-[10.5px] font-semibold px-1.5 py-0.2 rounded border ${ticket.aiPlan.badgeClass}`}>
-                  {ticket.aiPlan.actionBadge}
-                </span>
-              </div>
-              <span className="text-[10.5px] font-mono font-semibold text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/50 px-1.5 py-0.2 rounded">
-                Уверенность {Math.round(ticket.aiPlan.confidenceScore * 100)}%
-              </span>
+      {/* 2. Body Content (Adaptive single column or dual pane when expanded) */}
+      {expanded ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <div className="max-w-7xl mx-auto w-full h-full p-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="space-y-3 overflow-y-auto pr-1">
+              {renderRequesterEquipmentCard()}
+              {renderDescription()}
+              {renderAttachments()}
             </div>
-
-            <div className="text-[12.5px] text-neutral-800 dark:text-neutral-200">
-              <div className="font-semibold mb-1 text-neutral-900 dark:text-neutral-100">
-                {ticket.aiPlan.actionTitle}
-              </div>
-              <div className="bg-white/90 dark:bg-neutral-900/80 p-2 rounded-lg border border-neutral-200/80 dark:border-neutral-800 text-[12px] text-neutral-700 dark:text-neutral-300 italic leading-relaxed">
-                «{ticket.aiPlan.comment}»
-              </div>
+            <div className="flex flex-col gap-3 min-h-0 overflow-hidden">
+              {renderAiPlanCard()}
+              {renderCommentsHistory(true)}
             </div>
-
-            <div className="flex items-center justify-between pt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
-              <div>
-                Статус: <strong className="text-neutral-700 dark:text-neutral-300">{ticket.aiPlan.targetStatusName} (#{ticket.aiPlan.targetStatusId})</strong> · Списание: <strong>{ticket.aiPlan.expensesMinutes} мин</strong>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setReplyText(ticket.aiPlan?.comment || '');
-                  setExpenses(ticket.aiPlan?.expensesMinutes || 10);
-                  setSelectedStatusOverride(ticket.aiPlan?.targetStatusId || null);
-                  onToast({ type: 'info', message: 'План подставлен в редактор для правок' });
-                }}
-                className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-semibold cursor-pointer flex items-center gap-1"
-              >
-                <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
-                  <path d="M11.5 2.5l2 2L4.5 13.5H2.5v-2L11.5 2.5z" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-                <span>Редактировать</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Workstation & Requester Context Card */}
-        <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 bg-white dark:bg-neutral-900 shadow-xs space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[10.5px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
-              Заявитель и оборудование
-            </span>
-            {effectiveHost && (
-              <button
-                onClick={runDiag}
-                disabled={diagStatus.ping === 'checking'}
-                className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-semibold cursor-pointer"
-              >
-                {diagStatus.ping === 'checking' ? 'Проверка...' : 'Диагностика сети'}
-              </button>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 text-[12px]">
-            <div className="bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 rounded-lg p-2">
-              <span className="text-neutral-400 block text-[10.5px] mb-0.5">ФИО заявителя</span>
-              <span className="text-neutral-900 dark:text-neutral-100 font-semibold block truncate" title={ticket.requesterName}>
-                {ticket.requesterName || '—'}
-              </span>
-            </div>
-
-            <div className="bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 rounded-lg p-2">
-              <span className="text-neutral-400 block text-[10.5px] mb-0.5">Телефон / Доб.</span>
-              <span className="text-neutral-900 dark:text-neutral-100 font-mono font-semibold block">
-                {ticket.requesterPhone || details?.phone || '—'}
-              </span>
-            </div>
-
-            <div className="bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 rounded-lg p-2">
-              <span className="text-neutral-400 block text-[10.5px] mb-0.5">Имя ПК / Хост</span>
-              <div className="flex items-center gap-1.5">
-                <span className="font-mono font-bold bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 px-1.5 py-0.2 rounded text-[11.5px] text-neutral-900 dark:text-neutral-100 truncate">
-                  {effectiveHost || 'Не указан'}
-                </span>
-                {effectiveHost && (
-                  <button
-                    onClick={() => copyToClipboard(effectiveHost)}
-                    className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer p-0.5 shrink-0"
-                    title="Скопировать имя ПК"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 11 11" fill="none">
-                      <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.2"/>
-                      <path d="M1.5 7.5V1.5h6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-                    </svg>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 rounded-lg p-2">
-              <span className="text-neutral-400 block text-[10.5px] mb-0.5">Кабинет / Отдел</span>
-              <span className="text-neutral-800 dark:text-neutral-200 font-medium block truncate" title={[ticket.room || details?.room, ticket.department || details?.department].filter(Boolean).join(' · ')}>
-                {[ticket.room || details?.room, ticket.department || details?.department].filter(Boolean).join(' · ') || '—'}
-              </span>
-            </div>
-          </div>
-
-          {/* Network diagnostics badges */}
-          {effectiveHost && (
-            <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between text-[11.5px]">
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1 font-mono">
-                  <span className="text-neutral-400 font-sans">Ping:</span>
-                  <DiagBadge status={diagStatus.ping} />
-                </div>
-                <div className="flex items-center gap-1 font-mono">
-                  <span className="text-neutral-400 font-sans">SMB:445:</span>
-                  <DiagBadge status={diagStatus.smb} />
-                </div>
-                <div className="flex items-center gap-1 font-mono">
-                  <span className="text-neutral-400 font-sans">WinRM:</span>
-                  <DiagBadge status={diagStatus.winrm} />
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Attachments & Visual Screenshots Gallery */}
-        {attachmentsList.length > 0 && (
-          <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 bg-white dark:bg-neutral-900 shadow-xs space-y-2">
-            <span className="text-[10.5px] font-bold uppercase tracking-wider text-neutral-400 block">
-              Вложения и скриншоты ({attachmentsList.length})
-            </span>
-
-            {attachmentsList.some(att => /\.(png|jpe?g|bmp|webp|gif)$/i.test(att.name || '')) && (
-              <div className="space-y-1.5">
-                <div className="grid grid-cols-2 gap-2">
-                  {attachmentsList.filter(att => /\.(png|jpe?g|bmp|webp|gif)$/i.test(att.name || '')).map(att => (
-                    <a
-                      key={att.id}
-                      href={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="group relative block rounded-lg overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 hover:ring-2 hover:ring-blue-500 transition-all"
-                    >
-                      <img
-                        src={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
-                        alt={att.name}
-                        className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-200"
-                        loading="lazy"
-                        onError={(e) => {
-                          (e.target as HTMLElement).style.display = 'none';
-                        }}
-                      />
-                      <div className="p-1 bg-white/95 dark:bg-neutral-900/95 text-[10.5px] font-mono truncate text-neutral-700 dark:text-neutral-300 flex items-center gap-1">
-                        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" className="shrink-0 text-neutral-400">
-                          <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.3"/>
-                          <circle cx="5.5" cy="5.5" r="1.2" stroke="currentColor" strokeWidth="1.2"/>
-                          <path d="M14 11l-3.5-3.5-5 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                        </svg>
-                        <span className="truncate">{att.name}</span>
-                      </div>
-                    </a>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-1">
-              {attachmentsList.map(att => (
-                <a
-                  key={att.id}
-                  href={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center justify-between p-2 rounded-lg bg-neutral-50 dark:bg-neutral-800/60 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors text-[12px]"
-                >
-                  <span className="truncate font-medium text-blue-600 dark:text-blue-400">{att.name}</span>
-                  <span className="text-[11px] text-neutral-400 font-mono shrink-0 ml-2">
-                    {att.size ? `${Math.round(att.size / 1024)} КБ` : 'Скачать'}
-                  </span>
-                </a>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Problem Description */}
-        <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 shadow-xs space-y-1.5">
-          <p className="text-[10.5px] font-bold uppercase tracking-wider text-neutral-400 block">
-            Описание проблемы
-          </p>
-          <div className="text-[13px] text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap font-sans bg-neutral-50/80 dark:bg-neutral-950/60 p-2.5 rounded-lg border border-neutral-200/70 dark:border-neutral-800/70">
-            {(details?.description || ticket.description || 'Без описания').replace(/[#*`]/g, '').trim()}
           </div>
         </div>
-
-        {/* Lifetime Comments History */}
-        <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 shadow-xs space-y-2">
-          <p className="text-[10.5px] font-bold uppercase tracking-wider text-neutral-400 block">
-            История переписки {loadingDetails ? '(Загрузка...)' : `(${commentsList.length})`}
-          </p>
-
-          <div className="space-y-2">
-            {commentsList.map(c => (
-              <div
-                key={c.id}
-                className={`p-2.5 rounded-lg border text-[12px] ${
-                  c.is_private
-                    ? 'border-amber-200 dark:border-amber-800/60 bg-amber-50/50 dark:bg-amber-950/20'
-                    : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-neutral-950/40'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-semibold text-neutral-900 dark:text-neutral-100">{c.author}</span>
-                    {c.is_private && (
-                      <span className="text-[10px] bg-amber-100 text-amber-900 dark:bg-amber-900/80 dark:text-amber-200 px-1 py-0.2 rounded font-bold">
-                        Скрытый
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-[10.5px] text-neutral-400 font-mono">{formatTime(c.created)}</span>
-                </div>
-                <p className="text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap">{c.text}</p>
-              </div>
-            ))}
-
-            {commentsList.length === 0 && !loadingDetails && (
-              <div className="text-[12px] text-neutral-400 italic py-1">
-                В этой заявке пока нет комментариев
-              </div>
-            )}
+      ) : (
+        <div className="flex-1 overflow-y-auto">
+          <div className="p-3.5 space-y-3">
+            {renderAiPlanCard()}
+            {renderRequesterEquipmentCard()}
+            {renderAttachments()}
+            {renderDescription()}
+            {renderCommentsHistory()}
           </div>
         </div>
-      </div>
+      )}
 
       {/* 3. Compact Minimalist Dispatch Footer */}
       <div className="border-t border-neutral-200 dark:border-neutral-800 p-3 shrink-0 bg-white dark:bg-neutral-900 shadow-md space-y-2">
@@ -747,8 +818,9 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             </div>
 
             {selectedStatusOverride !== null && (
-              <div className="flex items-center gap-1 px-2 py-0.5 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-md text-[11px] font-medium text-blue-800 dark:text-blue-300">
-                <span>Статус: #{selectedStatusOverride}</span>
+              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-md text-[11px] font-medium text-neutral-800 dark:text-neutral-200">
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${getStatusDotClass(selectedStatusOverride)}`} />
+                <span>Статус: {getStatusNameById(selectedStatusOverride)}</span>
                 <button
                   type="button"
                   onClick={() => setSelectedStatusOverride(null)}
@@ -846,40 +918,40 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                           <button
                             type="button"
                             onClick={() => handleSelectMenuStatus(35, 'Запрошена дополнительная информация у заявителя. Ожидаем ответа.', 5)}
-                            className="w-full text-left px-2 py-1 rounded-md text-[11.5px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
+                            className="w-full text-left px-2 py-1.5 rounded-md text-[11.5px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center gap-2"
                           >
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse bg-amber-500" />
                             <span>Ожидание заявителя</span>
-                            <span className="text-[10px] font-mono text-neutral-400">#35</span>
                           </button>
                         )}
                         {isStatusAllowed(36) && (
                           <button
                             type="button"
                             onClick={() => handleSelectMenuStatus(36, 'Заявка переведена в ожидание поставки оборудования / ЗИП.', 5)}
-                            className="w-full text-left px-2 py-1 rounded-md text-[11.5px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
+                            className="w-full text-left px-2 py-1.5 rounded-md text-[11.5px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center gap-2"
                           >
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse bg-amber-500" />
                             <span>Ожидание поставки / ЗИП</span>
-                            <span className="text-[10px] font-mono text-neutral-400">#36</span>
                           </button>
                         )}
                         {isStatusAllowed(37) && (
                           <button
                             type="button"
                             onClick={() => handleSelectMenuStatus(37, 'Заявка передана на исполнение сторонней организации / подрядчику.', 5)}
-                            className="w-full text-left px-2 py-1 rounded-md text-[11.5px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
+                            className="w-full text-left px-2 py-1.5 rounded-md text-[11.5px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center gap-2"
                           >
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse bg-amber-500" />
                             <span>Ожидание подрядчика</span>
-                            <span className="text-[10px] font-mono text-neutral-400">#37</span>
                           </button>
                         )}
                         {isStatusAllowed(48) && (
                           <button
                             type="button"
                             onClick={() => handleSelectMenuStatus(48, 'Приносите системный блок / ноутбук в АБК 3, 112 каб. на аппаратную диагностику и обслуживание.', 10)}
-                            className="w-full text-left px-2 py-1 rounded-md text-[11.5px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
+                            className="w-full text-left px-2 py-1.5 rounded-md text-[11.5px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center gap-2"
                           >
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse bg-amber-500" />
                             <span>Ожидание устройства (каб. 112)</span>
-                            <span className="text-[10px] font-mono text-neutral-400">#48</span>
                           </button>
                         )}
                       </div>
@@ -894,10 +966,10 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                       <button
                         type="button"
                         onClick={() => handleSelectMenuStatus(26, 'Заявка возвращена в статус Открыта для перераспределения.', 5)}
-                        className="w-full text-left px-2 py-1 rounded-md text-[11.5px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
+                        className="w-full text-left px-2 py-1.5 rounded-md text-[11.5px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center gap-2"
                       >
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse bg-blue-500" />
                         <span>Вернуть в статус «Открыта»</span>
-                        <span className="text-[10px] font-mono text-neutral-400">#26</span>
                       </button>
                     </div>
                   )}
