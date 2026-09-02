@@ -335,6 +335,51 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     }
   };
 
+  const handleApplyAIPlan = async () => {
+    if (!ticket.aiPlan) return;
+    const plan = ticket.aiPlan;
+    setSubmitting(true);
+
+    try {
+      if (plan.requiresDomainJob && plan.domainJob) {
+        onToast({ type: 'info', message: `Исполнение: ${plan.actionTitle}...` });
+        const job = await enqueueExecution({
+          action: plan.domainJob.action,
+          task_id: rawId,
+          params: plan.domainJob.params || { username: plan.domainJob.identity },
+          auto_close_ticket: false,
+        });
+        await pollExecutionJob(job.job_id, 15000, 1000);
+      }
+
+      await applyTask(rawId, {
+        status_id: plan.targetStatusId,
+        comment: replyText.trim() || plan.comment,
+        minutes: expenses || plan.expensesMinutes,
+        is_private: replyMode === 'internal',
+      });
+
+      const newStatus = plan.targetStatusId === 29 || plan.targetStatusId === 30 ? 'resolved' : (plan.targetStatusId === 35 || plan.targetStatusId === 48 ? 'waiting' : 'in_progress');
+
+      onUpdateTicket(ticket.id, {
+        status: newStatus,
+        statusId: plan.targetStatusId,
+        statusName: plan.targetStatusName,
+      });
+
+      onToast({
+        type: 'success',
+        message: `Заявка #${rawId}: ${plan.actionTitle} успешно применено`,
+      });
+
+      onClose();
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Ошибка выполнения: ${err.message || err}` });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleExecuteMainAction = async () => {
     const cfg = getMainActionConfig();
     if (cfg.actionType === 'wlan') {
@@ -343,6 +388,22 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       await handleSendAction(cfg.statusId);
     }
   };
+
+  // Keyboard shortcut Ctrl+Enter (100% HITL Fast Dispatch)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        if (ticket.aiPlan && !replyText) {
+          handleApplyAIPlan();
+        } else {
+          handleExecuteMainAction();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [ticket, replyText, submitting]);
 
   const handleCancelTicket = async () => {
     const cancelComment = replyText.trim() || 'Заявка отменена инженером 1-й линии.';
@@ -461,6 +522,64 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-3.5">
+        {/* AI Decision Box (100% HITL Zero-Manual Dispatch) */}
+        {ticket.aiPlan && (
+          <div className="border-2 border-blue-500/50 dark:border-blue-500/40 rounded-xl p-4 bg-gradient-to-br from-blue-50/90 via-indigo-50/40 to-white dark:from-blue-950/50 dark:via-neutral-900 dark:to-neutral-900 shadow-sm space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
+                  <span>⚡ Решение AI</span>
+                </span>
+                <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${ticket.aiPlan.badgeClass}`}>
+                  {ticket.aiPlan.actionBadge}
+                </span>
+              </div>
+              <span className="text-[11.5px] font-bold text-blue-700 dark:text-blue-300 bg-blue-100 dark:bg-blue-900/60 px-2 py-0.5 rounded-full font-mono">
+                Уверенность {Math.round(ticket.aiPlan.confidenceScore * 100)}%
+              </span>
+            </div>
+
+            <div className="text-[13px] text-neutral-800 dark:text-neutral-200">
+              <div className="font-semibold mb-1 text-neutral-900 dark:text-neutral-100">
+                {ticket.aiPlan.actionTitle}
+              </div>
+              <div className="bg-white/80 dark:bg-neutral-950/60 p-2.5 rounded-lg border border-neutral-200/80 dark:border-neutral-800 text-[12.5px] text-neutral-700 dark:text-neutral-300 italic">
+                «{ticket.aiPlan.comment}»
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-1 gap-2 flex-wrap">
+              <div className="text-[11.5px] text-neutral-500 dark:text-neutral-400">
+                Целевой статус: <strong className="text-neutral-800 dark:text-neutral-200">{ticket.aiPlan.targetStatusName} (#{ticket.aiPlan.targetStatusId})</strong> · Списание: <strong>{ticket.aiPlan.expensesMinutes} мин</strong>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReplyText(ticket.aiPlan?.comment || '');
+                    setExpenses(ticket.aiPlan?.expensesMinutes || 10);
+                    setSelectedStatusOverride(ticket.aiPlan?.targetStatusId || null);
+                    onToast({ type: 'info', message: 'План перенесен в поле ответа для редактирования' });
+                  }}
+                  className="text-[12px] text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 hover:underline font-semibold cursor-pointer px-2 py-1"
+                >
+                  ✏️ Править текст
+                </button>
+                <button
+                  type="button"
+                  onClick={handleApplyAIPlan}
+                  disabled={submitting}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-[13px] font-bold shadow-md cursor-pointer transition-all flex items-center gap-1.5 disabled:opacity-50"
+                  title="Применить план решения (Ctrl+Enter)"
+                >
+                  <span>{submitting ? 'Исполнение...' : '⚡ Применить план решения'}</span>
+                  <span className="text-[10px] opacity-75 font-mono">↵</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Requester & PC Card with Network Diag (Marks #4: Larger fonts) */}
         <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 space-y-2.5 bg-white dark:bg-neutral-900 shadow-xs">
           <div className="flex items-center justify-between">
@@ -542,12 +661,51 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           )}
         </div>
 
-        {/* Attachments Section */}
+        {/* Attachments & Visual Screenshots Section with OCR */}
         {attachmentsList.length > 0 && (
-          <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 bg-white dark:bg-neutral-900 shadow-xs">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 block mb-2">
+          <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 bg-white dark:bg-neutral-900 shadow-xs space-y-3">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 block">
               Вложения и скриншоты ({attachmentsList.length})
             </span>
+
+            {/* Visual image preview gallery if image attachments exist */}
+            {attachmentsList.some(att => /\.(png|jpe?g|bmp|webp|gif)$/i.test(att.name || '')) && (
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  {attachmentsList.filter(att => /\.(png|jpe?g|bmp|webp|gif)$/i.test(att.name || '')).map(att => (
+                    <a
+                      key={att.id}
+                      href={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="group relative block rounded-lg overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 hover:ring-2 hover:ring-blue-500 transition-all"
+                    >
+                      <img
+                        src={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
+                        alt={att.name}
+                        className="w-full h-28 object-cover group-hover:scale-105 transition-transform duration-200"
+                        loading="lazy"
+                        onError={(e) => {
+                          (e.target as HTMLElement).style.display = 'none';
+                        }}
+                      />
+                      <div className="p-1.5 bg-white/95 dark:bg-neutral-900/95 text-[11px] font-mono truncate text-neutral-700 dark:text-neutral-300">
+                        🖼️ {att.name}
+                      </div>
+                    </a>
+                  ))}
+                </div>
+                
+                {/* Smart OCR Error Highlight Notice */}
+                <div className="p-2.5 rounded-lg bg-purple-50/70 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800 text-[12px] text-purple-900 dark:text-purple-200 flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold">🔍 Vision / OCR:</span>
+                    <span>Скриншот прикреплен заявителем и проанализирован моделью</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="space-y-1.5">
               {attachmentsList.map(att => (
                 <a
@@ -831,9 +989,10 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
               type="button"
               onClick={handleExecuteMainAction}
               disabled={submitting || ticket.statusId === 29 || ticket.statusId === 30 || getMainActionConfig().statusId === 0 || !isStatusAllowed(getMainActionConfig().statusId)}
-              className={`h-9 px-4 text-[12.5px] font-bold rounded-lg transition-colors disabled:opacity-40 cursor-pointer shadow-xs whitespace-nowrap flex-1 min-w-0 flex items-center justify-center text-center truncate ${getMainActionConfig().buttonClass}`}
+              className={`h-9 px-4 text-[12.5px] font-bold rounded-lg transition-colors disabled:opacity-40 cursor-pointer shadow-xs whitespace-nowrap flex-1 min-w-0 flex items-center justify-center gap-1.5 text-center truncate ${getMainActionConfig().buttonClass}`}
             >
-              {getMainActionConfig().label}
+              <span>{getMainActionConfig().label}</span>
+              <span className="text-[10px] opacity-70 font-mono font-normal">Ctrl+↵</span>
             </button>
           </div>
         </div>

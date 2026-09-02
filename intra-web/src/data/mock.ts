@@ -17,6 +17,8 @@ export interface TimelineEvent {
   timestamp: Date;
 }
 
+import type { TicketAIPlan } from '../lib/types';
+
 export interface Ticket {
   id: string;
   rawId: number;
@@ -58,6 +60,7 @@ export interface Ticket {
   expenses?: number;
   executors?: string;
   executorIds?: Array<number | string>;
+  aiPlan?: TicketAIPlan;
 }
 
 export interface ToastMessage {

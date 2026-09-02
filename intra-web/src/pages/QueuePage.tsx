@@ -1,7 +1,8 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { Ticket, Status } from '../data/mock';
 import { statusConfig, priorityConfig } from '../data/mock';
-import { applyTask, bulkApplyTasks, mapStatusToStatusId } from '../lib/tasks';
+import { applyTask, bulkApplyTasks, smartBulkApplyTasks, mapStatusToStatusId } from '../lib/tasks';
+import type { SmartBulkApplyItemPayload } from '../lib/types';
 import type { ServiceSelection } from '../components/Sidebar';
 import TicketInspector from '../components/TicketInspector';
 
@@ -28,6 +29,19 @@ interface BulkConfirmModalState {
   count: number;
   hasRepair: boolean;
   ticketIds: number[];
+}
+
+interface SmartBatchItem {
+  ticket: Ticket;
+  selected: boolean;
+  comment: string;
+  minutes: number;
+  isEditing: boolean;
+}
+
+interface SmartBatchModalState {
+  open: boolean;
+  items: SmartBatchItem[];
 }
 
 function getSlaClass(deadline: Date) {
@@ -77,6 +91,7 @@ export default function QueuePage({
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [processingBulk, setProcessingBulk] = useState(false);
   const [bulkModal, setBulkModal] = useState<BulkConfirmModalState | null>(null);
+  const [smartBatchModal, setSmartBatchModal] = useState<SmartBatchModalState | null>(null);
 
   const selectedTicket = tickets.find(t => t.id === selectedTicketId) ?? null;
 
@@ -175,6 +190,103 @@ export default function QueuePage({
     });
   };
 
+  // Smart Plan Direct Action for Single Ticket
+  const handleApplyTicketPlan = async (t: Ticket) => {
+    const plan = t.aiPlan;
+    if (!plan) {
+      await handleInlineTake(t);
+      return;
+    }
+
+    try {
+      onToast({ type: 'info', message: `Выполняется: ${plan.actionTitle} (#${t.rawId})...` });
+      const payload: SmartBulkApplyItemPayload = {
+        task_id: t.rawId,
+        status_id: plan.targetStatusId,
+        comment: plan.comment,
+        minutes: plan.expensesMinutes,
+        requires_domain_job: plan.requiresDomainJob,
+        domain_job: plan.domainJob,
+        executor_ids: '8664,10502',
+      };
+
+      const res = await smartBulkApplyTasks([payload]);
+      if (res.success_count > 0) {
+        const newStatus = plan.targetStatusId === 29 || plan.targetStatusId === 30 ? 'resolved' : (plan.targetStatusId === 35 || plan.targetStatusId === 48 ? 'waiting' : 'in_progress');
+        onUpdateTicket(t.id, {
+          status: newStatus,
+          statusId: plan.targetStatusId,
+          statusName: plan.targetStatusName,
+        });
+        onToast({ type: 'success', message: `Заявка #${t.rawId}: ${plan.actionTitle} успешно выполнено` });
+      } else {
+        const err = res.errors[0]?.error || 'Ошибка исполнения';
+        onToast({ type: 'error', message: `Ошибка #${t.rawId}: ${err}` });
+      }
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Ошибка: ${err.message || err}` });
+    }
+  };
+
+  const openSmartBatchModal = (ticketsToProcess: Ticket[]) => {
+    if (ticketsToProcess.length === 0) return;
+    const items: SmartBatchItem[] = ticketsToProcess.map(t => ({
+      ticket: t,
+      selected: true,
+      comment: t.aiPlan?.comment || t.aiSuggestion || 'Принято в работу специалистом 1-й линии техподдержки.',
+      minutes: t.aiPlan?.expensesMinutes || t.expenses || 10,
+      isEditing: false,
+    }));
+    setSmartBatchModal({ open: true, items });
+  };
+
+  const executeSmartBatch = async () => {
+    if (!smartBatchModal) return;
+    const activeItems = smartBatchModal.items.filter(x => x.selected);
+    if (activeItems.length === 0) return;
+
+    setProcessingBulk(true);
+    try {
+      const payload: SmartBulkApplyItemPayload[] = activeItems.map(item => {
+        const plan = item.ticket.aiPlan;
+        return {
+          task_id: item.ticket.rawId,
+          status_id: plan?.targetStatusId || 27,
+          comment: item.comment,
+          minutes: item.minutes,
+          requires_domain_job: plan?.requiresDomainJob,
+          domain_job: plan?.domainJob,
+          executor_ids: '8664,10502',
+        };
+      });
+
+      const res = await smartBulkApplyTasks(payload);
+
+      activeItems.forEach(item => {
+        const plan = item.ticket.aiPlan;
+        const targetStatusId = plan?.targetStatusId || 27;
+        const newStatus = targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : (targetStatusId === 35 || targetStatusId === 48 ? 'waiting' : 'in_progress');
+        onUpdateTicket(item.ticket.id, {
+          status: newStatus,
+          statusId: targetStatusId,
+          statusName: plan?.targetStatusName || 'В работе',
+        });
+      });
+
+      onToast({
+        type: res.failed_count === 0 ? 'success' : 'warning',
+        message: `Пакетное выполнение: ${res.success_count} успешно${res.failed_count > 0 ? `, ${res.failed_count} ошибок` : ''}`,
+      });
+
+      setSelected(new Set());
+      setSmartBatchModal(null);
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Ошибка пакетного выполнения: ${err.message || err}` });
+    } finally {
+      setProcessingBulk(false);
+    }
+  };
+
   // Real Single Inline Actions
   const handleInlineTake = async (t: Ticket) => {
     try {
@@ -189,7 +301,6 @@ export default function QueuePage({
       onToast({ type: 'error', message: `Ошибка: ${err.message || err}` });
     }
   };
-
 
   const handleInlineStatusChange = async (t: Ticket, s: Status) => {
     // Guard: Do not allow blind closing without comment (Audit E-2)
@@ -412,6 +523,47 @@ export default function QueuePage({
                 );
               })}
             </div>
+
+            {/* Smart Tab Context Action Buttons (100% HITL Batch Trigger) */}
+            {filterTab === 'wifi' && countWifi > 0 && (
+              <button
+                onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.ruleType === 'wlan_access' || t.templateKey === 'wifi_access'))}
+                disabled={processingBulk}
+                className="flex items-center gap-1.5 px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-[12.5px] font-bold shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
+              >
+                <span>⚡ Выдать Wi-Fi всем ({countWifi})</span>
+              </button>
+            )}
+
+            {filterTab === 'duplicates' && countDuplicates > 0 && (
+              <button
+                onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.isDuplicate || t.ruleType === 'duplicate_task'))}
+                disabled={processingBulk}
+                className="flex items-center gap-1.5 px-3 py-1 bg-neutral-800 hover:bg-neutral-900 text-white dark:bg-neutral-200 dark:text-neutral-900 rounded-md text-[12.5px] font-bold shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
+              >
+                <span>👥 Отменить все дубликаты ({countDuplicates})</span>
+              </button>
+            )}
+
+            {filterTab === 'redirects' && countRedirects > 0 && (
+              <button
+                onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.isRedirect || t.ruleType?.startsWith('redirect')))}
+                disabled={processingBulk}
+                className="flex items-center gap-1.5 px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-md text-[12.5px] font-bold shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
+              >
+                <span>🔀 Перенаправить все ({countRedirects})</span>
+              </button>
+            )}
+
+            {filterTab === 'repair' && countRepair > 0 && (
+              <button
+                onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.ruleType === 'hardware_repair'))}
+                disabled={processingBulk}
+                className="flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-[12.5px] font-bold shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
+              >
+                <span>🔧 В ремонт все ({countRepair})</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -443,6 +595,9 @@ export default function QueuePage({
                   </th>
                   <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     ИСПОЛНИТЕЛЬ
+                  </th>
+                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+                    ПЛАН AI
                   </th>
                   <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     ДЕЙСТВИЕ
@@ -654,7 +809,23 @@ export default function QueuePage({
                         )}
                       </td>
 
-                      {/* Action (В работу) */}
+                      {/* AI Plan Column */}
+                      <td className="px-3.5 py-2.5 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                        {ticket.aiPlan ? (
+                          <div
+                            className="inline-flex items-center"
+                            title={`${ticket.aiPlan.actionTitle}\nОтвет заявителю: ${ticket.aiPlan.comment}\nСписание времени: ${ticket.aiPlan.expensesMinutes} мин`}
+                          >
+                            <span className={`text-[11.5px] font-bold px-2 py-0.5 rounded border ${ticket.aiPlan.badgeClass} inline-flex items-center gap-1 shadow-2xs`}>
+                              {ticket.aiPlan.actionBadge}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-neutral-400 dark:text-neutral-600 text-[12px]">—</span>
+                        )}
+                      </td>
+
+                      {/* Action Button (Smart HITL execution) */}
                       <td className="px-3.5 py-2.5 whitespace-nowrap" onClick={e => e.stopPropagation()}>
                         {ticket.statusId === 27 ? (
                           <span className="text-[12px] text-emerald-600 dark:text-emerald-400 font-medium">
@@ -662,10 +833,29 @@ export default function QueuePage({
                           </span>
                         ) : (
                           <button
-                            onClick={() => handleInlineTake(ticket)}
-                            className="px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 border border-neutral-300/90 dark:border-neutral-700 rounded text-[12px] font-medium transition-colors cursor-pointer"
+                            onClick={() => handleApplyTicketPlan(ticket)}
+                            className={`px-2.5 py-1 border rounded text-[12px] font-bold transition-all cursor-pointer shadow-2xs ${
+                              ticket.aiPlan?.actionType === 'grant_wlan'
+                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
+                                : ticket.aiPlan?.actionType === 'redirect'
+                                  ? 'bg-amber-600 hover:bg-amber-700 text-white border-amber-700'
+                                  : ticket.aiPlan?.actionType === 'duplicate'
+                                    ? 'bg-neutral-800 hover:bg-neutral-900 text-white border-neutral-900 dark:bg-neutral-200 dark:text-neutral-900'
+                                    : ticket.aiPlan?.actionType === 'hardware_repair'
+                                      ? 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-700'
+                                      : 'bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 border-neutral-300 dark:border-neutral-700'
+                            }`}
+                            title={ticket.aiPlan ? `Применить: ${ticket.aiPlan.actionTitle}` : 'Взять в работу'}
                           >
-                            В работу
+                            {ticket.aiPlan?.actionType === 'grant_wlan'
+                              ? '⚡ Wi-Fi'
+                              : ticket.aiPlan?.actionType === 'redirect'
+                                ? '🔀 Редирект'
+                                : ticket.aiPlan?.actionType === 'duplicate'
+                                  ? '👥 Дубликат'
+                                  : ticket.aiPlan?.actionType === 'hardware_repair'
+                                    ? '🔧 В ремонт'
+                                    : 'В работу'}
                           </button>
                         )}
                       </td>
@@ -792,44 +982,224 @@ export default function QueuePage({
         />
       )}
 
-      {/* Real Bulk Action Bar (Marks #6, #7: Terminology Helpdesk & Statuses in words) */}
+      {/* Real Bulk Action Bar (100% HITL Smart Automation) */}
       {selected.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-5 py-3 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded-xl shadow-2xl border border-neutral-700 dark:border-neutral-300">
-          <span className="text-[13px] font-bold mr-1">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2.5 px-4 py-2.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded-2xl shadow-2xl border border-neutral-700 dark:border-neutral-300 animate-in fade-in slide-in-from-bottom-3 duration-150 flex-wrap justify-center">
+          <span className="text-[13px] font-bold mr-1 shrink-0">
             Выбрано: {selected.size}
           </span>
-          <div className="w-px h-5 bg-neutral-700 dark:bg-neutral-300" />
+          <div className="w-px h-5 bg-neutral-700 dark:bg-neutral-300 shrink-0" />
+          
+          {/* Main 100% HITL Smart Button */}
+          <button
+            onClick={() => openSmartBatchModal(tickets.filter(t => selected.has(t.id)))}
+            disabled={processingBulk}
+            className="text-[13px] font-bold bg-blue-600 hover:bg-blue-500 text-white px-3.5 py-1.5 rounded-lg transition-all shadow-md cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+          >
+            <span>⚡ Применить индивидуальные решения ({selected.size})</span>
+          </button>
+
           <button
             onClick={() => initiateBulkAction('take')}
             disabled={processingBulk}
-            className="text-[13px] font-semibold hover:text-blue-300 dark:hover:text-blue-700 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50"
+            className="text-[12.5px] font-semibold text-neutral-300 hover:text-white dark:text-neutral-700 dark:hover:text-neutral-900 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50 shrink-0"
           >
-            Взять в работу
+            В работу
           </button>
           <button
             onClick={() => initiateBulkAction('cancel')}
             disabled={processingBulk}
-            className="text-[13px] font-semibold hover:text-amber-300 dark:hover:text-amber-700 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50"
+            className="text-[12.5px] font-semibold text-neutral-300 hover:text-white dark:text-neutral-700 dark:hover:text-neutral-900 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50 shrink-0"
           >
-            Отменить заявки
+            Отменить
           </button>
-          <button
-            onClick={() => initiateBulkAction('resolve')}
-            disabled={processingBulk}
-            className="text-[13px] font-semibold hover:text-emerald-300 dark:hover:text-emerald-700 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50"
-          >
-            Выполнить заявки
-          </button>
-          <div className="w-px h-5 bg-neutral-700 dark:bg-neutral-300" />
+          <div className="w-px h-5 bg-neutral-700 dark:bg-neutral-300 shrink-0" />
           <button
             onClick={() => setSelected(new Set())}
-            className="text-neutral-400 hover:text-white dark:hover:text-neutral-900 transition-colors cursor-pointer p-1"
+            className="text-neutral-400 hover:text-white dark:hover:text-neutral-900 transition-colors cursor-pointer p-1 shrink-0"
             title="Снять выделение"
           >
             <svg width="14" height="14" viewBox="0 0 13 13" fill="none">
               <path d="M2 2l9 9M11 2l-9 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           </button>
+        </div>
+      )}
+
+      {/* Smart Batch Plan Modal (100% HITL Confirmation with In-line Edit) */}
+      {smartBatchModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-2xs p-4">
+          <div className="w-full max-w-2xl bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl border border-neutral-200 dark:border-neutral-800 flex flex-col max-h-[85vh] animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between shrink-0">
+              <div>
+                <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
+                  <span>⚡ Сводный план индивидуального выполнения</span>
+                  <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-200 rounded-full font-bold">
+                    {smartBatchModal.items.filter(x => x.selected).length} из {smartBatchModal.items.length}
+                  </span>
+                </h3>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
+                  Каждая заявка будет исполнена в инфраструктуре и переведена в свой целевой статус с регламентным ответом заявителю
+                </p>
+              </div>
+              <button
+                onClick={() => setSmartBatchModal(null)}
+                disabled={processingBulk}
+                className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer p-1"
+              >
+                <svg width="16" height="16" viewBox="0 0 14 14" fill="none">
+                  <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Body: Tickets list */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-3">
+              {smartBatchModal.items.map((item, idx) => {
+                const t = item.ticket;
+                const plan = t.aiPlan;
+                return (
+                  <div
+                    key={t.id}
+                    className={`p-3.5 rounded-xl border transition-all ${
+                      item.selected
+                        ? 'bg-neutral-50 dark:bg-neutral-800/60 border-neutral-200 dark:border-neutral-700 shadow-2xs'
+                        : 'bg-neutral-100/40 dark:bg-neutral-900/40 border-neutral-200/50 dark:border-neutral-800/50 opacity-60'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-3 flex-1 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={item.selected}
+                          onChange={e => {
+                            const checked = e.target.checked;
+                            setSmartBatchModal(prev => prev ? {
+                              ...prev,
+                              items: prev.items.map((it, i) => i === idx ? { ...it, selected: checked } : it),
+                            } : null);
+                          }}
+                          className="w-4 h-4 accent-blue-600 cursor-pointer rounded mt-1 shrink-0"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <a
+                              href={`/admin/api/tasks/${t.rawId}/open`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-mono font-bold text-[13px] text-blue-600 dark:text-blue-400 hover:underline"
+                            >
+                              #{t.rawId}
+                            </a>
+                            <span className="font-bold text-[13.5px] text-neutral-900 dark:text-neutral-100 truncate max-w-sm">
+                              {t.title}
+                            </span>
+                            {plan && (
+                              <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${plan.badgeClass}`}>
+                                {plan.actionBadge}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[12px] text-neutral-500 dark:text-neutral-400 flex items-center gap-2 flex-wrap">
+                            <span>{t.requesterName}</span>
+                            {t.room && <span>· каб. {t.room}</span>}
+                            {t.host && <span className="font-mono font-semibold bg-neutral-200 dark:bg-neutral-700 px-1.5 py-0.2 rounded text-[11px]">{t.host}</span>}
+                            <span>· {plan?.targetStatusName || t.statusName} ({item.minutes} мин)</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSmartBatchModal(prev => prev ? {
+                            ...prev,
+                            items: prev.items.map((it, i) => i === idx ? { ...it, isEditing: !it.isEditing } : it),
+                          } : null);
+                        }}
+                        className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-bold shrink-0 cursor-pointer px-1.5 py-0.5"
+                      >
+                        {item.isEditing ? 'Свернуть' : '✏️ Изменить'}
+                      </button>
+                    </div>
+
+                    {/* Editing block */}
+                    {item.isEditing ? (
+                      <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700 space-y-2">
+                        <label className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
+                          Текст ответа заявителю:
+                        </label>
+                        <textarea
+                          value={item.comment}
+                          onChange={e => {
+                            const text = e.target.value;
+                            setSmartBatchModal(prev => prev ? {
+                              ...prev,
+                              items: prev.items.map((it, i) => i === idx ? { ...it, comment: text } : it),
+                            } : null);
+                          }}
+                          rows={2}
+                          className="w-full px-3 py-2 text-[12.5px] rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 outline-none resize-none"
+                        />
+                        <div className="flex items-center gap-2 text-[12px] text-neutral-500">
+                          <span>Трудозатраты:</span>
+                          <input
+                            type="number"
+                            value={item.minutes}
+                            onChange={e => {
+                              const m = Number(e.target.value);
+                              setSmartBatchModal(prev => prev ? {
+                                ...prev,
+                                items: prev.items.map((it, i) => i === idx ? { ...it, minutes: m } : it),
+                              } : null);
+                            }}
+                            min={0}
+                            max={240}
+                            className="w-14 h-6 px-1.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded text-center font-mono font-bold text-[11px]"
+                          />
+                          <span>мин</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-2 text-[12px] text-neutral-600 dark:text-neutral-400 italic bg-neutral-100/70 dark:bg-neutral-900/60 p-2 rounded-md line-clamp-2">
+                        «{item.comment}»
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-neutral-200 dark:border-neutral-800 flex items-center justify-between shrink-0 bg-neutral-50 dark:bg-neutral-950/60 rounded-b-2xl">
+              <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                Выбрано к исполнению: <strong className="text-neutral-900 dark:text-neutral-100">{smartBatchModal.items.filter(x => x.selected).length}</strong>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <button
+                  onClick={() => setSmartBatchModal(null)}
+                  disabled={processingBulk}
+                  className="px-4 py-2 text-[13px] font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800 rounded-lg transition-colors cursor-pointer"
+                >
+                  Отмена
+                </button>
+                <button
+                  onClick={executeSmartBatch}
+                  disabled={processingBulk || smartBatchModal.items.filter(x => x.selected).length === 0}
+                  className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[13px] font-bold rounded-lg transition-all shadow-md cursor-pointer disabled:opacity-50 flex items-center gap-2"
+                >
+                  {processingBulk && (
+                    <svg className="animate-spin h-4 w-4 text-white" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                    </svg>
+                  )}
+                  <span>{processingBulk ? 'Выполнение пакета...' : `🚀 Запустить выполнение (${smartBatchModal.items.filter(x => x.selected).length})`}</span>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
