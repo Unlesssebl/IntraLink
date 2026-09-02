@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.db import TaskKnowledgeBase
 from app.services import intraservice
+from app.services.ai import DataCircuit, RoutingMetadata, data_sanitizer
 
 logger = logging.getLogger("core_api.rag")
 
@@ -75,24 +76,78 @@ async def close_rag_session() -> None:
         _rag_session = None
 
 
-async def get_embedding_vector(text_input: str) -> list[float] | None:
+async def get_embedding_vector(
+    text_input: str,
+    force_local: bool = False,
+    circuit: DataCircuit | None = None,
+) -> list[float] | None:
     """
-    Генерирует вектор эмбеддинга заданной размерности (3072 dim через LiteLLM Proxy / Gemini
-    или fallback на FastEmbed).
+    Генерирует вектор эмбеддинга заданной размерности (3072 dim):
+    - RED (Закрытый контур / force_local): строго локальные эмбеддеры (Ollama / FastEmbed) без отправки наружу.
+    - YELLOW (Трансформируемый): автоматическая десенсибилизация перед вызовом Cloud LiteLLM / Gemini API.
+    - GREEN (Открытый): прямой вызов Cloud LiteLLM / Gemini с fallback на локальные модели.
     """
     clean_text = clean_html(text_input).strip()[:4000]
     if not clean_text:
         return None
 
+    # 1. Если принудительно локальный режим или RED контур -> строго локальные эмбеддеры
+    if force_local or circuit == DataCircuit.RED:
+        # Попытка через локальный сервис Ollama (/api/embed)
+        if getattr(settings, "OLLAMA_BASE_URL", None):
+            try:
+                session = await get_rag_http_session()
+                ollama_url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/embed"
+                payload = {
+                    "model": getattr(settings, "OLLAMA_EMBEDDING_MODEL", "bge-m3"),
+                    "input": clean_text,
+                }
+                async with session.post(
+                    ollama_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=4.0),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        embeddings = data.get("embeddings")
+                        if embeddings and len(embeddings) > 0:
+                            vec = embeddings[0]
+                            if len(vec) == settings.EMBEDDING_DIMENSION:
+                                return vec
+            except Exception:
+                pass
+
+        # Fallback: локальный FastEmbed в отдельном пуле потоков
+        try:
+            vec = await asyncio.to_thread(_get_fastembed_vector_sync, clean_text)
+            if vec and len(vec) == settings.EMBEDDING_DIMENSION:
+                return vec
+            if vec and len(vec) != settings.EMBEDDING_DIMENSION:
+                logger.warning(
+                    "Размерность вектора FastEmbed (%d) не совпадает с EMBEDDING_DIMENSION (%d).",
+                    len(vec),
+                    settings.EMBEDDING_DIMENSION,
+                )
+        except Exception as e:
+            logger.debug("Ошибка генерации вектора FastEmbed: %s", e)
+        return None
+
+    # 2. Подготовка текста для облачных эмбеддеров (маскирование PII при YELLOW или если обнаружены сущности)
+    cloud_payload_text = clean_text
+    if circuit == DataCircuit.YELLOW or circuit is None:
+        san_res = data_sanitizer.sanitize(clean_text)
+        if san_res.detected_types:
+            cloud_payload_text = san_res.sanitized_text
+
     session = await get_rag_http_session()
 
-    # 1. Попытка через LiteLLM Proxy
+    # 3. Попытка через LiteLLM Proxy
     if settings.LITELLM_BASE_URL:
         try:
             url = f"{settings.LITELLM_BASE_URL.rstrip('/')}/embeddings"
             headers = {"Authorization": f"Bearer {settings.LITELLM_API_KEY}"}
             payload = {
-                "input": [clean_text],
+                "input": [cloud_payload_text],
                 "model": settings.EMBEDDING_MODEL,
             }
             async with session.post(url, headers=headers, json=payload) as resp:
@@ -104,13 +159,13 @@ async def get_embedding_vector(text_input: str) -> list[float] | None:
         except Exception:
             pass
 
-    # 2. Попытка через Gemini API (если передан GEMINI_API_KEY)
+    # 4. Попытка через Gemini API (если передан GEMINI_API_KEY)
     if getattr(settings, "GEMINI_API_KEY", None):
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={settings.GEMINI_API_KEY}"
             payload = {
                 "model": "models/text-embedding-004",
-                "content": {"parts": [{"text": clean_text}]},
+                "content": {"parts": [{"text": cloud_payload_text}]},
             }
             async with session.post(url, json=payload) as resp:
                 if resp.status == 200:
@@ -121,7 +176,7 @@ async def get_embedding_vector(text_input: str) -> list[float] | None:
         except Exception:
             pass
 
-    # 3. Попытка через локальный сервис Ollama (/api/embed или /api/embeddings)
+    # 5. Локальный Fallback (Ollama / FastEmbed)
     if getattr(settings, "OLLAMA_BASE_URL", None):
         try:
             ollama_url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/embed"
@@ -129,7 +184,11 @@ async def get_embedding_vector(text_input: str) -> list[float] | None:
                 "model": getattr(settings, "OLLAMA_EMBEDDING_MODEL", "bge-m3"),
                 "input": clean_text,
             }
-            async with session.post(ollama_url, json=payload, timeout=aiohttp.ClientTimeout(total=4.0)) as resp:
+            async with session.post(
+                ollama_url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=4.0),
+            ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     embeddings = data.get("embeddings")
@@ -140,7 +199,6 @@ async def get_embedding_vector(text_input: str) -> list[float] | None:
         except Exception:
             pass
 
-    # 4. Fallback: локальный FastEmbed в отдельном пуле потоков (non-blocking Event Loop)
     try:
         vec = await asyncio.to_thread(_get_fastembed_vector_sync, clean_text)
         if vec:
@@ -157,21 +215,31 @@ async def get_embedding_vector(text_input: str) -> list[float] | None:
     return None
 
 
-
 async def search_knowledge_base(
     db: AsyncSession,
     query_text: str,
     limit: int = 3,
     distance_threshold: float = 0.70,
+    circuit: DataCircuit | None = None,
+    metadata: RoutingMetadata | None = None,
 ) -> list[dict[str, Any]]:
     """
     Выполняет косинусный семантический поиск похожих решений в базе знаний pgvector.
+    Автоматически определяет контур безопасности поискового запроса.
     """
     clean_query = clean_html(query_text).strip()
     if not clean_query:
         return []
 
-    query_vector = await get_embedding_vector(clean_query)
+    # Оцениваем контур запроса, если не задан явно
+    eval_circuit = circuit
+    if eval_circuit is None:
+        dec = data_sanitizer.evaluate_circuit(
+            prompt=clean_query, metadata=metadata or RoutingMetadata()
+        )
+        eval_circuit = dec.circuit
+
+    query_vector = await get_embedding_vector(clean_query, circuit=eval_circuit)
     if not query_vector:
         logger.debug(
             "Не удалось сформировать вектор для поискового запроса: '%s'",
@@ -222,6 +290,7 @@ async def search_knowledge_base(
                     "similarity_pct": sim_pct,
                     "distance": round(dist, 4),
                     "storage_tier": "PostgreSQL (pgvector)",
+                    "circuit_evaluated": eval_circuit.value if eval_circuit else "green",
                 })
         return matches
     except Exception as e:
@@ -239,21 +308,40 @@ async def index_task_knowledge(
     service_name: str,
     status_name: str,
     classification_data: dict[str, Any] | None = None,
+    force_local: bool = False,
+    circuit: DataCircuit | None = None,
 ) -> bool:
     """
     Индексирует решение заявки в таблицу task_knowledge_base с генерацией эмбеддинга.
+    Автоматически переключается на локальный контур при наличии паролей или конфиденциальности.
     """
     try:
         embed_input = (
             f"Тема: {original_name}\nПроблема: {problem}\nРешение: {solution}"
         )
-        vec = await get_embedding_vector(embed_input)
+
+        # Автоматическая оценка контура при индексации
+        eval_circuit = circuit
+        if eval_circuit is None and not force_local:
+            eval_dec = data_sanitizer.evaluate_circuit(
+                prompt=embed_input,
+                metadata=RoutingMetadata(service_id=service_id),
+            )
+            eval_circuit = eval_dec.circuit
+
+        vec = await get_embedding_vector(
+            embed_input, force_local=force_local, circuit=eval_circuit
+        )
 
         stmt = select(TaskKnowledgeBase).where(
             TaskKnowledgeBase.task_id == task_id
         )
         res = await db.execute(stmt)
         existing = res.scalar_one_or_none()
+
+        merged_data = dict(classification_data or {})
+        if eval_circuit:
+            merged_data["circuit"] = eval_circuit.value
 
         if existing:
             existing.original_name = original_name
@@ -262,7 +350,7 @@ async def index_task_knowledge(
             existing.service_id = service_id
             existing.service_name = service_name
             existing.status_name = status_name
-            existing.classification_data = classification_data or {}
+            existing.classification_data = merged_data
             existing.embedding = vec
             existing.is_blacklisted = False
         else:
@@ -274,7 +362,7 @@ async def index_task_knowledge(
                 service_id=service_id,
                 service_name=service_name,
                 status_name=status_name,
-                classification_data=classification_data or {},
+                classification_data=merged_data,
                 embedding=vec,
                 is_blacklisted=False,
             )
@@ -282,7 +370,9 @@ async def index_task_knowledge(
 
         await db.commit()
         logger.info(
-            "Заявка #%d успешно проиндексирована в базе знаний RAG", task_id
+            "Заявка #%d успешно проиндексирована в базе знаний RAG (контур: %s)",
+            task_id,
+            eval_circuit.value if eval_circuit else "default",
         )
         return True
     except Exception as e:

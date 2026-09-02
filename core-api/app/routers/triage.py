@@ -13,6 +13,7 @@ from app.config import settings
 from app.database.db import get_db
 from app.routers.deps import get_service_auth_b64, verify_admin_or_api_key
 from app.services import intraservice
+from app.services.ai import RoutingMetadata, data_sanitizer
 from app.services.deduplication import DuplicateDetector
 from app.services.rag import (
     index_task_knowledge,
@@ -216,6 +217,12 @@ async def get_triage_batch(
             redirect_mode=redirect_only,
         )
 
+        # Оценка контура безопасности данных
+        circuit_dec = data_sanitizer.evaluate_circuit(
+            prompt=query_text,
+            metadata=RoutingMetadata(service_id=t.get("ServiceId")),
+        )
+
         is_dup = t_id in dup_map
         dup_info = dup_map.get(t_id)
 
@@ -239,6 +246,9 @@ async def get_triage_batch(
             "is_duplicate": is_dup,
             "duplicate_info": dup_info,
             "kb_matches": kb_matches,
+            "circuit": circuit_dec.circuit.value,
+            "circuit_reason": circuit_dec.reason,
+            "requires_sanitization": circuit_dec.requires_sanitization,
         })
 
     return {
@@ -283,11 +293,20 @@ async def get_task_details_card(
     # Рекомендация Rule Engine
     decision = auto_detect_template(task=task, kb_matches=kb_matches)
 
+    # Оценка контура безопасности данных
+    circuit_dec = data_sanitizer.evaluate_circuit(
+        prompt=query_text,
+        metadata=RoutingMetadata(service_id=task.get("ServiceId")),
+    )
+
     return {
         "task": task,
         "history": history,
         "kb_matches": kb_matches,
         "suggested_action": decision,
+        "circuit": circuit_dec.circuit.value,
+        "circuit_reason": circuit_dec.reason,
+        "requires_sanitization": circuit_dec.requires_sanitization,
     }
 
 

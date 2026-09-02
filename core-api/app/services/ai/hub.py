@@ -3,15 +3,24 @@
 Включает семафор параллелизма, Redis-кэширование (Pre-Summarization) и Circuit Breaker.
 """
 import asyncio
+import hashlib
 import json
 import logging
+import time
+import uuid
 from typing import Any, List, Optional
 import aiohttp
 
 from app.config import settings
+from app.services.ai.sanitizer import data_sanitizer
 from app.services.ai.schemas import (
     AIAnalysisResult,
     AIHealthResponse,
+    DataCircuit,
+    RouteDecision,
+    RoutedInferenceRequest,
+    RoutedInferenceResponse,
+    SanitizationResult,
     TicketSummaryResult,
 )
 from app.services.worker import get_redis_client
@@ -171,10 +180,10 @@ class AIHub:
                     # Сохраняем в кэш Redis на 24 часа
                     try:
                         r = get_redis_client()
-                        await r.setex(
+                        await r.set(
                             cache_key,
-                            86400,
                             json.dumps(result.model_dump(), ensure_ascii=False),
+                            ex=86400,
                         )
                     except Exception as cache_err:
                         logger.warning(
@@ -258,6 +267,248 @@ class AIHub:
                     "Сбой инференса Ollama при анализе заявки #%s: %s", task_id, e
                 )
                 return None
+
+    async def generate_ollama_completion(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 512,
+        temperature: float = 0.0,
+    ) -> Optional[str]:
+        """Прямой инференс через локальную Ollama (Закрытый контур RED)."""
+        if not await self.is_ollama_available():
+            logger.warning("Локальная Ollama недоступна на %s", self.ollama_url)
+            return None
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        url = f"{self.ollama_url}/api/chat"
+        payload = {
+            "model": self.ollama_model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        }
+
+        async with self._semaphore:
+            try:
+                session = await self._get_session()
+                async with session.post(url, json=payload) as resp:
+                    if resp.status != 200:
+                        logger.error("Ошибка локальной Ollama: HTTP %s", resp.status)
+                        return None
+                    data = await resp.json()
+                    return data.get("message", {}).get("content", "").strip()
+            except Exception as e:
+                logger.error("Сбой локального инференса Ollama: %s", e)
+                return None
+
+    async def generate_cloud_completion(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 512,
+        temperature: float = 0.0,
+    ) -> Optional[str]:
+        """Инференс через LiteLLM Proxy / Cloud Gemini (Открытый контур GREEN/YELLOW)."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        url = f"{self.litellm_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {settings.LITELLM_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": settings.GEMINI_MODEL,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        try:
+            session = await self._get_session()
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    text_err = await resp.text()
+                    logger.error(
+                        "Ошибка Cloud LiteLLM/Gemini API: HTTP %s: %s",
+                        resp.status,
+                        text_err[:200],
+                    )
+                    return None
+                data = await resp.json()
+                choices = data.get("choices", [])
+                if choices:
+                    return choices[0].get("message", {}).get("content", "").strip()
+                return None
+        except Exception as e:
+            logger.error("Сбой облачного инференса Gemini via LiteLLM: %s", e)
+            return None
+
+    async def dispatch_routed_inference(
+        self, request: RoutedInferenceRequest
+    ) -> Optional[RoutedInferenceResponse]:
+        """
+        Центральный умный диспетчер с защитой данных:
+        1. Оценивает чувствительность (Red / Yellow / Green).
+        2. При Red -> Строго локальная Ollama.
+        3. При Yellow -> Десенсибилизация (PII Vault) -> Cloud Gemini -> Rehydration.
+        4. При Green -> Cloud Gemini напрямую.
+        5. Автоматическое L2 кэширование и замер времени выполнения.
+        """
+        start_time = time.perf_counter()
+
+        # 1. Проверяем L2 кэш по хэшу промпта
+        cache_hash = hashlib.sha256(
+            f"{request.prompt}:{request.system_prompt}:{request.temperature}".encode()
+        ).hexdigest()
+        cache_key = f"cache:ai:routed:{cache_hash}"
+
+        if not request.bypass_cache:
+            try:
+                r = get_redis_client()
+                cached_val = await r.get(cache_key)
+                if cached_val:
+                    data = json.loads(cached_val)
+                    data["cached"] = True
+                    data["execution_time_ms"] = round(
+                        (time.perf_counter() - start_time) * 1000, 2
+                    )
+                    return RoutedInferenceResponse.model_validate(data)
+            except Exception as e:
+                logger.debug("Промах кэша для routed AI: %s", e)
+
+        # 2. Выполняем инспекцию и десенсибилизацию
+        san_res = data_sanitizer.sanitize(request.prompt)
+        decision = data_sanitizer.evaluate_circuit(
+            prompt=request.prompt,
+            metadata=request.metadata,
+            sanitization_result=san_res,
+        )
+
+        model_name = (
+            self.ollama_model
+            if decision.circuit == DataCircuit.RED
+            else settings.GEMINI_MODEL
+        )
+        sanitized_count = 0
+        raw_output: Optional[str] = None
+
+        # 3. Маршрутизация по контурам
+        if decision.circuit == DataCircuit.RED:
+            # ЗАКРЫТЫЙ КОНТУР: строго локальный инференс
+            logger.info("Маршрутизация в ЗАКРЫТЫЙ контур (RED): %s", decision.reason)
+            raw_output = await self.generate_ollama_completion(
+                prompt=request.prompt,
+                system_prompt=request.system_prompt,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+            )
+            final_text = raw_output
+
+        elif decision.circuit == DataCircuit.YELLOW:
+            # ТРАНСФОРМИРУЕМЫЙ КОНТУР: маскирование -> облако -> деанонимизация
+            sanitized_count = len(san_res.entity_map)
+            session_id = uuid.uuid4().hex
+            logger.info(
+                "Маршрутизация в ТРАНСФОРМИРУЕМЫЙ контур (YELLOW) [Сессия %s, замаскировано %s сущностей]: %s",
+                session_id,
+                sanitized_count,
+                decision.reason,
+            )
+            await data_sanitizer.save_vault(
+                session_id, san_res.entity_map, ttl_sec=300
+            )
+
+            # Пробуем облачный инференс
+            raw_output = await self.generate_cloud_completion(
+                prompt=san_res.sanitized_text,
+                system_prompt=request.system_prompt,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+            )
+
+            # Fallback на локальную Ollama, если облако недоступно
+            if raw_output is None:
+                logger.warning(
+                    "LiteLLM/Gemini недоступен для YELLOW, fallback на локальную Ollama"
+                )
+                raw_output = await self.generate_ollama_completion(
+                    prompt=san_res.sanitized_text,
+                    system_prompt=request.system_prompt,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                )
+                model_name = f"{self.ollama_model} (fallback)"
+
+            # Восстанавливаем оригинальные сущности в ответе
+            if raw_output is not None:
+                final_text = data_sanitizer.deanonymize(
+                    raw_output, san_res.entity_map
+                )
+            else:
+                final_text = None
+
+        else:  # GREEN
+            # ОТКРЫТЫЙ КОНТУР: прямой вызов Gemini
+            logger.info("Маршрутизация в ОТКРЫТЫЙ контур (GREEN): %s", decision.reason)
+            raw_output = await self.generate_cloud_completion(
+                prompt=request.prompt,
+                system_prompt=request.system_prompt,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+            )
+
+            # Fallback на локальную Ollama
+            if raw_output is None:
+                logger.warning(
+                    "LiteLLM/Gemini недоступен для GREEN, fallback на локальную Ollama"
+                )
+                raw_output = await self.generate_ollama_completion(
+                    prompt=request.prompt,
+                    system_prompt=request.system_prompt,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                )
+                model_name = f"{self.ollama_model} (fallback)"
+
+            final_text = raw_output
+
+        if final_text is None:
+            logger.error("Не удалось получить ответ ни от одного AI-бэкенда")
+            return None
+
+        exec_time = round((time.perf_counter() - start_time) * 1000, 2)
+        response = RoutedInferenceResponse(
+            text=final_text,
+            circuit=decision.circuit,
+            model=model_name,
+            sanitized_entities_count=sanitized_count,
+            execution_time_ms=exec_time,
+            cached=False,
+        )
+
+        # Сохраняем в L2 кэш Redis на 1 час
+        try:
+            r = get_redis_client()
+            await r.set(
+                cache_key,
+                json.dumps(response.model_dump(), ensure_ascii=False),
+                ex=3600,
+            )
+        except Exception as e:
+            logger.warning("Не удалось сохранить ответ в Redis: %s", e)
+
+        return response
 
 
 # Синглтон AI Hub для использования в сервисах

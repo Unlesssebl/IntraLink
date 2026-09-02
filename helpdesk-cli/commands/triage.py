@@ -158,8 +158,16 @@ async def handle_batch(args: Any) -> None:
             action = it.get("suggested_action") or {}
 
             dup_badge = " 🔴 [ДУБЛИКАТ]" if it.get("is_duplicate") else ""
+            circuit = it.get("circuit", "green")
+            if circuit == "red":
+                circuit_badge = " 🔴 [RED/Local]"
+            elif circuit == "yellow":
+                circuit_badge = " 🟡 [YELLOW/Sanitized]"
+            else:
+                circuit_badge = " 🟢 [GREEN/Cloud]"
+
             print(
-                f"\n[{idx}] 🎫 [#{t_id}](https://servicedesk.corporate.loc/Task/View/{t_id}) | 📅 {created} | 📂 {s_name}{dup_badge}"
+                f"\n[{idx}] 🎫 [#{t_id}](https://servicedesk.corporate.loc/Task/View/{t_id}) | 📅 {created} | 📂 {s_name}{dup_badge}{circuit_badge}"
             )
             print(f"    • Тема: {name}")
             print(

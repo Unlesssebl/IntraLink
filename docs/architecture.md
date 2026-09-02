@@ -123,3 +123,53 @@ flowchart TB
    Перевод в финальные статусы `29 Выполнена` или `30 Отменена` обязательно выполняется через статус `27 В работе` с фиксацией двух исполнителей (`Беликов Ален` - ID `8664` и `Беликов Ален_assitant` - ID `10502`) и списанием трудозатрат.
 4. **Асинхронность и отказоустойчивость:**
    Все системные вызовы PowerShell в CLI обернуты в `asyncio.to_thread`. Вызовы к внешнему IntraService защищены Circuit Breaker с экспоненциальным backoff.
+
+---
+
+## 🛡️ 3. Многоконтурная безопасность данных и гибридный AI-роутинг
+
+Система реализует многоконтурную модель маршрутизации AI-инференса и RAG на принципах **Privacy-First & Zero Trust**:
+
+```mermaid
+flowchart LR
+    subgraph Input ["Входные данные"]
+        Req["Запрос оператора / Заявка"]
+    end
+
+    subgraph Router ["AI Smart Router & DLP Sanitizer"]
+        DLP["DLP / PII Инспектор\n(Регулярные выражения + Heuristics)"]
+        Decision{"Контур безопасности"}
+        Vault[("Redis PII Vault\n(TTL 300s)")]
+        Rehydrate["Rehydration\n(Деанонимизация)"]
+    end
+
+    subgraph RedZone ["🔴 Закрытый контур (On-Prem)"]
+        LocalLLM["Локальная Ollama (Qwen/bge-m3)"]
+        LocalRAG[("Локальная pgvector + FastEmbed")]
+    end
+
+    subgraph GreenZone ["🟢 / 🟡 Открытый контур (Cloud)"]
+        LiteLLM["LiteLLM Proxy / Gemini Cloud API"]
+    end
+
+    Req --> DLP
+    DLP --> Decision
+
+    Decision -- "🔴 RED: Пароли, СБ, учетные записи" --> LocalLLM
+    Decision -- "🟡 YELLOW: Есть ПДн/IP/Хосты -> Маскирование" --> Vault
+    Vault --> LiteLLM
+    LiteLLM --> Rehydrate
+    Rehydrate <--> Vault
+
+    Decision -- "🟢 GREEN: Общие регламенты без ПДн" --> LiteLLM
+```
+
+### Контуры безопасности данных:
+1. 🔴 **Красный контур (RED / On-Premise)**:
+   - Применяется при наличии паролей, токенов, конфиденциальных заявок СБ или кадровой службы.
+   - Обработка и векторизация выполняются **строго локально** (Ollama `qwen`/`bge-m3` и `FastEmbed`). Данные не покидают периметр.
+2. 🟡 **Трансформируемый контур (YELLOW / Sanitized Cloud)**:
+   - Применяется при наличии персональных данных (ФИО, телефоны, email), внутренних IP-адресов (`10.x.x.x`, `192.168.x.x`) и имен ПК (`NTEMW...`).
+   - Перед отправкой в Cloud Gemini сущности заменяются на обратимые маркеры (`{{USER_1}}`, `{{INTERNAL_IP_1}}`), а маппинг сохраняется в **Redis PII Vault**. В ответе модели маркеры автоматически восстанавливаются (**Rehydration**).
+3. 🟢 **Открытый контур (GREEN / Cloud Direct)**:
+   - Применяется для публичных вопросов, синтаксиса скриптов и общих регламентов. Запрос направляется в Gemini Cloud напрямую.

@@ -56,6 +56,77 @@ async def test_ai_summarize_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_ai_generate_routed_endpoint():
+    """Проверка эндпоинта /api/v1/ai/generate с автоматической маршрутизацией."""
+    transport = ASGITransport(app=app)
+    headers = {"X-Bot-Api-Key": "test-api-key"}
+
+    # 1. Тест RED контура (пароли)
+    with patch.object(ai_hub, "generate_ollama_completion", new=AsyncMock(return_value="Локальный ответ для сброса пароля")), \
+         patch("app.services.ai.sanitizer.get_redis_client") as mock_redis:
+        mock_redis.return_value = AsyncMock(get=AsyncMock(return_value=None), setex=AsyncMock(return_value=True))
+
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            payload = {
+                "prompt": "Сбрось пароль для пользователя. Временный пароль: SecretPass123",
+                "metadata": {"contains_credentials": True},
+            }
+            resp = await client.post("/api/v1/ai/generate", json=payload, headers=headers)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["circuit"] == "red"
+            assert data["text"] == "Локальный ответ для сброса пароля"
+
+    # 2. Тест YELLOW контура (маскирование PII -> Gemini -> деанонимизация)
+    with patch.object(ai_hub, "generate_cloud_completion", new=AsyncMock(return_value="Инструкция для {{USER_1}} по подключению к {{INTERNAL_IP_1}}")), \
+         patch("app.services.ai.sanitizer.get_redis_client") as mock_redis:
+        mock_redis.return_value = AsyncMock(get=AsyncMock(return_value=None), setex=AsyncMock(return_value=True))
+
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            payload = {
+                "prompt": "Подключить сотрудника Иванов Иван Иванович к хосту 10.244.12.55",
+            }
+            resp = await client.post("/api/v1/ai/generate", json=payload, headers=headers)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["circuit"] == "yellow"
+            assert data["sanitized_entities_count"] >= 2
+            # Проверяем, что в финальном ответе плейсхолдеры были деанонимизированы
+            assert "Иванов Иван Иванович" in data["text"]
+            assert "10.244.12.55" in data["text"]
+
+
+@pytest.mark.asyncio
+async def test_ai_sanitize_preview_and_deanonymize():
+    """Проверка эндпоинтов /api/v1/ai/sanitize-preview и /api/v1/ai/deanonymize."""
+    transport = ASGITransport(app=app)
+    headers = {"X-Bot-Api-Key": "test-api-key"}
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Preview
+        preview_payload = {
+            "text": "Проверить рабочую станцию NTEMW0144 сотрудника Петров Петр Петрович",
+            "metadata": {},
+        }
+        resp = await client.post("/api/v1/ai/sanitize-preview", json=preview_payload, headers=headers)
+        assert resp.status_code == 200
+        preview_data = resp.json()
+        assert preview_data["route_decision"]["circuit"] == "yellow"
+        assert "{{HOST_1}}" in preview_data["sanitized_text"]
+        assert "{{USER_1}}" in preview_data["sanitized_text"]
+
+        # Deanonymize
+        deanon_payload = {
+            "text": "Готово для {{USER_1}} на хосте {{HOST_1}}",
+            "entity_map": preview_data["entity_map"],
+        }
+        resp_deanon = await client.post("/api/v1/ai/deanonymize", json=deanon_payload, headers=headers)
+        assert resp_deanon.status_code == 200
+        assert "Петров Петр Петрович" in resp_deanon.json()["restored_text"]
+        assert "NTEMW0144" in resp_deanon.json()["restored_text"]
+
+
+@pytest.mark.asyncio
 async def test_ai_analyze_endpoint():
     """Проверка эндпоинта /api/v1/ai/analyze."""
     transport = ASGITransport(app=app)
@@ -81,3 +152,52 @@ async def test_ai_analyze_endpoint():
             data = resp.json()
             assert data["primary_category"] == "1C_ISSUE"
             assert "NTEMW0144" in data["entities"]["pc_names"]
+
+
+@pytest.mark.asyncio
+async def test_ai_routed_fallback_to_ollama():
+    """Проверка fallback на локальную Ollama при отказе Cloud Gemini."""
+    from app.services.ai.schemas import RoutedInferenceRequest, RoutingMetadata
+
+    req = RoutedInferenceRequest(
+        prompt="Как настроить принтер на ПК NTEMW001?",
+        metadata=RoutingMetadata(),
+        bypass_cache=True,
+    )
+
+    # Моделируем сбой Cloud LiteLLM (return None) и успешный ответ Ollama
+    with patch.object(ai_hub, "generate_cloud_completion", new=AsyncMock(return_value=None)), \
+         patch.object(ai_hub, "generate_ollama_completion", new=AsyncMock(return_value="Локальный fallback ответ")), \
+         patch("app.services.ai.sanitizer.get_redis_client") as mock_redis, \
+         patch("app.services.ai.hub.get_redis_client") as mock_redis_hub:
+
+        mock_redis.return_value = AsyncMock(set=AsyncMock(return_value=True), get=AsyncMock(return_value=None))
+        mock_redis_hub.return_value = AsyncMock(set=AsyncMock(return_value=True), get=AsyncMock(return_value=None))
+
+        resp = await ai_hub.dispatch_routed_inference(req)
+        assert resp is not None
+        assert "fallback" in resp.model
+        assert resp.text == "Локальный fallback ответ"
+
+
+@pytest.mark.asyncio
+async def test_ai_routed_cache_hit():
+    """Проверка отдачи ответа из L2 Redis кэша."""
+    from app.services.ai.schemas import RoutedInferenceRequest, RoutingMetadata
+
+    req = RoutedInferenceRequest(
+        prompt="Повторный запрос",
+        metadata=RoutingMetadata(),
+        bypass_cache=False,
+    )
+
+    cached_json = '{"text": "Закэшированный ответ", "circuit": "green", "model": "gemini", "sanitized_entities_count": 0, "execution_time_ms": 10.0, "cached": false}'
+
+    with patch("app.services.ai.hub.get_redis_client") as mock_redis_hub:
+        mock_redis_hub.return_value = AsyncMock(get=AsyncMock(return_value=cached_json))
+
+        resp = await ai_hub.dispatch_routed_inference(req)
+        assert resp is not None
+        assert resp.cached is True
+        assert resp.text == "Закэшированный ответ"
+

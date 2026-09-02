@@ -36,6 +36,8 @@ Pydantic-схемы запросов и ответов находятся в `ap
 * `tasks.py` — операции с заявками (`/api/v1/tasks`, комментарии, статусы, трудозатраты).
 * `users.py` — профиль пользователя (`/api/v1/users/me`).
 * `service_tasks.py` — сервисные операции (`/api/v1/service/...`).
+* `ai.py` — централизованный AI Hub с многоконтурным роутингом (`/api/v1/ai/generate`, `/sanitize-preview`, `/summarize`, `/analyze`).
+* `triage.py` — пакетный триаж очереди, дедупликация и RAG (`/api/v1/triage/batch`, `/apply`, `/rag/*`).
 * `admin.py` — API веб-панели администратора (`/admin/api/...`).
 * `ai_worker.py` — управление RAG-базой и AI-классификацией (`/admin/api/ai-worker/...`).
 
