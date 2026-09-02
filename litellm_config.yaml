@@ -7,16 +7,12 @@ model_list:
       model: gemini/gemini-3.5-flash
       api_key: os.environ/GEMINI_API_KEY
       rpm: 15
-  - model_name: gemini-3.5-flash
-    litellm_params:
-      model: gemini/gemini-3.5-flash
-      api_key: os.environ/GEMINI_API_KEY_2
-      rpm: 15
-  - model_name: gemini-3.5-flash
-    litellm_params:
-      model: gemini/gemini-3.5-flash
-      api_key: os.environ/GEMINI_API_KEY_3
-      rpm: 15
+  # Резервные ключи для пула ротации (раскомментировать при наличии активных ключей):
+  # - model_name: gemini-3.5-flash
+  #   litellm_params:
+  #     model: gemini/gemini-3.5-flash
+  #     api_key: os.environ/GEMINI_API_KEY_2
+  #     rpm: 15
 
   # =========================================================================
   # 2. Облегченная модель (Gemini 3.5 Flash Lite) — 1-й уровень Fallback
@@ -25,16 +21,6 @@ model_list:
     litellm_params:
       model: gemini/gemini-3.5-flash-lite
       api_key: os.environ/GEMINI_API_KEY
-      rpm: 30
-  - model_name: gemini-3.5-flash-lite
-    litellm_params:
-      model: gemini/gemini-3.5-flash-lite
-      api_key: os.environ/GEMINI_API_KEY_2
-      rpm: 30
-  - model_name: gemini-3.5-flash-lite
-    litellm_params:
-      model: gemini/gemini-3.5-flash-lite
-      api_key: os.environ/GEMINI_API_KEY_3
       rpm: 30
 
   # =========================================================================
@@ -45,22 +31,12 @@ model_list:
       model: gemini/gemini-2.5-flash
       api_key: os.environ/GEMINI_API_KEY
       rpm: 15
-  - model_name: gemini-2.5-flash
-    litellm_params:
-      model: gemini/gemini-2.5-flash
-      api_key: os.environ/GEMINI_API_KEY_2
-      rpm: 15
-  - model_name: gemini-2.5-flash
-    litellm_params:
-      model: gemini/gemini-2.5-flash
-      api_key: os.environ/GEMINI_API_KEY_3
-      rpm: 15
 
 # ===========================================================================
 # Умный роутинг, автоматический Cooldown и каскадные Fallback
 # ===========================================================================
 router_settings:
-  routing_strategy: "usage-based-routing" # Маршрутизация по наименее загруженному ключу
+  routing_strategy: "simple-shuffle"     # Ротация и балансировка по пулу доступных ключей
   num_retries: 3                         # Автоповтор до 3 раз при ошибках 429/5xx
   timeout: 30                            # Таймаут запроса в секундах
   retry_after: 2                         # Интервал между ретраями

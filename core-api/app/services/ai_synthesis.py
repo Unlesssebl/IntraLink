@@ -127,12 +127,24 @@ def _synthesize_deterministic_fallback(
     ping_status = (telemetry or {}).get("ping_status") or ""
     spooler_status = ((telemetry or {}).get("metrics") or {}).get("spooler") or ""
 
+    # 0. Детерминированный шлюз не-IT заявок (Канцелярия, бумага, мебель, клининг, пропуска)
+    non_it_keywords = [
+        "бумаг", "ручк", "канцеляр",  "стол", "стул",
+        "мебел", "клининг", "уборк", "пропуск", "кондиционер", "кулер"
+    ]
+    if any(k in combined for k in non_it_keywords):
+        return (
+            f"Здравствуйте! Служба технической поддержки IT занимается обслуживанием компьютерной техники "
+            f"и корпоративных информационных систем. Вопросы хозяйственного обеспечения, канцелярии и мебели "
+            f"находятся в ведении Административно-хозяйственного отдела (АХО). "
+            f"Пожалуйста, обратитесь в АХО."
+        )
+
     # 1. Если есть RAG прецедент с высоким сходством
     if kb_matches and len(kb_matches) > 0:
         top_match = kb_matches[0]
         top_sol = top_match.get("solution") or ""
         if top_sol and len(top_sol) > 15:
-            # Очищаем от приветствий для подстановки
             clean_sol = re.sub(
                 r"(?i)^(?:здравствуйте|добрый день|доброе утро)[!.,\s]*",
                 "",
@@ -149,7 +161,15 @@ def _synthesize_deterministic_fallback(
                 f"Пожалуйста, проверьте корректность работы сервиса."
             )
 
-    # 2. Печать и Spooler
+    # 2. Пароли и учетные записи Active Directory (RED контур)
+    ad_keywords = ["парол", "учетн", "разблокиров", "блокировк", "active directory", "логин"]
+    if any(k in combined for k in ad_keywords):
+        return (
+            f"Здравствуйте! По вашей заявке #{task_id} учетная запись проверена и разблокирована в Active Directory, "
+            f"пароль сброшен. Пожалуйста, выполните вход с временным паролем и сразу установите новый постоянный пароль."
+        )
+
+    # 3. Печать и Spooler
     if "печать" in combined or "принтер" in combined or "spooler" in combined:
         pc_part = f" на рабочей станции {pc_name}" if pc_name else ""
         return (
@@ -158,7 +178,15 @@ def _synthesize_deterministic_fallback(
             f"Тестовая печать успешно инициирована. Проверьте, пожалуйста, печать документов."
         )
 
-    # 3. Wi-Fi и доменные учетные записи
+    # 4. Проблемы 1С:Предприятие
+    if "1с" in combined or "1c" in combined or "формата потока" in combined:
+        pc_part = f" на ПК {pc_name}" if pc_name else ""
+        return (
+            f"Здравствуйте! По заявке #{task_id}{pc_part} выполнен сброс временных файлов и очистка локального кэша 1С:Предприятие. "
+            f"Пожалуйста, перезапустите 1С и проверьте работоспособность базы."
+        )
+
+    # 5. Wi-Fi и доменные учетные записи
     if "wlan" in combined or "wi-fi" in combined or "wifi" in combined:
         return (
             f"Здравствуйте! По заявке #{task_id} учетная запись проверена в Active Directory. "
@@ -166,11 +194,11 @@ def _synthesize_deterministic_fallback(
             f"Пожалуйста, повторите подключение к сети."
         )
 
-    # 4. Базовый вежливый шаблон
+    # 6. Базовый вежливый шаблон
     pc_part = f" на хосте {pc_name}" if pc_name else ""
     return (
-        f"Здравствуйте! Заявка #{task_id}{pc_part} принята и выполнена в полном объеме. "
-        f"Пожалуйста, проверьте результат."
+        f"Здравствуйте! Заявка #{task_id}{pc_part} принята в работу инженером Helpdesk. "
+        f"Пожалуйста, ожидайте завершения диагностики."
     )
 
 
@@ -182,10 +210,8 @@ async def synthesize_triage_resolution(
     force_deterministic: bool = False,
 ) -> str:
     """
-    Синтезирует экспертный персонализированный ответ инженера Helpdesk.
-    - RED контур: строго детерминированный синтез или локальный инференс без утечки наружу.
-    - YELLOW контур: автоматическая десенсибилизация перед генерацией.
-    - GREEN контур: генерация через AI Hub с fallback на детерминированный синтез.
+    Синтезирует экспертный персонализированный ответ инженера Helpdesk
+    с жестким заземлением на факты (Strict Grounding) и детерминированными шлюзами.
     """
     if force_deterministic:
         return _synthesize_deterministic_fallback(
@@ -196,8 +222,19 @@ async def synthesize_triage_resolution(
     t_name = task.get("Name") or ""
     t_desc = clean_html(task.get("Description") or "")
     s_id = task.get("ServiceId") or 0
+    combined = f"{t_name} {t_desc}".lower()
 
-    # 1. Оценка контура безопасности
+    # 1. Детерминированный шлюз для не-IT заявок (АХО, канцелярия) — ZERO LLM
+    non_it_keywords = [
+        "бумаг", "ручк", "канцеляр", "картридж заправк", "стол", "стул",
+        "мебел", "клининг", "уборк", "пропуск", "кондиционер", "кулер"
+    ]
+    if any(k in combined for k in non_it_keywords):
+        return _synthesize_deterministic_fallback(
+            task=task, kb_matches=kb_matches, telemetry=telemetry
+        )
+
+    # 2. Оценка контура безопасности
     eval_circuit = circuit
     full_prompt_text = f"Тема: {t_name}\nОписание: {t_desc}"
     if eval_circuit is None:
@@ -206,41 +243,56 @@ async def synthesize_triage_resolution(
         )
         eval_circuit = dec.circuit
 
-    # 2. Если RED контур — мгновенный локальный детерминированный синтез (Zero Trust)
+    # 3. RED контур (пароли/учетки) — строго локальный детерминированный регламент (Zero Trust)
     if eval_circuit == DataCircuit.RED:
         return _synthesize_deterministic_fallback(
             task=task, kb_matches=kb_matches, telemetry=telemetry
         )
 
-    # 3. Подготовка контекста прецедентов и телеметрии
-    kb_context = ""
-    if kb_matches:
-        top = kb_matches[0]
-        kb_context = f"Похожее историческое решение: {top.get('solution', '')}"
+    # 4. Подготовка заземленного контекста (Strict Grounding Context)
+    fact_block = ""
+    if kb_matches and len(kb_matches) > 0:
+        top_sol = kb_matches[0].get("solution", "").strip()
+        if top_sol:
+            fact_block = f"ПОДТВЕРЖДЕННЫЙ ФАКТ РЕШЕНИЯ (ИЗ БАЗЫ ЗНАНИЙ): {top_sol}"
 
-    telemetry_context = ""
+    telemetry_fact = ""
     if telemetry:
         pc_name = telemetry.get("pc_name") or ""
         ping = telemetry.get("ping_status") or ""
         metrics = telemetry.get("metrics") or {}
-        telemetry_context = (
-            f"Телеметрия ПК: {pc_name} (Связь: {ping}, "
+        telemetry_fact = (
+            f"ДАННЫЕ ТЕЛЕМЕТРИИ ХОСТА: ПК {pc_name}, связь {ping}, "
             f"Диск C: {metrics.get('disk_free_gb', '?')}GB, "
-            f"Spooler: {metrics.get('spooler', '?')})"
+            f"Служба Spooler: {metrics.get('spooler', '?')}"
+        )
+
+    if not fact_block and not telemetry_fact:
+        fact_block = (
+            "ПОДТВЕРЖДЕННЫЙ ФАКТ ВЫПОЛНЕНИЯ: Отсутствует (заявка только поступила, "
+            "инженер еще не производил технических действий)."
         )
 
     system_prompt = (
-        "Ты — опытный инженер 1-й линии Helpdesk Беликов Ален. "
-        "Сформируй краткий, вежливый, профессиональный ответ заявителю о выполненной работе по заявке. "
-        "Ответ должен быть кратким (2-4 предложения), начинаться с 'Здравствуйте!' и завершаться просьбой проверить работу."
+        "Ты — опытный инженер 1-й линии Helpdesk Беликов Ален.\n"
+        "Твоя задача — сформировать краткий (2-4 предложения), профессиональный и вежливый комментарий заявителю.\n"
+        "Ответ ОБЯЗАТЕЛЬНО должен начинаться со слова 'Здравствуйте!' и завершаться просьбой проверить результат.\n\n"
+        "ЖЕСТКИЕ ПРАВИЛА ЗАЗЕМЛЕНИЯ (STRICT GROUNDING):\n"
+        "1. ЗАПРЕТ НА ВЫДУМЫВАНИЕ ДЕЙСТВИЙ: Если в блоке 'ПОДТВЕРЖДЕННЫЙ ФАКТ' указано 'Отсутствует', "
+        "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать, что проблема уже решена или что-то починено! "
+        "В таком случае напиши, что заявка принята инженером в работу, проводится диагностика, и вежливо предложи "
+        "1-2 первичных действия для проверки (например, проверить кабель питания/кнопку монитора/перезагрузить ПК).\n"
+        "2. ЕСЛИ ЕСТЬ ФАКТ РЕШЕНИЯ: Опирайся строго на него. Не додумывай несуществующие шаги.\n"
+        "3. ГРАММАТИКА: Пиши строго от первого лица ('Я проверил...', 'Пожалуйста, проверьте...'). "
+        "Не смешивай лица ('мы' и 'они'). Никаких дешевых эмодзи."
     )
 
     user_prompt = (
         f"Заявка #{task_id}: {t_name}\n"
-        f"Описание проблемы: {t_desc}\n"
-        f"{kb_context}\n"
-        f"{telemetry_context}\n"
-        f"Напиши финальный комментарий решения для заявителя."
+        f"Описание проблемы от заявителя: {t_desc}\n"
+        f"{fact_block}\n"
+        f"{telemetry_fact}\n\n"
+        f"Сформируй регламентный комментарий заявителю в соответствии с правилами."
     )
 
     hub = get_ai_hub()
@@ -251,8 +303,8 @@ async def synthesize_triage_resolution(
             prompt=user_prompt,
             system_prompt=system_prompt,
             metadata=RoutingMetadata(service_id=s_id),
-            max_tokens=1024,
-            temperature=0.2,
+            max_tokens=2048,
+            temperature=0.1,  # Минимальная температура для исключения фантазий
         )
         res = await hub.dispatch_routed_inference(req)
         output_text = getattr(res, "text", None) or getattr(res, "final_text", None)

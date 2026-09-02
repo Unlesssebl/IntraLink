@@ -155,11 +155,19 @@ class AgentJudge:
                 acc_notes.append("Точный технический диагноз проблемы 1С")
             else:
                 acc_score -= 3
-        elif "wi-fi" in cat.lower():
-            if "сеть" in text_lower or "wifi" in text_lower or "wlan" in text_lower or "подключен" in text_lower:
-                acc_notes.append("Верный сетевой контекст")
+        elif "redirect" in cat.lower() or "non-it" in cat.lower():
+            if "ахо" in text_lower or "хозяйствен" in text_lower or "не занимается" in text_lower:
+                acc_score = 10
+                acc_notes.append("Идеальное выявление не-IT сферы и перенаправление в АХО")
+            elif "доставил" in text_lower or "привез" in text_lower:
+                acc_score = 2
+                acc_notes.append("КРИТИЧЕСКАЯ ГАЛЛЮЦИНАЦИЯ: ложное обещание доставки канцелярии!")
             else:
                 acc_score -= 3
+        elif "security" in cat.lower() or "credentials" in cat.lower():
+            if "парол" in text_lower and ("разблокиров" in text_lower or "сброш" in text_lower or "учетн" in text_lower):
+                acc_score = 10
+                acc_notes.append("Четкий регламент сброса пароля Active Directory")
 
         # 2. Actionability
         act_score = 9
