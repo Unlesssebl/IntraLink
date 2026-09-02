@@ -13,6 +13,7 @@ HTML_PATH = Path(__file__).resolve().parent.parent.parent / "static" / "admin" /
 
 
 @router.get("/admin", response_class=HTMLResponse)
+@router.get("/operator-panel", response_class=HTMLResponse)
 async def get_admin_ui():
     """
     Отдает HTML-страницу админ-панели.

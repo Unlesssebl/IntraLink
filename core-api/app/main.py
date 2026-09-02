@@ -12,12 +12,14 @@ from app.config import settings
 from app.database.db import AsyncSessionLocal, init_db
 from app.routers import (
     admin,
+    admin_settings,
     ai,
     ai_worker,
     auth,
     commands,
     events,
     rules_admin,
+    self_service,
     service_tasks,
     tasks,
     triage,
@@ -137,6 +139,8 @@ app.include_router(ai.router)
 app.include_router(commands.router)
 app.include_router(events.router)
 app.include_router(admin.router)
+app.include_router(admin_settings.router)
+app.include_router(self_service.router)
 app.include_router(ai_worker.router)
 
 # Статические файлы интерактивной презентации (при наличии)
@@ -152,9 +156,9 @@ if PRESENTATIONS_DIR.exists():
 @app.get("/", include_in_schema=False)
 async def root_redirect():
     """
-    Перенаправление с корня на панель администратора.
+    Перенаправление с корня на панель оператора.
     """
-    return RedirectResponse(url="/admin")
+    return RedirectResponse(url="/operator-panel")
 
 
 @app.get("/favicon.ico", include_in_schema=False)

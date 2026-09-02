@@ -39,21 +39,23 @@ IntraLink/
   * 🔴 **RED Zone (On-Prem)**: пароли и заявки СБ обрабатываются локально (Ollama Qwen2.5 / bge-m3).
   * 🟡 **YELLOW Zone (Sanitized Cloud)**: ПДн, IP и имена хостов маскируются токенами через Redis PII Vault перед вызовом облачных моделей.
   * 🟢 **GREEN Zone (Cloud Direct)**: открытые регламенты и технические вопросы.
+* **Прямой LDAPS-клиент Active Directory (порт 636)**: Управление доменными объектами и выдача доступа к корпоративному Wi-Fi (`WLAN-WORKNET`) без необходимости обращения к клиентскому ПК и без участия Windows-воркера.
+* **Многоуровневый каскад исполнения (Tiered Execution)**: Автоматическая установка принтеров через WinRM $\rightarrow$ LiteManager (порт 5650) $\rightarrow$ DameWare (порт 6129) $\rightarrow$ One-Liner ассистент оператора.
 * **Инструментарий AI-агента (AGY Toolset)**: Управление очередью прямо из диалога с AI-ассистентом через слэш-команды (`/triage`, `/task`, `/diag`, `/screen`, `/kb`, `/sync`, `/redirect`).
 * **Мобильный пейджер (Telegram Bot)**: Моментальные уведомления, просмотр активных заявок инженера и кнопки подтверждения операций (Human-in-the-Loop).
-* **Встроенный Web SPA (`/admin`)**: React 19 интерфейс мониторинга очереди 1-й линии, телеметрии хостов и управления базой знаний.
+* **Двухконтурный Web SPA (`/operator-panel` и `/admin`)**: React 19 интерфейс, разделенный на операторский центр обработки заявок 1-й линии с 1-клик вызовами LiteManager/DameWare (`/operator-panel`) и защищенную консоль системного администратора (`/admin`) с шифрованием Fernet.
 
 ---
 
 ## 🛠 Технологический стек
 
-* **Бэкенд**: Python 3.11+, FastAPI, SQLAlchemy 2.0 (Async), asyncpg, aiohttp, orjson.
+* **Бэкенд**: Python 3.11+, FastAPI, SQLAlchemy 2.0 (Async), asyncpg, ldap3, aiohttp, orjson, pyjwt, cryptography (Fernet).
 * **База данных и поиск**: PostgreSQL 16, pgvector (HNSW), FastEmbed (ONNX MiniLM-L12 + bge-reranker).
 * **Шина сообщений и кэш**: Redis 7 (Streams, Consumer Groups, Distributed Locks, PII Vault).
 * **ИИ и инференс**: Ollama (Qwen2.5:1.5B, bge-m3), LiteLLM Proxy / Gemini Cloud.
 * **Фронтенд**: React 19, TypeScript, Tailwind CSS v4, Vite 6 (`vite-plugin-singlefile`).
 * **Бот**: aiogram 3.x, aiohttp.
-* **Инфраструктура исполнения**: PowerShell, pywinrm, WMI / CIM over WinRM:5985.
+* **Инфраструктура исполнения**: PowerShell, pywinrm, WMI / CIM over WinRM:5985, LiteManager / DameWare integration.
 
 ---
 
@@ -63,10 +65,11 @@ IntraLink/
 ```bash
 docker compose up -d
 ```
-Поднимает контейнеры: `postgres` (pgvector), `redis`, `ollama`, `core-api` (Gateway + Admin SPA) и `poller` (фоновый опрос с Leader Lock).
+Поднимает контейнеры: `postgres` (pgvector), `redis`, `ollama`, `core-api` (Gateway + Admin/Operator SPA) и `poller` (фоновый опрос с Leader Lock).
 
-* Веб-панель управления: `http://localhost:8000/admin`
-* Интерактивная документация API: `http://localhost:8000/docs`
+* **Операторский центр обработки заявок:** `http://localhost:8000/operator-panel`
+* **Консоль системного администратора:** `http://localhost:8000/admin`
+* **Интерактивная документация API:** `http://localhost:8000/docs`
 
 ### 2. Запуск Telegram-бота (опционально):
 ```bash

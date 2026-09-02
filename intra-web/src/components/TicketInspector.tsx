@@ -547,7 +547,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                 const hostDiag = multiHostDiag[h] || (hostList.length === 1 ? { ping: diagStatus.ping, smb: diagStatus.smb, winrm: diagStatus.winrm } : { ping: 'idle', smb: 'idle', winrm: 'idle' });
                 return (
                   <div key={h} className="flex items-center justify-between gap-2 flex-wrap bg-white/70 dark:bg-neutral-900/60 px-2.5 py-1.5 rounded-md border border-neutral-200/50 dark:border-neutral-800">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="font-mono font-bold text-[12px] text-neutral-900 dark:text-neutral-100">
                         {h}
                       </span>
@@ -557,6 +557,34 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                         title="Скопировать имя ПК"
                       >
                         <IconCopy size={12} />
+                      </button>
+
+                      {/* LiteManager Connect (Primary) */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(`romviewer.exe /connect:${h}`).then(() =>
+                            onToast({ type: 'info', message: `Команда LiteManager скопирована: romviewer.exe /connect:${h}` })
+                          );
+                        }}
+                        className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900/60 hover:bg-blue-100 dark:hover:bg-blue-900 cursor-pointer transition-colors"
+                        title={`Подключиться через LiteManager: romviewer.exe /connect:${h}`}
+                      >
+                        LiteManager
+                      </button>
+
+                      {/* DameWare Connect (Secondary) */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(`dwrcc.exe -c: -m:${h}`).then(() =>
+                            onToast({ type: 'info', message: `Команда DameWare скопирована: dwrcc.exe -c: -m:${h}` })
+                          );
+                        }}
+                        className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-200 dark:hover:bg-neutral-750 cursor-pointer transition-colors"
+                        title={`Подключиться через DameWare: dwrcc.exe -c: -m:${h}`}
+                      >
+                        DameWare
                       </button>
                     </div>
 
@@ -579,6 +607,38 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                 );
               })}
             </div>
+
+            {/* Operator Assist Card if automatic WinRM is blocked */}
+            {((ticket.title && ticket.title.toLowerCase().includes('принтер')) || (ticket.serviceName && ticket.serviceName.toLowerCase().includes('принтер'))) && (
+              <div className="mt-2 p-2.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/60 rounded-lg space-y-1.5 text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-amber-800 dark:text-amber-400 font-semibold text-[11.5px]">
+                    <IconSparkles size={13} />
+                    <span>Ассистент оператора (One-Liner при закрытом WinRM)</span>
+                  </div>
+                  <span className="text-[9.5px] text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/50 px-1.5 py-0.2 rounded font-medium">
+                    Только для инженера
+                  </span>
+                </div>
+                <p className="text-neutral-600 dark:text-neutral-300 text-[11px] leading-relaxed">
+                  Если автоматическая установка по WinRM недоступна: подключитесь к ПК через <b>LiteManager</b> (или DameWare), нажмите <kbd className="px-1 py-0.2 bg-neutral-200 dark:bg-neutral-800 rounded font-mono text-[10px]">Win + R</kbd> и вставьте команду ниже:
+                </p>
+                <div className="flex items-center gap-1.5 bg-neutral-900 text-emerald-400 p-1.5 px-2 rounded font-mono text-[10.5px] border border-neutral-800">
+                  <span className="truncate flex-1">powershell -ep bypass -c "irm http://{window.location.host}/api/v1/run/p-{rawId} | iex"</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(`powershell -ep bypass -c "irm http://${window.location.host}/api/v1/run/p-${rawId} | iex"`).then(() =>
+                        onToast({ type: 'success', message: 'Команда экспресс-установки скопирована в буфер обмена' })
+                      );
+                    }}
+                    className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded text-[10px] shrink-0 font-sans cursor-pointer transition-colors font-medium"
+                  >
+                    Копировать
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -160,6 +160,24 @@ class Settings(BaseSettings):
         description="Окно rate limiter для применения решений в триаже (в секундах)",
     )
 
+    # Административная панель и мастер-пароль
+    ADMIN_PASSWORD: str = Field(
+        "admin", description="Мастер-пароль администратора для доступа к /admin"
+    )
+    ADMIN_JWT_SECRET: str = Field(
+        "intralink-admin-jwt-secret-key-32chars!",
+        description="Секретный ключ для подписи сессионных JWT токенов администратора",
+    )
+    PRIMARY_TRIAGE_FILTER_ID: int = Field(
+        984, description="ID основного фильтра первой линии в IntraService"
+    )
+    AD_DOMAIN_NAME: str = Field(
+        "corporate.loc", description="Имя домена Active Directory по умолчанию"
+    )
+    AD_WLAN_GROUP_NAME: str = Field(
+        "WLAN-WORKNET", description="Имя доменной группы для Wi-Fi доступа"
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )

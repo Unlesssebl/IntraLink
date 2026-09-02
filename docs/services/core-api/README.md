@@ -14,7 +14,10 @@
   * Многоконтурный AI Hub (DLP-маскирование, Redis PII Vault, роутинг RED/YELLOW/GREEN).
   * Защитные механизмы: `Distributed Host Concurrency Locks` (`safety.py`) и `Dead Man's Switch`.
   * Фоновая экспресс-телеметрия хостов с нулевой задержкой (`host_telemetry.py`).
-  * Хостинг скомпилированного React 19 SPA (`/admin`).
+  * Прямое управление доменными объектами Active Directory по протоколу LDAPS (порт 636) через Linux Core API (`active_directory.py`).
+  * Хранение конфигурации и зашифрованных учетных данных (Fernet) в таблице `system_settings` (`admin_settings.py`).
+  * Резервный Fallback One-Liner генератор для экспресс-установки оборудования (`self_service.py`).
+  * Хостинг скомпилированного двухконтурного React 19 SPA (`/operator-panel` и `/admin`).
 
 * **Фоновый демон опроса (`app.poller`):**
   * Автономный процесс (отдельный Docker-контейнер), опрашивающий IntraService от сервисного аккаунта.
@@ -35,7 +38,8 @@
 ## 🔐 Аутентификация
 
 * **Внутренние сервисы (`telegram-bot`, `helpdesk-cli`):** Pre-shared ключ в заголовке `X-Bot-Api-Key: <key>`.
-* **Веб-панель управления (`/admin`):** HTTP-only сессионная cookie с JWT-токеном (`admin_session`), получаемая через `POST /admin/api/login`.
+* **Панель системного администратора (`/admin`):** Bearer JWT-токен (`role: "admin"`), выдаваемый по мастер-паролю администратора через `POST /api/v1/admin/auth/login`.
+* **Операторская панель (`/operator-panel`):** Доступ к мониторингу очередей 1-й линии и экспресс-действиям.
 * **Внешний IntraService:** Basic Auth (`Authorization: Basic <base64>`).
 
 ---
