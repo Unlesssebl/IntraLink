@@ -7,22 +7,32 @@ import logging
 import re
 from typing import Any
 
-from app.services.ai.hub import AIHub
+from app.services.ai.hub import ai_hub
 from app.services.ai.sanitizer import data_sanitizer
 from app.services.ai.schemas import DataCircuit, RoutingMetadata
 from app.services.rag import clean_html, distill_search_query
 
 logger = logging.getLogger("core_api.ai_synthesis")
 
-_ai_hub_instance: AIHub | None = None
+# ---------------------------------------------------------------------------
+# SSOT: Ключевые слова для детерминированных шлюзов
+# Единый источник истины — изменяется в одном месте
+# ---------------------------------------------------------------------------
+
+# Не-IT заявки: АХО, канцелярия, хозяйственное обеспечение
+_NON_IT_KEYWORDS: tuple[str, ...] = (
+    "бумаг", "ручк", "канцеляр", "картридж заправк",
+    "стол", "стул", "мебел", "клининг", "уборк",
+    "пропуск", "кондиционер", "кулер",
+)
+
+# Regex очистки подписей инженера: ограничен до конца строки ($),
+# чтобы не обрезать последующие абзацы технического решения.
+_SIGNATURE_CLEANUP_RE = re.compile(
+    r"(?im)(?:С уважением|Инженер|тел\.|доб\.|Беликов|тел:\s*[\d\-]+).*$"
+)
 
 
-def get_ai_hub() -> AIHub:
-    """Возвращает переиспользуемый инстанс AIHub."""
-    global _ai_hub_instance
-    if _ai_hub_instance is None:
-        _ai_hub_instance = AIHub()
-    return _ai_hub_instance
 
 
 # ---------------------------------------------------------------------------
@@ -69,25 +79,25 @@ def canonize_task_solution(
     if not solution_text:
         solution_text = "Заявка выполнена в штатном режиме."
 
-    # Удаление стандартных телефонных подписей и контактных данных из решения
-    solution_text = re.sub(
-        r"(?i)(?:С уважением|Инженер|тел\.|доб\.|Беликов|тел:\s*[\d\-]+).*",
-        "",
-        solution_text,
-    ).strip()
+    # Удаление стандартных телефонных подписей и контактных данных из решения.
+    # Используем модульный SSOT-паттерн с ограничением по строке (не жадный).
+    solution_text = _SIGNATURE_CLEANUP_RE.sub("", solution_text).strip()
 
-    # Определение первопричины (Root Cause) по эвристикам
+    # Определение первопричины (Root Cause) по эвристикам.
+    # ВАЖНО: порядок — от специфичных к общим (конкретные коды ошибок — первыми,
+    # широкие термины вроде «сеть» — последними, чтобы не перекрывать более точные ветки).
     combined = f"{distilled_problem} {solution_text}".lower()
-    if "spooler" in combined or "печать" in combined or "0x0000011b" in combined:
+    if "spooler" in combined or "принтер" in combined or "0x0000011b" in combined or "печать" in combined:
         root_cause = "Сбой подсистемы печати / очереди диспетчера Spooler"
-    elif "wlan" in combined or "wi-fi" in combined or "сеть" in combined:
-        root_cause = "Отсутствие учетной записи в доменной группе доступа WLAN"
-    elif "1c" in combined or "1с" in combined:
+    elif "1c" in combined or "1с" in combined or "формата потока" in combined:
         root_cause = "Блокировка сеанса 1С или кэша конфигурации"
-    elif "пароль" in combined or "заблокирован" in combined:
+    elif "пароль" in combined or "заблокирован" in combined or "active directory" in combined:
         root_cause = "Превышение лимита неверных попыток ввода пароля AD"
     elif "диск" in combined or "место" in combined or "память" in combined:
         root_cause = "Переполнение системного раздела диска C:"
+    elif "wlan" in combined or "wi-fi" in combined or "wifi" in combined:
+        # «сеть» намеренно убран — слишком широкий термин
+        root_cause = "Отсутствие учетной записи в доменной группе доступа WLAN"
 
     canonical_summary = (
         f"Проблема: {distilled_problem}\n"
@@ -127,12 +137,9 @@ def _synthesize_deterministic_fallback(
     ping_status = (telemetry or {}).get("ping_status") or ""
     spooler_status = ((telemetry or {}).get("metrics") or {}).get("spooler") or ""
 
-    # 0. Детерминированный шлюз не-IT заявок (Канцелярия, бумага, мебель, клининг, пропуска)
-    non_it_keywords = [
-        "бумаг", "ручк", "канцеляр",  "стол", "стул",
-        "мебел", "клининг", "уборк", "пропуск", "кондиционер", "кулер"
-    ]
-    if any(k in combined for k in non_it_keywords):
+    # 0. Детерминированный шлюз не-IT заявок (Канцелярия, бумага, мебель, клининг, пропуска).
+    # Использует модульный SSOT-константу _NON_IT_KEYWORDS.
+    if any(k in combined for k in _NON_IT_KEYWORDS):
         return (
             f"Здравствуйте! Служба технической поддержки IT занимается обслуживанием компьютерной техники "
             f"и корпоративных информационных систем. Вопросы хозяйственного обеспечения, канцелярии и мебели "
@@ -224,12 +231,9 @@ async def synthesize_triage_resolution(
     s_id = task.get("ServiceId") or 0
     combined = f"{t_name} {t_desc}".lower()
 
-    # 1. Детерминированный шлюз для не-IT заявок (АХО, канцелярия) — ZERO LLM
-    non_it_keywords = [
-        "бумаг", "ручк", "канцеляр", "картридж заправк", "стол", "стул",
-        "мебел", "клининг", "уборк", "пропуск", "кондиционер", "кулер"
-    ]
-    if any(k in combined for k in non_it_keywords):
+    # 1. Детерминированный шлюз для не-IT заявок (АХО, канцелярия) — ZERO LLM.
+    # Использует модульный SSOT-константу _NON_IT_KEYWORDS.
+    if any(k in combined for k in _NON_IT_KEYWORDS):
         return _synthesize_deterministic_fallback(
             task=task, kb_matches=kb_matches, telemetry=telemetry
         )
@@ -295,7 +299,6 @@ async def synthesize_triage_resolution(
         f"Сформируй регламентный комментарий заявителю в соответствии с правилами."
     )
 
-    hub = get_ai_hub()
     try:
         from app.services.ai.schemas import RoutedInferenceRequest
 
@@ -306,7 +309,7 @@ async def synthesize_triage_resolution(
             max_tokens=2048,
             temperature=0.1,  # Минимальная температура для исключения фантазий
         )
-        res = await hub.dispatch_routed_inference(req)
+        res = await ai_hub.dispatch_routed_inference(req)
         output_text = getattr(res, "text", None) or getattr(res, "final_text", None)
         if output_text and len(output_text.strip()) > 15:
             return output_text.strip()

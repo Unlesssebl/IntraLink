@@ -192,6 +192,14 @@ class AIHub:
                         )
 
                     return result
+            except json.JSONDecodeError as jde:
+                # Ollama вернула не-JSON (например, текст с извинениями или пустая строка).
+                # Логируем snippet ответа для диагностики, возвращаем None.
+                logger.error(
+                    "Ollama вернула невалидный JSON для заявки #%s: %s | snippet: %.120r",
+                    task_id, jde, content
+                )
+                return None
             except Exception as e:
                 logger.error(
                     "Сбой инференса Ollama при суммаризации заявки #%s: %s", task_id, e

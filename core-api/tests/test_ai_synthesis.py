@@ -119,10 +119,11 @@ async def test_synthesize_triage_resolution_red_circuit_isolation():
         "ServiceId": 42,
     }
 
-    with patch("app.services.ai_synthesis.get_ai_hub") as mock_hub_getter:
-        mock_hub = MagicMock()
-        mock_hub_getter.return_value = mock_hub
-
+    with patch.object(
+        __import__("app.services.ai_synthesis", fromlist=["ai_hub"]).ai_hub,
+        "dispatch_routed_inference",
+        new_callable=AsyncMock,
+    ) as mock_dispatch:
         resp = await synthesize_triage_resolution(
             task=task,
             circuit=DataCircuit.RED,
@@ -130,8 +131,8 @@ async def test_synthesize_triage_resolution_red_circuit_isolation():
 
         assert "Здравствуйте!" in resp
         assert "#5544" in resp
-        # Облачный инференс dispatch_routed_inference НЕ вызывался
-        mock_hub.dispatch_routed_inference.assert_not_called()
+        # RED контур: dispatch_routed_inference НЕ вызывался
+        mock_dispatch.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -153,18 +154,19 @@ async def test_synthesize_triage_resolution_green_ai_hub():
         execution_time_ms=150.0,
     )
 
-    with patch("app.services.ai_synthesis.get_ai_hub") as mock_hub_getter:
-        mock_hub = MagicMock()
-        mock_hub.dispatch_routed_inference = AsyncMock(return_value=mock_resp)
-        mock_hub_getter.return_value = mock_hub
-
+    with patch.object(
+        __import__("app.services.ai_synthesis", fromlist=["ai_hub"]).ai_hub,
+        "dispatch_routed_inference",
+        new_callable=AsyncMock,
+        return_value=mock_resp,
+    ) as mock_dispatch:
         resp = await synthesize_triage_resolution(
             task=task,
             circuit=DataCircuit.GREEN,
         )
 
         assert "Шрифты успешно установлены" in resp
-        mock_hub.dispatch_routed_inference.assert_called_once()
+        mock_dispatch.assert_called_once()
 
 
 # ===========================================================================
