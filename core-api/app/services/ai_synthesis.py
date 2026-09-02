@@ -251,6 +251,7 @@ async def synthesize_triage_resolution(
             prompt=user_prompt,
             system_prompt=system_prompt,
             metadata=RoutingMetadata(service_id=s_id),
+            max_tokens=1024,
             temperature=0.2,
         )
         res = await hub.dispatch_routed_inference(req)
