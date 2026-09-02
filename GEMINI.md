@@ -35,17 +35,22 @@ docs/
 ## 1. Архитектура монорепозитория
 
 Проект — **модульный монорепозиторий**:
-- `core-api/` — FastAPI (шлюз, хранилище состояния, фоновый воркер, встроенный SPA `/admin`).
-- `telegram-bot/` — aiogram 3.x (интерфейсный слой, делегирует логику в Core API).
-- `helpdesk_agent/` — автономный CLI-агент и Execution Hub в среде Antigravity (AGY).
+- `core-api/` — FastAPI (шлюз состояния, AI Hub, правила SSOT, шина событий, хостинг React SPA `/admin`).
+- `poller` (`core-api/app/poller.py`) — автономный фоновый демон опроса IntraService с распределенным Leader Lock.
+- `execution-worker/` — фоновый headless-демон исполнения в среде Windows (Active Directory, WinRM, WMI, принтеры).
+- `helpdesk-cli/` — **машинный инструментарий и SDK исключительно для AI-агента Antigravity (AGY)**.
+- `telegram-bot/` — aiogram 3.x (мобильный пейджер + HitL кнопки одобрения).
 
 Каналы связи:
-1. **HTTP REST** (`telegram-bot` → `core-api`) — управляющие команды и запросы данных.
-2. **Redis Streams & Pub/Sub** (`core-api` → `telegram-bot`) — гарантированная доставка push-уведомлений (`stream:intraservice_events` с Consumer Group, `XACK` и автоперехватом `XAUTOCLAIM`).
+1. **HTTP REST** (`telegram-bot`, `helpdesk-cli`, `intra-web` → `core-api`) — управляющие команды, запросы данных, AI-инференс.
+2. **Redis Streams & Pub/Sub** (`core-api`, `poller` → `telegram-bot`, `execution-worker`) — гарантированная доставка событий и очередь исполнения.
 
 ---
 
 ## 2. Ключевые архитектурные принципы (ПОЧЕМУ)
+
+### `helpdesk-cli` — исключительно инструментарий для AI-агента AGY
+Директория `helpdesk-cli/` не разрабатывается как интерактивный терминальный UI для человека. Она спроектирована и развивается **строго как машинный SDK/Tooling для AI-агента Antigravity (AGY)** при вызове слэш-команд (`/triage`, `/diag`, `/task`, `/sync`, `/kb`, `/redirect`) и исполнении специализированных навыков (`.agents/skills/`). Человек взаимодействует с системой через диалог с AI-агентом, Web SPA `/admin` или Telegram-бот.
 
 ### Бот не хранит учётные данные
 Вся ответственность за хранение и использование паролей IntraService лежит **исключительно на Core API**. Бот получает только отфильтрованные шлюзом данные.
@@ -70,7 +75,7 @@ docs/
 
 ### Специализированные навыки (Skills)
 - **Установка принтеров и WinRM/WMI:** [`.agents/skills/printer-orchestration/SKILL.md`](.agents/skills/printer-orchestration/SKILL.md)
-- **Триаж очереди и Helpdesk-оператор:** [`.agents/skills/intraservice-helpdesk/SKILL.md`](.agents/skills/intraservice-helpdesk/SKILL.md) и [`helpdesk_agent/GEMINI.md`](helpdesk_agent/GEMINI.md)
+- **Триаж очереди и Helpdesk-оператор:** [`.agents/skills/intraservice-helpdesk/SKILL.md`](.agents/skills/intraservice-helpdesk/SKILL.md)
 
 ---
 
