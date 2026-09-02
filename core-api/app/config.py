@@ -94,6 +94,20 @@ class Settings(BaseSettings):
         3072, description="Размерность векторов модели эмбеддингов"
     )
 
+    # Параметры Ollama (локальный AI инференс)
+    OLLAMA_BASE_URL: str = Field(
+        "http://ollama:11434", description="URL-адрес для подключения к сервису Ollama"
+    )
+    OLLAMA_MODEL: str = Field(
+        "qwen2.5:1.5b", description="Имя локальной языковой модели для суммаризации"
+    )
+    OLLAMA_TIMEOUT: float = Field(
+        30.0, description="Таймаут в секундах для запросов инференса Ollama"
+    )
+    OLLAMA_NUM_PARALLEL: int = Field(
+        2, description="Лимит параллельных сессий инференса Ollama"
+    )
+
     AUTO_REPLY_SERVICE_IDS: list[int] = Field(
         default=[], description="ID разделов IntraService для автоматических AI-ответов"
     )

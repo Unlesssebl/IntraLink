@@ -7,9 +7,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.database.db import init_db
-from app.routers import admin, auth, commands, events, service_tasks, tasks, users, ai_worker, triage, execution
+from app.database.db import AsyncSessionLocal, init_db
+from app.routers import (
+    admin,
+    ai,
+    ai_worker,
+    auth,
+    commands,
+    events,
+    execution,
+    rules_admin,
+    service_tasks,
+    tasks,
+    triage,
+    users,
+)
+from app.services.ai import ai_hub
 from app.services.intraservice import close_session, init_session
+from app.services.template_engine import get_templates_from_db, seed_templates_if_empty
 from app.services.worker import start_worker, stop_worker
 
 # Настройка логирования
@@ -28,6 +43,15 @@ async def lifespan(_app: FastAPI):
         logger.info("База данных успешно инициализирована.")
     except Exception as e:
         logger.exception("Ошибка при инициализации базы данных: %s", e)
+
+    # Database Seeding и прогрев L1 кэша шаблонов
+    try:
+        async with AsyncSessionLocal() as session:
+            await seed_templates_if_empty(session)
+            await get_templates_from_db(session)
+        logger.info("L1 кэш шаблонов триажа инициализирован из PostgreSQL.")
+    except Exception as e:
+        logger.warning("Ошибка инициализации шаблонов триажа: %s", e)
 
     logger.info("Инициализация HTTP-сессии IntraService...")
     try:
@@ -48,14 +72,20 @@ async def lifespan(_app: FastAPI):
     except Exception as e:
         logger.exception("Ошибка при остановке фонового воркера: %s", e)
 
-    logger.info("Закрытие HTTP-сессии IntraService и RAG...")
+    logger.info("Закрытие HTTP-сессий IntraService, RAG и AI Hub...")
     try:
         await close_session()
     except Exception as e:
         logger.exception("Ошибка при закрытии HTTP-сессии: %s", e)
 
     try:
+        await ai_hub.close()
+    except Exception as e:
+        logger.exception("Ошибка при закрытии сессии AI Hub: %s", e)
+
+    try:
         from app.services.rag import close_rag_session
+
         await close_rag_session()
     except Exception as e:
         logger.exception("Ошибка при закрытии HTTP-сессии RAG: %s", e)
@@ -84,6 +114,8 @@ app.include_router(tasks.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(service_tasks.router, prefix="/api/v1")
 app.include_router(triage.router)
+app.include_router(rules_admin.router)
+app.include_router(ai.router)
 app.include_router(commands.router)
 app.include_router(events.router)
 app.include_router(execution.router)
