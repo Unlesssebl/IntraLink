@@ -5,6 +5,7 @@ import LoginPage from './pages/LoginPage';
 import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
 import QueuePage from './pages/QueuePage';
+import SettingsPage from './pages/SettingsPage';
 import CommandPalette from './components/CommandPalette';
 import ToastContainer from './components/Toast';
 import { AuthProvider, useAuth } from './lib/auth';
@@ -55,9 +56,9 @@ function MainApp() {
   }, [theme]);
 
   // Load live tickets and services from real API when logged in
-  const loadQueue = useCallback(async () => {
+  const loadQueue = useCallback(async (isSilent = false) => {
     if (!isLoggedIn) return;
-    setLoadingTickets(true);
+    if (!isSilent) setLoadingTickets(true);
     setQueueError(null);
     try {
       const data = await fetchQueue(984, 200);
@@ -66,10 +67,12 @@ function MainApp() {
       setSubservicesByRoot(data.subservicesByRoot || {});
     } catch (err: any) {
       console.error('Ошибка загрузки очереди заявок:', err);
-      setQueueError(err.message || 'Не удалось загрузить очередь заявок');
-      setTickets([]);
+      if (!isSilent) {
+        setQueueError(err.message || 'Не удалось загрузить очередь заявок');
+        setTickets([]);
+      }
     } finally {
-      setLoadingTickets(false);
+      if (!isSilent) setLoadingTickets(false);
     }
   }, [isLoggedIn]);
 
@@ -77,6 +80,20 @@ function MainApp() {
     if (isLoggedIn) {
       loadQueue();
     }
+  }, [isLoggedIn, loadQueue]);
+
+  // Smart background polling (every 15s when logged in & page visible)
+  useEffect(() => {
+    if (!isLoggedIn) return;
+
+    const interval = setInterval(() => {
+      const isAutoRefresh = localStorage.getItem('intralink_auto_refresh') !== 'false';
+      if (isAutoRefresh && document.visibilityState === 'visible') {
+        loadQueue(true);
+      }
+    }, 15000);
+
+    return () => clearInterval(interval);
   }, [isLoggedIn, loadQueue]);
 
   // Keyboard shortcuts
@@ -160,7 +177,7 @@ function MainApp() {
           sidebarMode={sidebarMode}
           onCycleSidebarMode={handleCycleSidebarMode}
           onOpenCmdPalette={() => setCmdPaletteOpen(true)}
-          onRefresh={loadQueue}
+          onRefresh={() => loadQueue()}
           selectedService={selectedService}
           onResetService={() => setSelectedService({ rootId: null, serviceId: null, name: null })}
           searchQuery={searchQuery}
@@ -190,7 +207,7 @@ function MainApp() {
                 <span>{queueError}</span>
               </div>
               <button
-                onClick={loadQueue}
+                onClick={() => loadQueue()}
                 className="px-3 py-1 bg-red-800 dark:bg-red-200 text-white dark:text-red-950 rounded text-xs font-semibold hover:bg-red-700 transition-colors cursor-pointer"
               >
                 Повторить
@@ -198,17 +215,25 @@ function MainApp() {
             </div>
           )}
 
-          <QueuePage
-            tickets={tickets}
-            selectedTicketId={selectedTicketId}
-            onSelectTicket={setSelectedTicketId}
-            onUpdateTicket={updateTicket}
-            onRefresh={loadQueue}
-            onToast={addToast}
-            selectedService={selectedService}
-            onResetService={() => setSelectedService({ rootId: null, serviceId: null, name: null })}
-            searchQuery={searchQuery}
-          />
+          {currentPage === 'settings' ? (
+            <SettingsPage
+              theme={theme}
+              onToggleTheme={() => setTheme(t => (t === 'dark' ? 'light' : 'dark'))}
+              onToast={addToast}
+            />
+          ) : (
+            <QueuePage
+              tickets={tickets}
+              selectedTicketId={selectedTicketId}
+              onSelectTicket={setSelectedTicketId}
+              onUpdateTicket={updateTicket}
+              onRefresh={() => loadQueue()}
+              onToast={addToast}
+              selectedService={selectedService}
+              onResetService={() => setSelectedService({ rootId: null, serviceId: null, name: null })}
+              searchQuery={searchQuery}
+            />
+          )}
         </main>
       </div>
 

@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from app.routers.deps import verify_api_key
+from app.routers.deps import verify_admin_or_api_key
 from app.services.worker import get_redis_client
 
 logger = logging.getLogger("core_api.routers.execution")
@@ -18,7 +18,7 @@ logger = logging.getLogger("core_api.routers.execution")
 router = APIRouter(
     prefix="/api/v1/execution",
     tags=["Execution Broker (Windows Domain RPC)"],
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(verify_admin_or_api_key)],
 )
 
 STREAM_EXECUTION_QUEUE = "stream:execution_queue"

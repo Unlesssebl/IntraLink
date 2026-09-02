@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.db import get_db
-from app.routers.deps import get_service_auth_b64, verify_api_key
+from app.routers.deps import get_service_auth_b64, verify_admin_or_api_key
 from app.services import intraservice
 from app.services.deduplication import DuplicateDetector
 from app.services.rag import (
@@ -36,7 +36,7 @@ logger = logging.getLogger("core_api.routers.triage")
 router = APIRouter(
     prefix="/api/v1/triage",
     tags=["Unified Triage Hub"],
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(verify_admin_or_api_key)],
 )
 
 

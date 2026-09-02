@@ -11,7 +11,7 @@ from typing import Any
 from datetime import datetime, timedelta, UTC
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, status, Response
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel
 
 from app.routers.deps import verify_admin_jwt
@@ -1187,6 +1187,16 @@ async def get_triage_queue(filter_id: int = 984, limit: int = 200):
 
 
 
+@router.get("/admin/api/tasks/{task_id}/open")
+async def open_task_in_intraservice(task_id: int):
+    """
+    Перенаправляет браузер на веб-интерфейс IntraService для просмотра заявки.
+    """
+    base_url = settings.INTRASERVICE_URL.rstrip("/").replace("/api", "")
+    target_url = f"{base_url}/Task/View/{task_id}"
+    return RedirectResponse(url=target_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
 @router.get("/admin/api/tasks/{task_id}/details", dependencies=[Depends(verify_admin_jwt)])
 async def get_task_details(task_id: int):
     """
@@ -1371,6 +1381,36 @@ async def apply_task_action(task_id: int, payload: ApplyActionRequest):
         )
 
     logger.info("Заявка #%s успешно обновлена администратором в статус %s", task_id, payload.status_id)
+
+    # 5. Полуавтоматическое дообучение RAG: если заявка закрыта (29) и содержит содержательное решение
+    if payload.status_id == 29 and payload.comment and len(payload.comment.strip()) >= 15:
+        try:
+            from app.database.db import AsyncSessionLocal
+            from app.services.rag import index_task_knowledge
+
+            async def _bg_index():
+                try:
+                    async with AsyncSessionLocal() as session:
+                        task_info = task_curr or await get_single_task(auth_b64, task_id)
+                        if task_info:
+                            await index_task_knowledge(
+                                db=session,
+                                task_id=task_id,
+                                original_name=task_info.get("Name", "") or f"Заявка #{task_id}",
+                                problem=task_info.get("Description", "") or task_info.get("Name", ""),
+                                solution=payload.comment.strip(),
+                                service_id=task_info.get("ServiceId") or 0,
+                                service_name=task_info.get("ServiceName") or "",
+                                status_name="Выполнена",
+                            )
+                            logger.info("Решение заявки #%s успешно проиндексировано в RAG", task_id)
+                except Exception as ex:
+                    logger.debug("Ошибка фоновой индексации заявки #%s в RAG: %s", task_id, ex)
+
+            asyncio.create_task(_bg_index())
+        except Exception as e:
+            logger.warning("Не удалось запустить фоновую индексацию в RAG: %s", e)
+
     return {
         "success": True,
         "task_id": task_id,

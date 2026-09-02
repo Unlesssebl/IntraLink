@@ -565,9 +565,16 @@ export default function QueuePage({
                         </div>
 
                         <div className="text-[12px] text-neutral-500 dark:text-neutral-400 mt-0.5 flex items-center gap-1.5 font-normal">
-                          <span className="font-mono tabular-nums text-neutral-500 dark:text-neutral-400 shrink-0">
+                          <a
+                            href={`/admin/api/tasks/${ticket.rawId}/open`}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={e => e.stopPropagation()}
+                            className="font-mono tabular-nums text-neutral-500 hover:text-blue-600 dark:hover:text-blue-400 hover:underline shrink-0 font-medium"
+                            title="Открыть заявку в IntraService"
+                          >
                             #{ticket.rawId}
-                          </span>
+                          </a>
                           <span>·</span>
                           <span>{ticket.requesterName}</span>
                           {ticket.room && <span>· каб. {ticket.room}</span>}
