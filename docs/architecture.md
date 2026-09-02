@@ -40,7 +40,7 @@ flowchart TB
     subgraph Interface_Layer ["Слой интерфейсов"]
         TG_API["💬 Telegram Bot API"]:::telegramStyle
         Intra_Web["🖥️ Intra Web SPA (/admin)"]:::serviceStyle
-        HD_CLI["🚀 helpdesk_tool.py (CLI)"]:::serviceStyle
+        HD_CLI["🚀 helpdesk.py (CLI)"]:::serviceStyle
     end
 
     subgraph Bot_Service ["Telegram Bot Service"]

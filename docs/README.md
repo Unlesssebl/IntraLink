@@ -15,7 +15,7 @@ docs/
 │   ├── core-api/            ← Сервис API-шлюза (FastAPI, Web Admin, фоновый воркер)
 │   ├── telegram-bot/        ← Сервис Telegram-бота (aiogram 3.x, слушатель Redis Pub/Sub)
 │   ├── intra-web/           ← Веб-панель управления и мониторинга (React 19, Vite, Tailwind CSS v4)
-│   └── helpdesk-agent/      ← Инженерный кокпит и инструменты автоматизации в AGY
+│   └── helpdesk-cli/      ← Инженерный кокпит и инструменты автоматизации в AGY
 │
 └── external/                ← Документация внешних систем (не наш код)
     └── intraservice_api/    ← Справочник по REST API IntraService
@@ -33,8 +33,8 @@ docs/
 * **[Core API Gateway](services/core-api/README.md)** — архитектура шлюза, JWT-сессии, шифрование учетных данных, фоновый опрос IntraService и ссылки на Swagger `/docs`.
 * **[Telegram Bot](services/telegram-bot/README.md)** — архитектура хендлеров aiogram, обработка FSM и получение уведомлений.
 * **[Intra Web (Admin Panel)](services/intra-web/README.md)** — React 19 SPA интерфейс мониторинга очередей, логов SSE и управления AI/RAG.
-* **[Helpdesk Agent & Execution Hub](services/helpdesk-agent/README.md)** — модули прямого исполнения (AD WLAN, WinRM), сетевая диагностика хостов и семантический RAG-поиск в AGY.
-  * **[Справочник Workflows и команд](services/helpdesk-agent/WORKFLOWS.md)** — слэш-команды (`/triage`, `/task`, `/diag`, `/screen`, `/kb`, `/sync`) и оперативные сценарии.
+* **[Helpdesk Agent & Execution Hub](services/helpdesk-cli/README.md)** — модули прямого исполнения (AD WLAN, WinRM), сетевая диагностика хостов и семантический RAG-поиск в AGY.
+  * **[Справочник Workflows и команд](services/helpdesk-cli/WORKFLOWS.md)** — слэш-команды (`/triage`, `/task`, `/diag`, `/screen`, `/kb`, `/sync`) и оперативные сценарии.
 
 ### 3. Внешние интеграции
 * **[Справочник IntraService REST API](external/intraservice_api/IntraService_API_Index.md)** — справочник по внешнему REST API IntraService (`/api/task`, `/api/service`, `/api/tasklifetime`, `/api/taskstatus`).

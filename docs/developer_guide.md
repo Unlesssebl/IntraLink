@@ -13,7 +13,7 @@ intraservice-tg-bot/
 ├── core-api/          # FastAPI Gateway: база данных (PostgreSQL+pgvector), фоновый воркер, веб-панель администратора
 ├── telegram-bot/      # Telegram Bot (aiogram 3.x): интерфейс пользователя и подписчик Redis Pub/Sub
 ├── intra-web/          # Фронтенд веб-панели администратора (React 19, Vite, Tailwind CSS v4)
-├── helpdesk-agent/    # Инженерный кокпит в AGY: Rule Engine, FastEmbed RAG, AD (Wi-Fi) и WinRM (принтеры)
+├── helpdesk-cli/    # Инженерный кокпит в AGY: Rule Engine, FastEmbed RAG, AD (Wi-Fi) и WinRM (принтеры)
 ├── tools/             # Скрипты индексации драйверов печати
 ├── docs/              # Фундаментальная документация проекта
 └── .agents/skills/    # Навыки Antigravity для автоматизации задач
@@ -89,25 +89,25 @@ flowchart LR
 
 ---
 
-## 🛠 4. Инструменты автономной диагностики инженера (`helpdesk_tool.py`)
+## 🛠 4. Инструменты автономной диагностики инженера (`helpdesk.py`)
 
-Для автономной проверки и управления очередью заявок, RAG-поиска и инфраструктурных действий используется CLI-инструмент [`helpdesk-agent/helpdesk_tool.py`](../services/helpdesk-agent/README.md):
+Для автономной проверки и управления очередью заявок, RAG-поиска и инфраструктурных действий используется CLI-инструмент [`helpdesk-cli/helpdesk.py`](../services/helpdesk-cli/README.md):
 
 ```bash
 # 1. Пакетный разбор очереди (триаж)
-uv run python helpdesk-agent/helpdesk_tool.py batch --limit 10
+uv run python helpdesk-cli/helpdesk.py batch --limit 10
 
 # 2. Семантический RAG-поиск по базе решений
-uv run python helpdesk-agent/helpdesk_tool.py search-kb "проблема с принтером"
+uv run python helpdesk-cli/helpdesk.py search-kb "проблема с принтером"
 
 # 3. Сетевая экспресс-диагностика хоста (Ping, DNS, SMB, WinRM)
-uv run python helpdesk-agent/helpdesk_tool.py diag "PC-NAME-OR-IP"
+uv run python helpdesk-cli/helpdesk.py diag "PC-NAME-OR-IP"
 
 # 4. Выдача Wi-Fi доступа (AD WLAN-WORKNET)
-uv run python helpdesk-agent/helpdesk_tool.py wlan 145001
+uv run python helpdesk-cli/helpdesk.py wlan 145001
 
 # 5. Локальная AI-суммаризация инцидента через Ollama (Qwen2.5:1.5B)
-uv run python helpdesk-agent/helpdesk_tool.py summary 145001
+uv run python helpdesk-cli/helpdesk.py summary 145001
 ```
 
 ---

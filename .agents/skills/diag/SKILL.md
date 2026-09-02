@@ -12,7 +12,7 @@ description: >-
 ## Шаги выполнения:
 
 1. **Запуск диагностики:**
-   Выполнить команду `uv run python helpdesk_tool.py diagnose <ХОСТ_ИЛИ_IP>` в каталоге `helpdesk_agent/`.
+   Выполнить команду `uv run python helpdesk.py diagnose <ХОСТ_ИЛИ_IP>` в каталоге `helpdesk-cli/`.
 2. **Проверка портов:**
    Анализирует ICMP Ping, DNS-резолвинг в домене, порт `SMB 445` и `WinRM 5985`.
 3. **Вывод статуса:**

@@ -11,7 +11,7 @@
 
 ## 🏗 Ключевые компоненты
 
-* **`helpdesk_tool.py`** — центральная CLI-точка входа для выполнения команд.
+* **`helpdesk.py`** — центральная CLI-точка входа для выполнения команд.
 * **`core_api_client.py`** — асинхронный HTTP REST-клиент к Core API Gateway (`X-Bot-Api-Key`).
 * **`commands/`** — модульная структура команд CLI:
   * `triage.py` — `batch`, `redirect`, `duplicates`, `queue`
@@ -33,12 +33,12 @@
 
 | Команда | Описание | Пример вызова |
 |---|---|---|
-| `batch` | Пакетный разбор стопки заявок со сводной матрицей | `uv run python helpdesk_tool.py batch --limit 5` |
-| `task <ID>` | Детальная карточка задачи + кастомные поля + RAG | `uv run python helpdesk_tool.py task 139022` |
-| `diagnose <HOST>` | Сетевая проверка ПК / IP (Ping, DNS, SMB, WinRM) | `uv run python helpdesk_tool.py diagnose NTEMW0047` |
-| `attachment <ID>` | Скачивание и анализ вложений из заявки | `uv run python helpdesk_tool.py attachment 139063` |
-| `search-kb "<query>"` | Семантический RAG-поиск по базе решений через Core API | `uv run python helpdesk_tool.py search-kb "сбой печати 1С"` |
-| `services` | Корневые разделы каталога услуг (01..16) | `uv run python helpdesk_tool.py services` |
-| `wlan <ID>` | Автовыдача Wi-Fi в AD + закрытие тикета | `uv run python helpdesk_tool.py wlan 139088` |
-| `create-user <ID>` | Создание пользователя в AD + закрытие тикета | `uv run python helpdesk_tool.py create-user 139090` |
-| `apply <ID>` | Применение решения (статус + комментарий + списание времени) | `uv run python helpdesk_tool.py apply 139022 --status 29 --comment "..." --expenses 10` |
+| `batch` | Пакетный разбор стопки заявок со сводной матрицей | `uv run python helpdesk.py batch --limit 5` |
+| `task <ID>` | Детальная карточка задачи + кастомные поля + RAG | `uv run python helpdesk.py task 139022` |
+| `diagnose <HOST>` | Сетевая проверка ПК / IP (Ping, DNS, SMB, WinRM) | `uv run python helpdesk.py diagnose NTEMW0047` |
+| `attachment <ID>` | Скачивание и анализ вложений из заявки | `uv run python helpdesk.py attachment 139063` |
+| `search-kb "<query>"` | Семантический RAG-поиск по базе решений через Core API | `uv run python helpdesk.py search-kb "сбой печати 1С"` |
+| `services` | Корневые разделы каталога услуг (01..16) | `uv run python helpdesk.py services` |
+| `wlan <ID>` | Автовыдача Wi-Fi в AD + закрытие тикета | `uv run python helpdesk.py wlan 139088` |
+| `create-user <ID>` | Создание пользователя в AD + закрытие тикета | `uv run python helpdesk.py create-user 139090` |
+| `apply <ID>` | Применение решения (статус + комментарий + списание времени) | `uv run python helpdesk.py apply 139022 --status 29 --comment "..." --expenses 10` |
