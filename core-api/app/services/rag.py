@@ -1,7 +1,4 @@
-"""
-Сервис RAG (Retrieval-Augmented Generation) и семантического поиска в PostgreSQL pgvector.
-"""
-
+import asyncio
 import logging
 import re
 from typing import Any
@@ -31,6 +28,21 @@ def get_local_embed_model():
         except Exception as e:
             logger.debug("Ошибка инициализации fastembed: %s", e)
     return _fastembed_model
+
+
+def _get_fastembed_vector_sync(text_input: str) -> list[float] | None:
+    """Синхронный расчет эмбеддинга FastEmbed в отдельном потоке (worker thread)."""
+    model = get_local_embed_model()
+    if not model:
+        return None
+    try:
+        embeddings = list(model.embed([text_input]))
+        if embeddings:
+            vec = embeddings[0].tolist()
+            return vec
+    except Exception as e:
+        logger.debug("Ошибка генерации FastEmbed вектора: %s", e)
+    return None
 
 
 def clean_html(raw_html: str | None) -> str:
@@ -108,6 +120,14 @@ async def get_embedding_vector(text_input: str) -> list[float] | None:
                         return vec
         except Exception:
             pass
+
+    # 3. Fallback: локальный FastEmbed в отдельном пуле потоков (non-blocking Event Loop)
+    try:
+        vec = await asyncio.to_thread(_get_fastembed_vector_sync, clean_text)
+        if vec:
+            return vec
+    except Exception:
+        pass
 
     return None
 

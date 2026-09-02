@@ -111,6 +111,8 @@ async def enqueue_execution_job(
                 "auto_close": str(payload.auto_close_ticket).lower(),
                 "initiator": initiator_identity or "unknown",
             },
+            maxlen=10000,
+            approximate=True,
         )
 
         # Оповещение в Pub/Sub

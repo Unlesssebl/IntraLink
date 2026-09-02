@@ -92,6 +92,8 @@ class WindowsExecutionWorker:
         )
         print(f"   • Consumer: {CONSUMER_NAME} | Node: {os.name} (Windows)")
 
+        self._concurrency_sem = asyncio.Semaphore(4)
+
         while self._running:
             try:
                 # Чтение задач для Consumer Group
@@ -108,13 +110,29 @@ class WindowsExecutionWorker:
 
                 for stream_name, messages in events:
                     for msg_id, data in messages:
-                        await self._process_job(msg_id, data)
+                        asyncio.create_task(self._process_job_safe(msg_id, data))
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("Ошибка в цикле execution_worker: %s", e)
                 await asyncio.sleep(2.0)
+
+    async def _process_job_safe(self, msg_id: str, data: dict[str, Any]) -> None:
+        """Безопасная конкурентная обработка задачи с подтверждением доставки XACK."""
+        async with self._concurrency_sem:
+            try:
+                await self._process_job(msg_id, data)
+            except Exception as e:
+                logger.error("Критический сбой обработки задачи msg_id=%s: %s", msg_id, e)
+            finally:
+                if self.redis:
+                    try:
+                        await self.redis.xack(
+                            STREAM_EXECUTION_QUEUE, STREAM_GROUP_NAME, msg_id
+                        )
+                    except Exception as e:
+                        logger.debug("Ошибка XACK для %s: %s", msg_id, e)
 
     async def stop(self) -> None:
         self._running = False

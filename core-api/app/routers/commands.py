@@ -191,6 +191,8 @@ async def submit_command(
                 "auto_close": str(payload.auto_close_ticket).lower(),
                 "initiator": initiator_str,
             },
+            maxlen=10000,
+            approximate=True,
         )
 
         # 5. Оповещение в Pub/Sub канал событий

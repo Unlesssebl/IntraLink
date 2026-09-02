@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -7,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.config import settings
 from app.database.db import AsyncSessionLocal, init_db
 from app.routers import (
     admin,
@@ -24,7 +26,11 @@ from app.routers import (
 )
 from app.services.ai import ai_hub
 from app.services.intraservice import close_session, init_session
-from app.services.template_engine import get_templates_from_db, seed_templates_if_empty
+from app.services.template_engine import (
+    get_templates_from_db,
+    seed_templates_if_empty,
+    start_rules_invalidation_listener,
+)
 from app.services.worker import start_worker, stop_worker
 
 # Настройка логирования
@@ -53,6 +59,11 @@ async def lifespan(_app: FastAPI):
     except Exception as e:
         logger.warning("Ошибка инициализации шаблонов триажа: %s", e)
 
+    # Запуск Pub/Sub слушателя инвалидации кэша правил
+    invalidation_task = asyncio.create_task(
+        start_rules_invalidation_listener(settings.REDIS_URL)
+    )
+
     logger.info("Инициализация HTTP-сессии IntraService...")
     try:
         await init_session()
@@ -67,6 +78,7 @@ async def lifespan(_app: FastAPI):
     yield
     # Действия при остановке приложения
     logger.info("Остановка приложения Core API...")
+    invalidation_task.cancel()
     try:
         await stop_worker()
     except Exception as e:

@@ -50,6 +50,29 @@ def invalidate_templates_cache() -> None:
     logger.info("L1 кэш шаблонов триажа сброшен.")
 
 
+async def start_rules_invalidation_listener(redis_url: str) -> None:
+    """
+    Фоновый слушатель Redis Pub/Sub для кросс-воркерной инвалидации L1 кэша.
+    """
+    import asyncio
+    import redis.asyncio as aioredis
+
+    while True:
+        try:
+            r = aioredis.from_url(redis_url, decode_responses=True)
+            async with r.pubsub() as pubsub:
+                await pubsub.subscribe("channel:rules_invalidated")
+                logger.info("Подписка на channel:rules_invalidated активна.")
+                async for msg in pubsub.listen():
+                    if msg and msg.get("type") == "message":
+                        invalidate_templates_cache()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug("Ошибка слушателя channel:rules_invalidated: %s", e)
+            await asyncio.sleep(5.0)
+
+
 async def seed_templates_if_empty(session: AsyncSession) -> None:
     """
     Выполняет Database Seeding начальных шаблонов из JSON строго при пустой таблице в БД.
