@@ -116,3 +116,39 @@ async def test_search_knowledge_base_auto_circuit():
         await rag.search_knowledge_base(mock_db, query_cred)
 
         mock_get_vec.assert_called_with(query_cred, circuit=DataCircuit.RED)
+
+
+@pytest.mark.asyncio
+async def test_get_embedding_vector_gemini_fallback_when_litellm_fails():
+    """Проверка fallback на прямой вызов Gemini API при недоступности LiteLLM."""
+    raw_text = "Инструкция по настройке сканирования в сетевую папку SMB"
+    dummy_vec = [0.5] * 3072
+
+    litellm_resp = MagicMock()
+    litellm_resp.status = 503
+
+    gemini_resp = MagicMock()
+    gemini_resp.status = 200
+    gemini_resp.json = AsyncMock(return_value={"embedding": {"values": dummy_vec}})
+
+    mock_cm_litellm = AsyncMock()
+    mock_cm_litellm.__aenter__.return_value = litellm_resp
+
+    mock_cm_gemini = AsyncMock()
+    mock_cm_gemini.__aenter__.return_value = gemini_resp
+
+    def post_side_effect(url, *args, **kwargs):
+        if "embeddings" in url:
+            return mock_cm_litellm
+        elif "generativelanguage" in url:
+            return mock_cm_gemini
+        raise ValueError(f"Unexpected url: {url}")
+
+    with patch("app.services.rag.get_rag_http_session") as mock_session_getter, \
+         patch("app.config.settings.GEMINI_API_KEY", "test-gemini-key"):
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(side_effect=post_side_effect)
+        mock_session_getter.return_value = mock_session
+
+        vec = await rag.get_embedding_vector(raw_text, circuit=DataCircuit.GREEN)
+        assert vec == dummy_vec

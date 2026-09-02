@@ -44,6 +44,27 @@ services:
               count: 1
               capabilities: [gpu]
 
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: intralink_litellm
+    restart: always
+    ports:
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    environment:
+      - LITELLM_API_KEY=${LITELLM_API_KEY:-sk-intraservice-master-key}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_API_KEY_2=${GEMINI_API_KEY_2}
+      - GEMINI_API_KEY_3=${GEMINI_API_KEY_3}
+    command:
+      - "--config"
+      - "/app/config.yaml"
+      - "--port"
+      - "4000"
+      - "--host"
+      - "0.0.0.0"
+
   core-api:
     build:
       context: .
@@ -55,10 +76,11 @@ services:
     volumes:
       - ./docs/presentations:/app/docs/presentations:ro
     env_file:
-      - ./core-api/.env
+      - .env
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
       - REDIS_URL=redis://redis:6379/0
+      - LITELLM_BASE_URL=http://litellm:4000/v1
       - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
       - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
       - INTRASERVICE_SERVICE_LOGIN=intratest
@@ -81,6 +103,7 @@ services:
     depends_on:
       - postgres
       - redis
+      - litellm
 
   poller:
     build:
@@ -90,10 +113,11 @@ services:
     command: python -m app.poller
     restart: always
     env_file:
-      - ./core-api/.env
+      - .env
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
       - REDIS_URL=redis://redis:6379/0
+      - LITELLM_BASE_URL=http://litellm:4000/v1
       - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
       - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
       - INTRASERVICE_SERVICE_LOGIN=intratest
@@ -126,7 +150,7 @@ services:
     container_name: intralink_tg_bot
     restart: always
     env_file:
-      - ./telegram-bot/.env
+      - .env
     environment:
       - CORE_API_URL=http://core-api:8000/api/v1
       - REDIS_URL=redis://redis:6379/0

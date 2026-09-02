@@ -66,9 +66,10 @@ class AIHub:
         except Exception:
             return False
 
-    async def is_litellm_available(self, timeout_sec: float = 1.5) -> bool:
+    async def is_litellm_available(self, timeout_sec: float = 2.0) -> bool:
         """Быстрая проверка доступности LiteLLM Proxy."""
-        url = f"{self.litellm_url}/health"
+        base_url = self.litellm_url.removesuffix("/v1")
+        url = f"{base_url}/health/liveliness"
         try:
             session = await self._get_session()
             async with session.get(
@@ -316,7 +317,7 @@ class AIHub:
         max_tokens: int = 512,
         temperature: float = 0.0,
     ) -> Optional[str]:
-        """Инференс через LiteLLM Proxy / Cloud Gemini (Открытый контур GREEN/YELLOW)."""
+        """Инференс строго через LiteLLM Proxy (Открытый контур GREEN/YELLOW с ротацией ключей)."""
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})

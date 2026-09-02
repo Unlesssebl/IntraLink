@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 # ---------------------------------------------------------------------------
 os.environ.setdefault("INTRASERVICE_URL", "http://intraservice.test/api/")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
 os.environ.setdefault("ENCRYPTION_KEY", "")
 os.environ.setdefault("BOT_API_KEY", "test-api-key")
 os.environ.setdefault("INTRASERVICE_TZ", "Europe/Moscow")

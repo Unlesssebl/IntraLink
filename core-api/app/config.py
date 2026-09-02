@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     )
 
     # Параметры LiteLLM и эмбеддингов
+    GEMINI_API_KEY: str | None = Field(
+        None, description="API-ключ Google Gemini API для прямого доступа без прокси"
+    )
     LITELLM_API_KEY: str = Field(
         "sk-intraservice-master-key",
         description="API-ключ для авторизации в LiteLLM Proxy",

@@ -195,9 +195,10 @@ async def get_embedding_vector(
     # 4. Попытка через Gemini API (если передан GEMINI_API_KEY)
     if getattr(settings, "GEMINI_API_KEY", None):
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={settings.GEMINI_API_KEY}"
+            embed_model = getattr(settings, "EMBEDDING_MODEL", "gemini-embedding-2")
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{embed_model}:embedContent?key={settings.GEMINI_API_KEY}"
             payload = {
-                "model": "models/text-embedding-004",
+                "model": f"models/{embed_model}",
                 "content": {"parts": [{"text": cloud_payload_text}]},
             }
             async with session.post(url, json=payload) as resp:
@@ -206,8 +207,8 @@ async def get_embedding_vector(
                     vec = data.get("embedding", {}).get("values", [])
                     if vec and len(vec) == settings.EMBEDDING_DIMENSION:
                         return vec
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Ошибка генерации Gemini эмбеддинга: %s", e)
 
     # 5. Локальный Fallback (Ollama / FastEmbed)
     if getattr(settings, "OLLAMA_BASE_URL", None):

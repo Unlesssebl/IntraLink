@@ -10,8 +10,8 @@
   * Проксирование и изоляция вызовов к REST API IntraService.
   * Безопасное хранение зашифрованных учетных данных пользователей (Fernet).
   * Централизованный Rule Engine и хранение канонических шаблонов триажа (PostgreSQL).
-  * Двухэтапный Hybrid RAG (`FastEmbed` + `pgvector` HNSW + Cross-Encoder Reranker).
-  * Многоконтурный AI Hub (DLP-маскирование, Redis PII Vault, роутинг RED/YELLOW/GREEN).
+  * Двухэтапный Hybrid RAG (`LiteLLM` / `gemini-embedding-2` 3072 dim + `pgvector` HNSW + Cross-Encoder Reranker).
+  * Многоконтурный AI Hub (LiteLLM Proxy с ротацией ключей, Gemini 3.5 Flash, DLP-маскирование, Redis PII Vault, роутинг RED/YELLOW/GREEN).
   * Защитные механизмы: `Distributed Host Concurrency Locks` (`safety.py`) и `Dead Man's Switch`.
   * Фоновая экспресс-телеметрия хостов с нулевой задержкой (`host_telemetry.py`).
   * Прямое управление доменными объектами Active Directory по протоколу LDAPS (порт 636) через Linux Core API (`active_directory.py`).
@@ -47,14 +47,14 @@
 
 ## ⚙️ Конфигурация
 
-Все переменные окружения задокументированы с примерами значений в файле:
-👉 **[`core-api/.env.example`](../../../core-api/.env.example)**
+Все переменные окружения задокументированы с примерами значений в едином файле в корне проекта:
+👉 **[`.env.example`](../../../.env.example)**
 
 ---
 
 ## 🚀 Запуск сервиса
 
-### Через Docker Compose (вместе с poller, postgres, redis, ollama):
+### Через Docker Compose (вместе с litellm, poller, postgres, redis, ollama):
 ```bash
 docker compose up -d
 ```
