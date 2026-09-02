@@ -182,7 +182,6 @@ export default function QueuePage({
         status_id: 27,
         comment: 'Взято в работу инженером 1-й линии',
         minutes: 5,
-        executor_ids: '8664,10502',
       });
       onUpdateTicket(t.id, { status: 'in_progress', statusId: 27, statusName: 'В работе' });
       onToast({ type: 'success', message: `Заявка #${t.rawId} взята в работу` });
@@ -190,6 +189,7 @@ export default function QueuePage({
       onToast({ type: 'error', message: `Ошибка: ${err.message || err}` });
     }
   };
+
 
   const handleInlineStatusChange = async (t: Ticket, s: Status) => {
     // Guard: Do not allow blind closing without comment (Audit E-2)

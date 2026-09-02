@@ -82,19 +82,12 @@ async def test_get_triage_queue(mock_get_tasks, mock_decrypt, mock_get_redis):
 
 
 @pytest.mark.asyncio
-@patch("app.routers.admin.get_redis_client")
-@patch("app.services.crypto.decrypt_token")
 @patch("app.services.intraservice.get_single_task")
 @patch("app.services.intraservice.update_task_full")
 @patch("app.services.intraservice.add_task_expenses")
 async def test_apply_task_action(
-    mock_add_expenses, mock_update_task, mock_get_task, mock_decrypt, mock_get_redis
+    mock_add_expenses, mock_update_task, mock_get_task
 ):
-    mock_redis = AsyncMock()
-    mock_redis.get.return_value = "encrypted_auth"
-    mock_get_redis.return_value = mock_redis
-    mock_decrypt.return_value = "dXNlcjpwYXNz"
-
     mock_get_task.return_value = {"Id": 101, "StatusId": 1}
     mock_update_task.return_value = True
     mock_add_expenses.return_value = True
@@ -106,7 +99,7 @@ async def test_apply_task_action(
         executor_ids="8664,10502",
     )
 
-    res = await apply_task_action(task_id=101, payload=req)
+    res = await apply_task_action(task_id=101, payload=req, auth_b64="dXNlcjpwYXNz")
     assert res["success"] is True
     assert res["task_id"] == 101
     assert res["final_status_id"] == 29
@@ -142,16 +135,12 @@ async def test_get_host_diagnostics(mock_check):
 
 
 @pytest.mark.asyncio
-@patch("app.routers.admin.get_redis_client")
-@patch("app.services.crypto.decrypt_token")
+@patch("app.routers.admin._get_service_catalog_map")
 @patch("app.services.intraservice.get_single_task")
 @patch("app.services.intraservice.get_task_lifetime")
-async def test_get_task_details(mock_lifetime, mock_task, mock_decrypt, mock_redis):
+async def test_get_task_details(mock_lifetime, mock_task, mock_svc_map):
     from app.routers.admin import get_task_details
-    r_mock = AsyncMock()
-    r_mock.get.return_value = "encrypted_auth"
-    mock_redis.return_value = r_mock
-    mock_decrypt.return_value = "auth_str"
+    mock_svc_map.return_value = ({}, [], {})
     mock_task.return_value = {
         "Id": 202,
         "Name": "Сбой 1С ЗУП",
@@ -162,17 +151,20 @@ async def test_get_task_details(mock_lifetime, mock_task, mock_decrypt, mock_red
         "StatusName": "В работе",
         "Data": '<field id="1089">WS-PETROV</field>',
         "Attachments": [{"Id": 501, "Name": "error.png", "Size": 1024}],
+        "Rights": {"ToStatuses": [27, 29, 30, 48]},
     }
     mock_lifetime.return_value = [
         {"Id": 1, "UserName": "Петров", "Created": "2026-08-25", "Comment": "Жду решения"}
     ]
 
-    res = await get_task_details(202)
+    res = await get_task_details(202, auth_b64="dXNlcjpwYXNz")
     assert res["id"] == 202
     assert res["pc_name"] == "WS-PETROV"
     assert len(res["attachments"]) == 1
     assert len(res["comments"]) == 1
     assert res["comments"][0]["text"] == "Жду решения"
+    assert res["rights"]["to_statuses"] == [27, 29, 30, 48]
+
 
 
 @pytest.mark.asyncio
@@ -186,8 +178,9 @@ async def test_bulk_apply_tasks(mock_apply):
             BulkApplyItem(task_id=102, status_id=30, comment="Редирект"),
         ]
     )
-    res = await bulk_apply_tasks(payload)
+    res = await bulk_apply_tasks(payload, auth_b64="dXNlcjpwYXNz")
     assert res["total"] == 2
     assert res["success_count"] == 2
     assert len(res["applied"]) == 2
+
 

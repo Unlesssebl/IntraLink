@@ -134,6 +134,12 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     }
   };
 
+  const allowedStatuses = details?.rights?.to_statuses ?? null;
+  const isStatusAllowed = (statusId: number) => {
+    if (allowedStatuses === null) return true;
+    return allowedStatuses.includes(statusId);
+  };
+
   const getMainActionConfig = () => {
     const primaryBtnClass = 'bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900';
 
@@ -158,24 +164,47 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       }
     }
 
-    if (selectedTemplateKey === 'wifi_access' || ticket.ruleType === 'wlan_access') {
+    if ((selectedTemplateKey === 'wifi_access' || ticket.ruleType === 'wlan_access') && isStatusAllowed(29)) {
       return { label: 'Выдать доступ к Wi-Fi', statusId: 29, buttonClass: primaryBtnClass, actionType: 'wlan' as const };
     }
-    if (selectedTemplateKey === 'hardware_repair' || ticket.ruleType === 'hardware_repair') {
+    if ((selectedTemplateKey === 'hardware_repair' || ticket.ruleType === 'hardware_repair') && isStatusAllowed(48)) {
       return { label: 'В ремонт (каб. 112)', statusId: 48, buttonClass: primaryBtnClass };
     }
-    if (ticket.isRedirect || ticket.ruleType?.startsWith('redirect') || selectedTemplateKey === 'redirect_catalog') {
+    if ((ticket.isRedirect || ticket.ruleType?.startsWith('redirect') || selectedTemplateKey === 'redirect_catalog') && isStatusAllowed(30)) {
       return { label: 'Перенаправить и отменить', statusId: 30, buttonClass: primaryBtnClass };
     }
-    if (ticket.isDuplicate || ticket.ruleType === 'duplicate_task' || selectedTemplateKey === 'duplicate_close') {
+    if ((ticket.isDuplicate || ticket.ruleType === 'duplicate_task' || selectedTemplateKey === 'duplicate_close') && isStatusAllowed(30)) {
       return { label: 'Отменить как дубликат', statusId: 30, buttonClass: primaryBtnClass };
     }
-    if (ticket.statusId === 35) {
+    if (ticket.statusId === 35 && isStatusAllowed(35)) {
       return { label: 'В ожидание заявителя', statusId: 35, buttonClass: primaryBtnClass };
+    }
+
+    // Проверяем статус 29 (Выполнить)
+    if (isStatusAllowed(29)) {
+      return { label: 'Выполнить заявку', statusId: 29, buttonClass: primaryBtnClass };
+    }
+    // Если 29 недоступен, но доступен 27 (В работу)
+    if (isStatusAllowed(27)) {
+      return { label: 'В работу', statusId: 27, buttonClass: primaryBtnClass };
+    }
+    // Если доступен 30 (Отменить)
+    if (isStatusAllowed(30)) {
+      return { label: 'Отменить заявку', statusId: 30, buttonClass: primaryBtnClass };
+    }
+    // Если есть любые другие разрешенные статусы, берем первый доступный
+    if (allowedStatuses && allowedStatuses.length > 0) {
+      const firstAllowed = allowedStatuses[0];
+      return { label: `Перевести в статус #${firstAllowed}`, statusId: firstAllowed, buttonClass: primaryBtnClass };
+    }
+
+    if (allowedStatuses && allowedStatuses.length === 0) {
+      return { label: 'Нет доступных действий', statusId: 0, buttonClass: 'bg-neutral-300 dark:bg-neutral-800 text-neutral-500 cursor-not-allowed' };
     }
 
     return { label: 'Выполнить заявку', statusId: 29, buttonClass: primaryBtnClass };
   };
+
 
   const handleSelectMenuStatus = (statusId: number, defaultText?: string, defaultMinutes?: number) => {
     setSelectedStatusOverride(statusId);
@@ -330,7 +359,6 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         status_id: 27,
         comment: 'Взято в работу инженером 1-й линии',
         minutes: 5,
-        executor_ids: '8664,10502',
       });
       onUpdateTicket(ticket.id, { status: 'in_progress', statusId: 27, statusName: 'В работе' });
       onToast({ type: 'success', message: `Заявка #${rawId} взята в работу` });
@@ -341,6 +369,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       setSubmitting(false);
     }
   };
+
 
   const copyToClipboard = (v: string) => {
     navigator.clipboard.writeText(v).then(() =>
@@ -698,61 +727,79 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
               {isActionsMenuOpen && (
                 <div className="absolute right-0 bottom-8 z-30 w-72 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-xl shadow-2xl p-2 space-y-2 animate-in fade-in zoom-in-95 duration-100">
-                  <div>
-                    <span className="text-[10px] uppercase font-bold text-neutral-400 dark:text-neutral-500 block px-2 mb-1">
-                      Статусы ожидания
-                    </span>
-                    <div className="space-y-0.5">
-                      <button
-                        type="button"
-                        onClick={() => handleSelectMenuStatus(35, 'Запрошена дополнительная информация у заявителя. Ожидаем ответа.', 5)}
-                        className="w-full text-left px-2.5 py-1.5 rounded-lg text-[12px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
-                      >
-                        <span>Ожидание ответа заявителя</span>
-                        <span className="text-[11px] font-mono text-neutral-400">#35</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleSelectMenuStatus(36, 'Заявка переведена в ожидание поставки оборудования / ЗИП.', 5)}
-                        className="w-full text-left px-2.5 py-1.5 rounded-lg text-[12px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
-                      >
-                        <span>Ожидание поставки / ЗИП</span>
-                        <span className="text-[11px] font-mono text-neutral-400">#36</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleSelectMenuStatus(37, 'Заявка передана на исполнение сторонней организации / подрядчику.', 5)}
-                        className="w-full text-left px-2.5 py-1.5 rounded-lg text-[12px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
-                      >
-                        <span>Ожидание подрядчика</span>
-                        <span className="text-[11px] font-mono text-neutral-400">#37</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleSelectMenuStatus(48, 'Приносите системный блок / ноутбук в АБК 3, 112 каб. на аппаратную диагностику и обслуживание.', 10)}
-                        className="w-full text-left px-2.5 py-1.5 rounded-lg text-[12px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
-                      >
-                        <span>Ожидание устройства (каб. 112)</span>
-                        <span className="text-[11px] font-mono text-neutral-400">#48</span>
-                      </button>
+                  {[35, 36, 37, 48].some(s => isStatusAllowed(s)) && (
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-neutral-400 dark:text-neutral-500 block px-2 mb-1">
+                        Статусы ожидания
+                      </span>
+                      <div className="space-y-0.5">
+                        {isStatusAllowed(35) && (
+                          <button
+                            type="button"
+                            onClick={() => handleSelectMenuStatus(35, 'Запрошена дополнительная информация у заявителя. Ожидаем ответа.', 5)}
+                            className="w-full text-left px-2.5 py-1.5 rounded-lg text-[12px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
+                          >
+                            <span>Ожидание ответа заявителя</span>
+                            <span className="text-[11px] font-mono text-neutral-400">#35</span>
+                          </button>
+                        )}
+                        {isStatusAllowed(36) && (
+                          <button
+                            type="button"
+                            onClick={() => handleSelectMenuStatus(36, 'Заявка переведена в ожидание поставки оборудования / ЗИП.', 5)}
+                            className="w-full text-left px-2.5 py-1.5 rounded-lg text-[12px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
+                          >
+                            <span>Ожидание поставки / ЗИП</span>
+                            <span className="text-[11px] font-mono text-neutral-400">#36</span>
+                          </button>
+                        )}
+                        {isStatusAllowed(37) && (
+                          <button
+                            type="button"
+                            onClick={() => handleSelectMenuStatus(37, 'Заявка передана на исполнение сторонней организации / подрядчику.', 5)}
+                            className="w-full text-left px-2.5 py-1.5 rounded-lg text-[12px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
+                          >
+                            <span>Ожидание подрядчика</span>
+                            <span className="text-[11px] font-mono text-neutral-400">#37</span>
+                          </button>
+                        )}
+                        {isStatusAllowed(48) && (
+                          <button
+                            type="button"
+                            onClick={() => handleSelectMenuStatus(48, 'Приносите системный блок / ноутбук в АБК 3, 112 каб. на аппаратную диагностику и обслуживание.', 10)}
+                            className="w-full text-left px-2.5 py-1.5 rounded-lg text-[12px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
+                          >
+                            <span>Ожидание устройства (каб. 112)</span>
+                            <span className="text-[11px] font-mono text-neutral-400">#48</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
-                  <div className="border-t border-neutral-100 dark:border-neutral-800 pt-1.5">
-                    <span className="text-[10px] uppercase font-bold text-neutral-400 dark:text-neutral-500 block px-2 mb-1">
-                      Перераспределение
-                    </span>
-                    <div className="space-y-0.5">
-                      <button
-                        type="button"
-                        onClick={() => handleSelectMenuStatus(26, 'Заявка возвращена в статус Открыта для перераспределения.', 5)}
-                        className="w-full text-left px-2.5 py-1.5 rounded-lg text-[12px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
-                      >
-                        <span>Вернуть в статус «Открыта»</span>
-                        <span className="text-[11px] font-mono text-neutral-400">#26</span>
-                      </button>
+                  {isStatusAllowed(26) && (
+                    <div className="border-t border-neutral-100 dark:border-neutral-800 pt-1.5">
+                      <span className="text-[10px] uppercase font-bold text-neutral-400 dark:text-neutral-500 block px-2 mb-1">
+                        Перераспределение
+                      </span>
+                      <div className="space-y-0.5">
+                        <button
+                          type="button"
+                          onClick={() => handleSelectMenuStatus(26, 'Заявка возвращена в статус Открыта для перераспределения.', 5)}
+                          className="w-full text-left px-2.5 py-1.5 rounded-lg text-[12px] hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 font-medium cursor-pointer flex items-center justify-between"
+                        >
+                          <span>Вернуть в статус «Открыта»</span>
+                          <span className="text-[11px] font-mono text-neutral-400">#26</span>
+                        </button>
+                      </div>
                     </div>
-                  </div>
+                  )}
+
+                  {![26, 35, 36, 37, 48].some(s => isStatusAllowed(s)) && (
+                    <div className="p-3 text-center text-[11.5px] text-neutral-400">
+                      Нет дополнительных доступных статусов
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -760,26 +807,30 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
           {/* Main Action Buttons: Consistent h-9 height, single-line typography */}
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleCancelTicket}
-              disabled={submitting || ticket.statusId === 30 || ticket.statusId === 29}
-              className="h-9 px-4 text-[12.5px] font-bold text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 border border-neutral-300 dark:border-neutral-700 rounded-lg transition-colors disabled:opacity-40 cursor-pointer whitespace-nowrap shrink-0 flex items-center justify-center"
-            >
-              Отменить
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSendAction(27)}
-              disabled={submitting || ticket.statusId === 27}
-              className="h-9 px-4 text-[12.5px] font-bold text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg transition-colors disabled:opacity-40 cursor-pointer whitespace-nowrap shrink-0 flex items-center justify-center"
-            >
-              В работу
-            </button>
+            {isStatusAllowed(30) && (
+              <button
+                type="button"
+                onClick={handleCancelTicket}
+                disabled={submitting || ticket.statusId === 30 || ticket.statusId === 29}
+                className="h-9 px-4 text-[12.5px] font-bold text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 border border-neutral-300 dark:border-neutral-700 rounded-lg transition-colors disabled:opacity-40 cursor-pointer whitespace-nowrap shrink-0 flex items-center justify-center"
+              >
+                Отменить
+              </button>
+            )}
+            {isStatusAllowed(27) && (
+              <button
+                type="button"
+                onClick={() => handleSendAction(27)}
+                disabled={submitting || ticket.statusId === 27}
+                className="h-9 px-4 text-[12.5px] font-bold text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg transition-colors disabled:opacity-40 cursor-pointer whitespace-nowrap shrink-0 flex items-center justify-center"
+              >
+                В работу
+              </button>
+            )}
             <button
               type="button"
               onClick={handleExecuteMainAction}
-              disabled={submitting || ticket.statusId === 29 || ticket.statusId === 30}
+              disabled={submitting || ticket.statusId === 29 || ticket.statusId === 30 || getMainActionConfig().statusId === 0 || !isStatusAllowed(getMainActionConfig().statusId)}
               className={`h-9 px-4 text-[12.5px] font-bold rounded-lg transition-colors disabled:opacity-40 cursor-pointer shadow-xs whitespace-nowrap flex-1 min-w-0 flex items-center justify-center text-center truncate ${getMainActionConfig().buttonClass}`}
             >
               {getMainActionConfig().label}
@@ -790,3 +841,4 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     </div>
   );
 }
+

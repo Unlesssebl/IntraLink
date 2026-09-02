@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Response
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel
 
-from app.routers.deps import verify_admin_jwt
+from app.routers.deps import verify_admin_jwt, get_operator_auth_b64
 from app.services.worker import get_redis_client
 from app.services.intraservice import verify_credentials
 from app.config import settings
@@ -34,8 +34,9 @@ class LoginRequest(BaseModel):
 @router.post("/admin/api/login")
 async def admin_login(payload: LoginRequest, response: Response):
     """
-    Проверяет учетные данные администратора в IntraService.
-    При успехе сохраняет подписанный JWT токен в HttpOnly Cookie.
+    Проверяет учетные данные администратора/оператора в IntraService.
+    При успехе сохраняет зашифрованный токен сессии оператора в Redis
+    и устанавливает подписанный JWT токен в HttpOnly Cookie.
     """
     auth_b64, user_id = await verify_credentials(payload.username, payload.password)
     if not auth_b64:
@@ -44,20 +45,21 @@ async def admin_login(payload: LoginRequest, response: Response):
             detail="Неверный логин или пароль",
         )
 
-    # Сохраняем учетные данные администратора как сервисный аккаунт в Redis
+    # Сохраняем учетные данные оператора в изолированном ключе Redis с TTL 12 часов
     try:
         from app.services.crypto import encrypt_token
 
         r = get_redis_client()
         encrypted_auth = encrypt_token(auth_b64)
-        await r.set("worker:service_auth_b64", encrypted_auth)
+        await r.set(f"admin_auth:{payload.username}", encrypted_auth, ex=12 * 3600)
         logger.info(
-            "Учетные данные администратора '%s' сохранены в Redis для фонового воркера",
+            "Учетные данные оператора '%s' (user_id: %s) сохранены в Redis (сессия 12ч)",
             payload.username,
+            user_id,
         )
     except Exception as e:
         logger.error(
-            "Не удалось сохранить учетные данные администратора в Redis: %s", e
+            "Не удалось сохранить учетные данные оператора в Redis: %s", e
         )
 
     expire = datetime.now(UTC) + timedelta(hours=12)
@@ -77,10 +79,16 @@ async def admin_login(payload: LoginRequest, response: Response):
 
 
 @router.post("/admin/api/logout")
-async def admin_logout(response: Response):
+async def admin_logout(response: Response, username: str = Depends(verify_admin_jwt)):
     """
-    Удаляет куку сессии администратора.
+    Удаляет куку сессии администратора и очищает токен сессии оператора из Redis.
     """
+    try:
+        r = get_redis_client()
+        await r.delete(f"admin_auth:{username}")
+    except Exception as e:
+        logger.warning("Ошибка при удалении сессии оператора из Redis: %s", e)
+
     response.delete_cookie(key="admin_session")
     return {"status": "success"}
 
@@ -91,6 +99,7 @@ async def admin_me(username: str = Depends(verify_admin_jwt)):
     Возвращает информацию о текущем авторизованном администраторе.
     """
     return {"username": username}
+
 
 
 class DomainAuthRequest(BaseModel):
@@ -1197,24 +1206,17 @@ async def open_task_in_intraservice(task_id: int):
     return RedirectResponse(url=target_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
-@router.get("/admin/api/tasks/{task_id}/details", dependencies=[Depends(verify_admin_jwt)])
-async def get_task_details(task_id: int):
+@router.get("/admin/api/tasks/{task_id}/details")
+async def get_task_details(
+    task_id: int,
+    auth_b64: str = Depends(get_operator_auth_b64),
+):
     """
-    Возвращает расширенные детали задачи: историю комментариев, вложения и кастомные поля.
+    Возвращает расширенные детали задачи: историю комментариев, вложения, кастомные поля и права текущего оператора.
     """
-    from app.services.crypto import decrypt_token
     from app.services.intraservice import get_single_task, get_task_lifetime
 
-    r = get_redis_client()
-    auth_encrypted = await r.get("worker:service_auth_b64")
-    if not auth_encrypted:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Сервисный аккаунт не настроен",
-        )
-
-    auth_b64 = decrypt_token(auth_encrypted)
-    task_data = await get_single_task(auth_b64, task_id)
+    task_data = await get_single_task(auth_b64, task_id, include_rights=True)
     if not task_data:
         raise HTTPException(status_code=404, detail=f"Заявка #{task_id} не найдена")
 
@@ -1259,6 +1261,14 @@ async def get_task_details(task_id: int):
     c_fields = _parse_task_custom_fields(task_data.get("Data"))
     cls_info = _classify_queue_task(task_data, svc_info, pc_name=c_fields.get("pc_name", ""))
 
+    rights_data = task_data.get("Rights") or {}
+    to_statuses = rights_data.get("ToStatuses") or []
+    rights_info = {
+        "to_statuses": to_statuses,
+        "can_add_comment": bool(rights_data.get("CanAddComments", True)),
+        "can_add_expenses": True,
+    }
+
     return {
         "id": task_id,
         "name": task_data.get("Name") or "Без темы",
@@ -1281,29 +1291,23 @@ async def get_task_details(task_id: int):
         "comments": comments,
         "attachments": attachments,
         "cls_info": cls_info,
+        "rights": rights_info,
     }
 
 
 @router.get(
     "/admin/api/tasks/{task_id}/attachments/{file_id}",
-    dependencies=[Depends(verify_admin_jwt)],
 )
-async def download_task_attachment(task_id: int, file_id: int):
+async def download_task_attachment(
+    task_id: int,
+    file_id: int,
+    auth_b64: str = Depends(get_operator_auth_b64),
+):
     """
-    Скачивает бинарный файл вложения задачи из IntraService.
+    Скачивает бинарный файл вложения задачи из IntraService от имени авторизованного оператора.
     """
-    from app.services.crypto import decrypt_token
     from app.services.intraservice import download_attachment_file
 
-    r = get_redis_client()
-    auth_encrypted = await r.get("worker:service_auth_b64")
-    if not auth_encrypted:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Сервисный аккаунт не настроен",
-        )
-
-    auth_b64 = decrypt_token(auth_encrypted)
     content = await download_attachment_file(auth_b64, task_id, file_id)
     if content is None:
         raise HTTPException(
@@ -1318,30 +1322,24 @@ async def download_task_attachment(task_id: int, file_id: int):
     )
 
 
-@router.post("/admin/api/tasks/{task_id}/apply", dependencies=[Depends(verify_admin_jwt)])
-async def apply_task_action(task_id: int, payload: ApplyActionRequest):
+@router.post("/admin/api/tasks/{task_id}/apply")
+async def apply_task_action(
+    task_id: int,
+    payload: ApplyActionRequest,
+    auth_b64: str = Depends(get_operator_auth_b64),
+):
     """
-    Интерактивно применяет действие к заявке (перевод в статус 27/29/30/48, комментарий, трудозатраты).
+    Интерактивно применяет действие к заявке (перевод в целевой статус, комментарий, трудозатраты)
+    от имени текущего авторизованного оператора.
     """
-    from app.services.crypto import decrypt_token
     from app.services.intraservice import (
         get_single_task,
         update_task_full,
         add_task_expenses,
     )
 
-    r = get_redis_client()
-    auth_encrypted = await r.get("worker:service_auth_b64")
-    if not auth_encrypted:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Сервисный аккаунт не настроен",
-        )
-
-    auth_b64 = decrypt_token(auth_encrypted)
-
     # 1. Pre-flight: проверяем статус в живой базе
-    task_curr = await get_single_task(auth_b64, task_id)
+    task_curr = await get_single_task(auth_b64, task_id, include_rights=True)
     if task_curr:
         curr_status = task_curr.get("StatusId")
         if curr_status in (29, 30):
@@ -1352,37 +1350,29 @@ async def apply_task_action(task_id: int, payload: ApplyActionRequest):
                 "message": f"Заявка #{task_id} уже закрыта со статусом {curr_status}",
             }
 
-    # 2. Двухэтапный жизненный цикл: переводим в 27 В работе с назначением исполнителей
-    await update_task_full(
-        auth_b64,
-        task_id=task_id,
-        status_id=27,
-        executor_ids=payload.executor_ids,
-    )
-
-    # 3. Списываем трудозатраты
+    # 2. Списываем трудозатраты
     if payload.minutes > 0:
         await add_task_expenses(auth_b64, task_id=task_id, minutes=payload.minutes)
 
-    # 4. Переводим в целевой статус с комментарием
+    # 3. Переводим в целевой статус напрямую с комментарием
     ok = await update_task_full(
         auth_b64,
         task_id=task_id,
         status_id=payload.status_id,
-        comment=payload.comment.strip(),
+        comment=payload.comment.strip() if payload.comment else None,
         executor_ids=payload.executor_ids,
         is_private=payload.is_private,
     )
 
     if not ok:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось обновить статус заявки #{task_id} в IntraService",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Не удалось обновить статус заявки #{task_id} в IntraService. Проверьте права оператора на данный переход.",
         )
 
-    logger.info("Заявка #%s успешно обновлена администратором в статус %s", task_id, payload.status_id)
+    logger.info("Заявка #%s успешно обновлена оператором в статус %s", task_id, payload.status_id)
 
-    # 5. Полуавтоматическое дообучение RAG: если заявка закрыта (29) и содержит содержательное решение
+    # 4. Полуавтоматическое дообучение RAG: если заявка закрыта (29) и содержит содержательное решение
     if payload.status_id == 29 and payload.comment and len(payload.comment.strip()) >= 15:
         try:
             from app.database.db import AsyncSessionLocal
@@ -1419,10 +1409,13 @@ async def apply_task_action(task_id: int, payload: ApplyActionRequest):
     }
 
 
-@router.post("/admin/api/tasks/bulk-apply", dependencies=[Depends(verify_admin_jwt)])
-async def bulk_apply_tasks(payload: BulkApplyRequest):
+@router.post("/admin/api/tasks/bulk-apply")
+async def bulk_apply_tasks(
+    payload: BulkApplyRequest,
+    auth_b64: str = Depends(get_operator_auth_b64),
+):
     """
-    Пакетно применяет действия к списку выбранных заявок с фиксацией прогресса.
+    Пакетно применяет действия к списку выбранных заявок от имени авторизованного оператора.
     """
     applied = []
     failed = []
@@ -1436,7 +1429,7 @@ async def bulk_apply_tasks(payload: BulkApplyRequest):
                 executor_ids=item.executor_ids,
                 is_private=item.is_private,
             )
-            res = await apply_task_action(item.task_id, req)
+            res = await apply_task_action(item.task_id, req, auth_b64=auth_b64)
             applied.append({"task_id": item.task_id, "res": res})
         except Exception as e:
             logger.error("Ошибка пакетного применения к задаче #%d: %s", item.task_id, e)
@@ -1449,6 +1442,7 @@ async def bulk_apply_tasks(payload: BulkApplyRequest):
         "applied": applied,
         "failed": failed,
     }
+
 
 
 # ===========================================================================

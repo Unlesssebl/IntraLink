@@ -361,19 +361,26 @@ async def get_services(auth_b64: str) -> list[dict[str, Any]] | None:
     )
 
 
-async def get_single_task(auth_b64: str, task_id: int) -> dict[str, Any] | None:
+async def get_single_task(
+    auth_b64: str, task_id: int, include_rights: bool = True
+) -> dict[str, Any] | None:
     """
-    Получает детальную информацию по конкретной задаче с кастомными полями и метаданными.
+    Получает детальную информацию по конкретной задаче с кастомными полями, правами и метаданными.
     """
+    include_str = "customfields,status,service,comments,attachments"
+    if include_rights:
+        include_str += ",usertaskrights"
+
     res = await _make_request(
         endpoint=f"task/{task_id}",
         method="GET",
         auth_b64=auth_b64,
-        params={"include": "customfields,status,service,comments,attachments"},
+        params={"include": include_str},
     )
     if res:
         return enrich_task_data(res)
     return None
+
 
 
 async def get_tasks_by_filter(

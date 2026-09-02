@@ -153,3 +153,24 @@ async def get_service_auth_b64() -> str:
             detail="Сервисный аккаунт IntraService не настроен.",
         )
     return service_auth_b64
+
+
+async def get_operator_auth_b64(
+    username: str = Depends(verify_admin_jwt),
+) -> str:
+    """
+    Получает расшифрованный Basic Auth токен авторизованного оператора из Redis.
+    Сессия оператора изолирована и сохраняется под ключом admin_auth:{username}.
+    """
+    from app.services.crypto import decrypt_token
+    from app.services.worker import get_redis_client
+
+    r = get_redis_client()
+    encrypted_auth = await r.get(f"admin_auth:{username}")
+    if not encrypted_auth:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Сессия оператора истекла или не найдена. Пожалуйста, войдите заново.",
+        )
+    return decrypt_token(encrypted_auth)
+
