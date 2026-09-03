@@ -115,6 +115,8 @@ export interface KBExampleItem {
   service_id: number;
   service_name: string;
   status_name: string;
+  root_cause?: string | null;
+  root_id?: string | null;
 }
 
 export interface KBExamplesResponse {
@@ -144,6 +146,7 @@ export interface KBStatsResponse {
   services: Record<string, { total: number; by_status: Record<string, number> }>;
   sync_readiness?: KBSyncReadiness;
   root_services?: KBRootServiceItem[];
+  root_counts?: Record<string, number>;
 }
 
 export interface KBSyncResponse {
@@ -172,13 +175,15 @@ export async function fetchKbExamples(
   page = 1,
   limit = 20,
   serviceId?: number,
-  search?: string
+  search?: string,
+  rootId?: string | null
 ): Promise<KBExamplesResponse> {
   const params = new URLSearchParams({
     page: String(page),
     limit: String(limit),
   });
   if (serviceId) params.set('service_id', String(serviceId));
+  if (rootId) params.set('root_id', rootId);
   if (search && search.trim()) params.set('search', search.trim());
 
   const res = await fetch(`/api/v1/admin/kb/examples?${params.toString()}`, {

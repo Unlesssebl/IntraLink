@@ -56,6 +56,8 @@ class KBExampleItem(BaseModel):
     service_id: int
     service_name: str
     status_name: str
+    root_cause: str | None = None
+    root_id: str | None = None
 
 
 class KBExamplesResponse(BaseModel):
@@ -111,19 +113,26 @@ async def get_services_tree() -> list[dict[str, Any]]:
 async def get_kb_examples(
     page: int = Query(1, ge=1, description="Номер страницы"),
     limit: int = Query(20, ge=1, le=100, description="Количество на страницу"),
-    service_id: int | None = Query(None, description="Фильтр по ID услуги"),
+    service_id: int | None = Query(None, description="Фильтр по ID конкретной услуги"),
+    root_id: str | None = Query(None, description="Фильтр по корневому разделу каталога (01..16)"),
     search: str | None = Query(None, description="Текстовый поиск по проблеме или решению"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Просмотр проиндексированных прецедентов RAG (исключая черный список).
-    Поддерживает пагинацию, фильтр по разделу каталога и полнотекстовый поиск.
+    Поддерживает пагинацию, фильтр по корневому разделу или конкретной услуге и полнотекстовый поиск.
     """
     try:
         offset = (page - 1) * limit
         query = select(TaskKnowledgeBase).where(TaskKnowledgeBase.is_blacklisted.is_(False))
 
-        if service_id is not None:
+        # Фильтр по корневому разделу (все дочерние service_id)
+        if root_id:
+            from app.services.rag import get_subservice_ids_for_root
+            sub_ids = get_subservice_ids_for_root(root_id)
+            if sub_ids:
+                query = query.where(TaskKnowledgeBase.service_id.in_(sub_ids))
+        elif service_id is not None:
             query = query.where(TaskKnowledgeBase.service_id == service_id)
 
         if search and search.strip():
@@ -138,8 +147,14 @@ async def get_kb_examples(
         count_query = select(func.count(TaskKnowledgeBase.task_id)).where(
             TaskKnowledgeBase.is_blacklisted.is_(False)
         )
-        if service_id is not None:
+        if root_id:
+            from app.services.rag import get_subservice_ids_for_root
+            sub_ids = get_subservice_ids_for_root(root_id)
+            if sub_ids:
+                count_query = count_query.where(TaskKnowledgeBase.service_id.in_(sub_ids))
+        elif service_id is not None:
             count_query = count_query.where(TaskKnowledgeBase.service_id == service_id)
+
         if search and search.strip():
             term = f"%{search.strip()}%"
             count_query = count_query.where(
@@ -171,6 +186,7 @@ async def get_kb_examples(
         examples: list[KBExampleItem] = []
         for r in rows:
             s_name = r.service_name or service_names_map.get(r.service_id, f"Услуга #{r.service_id}")
+            c_data = r.classification_data or {}
             examples.append(
                 KBExampleItem(
                     task_id=r.task_id,
@@ -180,6 +196,8 @@ async def get_kb_examples(
                     service_id=r.service_id or 0,
                     service_name=s_name,
                     status_name=r.status_name or "",
+                    root_cause=c_data.get("root_cause"),
+                    root_id=c_data.get("root_id"),
                 )
             )
 
@@ -372,8 +390,14 @@ async def get_kb_statistics(
                 except Exception:
                     pass
 
-        from app.services.rag import get_all_root_services
+        from app.services.rag import get_all_root_services, get_subservice_ids_for_root
         roots = get_all_root_services()
+
+        root_counts: dict[str, int] = {}
+        for r in roots:
+            sids = get_subservice_ids_for_root(r["root_id"])
+            cnt = sum(services_stats.get(str(s), {}).get("total", 0) for s in sids)
+            root_counts[r["root_id"]] = cnt
 
         return {
             "total_active_examples": total_examples,
@@ -382,6 +406,7 @@ async def get_kb_statistics(
             "services": services_stats,
             "sync_readiness": readiness,
             "root_services": roots,
+            "root_counts": root_counts,
         }
     except Exception as e:
         logger.exception("Ошибка при сборе статистики базы знаний: %s", e)

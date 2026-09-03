@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   loginAdmin,
   checkCurrentAdminSession,
@@ -31,6 +31,19 @@ import type { AIHealthData, SanitizePreviewResult } from '../lib/types';
 
 interface AdminPanelPageProps {
   theme?: 'light' | 'dark';
+}
+
+function getPaginationPages(currentPage: number, totalPages: number): (number | string)[] {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  if (currentPage <= 4) {
+    return [1, 2, 3, 4, 5, '...', totalPages];
+  }
+  if (currentPage >= totalPages - 3) {
+    return [1, '...', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+  }
+  return [1, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages];
 }
 
 export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps) {
@@ -105,8 +118,13 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [kbExamples, setKbExamples] = useState<KBExampleItem[]>([]);
   const [kbTotal, setKbTotal] = useState<number>(0);
   const [kbPage, setKbPage] = useState<number>(1);
-  const [kbLimit] = useState<number>(10);
+  const [kbLimit, setKbLimit] = useState<number>(10);
   const [kbSearch, setKbSearch] = useState<string>('');
+  const [kbSearchInput, setKbSearchInput] = useState<string>('');
+  const [kbSelectedRootFilter, setKbSelectedRootFilter] = useState<string | null>(null);
+  const [expandedTasks, setExpandedTasks] = useState<Record<number, boolean>>({});
+  const [copiedTaskId, setCopiedTaskId] = useState<number | null>(null);
+  const kbTableRef = useRef<HTMLDivElement>(null);
   const [kbLoading, setKbLoading] = useState<boolean>(false);
   const [kbSyncLoading, setKbSyncLoading] = useState<boolean>(false);
   const [kbSyncDays, setKbSyncDays] = useState<number>(60);
@@ -299,12 +317,12 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
   // KB Handlers
   const loadKbData = useCallback(
-    async (authToken: string, page = 1, search = '') => {
+    async (authToken: string, page = 1, search = '', rootId: string | null = null, limit = 10) => {
       setKbLoading(true);
       try {
         const [stats, examplesData] = await Promise.all([
           fetchKbStats(authToken).catch(() => null),
-          fetchKbExamples(authToken, page, kbLimit, undefined, search),
+          fetchKbExamples(authToken, page, limit, undefined, search, rootId),
         ]);
         if (stats) setKbStats(stats);
         setKbExamples(examplesData.examples || []);
@@ -316,21 +334,48 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
         setKbLoading(false);
       }
     },
-    [kbLimit]
+    []
   );
+
+  // Мгновенный дебаунс-поиск 300мс
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setKbSearch(kbSearchInput.trim());
+      setKbPage(1);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [kbSearchInput]);
 
   useEffect(() => {
     if (token && activeTab === 'kb') {
-      loadKbData(token, kbPage, kbSearch);
+      loadKbData(token, kbPage, kbSearch, kbSelectedRootFilter, kbLimit);
     }
-  }, [token, activeTab, kbPage]);
+  }, [token, activeTab, kbPage, kbSearch, kbSelectedRootFilter, kbLimit, loadKbData]);
 
-  const handleSearchSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (token) {
-      setKbPage(1);
-      loadKbData(token, 1, kbSearch);
+  const handleCopySolution = async (taskId: number, solution: string) => {
+    try {
+      await navigator.clipboard.writeText(solution);
+      setCopiedTaskId(taskId);
+      setTimeout(() => setCopiedTaskId(null), 2000);
+    } catch {
+      // ignore
     }
+  };
+
+  const handleToggleExpand = (taskId: number) => {
+    setExpandedTasks(prev => ({ ...prev, [taskId]: !prev[taskId] }));
+  };
+
+  const handleResetFilters = () => {
+    setKbSearchInput('');
+    setKbSearch('');
+    setKbSelectedRootFilter(null);
+    setKbPage(1);
+  };
+
+  const handlePageChange = (newPage: number) => {
+    setKbPage(newPage);
+    kbTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   const handleBlacklistExample = async (taskId: number) => {
@@ -1853,61 +1898,151 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                 </div>
               )}
 
-              {/* Search input */}
-              <form onSubmit={handleSearchSubmit} className="flex gap-2">
-                <div className="relative flex-1">
-                  <input
-                    type="text"
-                    value={kbSearch}
-                    onChange={e => setKbSearch(e.target.value)}
-                    placeholder="Поиск по теме, сути проблемы или тексту решения..."
-                    className="w-full pl-9 pr-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-blue-500"
-                  />
-                  <svg
-                    className="absolute left-3 top-2.5 text-neutral-500"
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <circle cx="11" cy="11" r="8"></circle>
-                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                  </svg>
-                </div>
-                <button
-                  type="submit"
-                  disabled={kbLoading}
-                  className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded-xl text-xs font-medium border border-neutral-700 transition-colors cursor-pointer"
-                >
-                  Найти
-                </button>
-                {kbSearch && (
+              {/* Service Category Chips Filter (01..17) */}
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 scrollbar-thin scrollbar-thumb-neutral-800">
                   <button
                     type="button"
                     onClick={() => {
-                      setKbSearch('');
-                      if (token) {
-                        setKbPage(1);
-                        loadKbData(token, 1, '');
-                      }
+                      setKbSelectedRootFilter(null);
+                      setKbPage(1);
                     }}
-                    className="px-3 py-2 text-xs text-neutral-400 hover:text-neutral-200 transition-colors cursor-pointer"
+                    className={`px-3 py-1.5 rounded-xl text-xs font-medium shrink-0 transition-all cursor-pointer flex items-center gap-1.5 ${
+                      kbSelectedRootFilter === null
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'bg-neutral-950 hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200 border border-neutral-800'
+                    }`}
                   >
-                    Сброс
+                    <span>Все разделы</span>
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-black/30 text-neutral-300">
+                      {kbStats?.total_active_examples ?? 0}
+                    </span>
+                  </button>
+                  {kbStats?.root_services?.map(r => {
+                    const cnt = kbStats.root_counts?.[r.root_id] ?? 0;
+                    const isSelected = kbSelectedRootFilter === r.root_id;
+                    return (
+                      <button
+                        key={r.root_id}
+                        type="button"
+                        onClick={() => {
+                          setKbSelectedRootFilter(isSelected ? null : r.root_id);
+                          setKbPage(1);
+                        }}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-medium shrink-0 transition-all cursor-pointer flex items-center gap-1.5 ${
+                          isSelected
+                            ? 'bg-blue-600 text-white shadow-sm'
+                            : 'bg-neutral-950 hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200 border border-neutral-800'
+                        }`}
+                      >
+                        <span>{r.name}</span>
+                        <span
+                          className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                            isSelected
+                              ? 'bg-black/30 text-white'
+                              : cnt > 0
+                              ? 'bg-neutral-800 text-neutral-300'
+                              : 'bg-neutral-900 text-neutral-600'
+                          }`}
+                        >
+                          {cnt}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Active Filters Bar */}
+                {(kbSelectedRootFilter || kbSearch) && (
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    <span className="text-[11px] text-neutral-500 font-medium">Активные фильтры:</span>
+                    {kbSelectedRootFilter && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/30 text-xs">
+                        <span>
+                          Раздел: {kbStats?.root_services?.find(r => r.root_id === kbSelectedRootFilter)?.name || kbSelectedRootFilter}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setKbSelectedRootFilter(null);
+                            setKbPage(1);
+                          }}
+                          className="hover:text-white cursor-pointer ml-0.5 text-sm"
+                          title="Снять фильтр раздела"
+                        >
+                          &times;
+                        </button>
+                      </span>
+                    )}
+                    {kbSearch && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-neutral-800 text-neutral-300 border border-neutral-700 text-xs">
+                        <span>Поиск: "{kbSearch}"</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setKbSearchInput('');
+                            setKbSearch('');
+                            setKbPage(1);
+                          }}
+                          className="hover:text-white cursor-pointer ml-0.5 text-sm"
+                          title="Очистить поиск"
+                        >
+                          &times;
+                        </button>
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleResetFilters}
+                      className="text-[11px] text-neutral-400 hover:text-rose-400 underline cursor-pointer ml-1 transition-colors"
+                    >
+                      Сбросить все
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Instant Search input */}
+              <div className="relative">
+                <input
+                  type="text"
+                  value={kbSearchInput}
+                  onChange={e => setKbSearchInput(e.target.value)}
+                  placeholder="Мгновенный поиск по номеру заявки, теме, проблеме или решению..."
+                  className="w-full pl-9 pr-9 py-2.5 bg-neutral-950 border border-neutral-700 rounded-xl text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+                <svg
+                  className="absolute left-3 top-3 text-neutral-500"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                {kbSearchInput && (
+                  <button
+                    type="button"
+                    onClick={() => setKbSearchInput('')}
+                    className="absolute right-3 top-2.5 text-neutral-400 hover:text-neutral-200 cursor-pointer p-0.5"
+                    title="Очистить строку"
+                  >
+                    &times;
                   </button>
                 )}
-              </form>
+              </div>
             </div>
 
             {/* Knowledge Base Examples Table */}
-            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-sm overflow-hidden">
+            <div ref={kbTableRef} className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-sm overflow-hidden">
               <div className="px-6 py-4 border-b border-neutral-800 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm font-semibold">Проиндексированные прецеденты</h3>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-neutral-800 text-neutral-300">
-                    {kbTotal} записей
+                    {kbTotal} {kbTotal === 1 ? 'запись' : kbTotal < 5 ? 'записи' : 'записей'}
                   </span>
                 </div>
                 <div className="flex items-center gap-3">
@@ -1937,81 +2072,187 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
               {kbExamples.length === 0 && !kbLoading ? (
                 <div className="p-12 text-center text-neutral-500 text-xs">
-                  {kbSearch ? 'По вашему запросу прецедентов не найдено.' : 'База знаний пока пуста. Запустите синхронизацию выше.'}
+                  {kbSearch || kbSelectedRootFilter
+                    ? 'По выбранным фильтрам прецедентов не найдено.'
+                    : 'База знаний пока пуста. Запустите синхронизацию выше.'}
                 </div>
               ) : (
                 <div className="divide-y divide-neutral-800/60">
-                  {kbExamples.map(item => (
-                    <div key={item.task_id} className="p-5 hover:bg-neutral-800/30 transition-colors space-y-2.5">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex items-center gap-2.5">
-                          <span className="px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-mono font-semibold">
-                            #{item.task_id}
-                          </span>
-                          <span className="text-xs font-semibold text-neutral-200">
-                            {item.original_name || 'Без названия'}
-                          </span>
-                          <span className="px-2 py-0.5 rounded text-[10px] bg-neutral-800 text-neutral-400">
-                            {item.service_name}
-                          </span>
+                  {kbExamples.map(item => {
+                    const isExpanded = !!expandedTasks[item.task_id];
+                    const isLongText = (item.problem?.length || 0) > 180 || (item.solution?.length || 0) > 180;
+                    return (
+                      <div key={item.task_id} className="p-5 hover:bg-neutral-800/30 transition-colors space-y-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-mono font-semibold">
+                              #{item.task_id}
+                            </span>
+                            <span className="text-xs font-semibold text-neutral-200">
+                              {item.original_name || 'Без названия'}
+                            </span>
+                            <span className="px-2 py-0.5 rounded text-[10px] bg-neutral-800 text-neutral-400">
+                              {item.service_name}
+                            </span>
+                            {item.root_cause && (
+                              <span className="px-2 py-0.5 rounded text-[10px] bg-amber-500/10 border border-amber-500/20 text-amber-300 font-medium">
+                                Причина: {item.root_cause}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {/* Copy Solution button */}
+                            <button
+                              type="button"
+                              onClick={() => handleCopySolution(item.task_id, item.solution || '')}
+                              className="px-2.5 py-1 text-[11px] font-medium text-neutral-300 hover:text-white bg-neutral-800 hover:bg-neutral-700 rounded-lg border border-neutral-700 transition-colors flex items-center gap-1 cursor-pointer"
+                              title="Скопировать решение в буфер обмена"
+                            >
+                              {copiedTaskId === item.task_id ? (
+                                <span className="text-emerald-400 font-semibold">Скопировано!</span>
+                              ) : (
+                                <>
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                  </svg>
+                                  <span>Решение</span>
+                                </>
+                              )}
+                            </button>
+
+                            {/* IntraService direct link */}
+                            <a
+                              href={`/api/v1/tasks/${item.task_id}/open`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-2.5 py-1 text-[11px] font-medium text-blue-400 hover:text-blue-300 hover:bg-blue-950/40 rounded-lg border border-blue-900/40 transition-colors flex items-center gap-1 cursor-pointer"
+                              title="Открыть карточку заявки в IntraService"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                                <polyline points="15 3 21 3 21 9"></polyline>
+                                <line x1="10" y1="14" x2="21" y2="3"></line>
+                              </svg>
+                              <span>В тикет</span>
+                            </a>
+
+                            {/* Blacklist button */}
+                            <button
+                              onClick={() => handleBlacklistExample(item.task_id)}
+                              disabled={blacklistingTaskId === item.task_id}
+                              title="Скрыть прецедент из базы знаний RAG"
+                              className="px-2.5 py-1 text-[11px] font-medium text-amber-400 hover:text-amber-300 hover:bg-amber-950/40 rounded-lg border border-amber-900/40 transition-colors flex items-center gap-1 cursor-pointer"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                                <line x1="1" y1="1" x2="23" y2="23"></line>
+                              </svg>
+                              <span>{blacklistingTaskId === item.task_id ? 'Скрытие...' : 'Скрыть'}</span>
+                            </button>
+                          </div>
                         </div>
 
-                        <button
-                          onClick={() => handleBlacklistExample(item.task_id)}
-                          disabled={blacklistingTaskId === item.task_id}
-                          title="Скрыть прецедент из базы знаний RAG"
-                          className="px-2.5 py-1 text-[11px] font-medium text-amber-400 hover:text-amber-300 hover:bg-amber-950/40 rounded-lg border border-amber-900/40 transition-colors flex items-center gap-1 cursor-pointer"
-                        >
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
-                            <line x1="1" y1="1" x2="23" y2="23"></line>
-                          </svg>
-                          <span>{blacklistingTaskId === item.task_id ? 'Скрытие...' : 'Скрыть из базы знаний'}</span>
-                        </button>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                          <div className="p-3 bg-neutral-950/60 rounded-xl border border-neutral-800/80">
+                            <p className="text-[10px] uppercase font-semibold text-neutral-500 tracking-wider mb-1">
+                              Суть проблемы / Запрос
+                            </p>
+                            <p className={`text-neutral-300 leading-relaxed whitespace-pre-wrap ${!isExpanded ? 'line-clamp-3' : ''}`}>
+                              {item.problem || '—'}
+                            </p>
+                          </div>
+
+                          <div className="p-3 bg-emerald-950/10 rounded-xl border border-emerald-900/20">
+                            <p className="text-[10px] uppercase font-semibold text-emerald-500 tracking-wider mb-1">
+                              Решение / Ответ
+                            </p>
+                            <p className={`text-neutral-300 leading-relaxed whitespace-pre-wrap ${!isExpanded ? 'line-clamp-3' : ''}`}>
+                              {item.solution || '—'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {isLongText && (
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleExpand(item.task_id)}
+                              className="text-[11px] text-blue-400 hover:text-blue-300 font-medium cursor-pointer transition-colors flex items-center gap-1"
+                            >
+                              <span>{isExpanded ? 'Свернуть текст' : 'Развернуть полностью'}</span>
+                              <span>{isExpanded ? '↑' : '↓'}</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                        <div className="p-3 bg-neutral-950/60 rounded-xl border border-neutral-800/80">
-                          <p className="text-[10px] uppercase font-semibold text-neutral-500 tracking-wider mb-1">
-                            Суть проблемы / Запрос
-                          </p>
-                          <p className="text-neutral-300 leading-relaxed line-clamp-3">
-                            {item.problem || '—'}
-                          </p>
-                        </div>
-
-                        <div className="p-3 bg-emerald-950/10 rounded-xl border border-emerald-900/20">
-                          <p className="text-[10px] uppercase font-semibold text-emerald-500 tracking-wider mb-1">
-                            Решение / Ответ
-                          </p>
-                          <p className="text-neutral-300 leading-relaxed line-clamp-3">
-                            {item.solution || '—'}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
-              {/* Pagination Bar */}
-              {kbTotal > kbLimit && (
-                <div className="px-6 py-3 border-t border-neutral-800 flex items-center justify-between text-xs text-neutral-400">
-                  <span>
-                    Страница {kbPage} из {Math.ceil(kbTotal / kbLimit)}
-                  </span>
-                  <div className="flex items-center gap-2">
+              {/* Enhanced Pagination Bar */}
+              {kbTotal > 0 && (
+                <div className="px-6 py-3.5 border-t border-neutral-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-neutral-400">
+                  <div className="flex items-center gap-4">
+                    <span>
+                      Показано <strong className="text-neutral-200 font-mono">{(kbPage - 1) * kbLimit + 1}</strong>–
+                      <strong className="text-neutral-200 font-mono">{Math.min(kbPage * kbLimit, kbTotal)}</strong> из{' '}
+                      <strong className="text-neutral-200 font-mono">{kbTotal}</strong>
+                    </span>
+
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-neutral-500">На странице:</span>
+                      <select
+                        value={kbLimit}
+                        onChange={e => {
+                          setKbLimit(Number(e.target.value));
+                          setKbPage(1);
+                        }}
+                        className="px-2 py-1 bg-neutral-950 border border-neutral-700 rounded-lg text-xs text-neutral-200 focus:outline-none focus:border-blue-500 cursor-pointer"
+                      >
+                        <option value={10}>10</option>
+                        <option value={25}>25</option>
+                        <option value={50}>50</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
                     <button
-                      onClick={() => setKbPage(prev => Math.max(prev - 1, 1))}
+                      onClick={() => handlePageChange(Math.max(kbPage - 1, 1))}
                       disabled={kbPage <= 1 || kbLoading}
-                      className="px-3 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-300 rounded-lg border border-neutral-700 transition-colors cursor-pointer"
+                      className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-300 rounded-lg border border-neutral-700 transition-colors cursor-pointer"
                     >
                       ← Назад
                     </button>
+
+                    {/* Numeric page buttons */}
+                    {getPaginationPages(kbPage, Math.ceil(kbTotal / kbLimit)).map((p, idx) =>
+                      typeof p === 'number' ? (
+                        <button
+                          key={idx}
+                          onClick={() => handlePageChange(p)}
+                          className={`w-7 h-7 rounded-lg text-xs font-mono transition-colors cursor-pointer ${
+                            kbPage === p
+                              ? 'bg-blue-600 text-white font-semibold shadow-xs'
+                              : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700'
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      ) : (
+                        <span key={idx} className="px-1 text-neutral-600 font-mono">
+                          ...
+                        </span>
+                      )
+                    )}
+
                     <button
-                      onClick={() => setKbPage(prev => (prev * kbLimit < kbTotal ? prev + 1 : prev))}
+                      onClick={() => handlePageChange(kbPage * kbLimit < kbTotal ? kbPage + 1 : kbPage)}
                       disabled={kbPage * kbLimit >= kbTotal || kbLoading}
-                      className="px-3 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-300 rounded-lg border border-neutral-700 transition-colors cursor-pointer"
+                      className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-300 rounded-lg border border-neutral-700 transition-colors cursor-pointer"
                     >
                       Вперед →
                     </button>
