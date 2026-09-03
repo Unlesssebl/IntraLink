@@ -64,8 +64,8 @@ services:
       - OLLAMA_BASE_URL=${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
       - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
-      - INTRASERVICE_SERVICE_LOGIN=intratest
-      - INTRASERVICE_SERVICE_USER_ID=9891
+      - INTRASERVICE_SERVICE_LOGIN=${INTRASERVICE_SERVICE_LOGIN:-IntraService_dev}
+      - INTRASERVICE_SERVICE_USER_ID=${INTRASERVICE_SERVICE_USER_ID:-10500}
       - INTRASERVICE_SERVICE_PASSWORD_FILE=/run/secrets/service_password
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
     extra_hosts:
@@ -104,8 +104,8 @@ services:
       - OLLAMA_BASE_URL=${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
       - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
-      - INTRASERVICE_SERVICE_LOGIN=intratest
-      - INTRASERVICE_SERVICE_USER_ID=9891
+      - INTRASERVICE_SERVICE_LOGIN=${INTRASERVICE_SERVICE_LOGIN:-IntraService_dev}
+      - INTRASERVICE_SERVICE_USER_ID=${INTRASERVICE_SERVICE_USER_ID:-10500}
       - INTRASERVICE_SERVICE_PASSWORD_FILE=/run/secrets/service_password
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
     extra_hosts:

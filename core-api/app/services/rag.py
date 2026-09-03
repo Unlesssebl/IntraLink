@@ -357,6 +357,14 @@ async def dense_vector_search(
         )
         eval_circuit = dec.circuit
 
+    # Проверяем, есть ли вообще записи в базе знаний перед вызовом внешнего сервиса эмбеддингов
+    try:
+        has_records = await db.scalar(select(TaskKnowledgeBase.task_id).limit(1))
+        if not has_records:
+            return []
+    except Exception:
+        pass
+
     query_vector = await get_embedding_vector(clean_query, circuit=eval_circuit)
     if not query_vector:
         return []

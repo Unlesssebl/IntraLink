@@ -32,6 +32,21 @@ model_list:
       api_key: os.environ/GEMINI_API_KEY
       rpm: 15
 
+  # =========================================================================
+  # 4. Модель эмбеддингов Google Gemini (3072 dim)
+  # =========================================================================
+  - model_name: gemini-embedding-2
+    litellm_params:
+      model: gemini/gemini-embedding-001
+      api_key: os.environ/GEMINI_API_KEY
+      rpm: 30
+
+  - model_name: gemini-embedding-001
+    litellm_params:
+      model: gemini/gemini-embedding-001
+      api_key: os.environ/GEMINI_API_KEY
+      rpm: 30
+
 # ===========================================================================
 # Умный роутинг, автоматический Cooldown и каскадные Fallback
 # ===========================================================================
