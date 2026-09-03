@@ -1232,9 +1232,22 @@ async def sync_stratified_kb(
         "total_duplicates": 0,
         "total_ai_errors": 0,
         "service_stats": {},
+        "logs": [],
         "error": None,
         "finished_at": None,
     }
+
+    def add_log(msg: str, level: str = "info") -> None:
+        now_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        progress_state.setdefault("logs", []).append({
+            "time": now_str,
+            "level": level,
+            "message": msg,
+        })
+        if len(progress_state["logs"]) > 100:
+            progress_state["logs"] = progress_state["logs"][-100:]
+
+    add_log(f"Старт наполнения RAG: {len(target_roots)} разделов, квота {quota_per_service}, глубина {days} дн.", "info")
     await _save_sync_progress(redis, progress_state)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -1256,6 +1269,7 @@ async def sync_stratified_kb(
 
                 if not sub_ids:
                     progress_state["processed_roots"] = idx
+                    add_log(f"[{r_id}] Раздел '{r_name}': нет дочерних сервисов, пропуск", "warn")
                     continue
 
                 # Проверяем, сколько активных прецедентов уже есть в этом разделе
@@ -1275,10 +1289,13 @@ async def sync_stratified_kb(
                     "status": "in_progress",
                 }
 
+                add_log(f"[{r_id}] Раздел '{r_name}': в базе {existing_count}/{quota_per_service} записей", "info")
+
                 if existing_count >= quota_per_service:
                     s_stats["status"] = "quota_reached"
                     progress_state["service_stats"][r_id] = s_stats
                     progress_state["processed_roots"] = idx
+                    add_log(f"[{r_id}] Раздел '{r_name}' укомплектован (квота {quota_per_service} достигнута)", "success")
                     await _save_sync_progress(redis, progress_state)
                     continue
 
@@ -1299,7 +1316,17 @@ async def sync_stratified_kb(
                     try:
                         raw_tasks = await intraservice.get_tasks(auth_b64=auth_b64, filters=params)
                     except Exception as fe:
+                        err_str = str(fe)
                         logger.warning("Сбой выборки задач для раздела %s (стр %d): %s", r_name, page, fe)
+                        if "401" in err_str or "Unauthorized" in err_str:
+                            err_msg = f"Ошибка авторизации IntraService (401 Unauthorized): проверьте пароль в Хранилище"
+                            add_log(err_msg, "error")
+                            progress_state["is_running"] = False
+                            progress_state["error"] = err_msg
+                            progress_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+                            await _save_sync_progress(redis, progress_state)
+                            return progress_state
+                        add_log(f"[{r_id}] Ошибка загрузки страницы {page}: {fe}", "warn")
                         break
 
                     batch = []
@@ -1309,8 +1336,10 @@ async def sync_stratified_kb(
                         batch = raw_tasks
 
                     if not batch:
-                        # Edge Case 2: в данном разделе больше нет закрытых заявок
+                        add_log(f"[{r_id}] Закрытых заявок больше нет", "info")
                         break
+
+                    add_log(f"[{r_id}] Получено {len(batch)} заявок на стр. {page}", "info")
 
                     for t in batch:
                         if service_indexed >= needed:
@@ -1346,6 +1375,7 @@ async def sync_stratified_kb(
                         if not is_informative_solution(solution_text):
                             s_stats["skipped"] += 1
                             progress_state["total_skipped"] += 1
+                            add_log(f"#{tid}: отсеяна Quality Gate (неинформативно)", "warn")
                             continue
 
                         # Edge Case 7: обрезка чрезмерно длинных логов
@@ -1364,6 +1394,7 @@ async def sync_stratified_kb(
                             progress_state["total_ai_errors"] = progress_state.get("total_ai_errors", 0) + 1
                             s_stats["ai_errors"] = s_stats.get("ai_errors", 0) + 1
                             err_reason = _last_embedding_error or "сервис генерации векторов вернул None"
+                            add_log(f"#{tid}: сбой AI эмбеддера ({err_reason[:60]})", "error")
                             logger.warning(
                                 "Сбой генерации вектора для заявки #%d (сбоев подряд: %d): %s",
                                 tid,
@@ -1377,6 +1408,7 @@ async def sync_stratified_kb(
                                     f"Синхронизация аварийно остановлена во избежание холостого прогона."
                                 )
                                 logger.error(err_msg)
+                                add_log(err_msg, "error")
                                 progress_state["is_running"] = False
                                 progress_state["error"] = err_msg
                                 progress_state["finished_at"] = datetime.now(timezone.utc).isoformat()
@@ -1394,6 +1426,7 @@ async def sync_stratified_kb(
                         if is_dup:
                             s_stats["duplicates"] += 1
                             progress_state["total_duplicates"] += 1
+                            add_log(f"#{tid}: отсеяна Cosine Gate (дубликат > 0.90)", "warn")
                             continue
 
                         # Сохранение качественного прецедента в pgvector
@@ -1420,6 +1453,7 @@ async def sync_stratified_kb(
                         service_indexed += 1
                         s_stats["indexed"] += 1
                         progress_state["total_indexed"] += 1
+                        add_log(f"#{tid}: сохранена в RAG ({t_name[:35]}...) [{service_indexed}/{needed}]", "success")
 
                     if len(batch) < page_size:
                         # Завершение страниц раздела
@@ -1430,11 +1464,13 @@ async def sync_stratified_kb(
                 progress_state["service_stats"][r_id] = s_stats
                 progress_state["processed_roots"] = idx
                 progress_state["percent"] = int((idx / len(target_roots)) * 100)
+                add_log(f"[{r_id}] Раздел '{r_name}' завершен: +{s_stats['indexed']} добавлено, {s_stats['skipped']} отписок", "info")
                 await _save_sync_progress(redis, progress_state)
 
         progress_state["is_running"] = False
         progress_state["percent"] = 100
         progress_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        add_log(f"Синхронизация RAG завершена! Всего добавлено: +{progress_state['total_indexed']} прецедентов", "success")
         await _save_sync_progress(redis, progress_state)
         logger.info(
             "Стратифицированная синхронизация RAG завершена: добавлено %d прецедентов, пропущено %d (дубликатов %d)",

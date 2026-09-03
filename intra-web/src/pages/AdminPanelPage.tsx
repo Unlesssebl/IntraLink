@@ -131,6 +131,8 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [kbSyncQuota, setKbSyncQuota] = useState<number>(30);
   const [kbSyncRootId, setKbSyncRootId] = useState<string>('');
   const [kbSyncProgress, setKbSyncProgress] = useState<KBSyncProgressResponse | null>(null);
+  const [showSyncConsole, setShowSyncConsole] = useState<boolean>(true);
+  const syncConsoleEndRef = useRef<HTMLDivElement | null>(null);
   const [blacklistingTaskId, setBlacklistingTaskId] = useState<number | null>(null);
   const [isPurgeModalOpen, setIsPurgeModalOpen] = useState<boolean>(false);
   const [purgeConfirmed, setPurgeConfirmed] = useState<boolean>(false);
@@ -477,6 +479,13 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
       if (timer) clearTimeout(timer);
     };
   }, [token, activeTab]);
+
+  // Auto-scroll sync console to bottom when new logs arrive
+  useEffect(() => {
+    if (showSyncConsole && kbSyncProgress?.logs?.length) {
+      syncConsoleEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [kbSyncProgress?.logs?.length, showSyncConsole]);
 
   useEffect(() => {
     if (token) {
@@ -1887,7 +1896,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               </div>
 
               {/* Live Background Sync Progress Card */}
-              {kbSyncProgress && (kbSyncProgress.is_running || (kbSyncProgress.percent > 0 && kbSyncProgress.percent < 100) || kbSyncProgress.error) && (
+              {kbSyncProgress && (kbSyncProgress.is_running || (kbSyncProgress.percent > 0 && kbSyncProgress.percent < 100) || kbSyncProgress.error || (kbSyncProgress.logs && kbSyncProgress.logs.length > 0)) && (
                 <div className={`p-4 rounded-xl bg-neutral-950 border space-y-2.5 shadow-inner ${
                   kbSyncProgress.error ? 'border-rose-800/60' : 'border-blue-900/50'
                 }`}>
@@ -1962,6 +1971,51 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                       Лимит: {kbSyncQuota} на раздел
                     </span>
                   </div>
+
+                  {/* Live Console Terminal */}
+                  {kbSyncProgress.logs && kbSyncProgress.logs.length > 0 && (
+                    <div className="mt-2.5 border-t border-neutral-800/80 pt-2.5">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setShowSyncConsole(!showSyncConsole)}
+                          className="flex items-center gap-1.5 text-neutral-400 hover:text-neutral-200 text-xs font-mono transition-colors cursor-pointer"
+                        >
+                          <span className="text-[10px] text-neutral-500">&gt;_</span>
+                          <span className="font-semibold text-[11px]">Терминал выполнения RAG</span>
+                          <span className="px-1.5 py-0.2 rounded bg-neutral-800 text-[9.5px] text-neutral-300 font-mono">
+                            {kbSyncProgress.logs.length}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowSyncConsole(!showSyncConsole)}
+                          className="text-[10px] text-neutral-500 hover:text-neutral-400 font-mono cursor-pointer"
+                        >
+                          {showSyncConsole ? 'свернуть ▲' : 'развернуть ▼'}
+                        </button>
+                      </div>
+
+                      {showSyncConsole && (
+                        <div className="p-3 rounded-xl bg-black/95 border border-neutral-800/90 font-mono text-[11px] leading-relaxed max-h-48 overflow-y-auto scrollbar-thin scrollbar-thumb-neutral-800 space-y-1 shadow-inner">
+                          {kbSyncProgress.logs.map((l, lIdx) => (
+                            <div key={lIdx} className="flex items-start gap-2">
+                              <span className="text-neutral-600 shrink-0 select-none text-[10px]">[{l.time}]</span>
+                              <span className={
+                                l.level === 'error' ? 'text-rose-400 font-semibold' :
+                                l.level === 'warn' ? 'text-amber-400' :
+                                l.level === 'success' ? 'text-emerald-400 font-medium' :
+                                'text-neutral-300'
+                              }>
+                                {l.message}
+                              </span>
+                            </div>
+                          ))}
+                          <div ref={syncConsoleEndRef} />
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

@@ -263,6 +263,12 @@ export async function triggerKbSync(token: string, days = 30, limit = 100): Prom
   return res.json();
 }
 
+export interface KBLogEntry {
+  time: string;
+  level: 'info' | 'warn' | 'error' | 'success';
+  message: string;
+}
+
 export interface KBSyncProgressResponse {
   is_running: boolean;
   started_at?: string | null;
@@ -286,6 +292,7 @@ export interface KBSyncProgressResponse {
     quota: number;
     status: string;
   }>;
+  logs?: KBLogEntry[];
   error?: string | null;
   finished_at?: string | null;
 }
