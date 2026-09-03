@@ -22,6 +22,7 @@ import {
   type VaultStatusResponse,
 } from '../lib/adminApi';
 import SkillsHub from '../components/SkillsHub';
+import { IconShield } from '../components/Icons';
 import { fetchAIHealth, fetchSanitizePreview, purgeTriageCache } from '../lib/tasks';
 import type { AIHealthData, SanitizePreviewResult } from '../lib/types';
 
@@ -812,8 +813,11 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                 </div>
                 <div className="mt-3 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px]">
                   <span className="text-neutral-500">Redis кэш:</span>
-                  <span className={vaultStatus?.service_account.redis_synced ? 'text-emerald-400 font-mono' : 'text-amber-400 font-mono'}>
-                    {vaultStatus?.service_account.redis_synced ? '🟢 Прогрет' : '🟡 Ожидает'}
+                  <span className="inline-flex items-center gap-1.5 font-mono">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${vaultStatus?.service_account.redis_synced ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                    <span className={vaultStatus?.service_account.redis_synced ? 'text-emerald-400' : 'text-amber-400'}>
+                      {vaultStatus?.service_account.redis_synced ? 'Прогрет' : 'Ожидает'}
+                    </span>
                   </span>
                 </div>
               </div>
@@ -831,8 +835,11 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                 </div>
                 <div className="mt-3 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px]">
                   <span className="text-neutral-500">Redis токен:</span>
-                  <span className={vaultStatus?.domain.redis_synced ? 'text-emerald-400 font-mono' : 'text-amber-400 font-mono'}>
-                    {vaultStatus?.domain.redis_synced ? '🟢 Прогрет' : '🟡 Ожидает'}
+                  <span className="inline-flex items-center gap-1.5 font-mono">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${vaultStatus?.domain.redis_synced ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                    <span className={vaultStatus?.domain.redis_synced ? 'text-emerald-400' : 'text-amber-400'}>
+                      {vaultStatus?.domain.redis_synced ? 'Прогрет' : 'Ожидает'}
+                    </span>
                   </span>
                 </div>
               </div>
@@ -863,8 +870,9 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                     <span>Execution Worker</span>
                     <span className={`w-2 h-2 rounded-full ${vaultStatus?.execution_worker.online ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-600'}`}></span>
                   </div>
-                  <div className="text-sm font-semibold truncate">
-                    {vaultStatus?.execution_worker.online ? '🟢 Онлайн' : '⚪ Ожидание воркера'}
+                  <div className="text-sm font-semibold truncate flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${vaultStatus?.execution_worker.online ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-500'}`} />
+                    <span>{vaultStatus?.execution_worker.online ? 'Онлайн' : 'Ожидание воркера'}</span>
                   </div>
                 </div>
                 <div className="mt-3 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px]">
@@ -1174,7 +1182,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                   type="button"
                   className="text-xs text-neutral-400 hover:text-neutral-200 cursor-pointer"
                 >
-                  {showSecurityInfo ? 'Свернуть ▲' : 'Развернуть ▼'}
+                  {showSecurityInfo ? 'Свернуть' : 'Развернуть'}
                 </button>
               </div>
 
@@ -1182,7 +1190,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                 <div className="pt-3 border-t border-neutral-800/80 space-y-3 text-xs text-neutral-300 leading-relaxed">
                   <div className="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800 space-y-1.5">
                     <div className="flex items-center gap-2 text-emerald-400 font-semibold">
-                      <span>✓ Шифрование чувствительных данных (Fernet SSOT)</span>
+                      <span>Шифрование чувствительных данных (Fernet SSOT)</span>
                     </div>
                     <p className="text-neutral-400">
                       Все учетные данные Active Directory, сохраняемые через веб-интерфейс, шифруются симметричным ключом Fernet перед записью в PostgreSQL (<code className="text-emerald-300">system_settings</code>). Пароли никогда не передаются в браузер в открытом виде, а прогреваются в Redis для демонов с ограничением по ключам.
@@ -1191,7 +1199,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
                   <div className="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800 space-y-1.5">
                     <div className="flex items-center gap-2 text-blue-400 font-semibold">
-                      <span>✓ Принцип действия Fallback One-Liner (Self-Service)</span>
+                      <span>Принцип действия Fallback One-Liner (Self-Service)</span>
                     </div>
                     <p className="text-neutral-400">
                       Если брандмауэр Windows на ПК заявителя блокирует входящие порты <code className="text-blue-300">5985</code> (WinRM) и <code className="text-blue-300">135</code> (WMI), агент генерирует одноразовую команду запуска для <kbd className="px-1.5 py-0.5 bg-neutral-800 border border-neutral-700 rounded text-[10px]">Win + R</kbd>:
@@ -1243,9 +1251,9 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               {/* Ollama Local Card */}
               <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 space-y-3.5 shadow-sm">
                 <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2.5">
                     <div className="w-8 h-8 rounded-lg bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 font-bold text-xs">
-                      🔴
+                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />
                     </div>
                     <div>
                       <h3 className="text-sm font-semibold text-neutral-100">Локальный инференс Ollama</h3>
@@ -1253,13 +1261,14 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                     </div>
                   </div>
                   <span
-                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${
+                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border inline-flex items-center gap-1.5 ${
                       aiHealth?.ollama_available
                         ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
                         : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
                     }`}
                   >
-                    {aiHealth?.ollama_available ? '🟢 Доступен' : '🔴 Недоступен'}
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${aiHealth?.ollama_available ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+                    <span>{aiHealth?.ollama_available ? 'Доступен' : 'Недоступен'}</span>
                   </span>
                 </div>
 
@@ -1298,9 +1307,9 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               {/* LiteLLM Cloud Card */}
               <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 space-y-3.5 shadow-sm">
                 <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2.5">
                     <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold text-xs">
-                      🟡
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse" />
                     </div>
                     <div>
                       <h3 className="text-sm font-semibold text-neutral-100">Облачный шлюз LiteLLM</h3>
@@ -1308,13 +1317,14 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                     </div>
                   </div>
                   <span
-                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${
+                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border inline-flex items-center gap-1.5 ${
                       aiHealth?.litellm_available
                         ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
                         : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
                     }`}
                   >
-                    {aiHealth?.litellm_available ? '🟢 Прокси активен' : '🟡 Standby / Автономно'}
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${aiHealth?.litellm_available ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                    <span>{aiHealth?.litellm_available ? 'Прокси активен' : 'Standby / Автономно'}</span>
                   </span>
                 </div>
 
@@ -1347,7 +1357,8 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
             <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
               <div>
                 <h3 className="text-sm font-semibold text-neutral-100 flex items-center gap-2">
-                  <span>🛡 Интерактивная проверка Zero Trust DLP (Sanitize Playground)</span>
+                  <IconShield size={16} className="text-neutral-400 shrink-0" />
+                  <span>Интерактивная проверка Zero Trust DLP (Sanitize Playground)</span>
                 </h3>
                 <p className="text-xs text-neutral-400 mt-1">
                   Проверьте, как классификатор контуров безопасности и движок токенизации PII обрабатывают чувствительные данные.
@@ -1492,7 +1503,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
             <div className="p-3.5 rounded-xl bg-blue-950/20 border border-blue-800/40 text-xs text-neutral-300 space-y-1.5">
               <div className="font-semibold text-blue-300 flex items-center gap-1.5">
-                <span>ℹ️ Текущие системные привязки</span>
+                <span>Текущие системные привязки</span>
               </div>
               <p className="text-neutral-400 leading-relaxed text-[11.5px]">
                 Значения берутся из переменных окружения сервиса (<code className="text-blue-400 font-mono">INTRASERVICE_FILTER_ID</code>, <code className="text-blue-400 font-mono">DEFAULT_EXECUTOR_IDS</code>). При необходимости вы можете переопределить их здесь.
