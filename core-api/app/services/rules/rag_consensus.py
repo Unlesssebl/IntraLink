@@ -44,11 +44,15 @@ class RAGConsensusRule(BaseRule):
             if "выполнен" in status_name.lower() and not is_troubleshooting_incident:
                 return RuleDecision(
                     template_key="rag_historical_solution",
-                    name=f"🧠 Решение базы знаний (#{top_kb.get('task_id')}, сходство {sim}%)",
-                    status_id=29,
-                    status_name="Выполнена",
+                    name=f"🧠 Проверенный прецедент базы знаний (#{top_kb.get('task_id')}, сходство {sim}%)",
+                    status_id=27,
+                    status_name="В работе",
                     expenses=10,
-                    comment=sol,
+                    comment=(
+                        "Заявка принята в работу. Для аналогичной проблемы ранее "
+                        f"применялось следующее решение: {sol} "
+                        "Проверю применимость этого решения к текущей заявке."
+                    ),
                     rag_applied=True,
                     rag_task_id=top_kb.get("task_id"),
                     rag_similarity=sim,

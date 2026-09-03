@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 def read_secret_file(file_path_env: str) -> str | None:
     path = os.getenv(file_path_env)
-    if path and os.path.exists(path):
+    if path and os.path.exists(path) and os.path.isfile(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return f.read().strip()

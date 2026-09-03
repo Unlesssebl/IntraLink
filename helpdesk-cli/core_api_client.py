@@ -383,4 +383,21 @@ class CoreApiClient:
             logger.debug("Сбой запроса ai_analyze: %s", e)
             return None
 
+    async def get_feedback_review(
+        self, limit: int = 20, min_diff: float = 0.0
+    ) -> dict[str, Any]:
+        """Получает журнал аудита решений и контроля качества (Feedback Loop)."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v1/triage/feedback-review"
+        params = {"limit": str(limit), "min_diff": str(min_diff)}
+        try:
+            async with session.get(url, params=params) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                return {"total": 0, "items": []}
+        except Exception as e:
+            logger.debug("Сбой запроса get_feedback_review: %s", e)
+            return {"total": 0, "items": []}
+
+
 

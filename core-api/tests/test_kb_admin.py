@@ -147,3 +147,30 @@ async def test_kb_admin_services_tree():
             assert len(tree) == 1
             assert tree[0]["name"] == "Оборудование"
             assert len(tree[0]["children"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_kb_admin_sync_with_sso_and_cookie():
+    """Проверка работы /api/v1/admin/kb/sync при авторизации через sso_session и cookie admin_session."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with patch("app.routers.admin.auth.verify_credentials", return_value=("mock_auth_b64", 8664)):
+            login_res = await client.post(
+                "/admin/api/login",
+                json={"username": "belikov", "password": "valid_password"},
+            )
+            assert login_res.status_code == 200
+            cookie_val = login_res.cookies.get("admin_session")
+
+        with patch("app.routers.kb_admin.sync_historical_closed_tasks", new_callable=AsyncMock) as mock_sync:
+            mock_sync.return_value = {"indexed": 5, "skipped": 2}
+            res = await client.post(
+                "/api/v1/admin/kb/sync",
+                json={"days": 30, "limit": 100},
+                headers={"Authorization": "Bearer sso_session"},
+                cookies={"admin_session": cookie_val} if cookie_val else {},
+            )
+            assert res.status_code == 200
+            assert res.json()["status"] == "success"
+            assert res.json()["details"] == {"indexed": 5, "skipped": 2}
+

@@ -256,6 +256,17 @@ async def admin_login(
             "iat": datetime.datetime.now(datetime.timezone.utc),
         }
         token = jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
+
+        # Сохраняем учетные данные администратора в Redis для сервисных операций (RAG sync и др.)
+        try:
+            from app.services.worker import get_redis_client
+            r = get_redis_client()
+            encrypted_auth = encrypt_token(auth_b64)
+            await r.set(f"admin_auth:{body.username.strip()}", encrypted_auth, ex=12 * 3600)
+            logger.info("Учетные данные администратора '%s' сохранены в Redis (сессия 12ч)", body.username.strip())
+        except Exception as e:
+            logger.error("Не удалось сохранить учетные данные администратора в Redis: %s", e)
+
         return AdminLoginResponse(access_token=token, expires_in=expires_in)
 
     # 2. Fallback: проверка существующей сессии администратора из Cookie или Header

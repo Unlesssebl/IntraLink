@@ -208,9 +208,9 @@ async def get_service_auth_b64(
         bearer_val = authorization[7:].strip()
         if bearer_val and bearer_val != "sso_session":
             token = bearer_val
-    elif admin_session:
+    if not token and admin_session:
         token = admin_session.strip()
-    elif token_query:
+    if not token and token_query:
         token = token_query.strip()
 
     # Проверяем, есть ли активная сессия оператора
@@ -269,7 +269,7 @@ async def get_operator_context(
         bearer_val = authorization[7:].strip()
         if bearer_val and bearer_val != "sso_session":
             token = bearer_val
-    elif admin_session:
+    if not token and admin_session:
         token = admin_session.strip()
 
     if token:

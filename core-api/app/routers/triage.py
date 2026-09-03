@@ -4,7 +4,7 @@
 """
 
 import logging
-from typing import Any
+from typing import Any, Literal
 import jwt
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -64,7 +64,9 @@ class ApplyTriageRequest(BaseModel):
     task_ids: list[int] = Field(
         ..., description="Список ID заявок для применения решения"
     )
-    status_id: int = Field(..., description="Целевой ID статуса")
+    status_id: Literal[27, 29, 30, 35, 48] = Field(
+        ..., description="Разрешенный целевой ID статуса"
+    )
     comment: str = Field("", description="Текст комментария заявителю")
     expenses: int = Field(0, description="Списание трудозатрат в минутах")
     executor_ids: str = Field(
@@ -75,6 +77,13 @@ class ApplyTriageRequest(BaseModel):
     confirmed_by_human: bool = Field(
         False,
         description="Явное подтверждение оператора для обхода аварийного лимита (Dead Man's Switch)",
+    )
+    verified_execution_job_id: str | None = Field(
+        None,
+        description=(
+            "ID успешно завершенной команды Execution Worker. Обязателен для "
+            "финализации заявок, требующих инфраструктурного действия."
+        ),
     )
 
 
@@ -258,6 +267,7 @@ async def apply_triage_action(
         executor_ids=payload.executor_ids,
         dry_run=payload.dry_run,
         operator_user_id=op_user_id,
+        verified_execution_job_id=payload.verified_execution_job_id,
     )
 
     # Если ни одна задача не была успешно обновлена в IntraService, возвращаем ошибку клиенту
@@ -437,4 +447,43 @@ async def purge_triage_cache_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка сброса кэша: {e}",
         )
+
+
+@router.get("/feedback-review", status_code=status.HTTP_200_OK)
+async def get_feedback_review_endpoint(
+    limit: int = Query(20, ge=1, le=100, description="Количество записей аудита"),
+    min_diff: float = Query(0.0, ge=0.0, le=1.0, description="Минимальный коэффициент расхождения"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Возвращает журнал аудита решений и расхождений для анализа качества (Feedback Loop)."""
+    from sqlalchemy import desc, select
+    from app.database.db import TriageAuditLog
+
+    query = (
+        select(TriageAuditLog)
+        .where(TriageAuditLog.diff_ratio >= min_diff)
+        .order_by(desc(TriageAuditLog.created_at))
+        .limit(limit)
+    )
+    res = await db.execute(query)
+    entries = res.scalars().all()
+
+    return {
+        "total": len(entries),
+        "items": [
+            {
+                "id": str(e.id),
+                "task_id": e.task_id,
+                "generated_comment": e.generated_comment,
+                "final_comment": e.final_comment,
+                "confidence_score": e.confidence_score,
+                "diff_ratio": e.diff_ratio,
+                "operator_id": e.operator_id,
+                "status_id": e.status_id,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in entries
+        ],
+    }
+
 

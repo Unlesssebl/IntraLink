@@ -80,8 +80,9 @@ def test_synthesize_deterministic_fallback_printing():
     assert "Здравствуйте!" in resp
     assert "#9988" in resp
     assert "NTEMW0144" in resp
-    assert "Spooler" in resp
-    assert "Проверьте, пожалуйста" in resp
+    assert "службы печати" in resp
+    assert "диагностик" in resp.lower()
+    assert "выполнен" not in resp.lower()
 
 
 def test_synthesize_deterministic_fallback_rag_match():
@@ -101,7 +102,7 @@ def test_synthesize_deterministic_fallback_rag_match():
     assert "Здравствуйте!" in resp
     assert "#7766" in resp
     assert "Очищен локальный кэш" in resp
-    assert "Пожалуйста, проверьте" in resp
+    assert "проверю его применимость" in resp
 
 
 # ===========================================================================

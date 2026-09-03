@@ -2,7 +2,7 @@ import datetime
 import uuid
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, JSON, String, Text, Uuid, func, text
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, JSON, String, Text, Uuid, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -225,6 +225,31 @@ class SystemSetting(Base):
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+# Журнал аудита и обратной связи по решениям триажа (Feedback Loop)
+class TriageAuditLog(Base):
+    __tablename__ = "triage_audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, primary_key=True, default=uuid.uuid4
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    generated_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_comment: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence_score: Mapped[float] = mapped_column(
+        Float, default=1.0, server_default="1.0"
+    )
+    diff_ratio: Mapped[float] = mapped_column(
+        Float, default=0.0, server_default="0.0"
+    )
+    operator_id: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, index=True
+    )
+    status_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
     )
 
 

@@ -280,6 +280,7 @@ class WindowsExecutionWorker:
         result_status = "failed"
         result_message = ""
         result_payload = {}
+        close_ticket_payload: dict[str, Any] | None = None
 
         try:
             # 1. Выдача доступа Wi-Fi в AD (WLAN-WORKNET)
@@ -339,12 +340,11 @@ class WindowsExecutionWorker:
                                 "detail": "Закрытие заявки",
                             },
                         )
-                        await self.api_client.add_comment(
-                            task_id=task_id,
-                            comment=f"Добрый день! Доступ к сети Wi-Fi успешно предоставлен для учетной записи {identity}.",
-                            status_id=29,  # Выполнена
-                            expenses=15,
-                        )
+                        close_ticket_payload = {
+                            "comment": f"Добрый день! Доступ к сети Wi-Fi успешно предоставлен для учетной записи {identity}.",
+                            "status_id": 29,
+                            "expenses": 15,
+                        }
 
             # 2. Установка / Диагностика принтера
             elif action in ("install_printer", "printer"):
@@ -402,12 +402,11 @@ class WindowsExecutionWorker:
                         result_payload = {"log": res.log}
 
                         if res.success and task_id > 0 and auto_close:
-                            await self.api_client.add_comment(
-                                task_id=task_id,
-                                comment=f"Добрый день! Принтер {printer_name} успешно подключен на вашем компьютере {pc_name}.",
-                                status_id=30,
-                                expenses=15,
-                            )
+                            close_ticket_payload = {
+                                "comment": f"Добрый день! Принтер {printer_name} успешно подключен на вашем компьютере {pc_name}.",
+                                "status_id": 29,
+                                "expenses": 15,
+                            }
 
             else:
                 result_message = f"Неизвестное действие: '{action}'"
@@ -421,6 +420,9 @@ class WindowsExecutionWorker:
             # Сохраняем финальный результат в Redis
             final_data = {
                 "job_id": job_id,
+                "action": action,
+                "command_type": action,
+                "task_id": task_id,
                 "status": result_status,
                 "message": result_message,
                 "payload": result_payload,
@@ -433,6 +435,28 @@ class WindowsExecutionWorker:
                     json.dumps(final_data, ensure_ascii=False),
                     ex=3600 * 24 * 7,
                 )
+
+                # Финализация выполняется только после публикации проверяемого
+                # success proof. Core API сверяет job_id, task_id и action.
+                if result_status == "success" and close_ticket_payload:
+                    close_ok = await self.api_client.add_comment(
+                        task_id=task_id,
+                        comment=close_ticket_payload["comment"],
+                        status_id=close_ticket_payload["status_id"],
+                        expenses=close_ticket_payload["expenses"],
+                        verified_execution_job_id=job_id,
+                    )
+                    final_data["ticket_close_ok"] = close_ok
+                    if not close_ok:
+                        final_data["message"] = (
+                            f"{result_message} Инфраструктурное действие выполнено, "
+                            "но заявка не была финализирована."
+                        )
+                    await self.redis.set(
+                        f"execution_job:{job_id}",
+                        json.dumps(final_data, ensure_ascii=False),
+                        ex=3600 * 24 * 7,
+                    )
                 await self.redis.xack(
                     STREAM_EXECUTION_QUEUE, STREAM_GROUP_NAME, msg_id
                 )

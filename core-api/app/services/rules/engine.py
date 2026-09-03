@@ -24,13 +24,16 @@ class RuleEngine:
     def __init__(self, rules: list[BaseRule] | None = None):
         if rules is None:
             self._rules = [
+                # Корректность каталога проверяется до тематических правил:
+                # заявка в неверном разделе не должна получить исполняемое
+                # решение (например, grant_wlan) вместо редиректа.
+                ServiceRedirectRule(priority=5),
                 CredentialsRule(priority=10),
                 PhysicalDeliveryRule(priority=15),
                 FileLockRule(priority=20),
                 PrinterRule(priority=25),
                 RemoteAccessRule(priority=30),
                 OfflineHostRule(priority=35),
-                ServiceRedirectRule(priority=50),
                 RAGConsensusRule(priority=60),
                 StandardInWorkRule(priority=999),
             ]

@@ -91,33 +91,36 @@ async def handle_task(args: Any) -> None:
         history = card.get("history", [])
         kb_matches = card.get("kb_matches", [])
         action = card.get("suggested_action") or {}
+        conf = card.get("confidence_score") or action.get("confidence") or 0.50
+        req_review = card.get("requires_human_review", conf < 0.80)
+        conf_str = f"[LOW CONFIDENCE: {conf:.2f} / ТРЕБУЕТСЯ ПРОВЕРКА]" if req_review else f"[CONFIDENCE: {conf:.2f}]"
 
         meta = task.get("_field_meta") or {}
         created = (task.get("Created") or "")[:16].replace("T", " ")
 
         print(f"\n=======================================================")
-        print(f"🎫 КАРТОЧКА ЗАЯВКИ [#{args.task_id}](https://servicedesk.corporate.loc/Task/View/{args.task_id})")
+        print(f"КАРТОЧКА ЗАЯВКИ [#{args.task_id}](https://servicedesk.corporate.loc/Task/View/{args.task_id}) | {conf_str}")
         print(f"=======================================================")
-        print(f"• Тема:        {task.get('Name')}")
-        print(f"• Раздел:      {task.get('ServiceName')} (ID: {task.get('ServiceId')})")
-        print(f"• Статус:      {task.get('StatusName')} (ID: {task.get('StatusId')})")
-        print(f"• Дата:        {created}")
-        print(f"• Заявитель:   {task.get('Creator')} (Логин: {task.get('CreatorLogin')})")
-        print(f"• Телефон:     {meta.get('phone') or task.get('CreatorPhone') or '—'}")
-        print(f"• Кабинет:     {meta.get('room') or '—'}")
-        print(f"• ПК / Хост:   {meta.get('pc_name') or '—'}")
-        print(f"\n📄 Описание:\n{task.get('Description') or '—'}\n")
+        print(f"Тема:        {task.get('Name')}")
+        print(f"Раздел:      {task.get('ServiceName')} (ID: {task.get('ServiceId')})")
+        print(f"Статус:      {task.get('StatusName')} (ID: {task.get('StatusId')})")
+        print(f"Дата:        {created}")
+        print(f"Заявитель:   {task.get('Creator')} (Логин: {task.get('CreatorLogin')})")
+        print(f"Телефон:     {meta.get('phone') or task.get('CreatorPhone') or '—'}")
+        print(f"Кабинет:     {meta.get('room') or '—'}")
+        print(f"ПК / Хост:   {meta.get('pc_name') or '—'}")
+        print(f"\nОписание:\n{task.get('Description') or '—'}\n")
 
         if kb_matches:
-            print("📚 Похожие решения из базы знаний (RAG):")
+            print("Похожие решения из базы знаний (RAG):")
             for m in kb_matches:
-                print(f"  • [Кейс #{m['task_id']} | Сходство: {m['similarity_pct']}%] {m['name']}")
-                print(f"    Решение: {m['solution'][:100]}...\n")
+                print(f"  [Кейс #{m['task_id']} | Сходство: {m['similarity_pct']}%] {m['name']}")
+                print(f"  Решение: {m['solution'][:100]}...\n")
 
-        print(f"🎯 Рекомендованное действие:")
-        print(f"  • Шаблон:       {action.get('name')}")
-        print(f"  • Целевой статус: {action.get('status_id')} ({action.get('expenses', 10)} мин)")
-        print(f"  • Комментарий:\n    {action.get('comment')}\n")
+        print(f"Рекомендованное действие:")
+        print(f"  Шаблон:         {action.get('name')}")
+        print(f"  Целевой статус: {action.get('status_id')} ({action.get('expenses', 10)} мин)")
+        print(f"  Комментарий:\n    {action.get('comment')}\n")
     finally:
         await client.close()
 
@@ -128,7 +131,7 @@ async def handle_apply(args: Any) -> None:
         raw_ids = str(args.task_id).split(",")
         task_ids = [int(x.strip()) for x in raw_ids if x.strip().isdigit()]
         if not task_ids:
-            print(f"❌ Некорректный ID заявки: '{args.task_id}'", file=sys.stderr)
+            print(f"[ERROR] Некорректный ID заявки: '{args.task_id}'", file=sys.stderr)
             sys.exit(1)
 
         status_id = args.status
@@ -137,6 +140,29 @@ async def handle_apply(args: Any) -> None:
         executor_ids = getattr(args, "executor", None) or "8664,10502"
         dry_run = args.dry_run
 
+        # Если применяется пакет заявок (> 1), проверяем Confidence Score для защиты от Rubber Stamping
+        if len(task_ids) > 1:
+            validated_task_ids = []
+            skipped_low_conf = []
+            for tid in task_ids:
+                card = await client.get_task_card(tid)
+                c_score = (card or {}).get("confidence_score", 1.0) if card else 1.0
+                if c_score < 0.80:
+                    skipped_low_conf.append((tid, c_score))
+                else:
+                    validated_task_ids.append(tid)
+
+            if skipped_low_conf:
+                print("\n[ВНИМАНИЕ] Следующие заявки имеют низкую уверенность (< 0.80) и пропущены при пакетном применении:")
+                for stid, sc in skipped_low_conf:
+                    print(f"  - Заявка #{stid}: Confidence {sc:.2f} (требуется ручная проверка)")
+                print("Для применения к этим заявкам подтвердите их точечно командой с конкретным ID.\n")
+
+            task_ids = validated_task_ids
+            if not task_ids:
+                print("[INFO] Нет заявок с достаточным уровнем уверенности для пакетного применения.")
+                return
+
         print(f"=== Применение решения к заявкам: {', '.join(f'#{tid}' for tid in task_ids)} ===")
         print(f"Целевой статус: {status_id} | Списание: {expenses} мин | Исполнители: {executor_ids}")
 
@@ -144,7 +170,7 @@ async def handle_apply(args: Any) -> None:
         for task_id in task_ids:
             # 1. Автовыдача Wi-Fi в Active Directory через Command Bus
             if status_id == 29 and any(w in (comment or "").lower() for w in ["wi-fi", "wifi", "вайфай", "вай-фай"]):
-                print(f"⚡ [Command Bus] Постановка задачи Wi-Fi для #{task_id}...")
+                print(f"[Command Bus] Постановка задачи Wi-Fi для #{task_id}...")
                 cmd_res = await client.submit_command(
                     command_type="grant_wlan",
                     target={"task_id": task_id},
@@ -153,12 +179,12 @@ async def handle_apply(args: Any) -> None:
                     source="cli",
                 )
                 if cmd_res and cmd_res.get("status") in ("accepted", "dry_run_success"):
-                    print(f"✓ Задача Wi-Fi #{task_id} зарегистрирована в Command Bus ({cmd_res.get('job_id', 'dry_run')})")
+                    print(f"[OK] Задача Wi-Fi #{task_id} зарегистрирована в Command Bus ({cmd_res.get('job_id', 'dry_run')})")
                     continue
 
             # 2. Создание пользователя в Active Directory через Command Bus
             elif status_id == 29 and ("{password}" in (comment or "") or "учетная запись успешно создана" in (comment or "").lower()):
-                print(f"⚡ [Command Bus] Постановка задачи создания пользователя для #{task_id}...")
+                print(f"[Command Bus] Постановка задачи создания пользователя для #{task_id}...")
                 cmd_res = await client.submit_command(
                     command_type="create_user",
                     target={"task_id": task_id},
@@ -167,7 +193,7 @@ async def handle_apply(args: Any) -> None:
                     source="cli",
                 )
                 if cmd_res and cmd_res.get("status") in ("accepted", "dry_run_success"):
-                    print(f"✓ Задача New User #{task_id} зарегистрирована в Command Bus ({cmd_res.get('job_id', 'dry_run')})")
+                    print(f"[OK] Задача New User #{task_id} зарегистрирована в Command Bus ({cmd_res.get('job_id', 'dry_run')})")
                     continue
 
             # Обычные заявки (смена статуса, комментарий, списание)
@@ -180,11 +206,11 @@ async def handle_apply(args: Any) -> None:
                 dry_run=dry_run,
             )
             if ok:
-                print(f"✓ Заявка #{task_id}: решение успешно применено через Core API.")
+                print(f"[OK] Заявка #{task_id}: решение успешно применено через Core API.")
             else:
-                print(f"❌ Ошибка применения решения для #{task_id}.", file=sys.stderr)
+                print(f"[ERROR] Ошибка применения решения для #{task_id}.", file=sys.stderr)
 
-        print(f"🎯 Обработка пачки завершена.")
+        print(f"[DONE] Обработка пачки завершена.")
     finally:
         await client.close()
 

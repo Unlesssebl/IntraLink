@@ -44,6 +44,16 @@ def reset_backoff_interval() -> None:
     _consecutive_api_errors = 0
 
 
+def get_effective_polling_interval() -> int:
+    """Текущий интервал poller с учетом уже зарегистрированных ошибок API."""
+    if _consecutive_api_errors <= 0:
+        return settings.POLLING_INTERVAL
+    return min(
+        settings.POLLING_INTERVAL * (2 ** min(_consecutive_api_errors - 1, 4)),
+        300,
+    )
+
+
 class VirtualServiceUser:
     def __init__(self, is_user_id: int, is_login: str, last_task_id: int = 0):
         self.tg_user_id = None

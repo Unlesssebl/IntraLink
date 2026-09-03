@@ -760,7 +760,11 @@ async def search_knowledge_base(
     import json
     from app.services.worker import get_redis_client
 
-    cache_key = f"rag:cache:{hashlib.md5(search_query.encode()).hexdigest()}:{limit}:{distance_threshold}:{int(hybrid)}:{int(rerank)}"
+    cache_key = (
+        f"rag:cache:{hashlib.md5(search_query.encode()).hexdigest()}:"
+        f"{eval_circuit.value if eval_circuit else 'auto'}:{limit}:"
+        f"{distance_threshold}:{int(hybrid)}:{int(rerank)}:{rerank_threshold}"
+    )
     try:
         redis = get_redis_client()
         cached = await redis.get(cache_key)

@@ -478,9 +478,22 @@ class AIHub:
         """
         start_time = time.perf_counter()
 
-        # 1. Проверяем L2 кэш по хэшу промпта
+        # 1. Сначала определяем контур. Кэш нельзя читать до DLP-решения:
+        # одинаковый prompt с force_circuit=RED не должен получить результат,
+        # ранее сгенерированный облачным контуром.
+        san_res = data_sanitizer.sanitize(request.prompt)
+        decision = data_sanitizer.evaluate_circuit(
+            prompt=request.prompt,
+            metadata=request.metadata,
+            sanitization_result=san_res,
+        )
+
+        # 2. Проверяем L2 кэш по хэшу промпта и выбранного контура
         cache_hash = hashlib.sha256(
-            f"{request.prompt}:{request.system_prompt}:{request.temperature}".encode()
+            (
+                f"{request.prompt}:{request.system_prompt}:{request.temperature}:"
+                f"{decision.circuit.value}:{decision.target_backend}:{decision.target_model}"
+            ).encode()
         ).hexdigest()
         cache_key = f"cache:ai:routed:{cache_hash}"
 
@@ -497,14 +510,6 @@ class AIHub:
                     return RoutedInferenceResponse.model_validate(data)
             except Exception as e:
                 logger.debug("Промах кэша для routed AI: %s", e)
-
-        # 2. Выполняем инспекцию и десенсибилизацию
-        san_res = data_sanitizer.sanitize(request.prompt)
-        decision = data_sanitizer.evaluate_circuit(
-            prompt=request.prompt,
-            metadata=request.metadata,
-            sanitization_result=san_res,
-        )
 
         model_name = (
             self.ollama_model

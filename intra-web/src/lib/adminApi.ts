@@ -216,6 +216,7 @@ export async function purgeKnowledgeBase(
 export async function triggerKbSync(token: string, days = 30, limit = 100): Promise<KBSyncResponse> {
   const res = await fetch('/api/v1/admin/kb/sync', {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -224,7 +225,8 @@ export async function triggerKbSync(token: string, days = 30, limit = 100): Prom
   });
   if (!res.ok) {
     if (res.status === 401) throw new Error('Сессия администратора истекла');
-    throw new Error('Не удалось запустить синхронизацию базы знаний');
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Не удалось запустить синхронизацию базы знаний');
   }
   return res.json();
 }

@@ -66,6 +66,7 @@ class CoreApiClient:
         status_id: int | None = None,
         expenses: int | None = None,
         is_service: bool = True,
+        verified_execution_job_id: str | None = None,
     ) -> bool:
         """Публикует отчетный комментарий и обновляет статус тикета через Core API."""
         session = await self._get_session()
@@ -76,6 +77,7 @@ class CoreApiClient:
             "status_id": status_id or 29,
             "expenses": expenses or 0,
             "confirmed_by_human": True,
+            "verified_execution_job_id": verified_execution_job_id,
         }
         try:
             async with session.post(url, json=payload) as resp:

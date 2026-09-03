@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any
@@ -12,7 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.services import intraservice
 from app.services.ai import RoutingMetadata, data_sanitizer
+from app.services.ai_synthesis import calculate_confidence_score
 from app.services.deduplication import DuplicateDetector
+from app.services.rules.credentials import CredentialsRule
 from app.services.rules.catalog import (
     ROOT_SERVICES,
     get_root_number_for_service_id,
@@ -26,6 +29,70 @@ class TriageService:
 
     _catalog_cache: dict[int, dict[str, Any]] = {}
     _catalog_cache_ts: float = 0.0
+    _EXECUTION_RULE_ACTIONS = {
+        "wlan_access": {"grant_wlan", "wifi"},
+        "user_creation": {"create_user"},
+    }
+
+    @staticmethod
+    def _telemetry_to_rule_diag(
+        telemetry: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Адаптирует каноническую телеметрию к контракту диагностических правил."""
+        if not telemetry:
+            return None
+
+        status = str(telemetry.get("status") or "").upper()
+        is_online = status == "ONLINE" or bool(
+            telemetry.get("ping_ok")
+            or telemetry.get("winrm_port_5985")
+            or telemetry.get("smb_port_445")
+        )
+        return {
+            **telemetry,
+            "target": telemetry.get("canonical_name")
+            or telemetry.get("pc_name")
+            or "UNKNOWN",
+            "is_online": is_online,
+        }
+
+    @classmethod
+    async def _validate_execution_proof(
+        cls,
+        job_id: str | None,
+        task_id: int,
+        expected_actions: set[str],
+    ) -> tuple[bool, str | None]:
+        if not job_id:
+            return (
+                False,
+                "Для статуса «Выполнена» требуется подтверждение успешной команды Execution Worker.",
+            )
+        try:
+            import app.routers.triage as tr
+
+            raw = await tr.get_redis_client().get(f"execution_job:{job_id}")
+            if not raw:
+                return False, f"Команда исполнения '{job_id}' не найдена."
+            data = json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode())
+        except Exception as exc:
+            logger.warning("Не удалось проверить execution proof %s: %s", job_id, exc)
+            return False, "Не удалось проверить результат команды исполнения."
+
+        proof_task_id = data.get("task_id")
+        try:
+            proof_task_id = int(proof_task_id)
+        except (TypeError, ValueError):
+            proof_task_id = 0
+        proof_action = str(data.get("action") or data.get("command_type") or "")
+
+        if data.get("status") != "success":
+            return False, f"Команда '{job_id}' не завершена успешно."
+        if proof_task_id != task_id:
+            return False, f"Команда '{job_id}' относится к другой заявке."
+        if proof_action not in expected_actions:
+            return False, f"Команда '{job_id}' не подтверждает требуемое действие."
+        return True, None
 
     @classmethod
     async def get_service_catalog_map(cls, service_auth_b64: str) -> dict[int, dict[str, Any]]:
@@ -97,7 +164,11 @@ class TriageService:
         """
         import app.routers.triage as tr
 
-        fetch_limit = max(limit * 4, 40)
+        # IntraService не возвращает total после нормализации ответа, поэтому
+        # забираем максимально допустимую страницу. Иначе page > 8 при
+        # стандартном limit=5 ложно выглядела пустой, а дедупликация работала
+        # только на первых 40 заявках.
+        fetch_limit = 500
         tasks = await intraservice.get_tasks_by_filter(
             auth_b64=service_auth_b64,
             filter_id=filter_id,
@@ -166,6 +237,19 @@ class TriageService:
             t_desc = t.get("Description") or ""
             query_text = f"{t_name}. {t_desc}".strip()
 
+            routing_metadata = RoutingMetadata(service_id=t.get("ServiceId"))
+            circuit_dec = data_sanitizer.evaluate_circuit(
+                prompt=query_text,
+                metadata=routing_metadata,
+            )
+
+            # Решение использует уже закэшированную телеметрию. Если кэша нет,
+            # запускаем prefetch; результат войдет в решение при следующем чтении.
+            telemetry = await tr.get_task_telemetry(t_id)
+            if telemetry is None:
+                asyncio.create_task(tr.prefetch_task_telemetry(t))
+            rule_diag = cls._telemetry_to_rule_diag(telemetry)
+
             is_dup = t_id in dup_map
             dup_info = dup_map.get(t_id)
 
@@ -191,6 +275,7 @@ class TriageService:
                 # 2. Быстрый прогон через модульный RuleEngine (Wi-Fi, Ремонт, Редирект, Принтер)
                 decision = tr.auto_detect_template(
                     task=t,
+                    diag=rule_diag,
                     kb_matches=None,
                     redirect_mode=redirect_only,
                 )
@@ -198,11 +283,17 @@ class TriageService:
                 # 3. Если правило общее/стандартное и запрошен RAG — ищем семантическое решение в pgvector RAG
                 if include_rag and decision.get("rule_type") in ("standard_in_work", None) and not decision.get("is_redirect"):
                     kb_matches = await tr.search_knowledge_base(
-                        db=db, query_text=query_text, limit=2, distance_threshold=0.70
+                        db=db,
+                        query_text=query_text,
+                        limit=2,
+                        distance_threshold=0.70,
+                        circuit=circuit_dec.circuit,
+                        metadata=routing_metadata,
                     )
                     if kb_matches:
                         decision = tr.auto_detect_template(
                             task=t,
+                            diag=rule_diag,
                             kb_matches=kb_matches,
                             redirect_mode=redirect_only,
                         )
@@ -220,17 +311,6 @@ class TriageService:
                 )
             )
 
-            # Zero Trust DLP оценка контура
-            circuit_dec = data_sanitizer.evaluate_circuit(
-                prompt=query_text,
-                metadata=RoutingMetadata(service_id=t.get("ServiceId")),
-            )
-
-            # Экспресс-телеметрия хоста (0ms из кэша Redis)
-            telemetry = await tr.get_task_telemetry(t_id)
-            if telemetry is None:
-                asyncio.create_task(tr.prefetch_task_telemetry(t))
-
             meta = t.get("_field_meta") or {}
             pc_name = meta.get("pc_name") or t.get("pc_name") or ""
             if not pc_name and t.get("Data"):
@@ -244,6 +324,15 @@ class TriageService:
             resolved_service_name = t.get("ServiceName") or s_info.get("name") or "Общие вопросы"
             root_service_id = s_info.get("root_id")
             root_service_name = s_info.get("root_name") or "Общие вопросы"
+
+            # Расчет Confidence Score для предотвращения слепого одобрения (Rubber Stamping)
+            confidence = calculate_confidence_score(
+                kb_matches=kb_matches,
+                telemetry=telemetry,
+                rule_decision=decision,
+            )
+            if decision:
+                decision["confidence"] = confidence
 
             result_items.append({
                 "task": t,
@@ -274,6 +363,8 @@ class TriageService:
                 "circuit_reason": circuit_dec.reason,
                 "requires_sanitization": circuit_dec.requires_sanitization,
                 "has_ai_solution": has_ai_solution,
+                "confidence_score": confidence,
+                "requires_human_review": bool(confidence < 0.80),
             })
 
         return {
@@ -328,24 +419,35 @@ class TriageService:
         telemetry = await tr.get_task_telemetry(task_id)
         if telemetry is None:
             telemetry = await tr.prefetch_task_telemetry(task)
+        rule_diag = cls._telemetry_to_rule_diag(telemetry)
 
         t_name = task.get("Name") or ""
         t_desc = task.get("Description") or ""
         query_text = f"{t_name}. {t_desc}".strip()
+
+        routing_metadata = RoutingMetadata(service_id=task.get("ServiceId"))
+        circuit_dec = data_sanitizer.evaluate_circuit(
+            prompt=query_text,
+            metadata=routing_metadata,
+        )
 
         # Проверяем редирект в другой отдел
         is_redirect = bool(tr.detect_service_redirect(task))
         kb_matches = []
         if not is_redirect:
             kb_matches = await tr.search_knowledge_base(
-                db=db, query_text=query_text, limit=3, distance_threshold=0.70
+                db=db,
+                query_text=query_text,
+                limit=3,
+                distance_threshold=0.70,
+                circuit=circuit_dec.circuit,
+                metadata=routing_metadata,
             )
 
-        decision = tr.auto_detect_template(task=task, kb_matches=kb_matches)
-
-        circuit_dec = data_sanitizer.evaluate_circuit(
-            prompt=query_text,
-            metadata=RoutingMetadata(service_id=task.get("ServiceId")),
+        decision = tr.auto_detect_template(
+            task=task,
+            diag=rule_diag,
+            kb_matches=kb_matches,
         )
 
         # Кэш синтеза решения LLM в Redis по хэшу задачи и длине истории переписки
@@ -374,12 +476,21 @@ class TriageService:
                 telemetry=telemetry,
                 circuit=circuit_dec.circuit,
                 rule_decision=decision,
+                comments_history=history,
             )
             if ai_resolution:
                 try:
                     await redis.set(cache_key, ai_resolution, ex=3600)
                 except Exception:
                     pass
+
+        card_confidence = calculate_confidence_score(
+            kb_matches=kb_matches,
+            telemetry=telemetry,
+            rule_decision=decision,
+        )
+        if decision:
+            decision["confidence"] = card_confidence
 
         return {
             "task": task,
@@ -392,6 +503,8 @@ class TriageService:
             "circuit_reason": circuit_dec.reason,
             "requires_sanitization": circuit_dec.requires_sanitization,
             "has_ai_solution": bool(len(kb_matches) > 0 or (decision and decision.get("rule_type") != "standard_in_work")),
+            "confidence_score": card_confidence,
+            "requires_human_review": bool(card_confidence < 0.80),
         }
 
     @staticmethod
@@ -405,6 +518,7 @@ class TriageService:
         executor_ids: str | None = None,
         dry_run: bool = False,
         operator_user_id: int | None = None,
+        verified_execution_job_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Применяет решение к заявке/группе заявок:
@@ -430,14 +544,74 @@ class TriageService:
                 })
                 continue
 
+            # Инфраструктурные рекомендации нельзя превращать в статус 29
+            # только по нажатию Apply. Сначала должен существовать успешный
+            # результат Execution Worker именно для этой заявки и действия.
+            task_snapshot = None
+            if status_id == 29:
+                try:
+                    task_snapshot = await intraservice.get_single_task(
+                        service_auth_b64, tid
+                    )
+                    # Проверяем исполняемые intent напрямую, независимо от
+                    # приоритета ServiceRedirectRule в основном пайплайне.
+                    execution_decision = (
+                        CredentialsRule().evaluate(task_snapshot)
+                        if task_snapshot
+                        else None
+                    )
+                    rule_decision = (
+                        execution_decision.to_dict() if execution_decision else {}
+                    )
+                    rule_type = rule_decision.get("rule_type")
+                    expected_actions = TriageService._EXECUTION_RULE_ACTIONS.get(
+                        rule_type
+                    )
+                    if expected_actions:
+                        proof_ok, proof_error = await TriageService._validate_execution_proof(
+                            verified_execution_job_id,
+                            tid,
+                            expected_actions,
+                        )
+                        if not proof_ok:
+                            results.append({
+                                "task_id": tid,
+                                "status": "failed",
+                                "update_ok": False,
+                                "expenses_ok": False,
+                                "error": proof_error,
+                            })
+                            continue
+                except Exception as exc:
+                    logger.exception(
+                        "Ошибка проверки условий финализации заявки #%d: %s", tid, exc
+                    )
+                    results.append({
+                        "task_id": tid,
+                        "status": "failed",
+                        "update_ok": False,
+                        "expenses_ok": False,
+                        "error": "Не удалось безопасно проверить условия финализации заявки.",
+                    })
+                    continue
+
             # 1. При необходимости берем в работу (27)
             if status_id != 27:
-                await intraservice.update_task_full(
+                in_work_ok = await intraservice.update_task_full(
                     auth_b64=service_auth_b64,
                     task_id=tid,
                     status_id=27,
                     executor_ids=exec_ids,
                 )
+                if not in_work_ok:
+                    results.append({
+                        "task_id": tid,
+                        "status": "failed",
+                        "update_ok": False,
+                        "expenses_ok": False,
+                        "error": "Не удалось перевести заявку в обязательный промежуточный статус «В работе».",
+                    })
+                    continue
 
             # 2. Обновление в целевой статус
             upd_ok = await intraservice.update_task_full(
@@ -470,7 +644,7 @@ class TriageService:
 
             if should_index:
                 try:
-                    task_data = await intraservice.get_single_task(service_auth_b64, tid)
+                    task_data = task_snapshot or await intraservice.get_single_task(service_auth_b64, tid)
                     if task_data:
                         t_name = task_data.get("Name") or f"Заявка #{tid}"
                         t_desc = task_data.get("Description") or ""
@@ -494,6 +668,24 @@ class TriageService:
                         )
                 except Exception as e:
                     logger.error("Ошибка автоиндексации заявки #%d в RAG: %s", tid, e)
+
+            # 5. Сохранение записи аудита в TriageAuditLog (Feedback Loop)
+            if upd_ok and db:
+                try:
+                    from app.database.db import TriageAuditLog
+                    audit_entry = TriageAuditLog(
+                        task_id=tid,
+                        generated_comment=None,
+                        final_comment=clean_comment or f"Статус {status_id}",
+                        confidence_score=1.0,
+                        diff_ratio=0.0,
+                        operator_id=str(op_user_id) if op_user_id else None,
+                        status_id=status_id,
+                    )
+                    db.add(audit_entry)
+                    await db.commit()
+                except Exception as e:
+                    logger.debug("Ошибка сохранения TriageAuditLog для заявки #%d: %s", tid, e)
 
             results.append({
                 "task_id": tid,
