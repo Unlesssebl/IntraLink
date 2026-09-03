@@ -372,12 +372,16 @@ async def get_kb_statistics(
                 except Exception:
                     pass
 
+        from app.services.rag import get_all_root_services
+        roots = get_all_root_services()
+
         return {
             "total_active_examples": total_examples,
             "total_blacklisted_examples": blacklisted_count,
             "services_count": len(services_stats),
             "services": services_stats,
             "sync_readiness": readiness,
+            "root_services": roots,
         }
     except Exception as e:
         logger.exception("Ошибка при сборе статистики базы знаний: %s", e)
@@ -388,7 +392,7 @@ async def get_kb_statistics(
 
 
 # ---------------------------------------------------------------------------
-# 5. Прямая синхронизация базы знаний (In-Process Sync)
+# 5. Прямая и умная стратифицированная синхронизация базы знаний
 # ---------------------------------------------------------------------------
 
 
@@ -420,3 +424,57 @@ async def trigger_kb_sync(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка синхронизации базы знаний: {e}",
         )
+
+
+class KBStratifiedSyncRequest(BaseModel):
+    quota_per_service: int = Field(30, ge=5, le=100, description="Квота качественных прецедентов на раздел")
+    days: int = Field(60, ge=7, le=365, description="Глубина выборки в днях")
+    root_id: str | None = Field(None, description="ID конкретного корневого раздела (например '03') или None для всех")
+
+
+@router.post("/sync-stratified", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_stratified_kb_sync(
+    payload: KBStratifiedSyncRequest,
+    service_auth_b64: str = Depends(get_service_auth_b64),
+):
+    """
+    Асинхронный запуск фонового умного наполнения RAG по корневым разделам (01..17).
+    """
+    redis = get_redis_client()
+    lock = await redis.get("lock:kb_sync")
+    if lock:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Синхронизация базы знаний уже выполняется. Дождитесь завершения текущего процесса.",
+        )
+
+    from app.services.rag import sync_stratified_kb
+
+    asyncio.create_task(
+        sync_stratified_kb(
+            auth_b64=service_auth_b64,
+            quota_per_service=payload.quota_per_service,
+            days=payload.days,
+            target_root_id=payload.root_id,
+        )
+    )
+
+    return {
+        "status": "started",
+        "message": "Умная фоновая синхронизация базы знаний успешно запущена.",
+        "quota_per_service": payload.quota_per_service,
+        "days": payload.days,
+        "root_id": payload.root_id,
+    }
+
+
+@router.get("/sync-status", status_code=status.HTTP_200_OK)
+async def get_kb_sync_status_endpoint() -> dict[str, Any]:
+    """
+    Возвращает актуальный статус и прогресс умной синхронизации базы знаний из Redis.
+    """
+    from app.services.rag import get_kb_sync_progress
+
+    progress = await get_kb_sync_progress()
+    return progress
+

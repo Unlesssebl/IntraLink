@@ -5,11 +5,11 @@ import re
 from collections import OrderedDict
 from typing import Any
 import aiohttp
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.db import TaskKnowledgeBase
+from app.database.db import AsyncSessionLocal, TaskKnowledgeBase
 from app.services import intraservice
 from app.services.ai import DataCircuit, RoutingMetadata, data_sanitizer
 from shared.json_utils import json_dumps, json_loads
@@ -274,22 +274,23 @@ async def get_embedding_vector(
 
     # 6. Попытка через Gemini API (если передан GEMINI_API_KEY)
     if getattr(settings, "GEMINI_API_KEY", None):
-        try:
-            embed_model = getattr(settings, "EMBEDDING_MODEL", "gemini-embedding-2")
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{embed_model}:embedContent?key={settings.GEMINI_API_KEY}"
-            payload = {
-                "model": f"models/{embed_model}",
-                "content": {"parts": [{"text": cloud_payload_text}]},
-            }
-            async with session.post(url, json=payload) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    vec = data.get("embedding", {}).get("values", [])
-                    if vec and len(vec) == settings.EMBEDDING_DIMENSION:
-                        await _save_embedding_to_cache(cache_key, vec)
-                        return vec
-        except Exception as e:
-            logger.debug("Ошибка генерации Gemini эмбеддинга: %s", e)
+        candidate_models = [getattr(settings, "EMBEDDING_MODEL", "gemini-embedding-001"), "gemini-embedding-001"]
+        for embed_model in dict.fromkeys(candidate_models):
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{embed_model}:embedContent?key={settings.GEMINI_API_KEY}"
+                payload = {
+                    "model": f"models/{embed_model}",
+                    "content": {"parts": [{"text": cloud_payload_text}]},
+                }
+                async with session.post(url, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        vec = data.get("embedding", {}).get("values", [])
+                        if vec and len(vec) == settings.EMBEDDING_DIMENSION:
+                            await _save_embedding_to_cache(cache_key, vec)
+                            return vec
+            except Exception as e:
+                logger.debug("Ошибка генерации Gemini эмбеддинга для %s: %s", embed_model, e)
 
     # 7. Локальный Fallback (Ollama / FastEmbed)
     if getattr(settings, "OLLAMA_BASE_URL", None):
@@ -1026,4 +1027,357 @@ async def sync_historical_closed_tasks(
         "indexed": indexed_count,
         "skipped": skipped_count,
     }
+
+
+# ---------------------------------------------------------------------------
+# 6. Умное стратифицированное квотирование и наполнение RAG (01–17)
+# ---------------------------------------------------------------------------
+
+
+async def check_semantic_duplicate(
+    db: AsyncSession,
+    vector: list[float],
+    service_ids: list[int] | None = None,
+    threshold: float = 0.90,
+) -> bool:
+    """
+    Проверяет наличие семантического дубликата задачи в базе (Cosine similarity >= threshold).
+    Порог 0.90 гарантирует разнообразие прецедентов внутри раздела.
+    """
+    if not vector:
+        return False
+    try:
+        max_dist = 1.0 - threshold
+        dist_expr = TaskKnowledgeBase.embedding.cosine_distance(vector).label("dist")
+        conditions = [
+            TaskKnowledgeBase.embedding.is_not(None),
+            TaskKnowledgeBase.is_blacklisted.is_(False),
+        ]
+        if service_ids:
+            conditions.append(TaskKnowledgeBase.service_id.in_(service_ids))
+
+        stmt = (
+            select(dist_expr)
+            .where(*conditions)
+            .order_by("dist")
+            .limit(1)
+        )
+        res = await db.execute(stmt)
+        min_dist = res.scalar_one_or_none()
+        if min_dist is not None and float(min_dist) <= max_dist:
+            return True
+        return False
+    except Exception as e:
+        logger.debug("Ошибка проверки семантического дубликата: %s", e)
+        return False
+
+
+def get_subservice_ids_for_root(root_key: str) -> list[int]:
+    """Возвращает список всех ID услуг IntraService, относящихся к корневому разделу root_key."""
+    from app.services.rules.catalog import ROOT_SERVICES, SERVICE_ID_TO_ROOT
+    res = set()
+    if root_key in ROOT_SERVICES:
+        res.add(ROOT_SERVICES[root_key]["id"])
+    for sid, r in SERVICE_ID_TO_ROOT.items():
+        if r == root_key:
+            res.add(sid)
+    return sorted(list(res))
+
+
+def get_all_root_services() -> list[dict[str, Any]]:
+    """Возвращает список корневых разделов каталога (01..16)."""
+    from app.services.rules.catalog import ROOT_SERVICES
+    items = []
+    for key, info in sorted(ROOT_SERVICES.items()):
+        items.append({
+            "root_id": key,
+            "root_service_id": info["id"],
+            "name": info["name"],
+        })
+    return items
+
+
+async def get_kb_sync_progress() -> dict[str, Any]:
+    """Возвращает текущий прогресс фоновой синхронизации базы знаний из Redis."""
+    redis = _get_redis_safe()
+    if redis is None:
+        return {"is_running": False, "percent": 0, "message": "Redis недоступен"}
+    try:
+        raw = await redis.get("kb:sync_progress")
+        if raw:
+            return json_loads(raw)
+    except Exception as e:
+        logger.debug("Ошибка чтения kb:sync_progress: %s", e)
+    return {
+        "is_running": False,
+        "percent": 0,
+        "total_indexed": 0,
+        "total_skipped": 0,
+        "total_duplicates": 0,
+        "current_service_name": None,
+        "service_stats": {},
+    }
+
+
+async def _save_sync_progress(redis, state: dict[str, Any]) -> None:
+    if redis:
+        try:
+            await redis.set("kb:sync_progress", json_dumps(state), ex=3600)
+        except Exception as e:
+            logger.debug("Ошибка сохранения kb:sync_progress в Redis: %s", e)
+
+
+async def sync_stratified_kb(
+    auth_b64: str,
+    quota_per_service: int = 30,
+    days: int = 60,
+    target_root_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Умное фоновое наполнение RAG по корневым разделам IntraService (01..17).
+    - Защита от перегрузки (Rate Limiting + троттлинг).
+    - Квотирование на каждый сервис (добирает только недостающие до quota_per_service).
+    - Семантическая дедупликация (Cosine Gate > 0.90) для разнообразия прецедентов.
+    - Уважение черного списка (Blacklist Integrity).
+    - Обрезка длинных логов до 2000 символов.
+    - Ограничение по времени и Redis Leader Lock от дублирования запусков.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    redis = _get_redis_safe()
+    lock_key = "lock:kb_sync"
+
+    # Edge Case 4: Re-entrancy / Защита от параллельного запуска
+    if redis:
+        acquired = await redis.set(lock_key, "1", nx=True, ex=900)
+        if not acquired:
+            raise RuntimeError(
+                "Синхронизация базы знаний уже выполняется другим процессом."
+            )
+
+    all_roots = get_all_root_services()
+    if target_root_id:
+        target_roots = [r for r in all_roots if r["root_id"] == target_root_id]
+        if not target_roots:
+            if redis:
+                await redis.delete(lock_key)
+            raise ValueError(f"Корневой раздел с ID '{target_root_id}' не найден в каталоге.")
+    else:
+        target_roots = all_roots
+
+    progress_state: dict[str, Any] = {
+        "is_running": True,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "target_root_id": target_root_id,
+        "current_root": None,
+        "current_service_name": None,
+        "processed_roots": 0,
+        "total_roots": len(target_roots),
+        "percent": 0,
+        "total_indexed": 0,
+        "total_skipped": 0,
+        "total_duplicates": 0,
+        "service_stats": {},
+        "error": None,
+        "finished_at": None,
+    }
+    await _save_sync_progress(redis, progress_state)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M")
+
+    try:
+        async with AsyncSessionLocal() as db:
+            for idx, root_info in enumerate(target_roots, start=1):
+                r_id = root_info["root_id"]
+                r_name = root_info["name"]
+                sub_ids = get_subservice_ids_for_root(r_id)
+
+                progress_state["current_root"] = r_id
+                progress_state["current_service_name"] = r_name
+                progress_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+                progress_state["percent"] = int(((idx - 1) / len(target_roots)) * 100)
+                await _save_sync_progress(redis, progress_state)
+
+                if not sub_ids:
+                    progress_state["processed_roots"] = idx
+                    continue
+
+                # Проверяем, сколько активных прецедентов уже есть в этом разделе
+                count_stmt = select(func.count(TaskKnowledgeBase.task_id)).where(
+                    TaskKnowledgeBase.service_id.in_(sub_ids),
+                    TaskKnowledgeBase.is_blacklisted.is_(False),
+                )
+                existing_count = (await db.execute(count_stmt)).scalar() or 0
+
+                s_stats = {
+                    "name": r_name,
+                    "existing": existing_count,
+                    "indexed": 0,
+                    "skipped": 0,
+                    "duplicates": 0,
+                    "quota": quota_per_service,
+                    "status": "in_progress",
+                }
+
+                if existing_count >= quota_per_service:
+                    s_stats["status"] = "quota_reached"
+                    progress_state["service_stats"][r_id] = s_stats
+                    progress_state["processed_roots"] = idx
+                    await _save_sync_progress(redis, progress_state)
+                    continue
+
+                needed = quota_per_service - existing_count
+                page = 1
+                page_size = min(max(needed * 2, 20), 50)
+                service_indexed = 0
+
+                while service_indexed < needed and page <= 10:
+                    params = {
+                        "StatusIds": "29,30",
+                        "serviceids": ",".join(str(s) for s in sub_ids),
+                        "ChangedMoreThan": cutoff_str,
+                        "pagesize": str(page_size),
+                        "page": str(page),
+                        "include": "status,service",
+                    }
+                    try:
+                        raw_tasks = await intraservice.get_tasks(auth_b64=auth_b64, filters=params)
+                    except Exception as fe:
+                        logger.warning("Сбой выборки задач для раздела %s (стр %d): %s", r_name, page, fe)
+                        break
+
+                    batch = []
+                    if isinstance(raw_tasks, dict):
+                        batch = raw_tasks.get("Tasks", [])
+                    elif isinstance(raw_tasks, list):
+                        batch = raw_tasks
+
+                    if not batch:
+                        # Edge Case 2: в данном разделе больше нет закрытых заявок
+                        break
+
+                    for t in batch:
+                        if service_indexed >= needed:
+                            break
+                        tid = t.get("Id")
+                        if not tid:
+                            continue
+
+                        # Edge Case 5: Blacklist Integrity & проверка наличия в БД
+                        check_db = await db.execute(
+                            select(TaskKnowledgeBase.task_id).where(TaskKnowledgeBase.task_id == tid)
+                        )
+                        if check_db.scalar_one_or_none():
+                            s_stats["skipped"] += 1
+                            progress_state["total_skipped"] += 1
+                            continue
+
+                        # Edge Case 1: Throttling / микро-пауза между запросами
+                        await asyncio.sleep(0.05)
+
+                        try:
+                            lifetime = await intraservice.get_task_lifetime(auth_b64, tid) or []
+                        except Exception as lte:
+                            logger.debug("Ошибка получения lifetime для заявки #%d: %s", tid, lte)
+                            lifetime = []
+
+                        from app.services.ai_synthesis import canonize_task_solution, is_informative_solution
+
+                        canon = canonize_task_solution(t, lifetime)
+                        solution_text = canon.get("solution") or ""
+
+                        # Quality Gate: отсекаем шаблонные отписки
+                        if not is_informative_solution(solution_text):
+                            s_stats["skipped"] += 1
+                            progress_state["total_skipped"] += 1
+                            continue
+
+                        # Edge Case 7: обрезка чрезмерно длинных логов
+                        solution_text = solution_text[:2000]
+                        problem_text = (canon.get("problem") or t.get("Name") or f"Заявка #{tid}")[:1000]
+                        t_name = (t.get("Name") or f"Заявка #{tid}")[:255]
+                        s_id = t.get("ServiceId") or sub_ids[0]
+                        s_name = t.get("ServiceName") or r_name
+                        st_name = t.get("StatusName") or "Закрыта"
+
+                        embed_input = f"Тема: {t_name}\nПроблема: {problem_text}\nРешение: {solution_text}"
+
+                        vec = await get_embedding_vector(embed_input)
+                        if not vec:
+                            s_stats["skipped"] += 1
+                            progress_state["total_skipped"] += 1
+                            continue
+
+                        # Edge Case 3: Семантическая дедупликация (Cosine Gate > 0.90)
+                        is_dup = await check_semantic_duplicate(
+                            db, vec, service_ids=sub_ids, threshold=0.90
+                        )
+                        if is_dup:
+                            s_stats["duplicates"] += 1
+                            progress_state["total_duplicates"] += 1
+                            continue
+
+                        # Сохранение качественного прецедента в pgvector
+                        item = TaskKnowledgeBase(
+                            task_id=tid,
+                            original_name=t_name,
+                            problem=problem_text,
+                            solution=solution_text,
+                            service_id=s_id,
+                            service_name=s_name,
+                            status_name=st_name,
+                            classification_data={
+                                "synced_from_history": True,
+                                "root_id": r_id,
+                                "days": days,
+                                "root_cause": canon.get("root_cause", ""),
+                            },
+                            embedding=vec,
+                            is_blacklisted=False,
+                        )
+                        db.add(item)
+                        await db.commit()
+
+                        service_indexed += 1
+                        s_stats["indexed"] += 1
+                        progress_state["total_indexed"] += 1
+
+                    if len(batch) < page_size:
+                        # Завершение страниц раздела
+                        break
+                    page += 1
+
+                s_stats["status"] = "completed"
+                progress_state["service_stats"][r_id] = s_stats
+                progress_state["processed_roots"] = idx
+                progress_state["percent"] = int((idx / len(target_roots)) * 100)
+                await _save_sync_progress(redis, progress_state)
+
+        progress_state["is_running"] = False
+        progress_state["percent"] = 100
+        progress_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        await _save_sync_progress(redis, progress_state)
+        logger.info(
+            "Стратифицированная синхронизация RAG завершена: добавлено %d прецедентов, пропущено %d (дубликатов %d)",
+            progress_state["total_indexed"],
+            progress_state["total_skipped"],
+            progress_state["total_duplicates"],
+        )
+        return progress_state
+
+    except Exception as e:
+        logger.exception("Сбой при стратифицированной синхронизации RAG: %s", e)
+        progress_state["is_running"] = False
+        progress_state["error"] = str(e)
+        progress_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        await _save_sync_progress(redis, progress_state)
+        raise
+    finally:
+        if redis:
+            try:
+                await redis.delete(lock_key)
+            except Exception:
+                pass
 

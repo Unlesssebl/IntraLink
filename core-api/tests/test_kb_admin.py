@@ -174,3 +174,43 @@ async def test_kb_admin_sync_with_sso_and_cookie():
             assert res.json()["status"] == "success"
             assert res.json()["details"] == {"indexed": 5, "skipped": 2}
 
+
+@pytest.mark.asyncio
+async def test_kb_admin_stratified_sync_endpoints():
+    """Проверка работы эндпоинтов /sync-stratified и /sync-status."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with patch("app.routers.admin.auth.verify_credentials", return_value=("mock_auth_b64", 8664)):
+            login_res = await client.post(
+                "/admin/api/login",
+                json={"username": "belikov", "password": "valid_password"},
+            )
+            assert login_res.status_code == 200
+            cookie_val = login_res.cookies.get("admin_session")
+
+        mock_redis = AsyncMock()
+        mock_redis.get.return_value = None  # no lock
+
+        with patch("app.routers.kb_admin.get_redis_client", return_value=mock_redis), \
+             patch("app.services.rag.sync_stratified_kb", new_callable=AsyncMock):
+            res = await client.post(
+                "/api/v1/admin/kb/sync-stratified",
+                json={"quota_per_service": 20, "days": 60, "root_id": "03"},
+                headers={"Authorization": "Bearer sso_session"},
+                cookies={"admin_session": cookie_val} if cookie_val else {},
+            )
+            assert res.status_code == 202
+            data = res.json()
+            assert data["status"] == "started"
+            assert data["quota_per_service"] == 20
+            assert data["root_id"] == "03"
+
+            # Check status endpoint
+            status_res = await client.get(
+                "/api/v1/admin/kb/sync-status",
+                headers={"Authorization": "Bearer sso_session"},
+                cookies={"admin_session": cookie_val} if cookie_val else {},
+            )
+            assert status_res.status_code == 200
+
+

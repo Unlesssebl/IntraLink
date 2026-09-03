@@ -10,6 +10,8 @@ import {
   blacklistKbExample,
   purgeKnowledgeBase,
   triggerKbSync,
+  triggerStratifiedKbSync,
+  fetchKbSyncStatus,
   fetchVaultStatus,
   saveVaultServiceAccount,
   saveVaultDomain,
@@ -19,6 +21,7 @@ import {
   type ConnectionTestResult,
   type KBExampleItem,
   type KBStatsResponse,
+  type KBSyncProgressResponse,
   type VaultStatusResponse,
 } from '../lib/adminApi';
 import SkillsHub from '../components/SkillsHub';
@@ -106,7 +109,10 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [kbSearch, setKbSearch] = useState<string>('');
   const [kbLoading, setKbLoading] = useState<boolean>(false);
   const [kbSyncLoading, setKbSyncLoading] = useState<boolean>(false);
-  const [kbSyncDays, setKbSyncDays] = useState<number>(30);
+  const [kbSyncDays, setKbSyncDays] = useState<number>(60);
+  const [kbSyncQuota, setKbSyncQuota] = useState<number>(30);
+  const [kbSyncRootId, setKbSyncRootId] = useState<string>('');
+  const [kbSyncProgress, setKbSyncProgress] = useState<KBSyncProgressResponse | null>(null);
   const [blacklistingTaskId, setBlacklistingTaskId] = useState<number | null>(null);
   const [isPurgeModalOpen, setIsPurgeModalOpen] = useState<boolean>(false);
   const [purgeConfirmed, setPurgeConfirmed] = useState<boolean>(false);
@@ -379,6 +385,53 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
       setKbSyncLoading(false);
     }
   };
+
+  const handleTriggerStratifiedSync = async () => {
+    if (!token) return;
+    setKbSyncLoading(true);
+    setStatusMessage(null);
+    try {
+      const res = await triggerStratifiedKbSync(token, {
+        quota_per_service: kbSyncQuota,
+        days: kbSyncDays,
+        root_id: kbSyncRootId || null,
+      });
+      setStatusMessage({ type: 'success', text: res.message || 'Умная синхронизация запущена в фоне' });
+      const statusData = await fetchKbSyncStatus(token);
+      setKbSyncProgress(statusData);
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Ошибка запуска умной синхронизации' });
+      setKbSyncLoading(false);
+    }
+  };
+
+  // Фоновый опрос прогресса умной синхронизации (Redis polling)
+  useEffect(() => {
+    let timer: any = null;
+    let isMounted = true;
+    if (token && activeTab === 'kb') {
+      const checkProgress = async () => {
+        try {
+          const prog = await fetchKbSyncStatus(token);
+          if (!isMounted) return;
+          setKbSyncProgress(prog);
+          if (prog.is_running) {
+            setKbSyncLoading(true);
+            timer = setTimeout(checkProgress, 2000);
+          } else {
+            setKbSyncLoading(false);
+          }
+        } catch {
+          // мягкий fallback
+        }
+      };
+      checkProgress();
+    }
+    return () => {
+      isMounted = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [token, activeTab]);
 
   useEffect(() => {
     if (token) {
@@ -1684,7 +1737,36 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                   </p>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-neutral-400">Раздел:</span>
+                    <select
+                      value={kbSyncRootId}
+                      onChange={e => setKbSyncRootId(e.target.value)}
+                      className="px-2.5 py-1.5 bg-neutral-950 border border-neutral-700 rounded-lg text-xs text-neutral-200 focus:outline-none focus:border-blue-500 cursor-pointer max-w-[200px] truncate"
+                    >
+                      <option value="">Все разделы (01–17)</option>
+                      {kbStats?.root_services?.map(r => (
+                        <option key={r.root_id} value={r.root_id}>
+                          {r.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-neutral-400">Квота:</span>
+                    <input
+                      type="number"
+                      min={5}
+                      max={100}
+                      value={kbSyncQuota}
+                      onChange={e => setKbSyncQuota(Math.max(5, Math.min(100, Number(e.target.value) || 30)))}
+                      className="w-14 px-2 py-1.5 bg-neutral-950 border border-neutral-700 rounded-lg text-xs text-neutral-200 text-center focus:outline-none focus:border-blue-500"
+                      title="Количество качественных прецедентов на каждый раздел"
+                    />
+                  </div>
+
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-neutral-400">Глубина:</span>
                     <select
@@ -1701,31 +1783,75 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                   </div>
 
                   <button
-                    onClick={handleTriggerSync}
+                    onClick={handleTriggerStratifiedSync}
                     disabled={kbSyncLoading || (kbStats?.sync_readiness ? !kbStats.sync_readiness.ready : false)}
                     title={
                       kbStats?.sync_readiness && !kbStats.sync_readiness.ready
                         ? kbStats.sync_readiness.message
-                        : 'Запустить прямую выгрузку и векторизацию закрытых заявок'
+                        : 'Запустить умное квотирование по разделам каталога с дедупликацией'
                     }
                     className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-medium shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
                   >
                     {kbSyncLoading ? (
                       <>
                         <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-                        <span>Обучение...</span>
+                        <span>Синхронизация...</span>
                       </>
                     ) : (
                       <>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
                         </svg>
-                        <span>Запустить синхронизацию</span>
+                        <span>Умное наполнение</span>
                       </>
                     )}
                   </button>
                 </div>
               </div>
+
+              {/* Live Background Sync Progress Card */}
+              {kbSyncProgress && (kbSyncProgress.is_running || (kbSyncProgress.percent > 0 && kbSyncProgress.percent < 100)) && (
+                <div className="p-4 rounded-xl bg-neutral-950 border border-blue-900/50 space-y-2.5 shadow-inner">
+                  <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping"></span>
+                      <span className="font-semibold text-blue-300">
+                        {kbSyncProgress.current_service_name
+                          ? `Обработка: ${kbSyncProgress.current_service_name}`
+                          : 'Подготовка разделов каталога...'}
+                      </span>
+                    </div>
+                    <span className="font-mono text-neutral-400">
+                      {kbSyncProgress.percent}% ({kbSyncProgress.processed_roots}/{kbSyncProgress.total_roots} разделов)
+                    </span>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div className="w-full bg-neutral-800 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className="bg-blue-500 h-1.5 rounded-full transition-all duration-300 ease-out"
+                      style={{ width: `${kbSyncProgress.percent}%` }}
+                    ></div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between text-[11px] text-neutral-400 pt-0.5">
+                    <div className="flex items-center gap-3">
+                      <span>
+                        Добавлено: <strong className="text-emerald-400 font-mono">+{kbSyncProgress.total_indexed}</strong>
+                      </span>
+                      <span>
+                        Пропущено (отписки): <strong className="text-neutral-300 font-mono">{kbSyncProgress.total_skipped}</strong>
+                      </span>
+                      <span>
+                        Отсеяно дублей: <strong className="text-amber-400 font-mono">{kbSyncProgress.total_duplicates}</strong>
+                      </span>
+                    </div>
+                    <span className="text-neutral-500 font-mono text-[10px]">
+                      Лимит: {kbSyncQuota} на раздел
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Search input */}
               <form onSubmit={handleSearchSubmit} className="flex gap-2">

@@ -131,12 +131,19 @@ export interface KBSyncReadiness {
   message: string;
 }
 
+export interface KBRootServiceItem {
+  root_id: string;
+  root_service_id: number;
+  name: string;
+}
+
 export interface KBStatsResponse {
   total_active_examples: number;
   total_blacklisted_examples: number;
   services_count: number;
   services: Record<string, { total: number; by_status: Record<string, number> }>;
   sync_readiness?: KBSyncReadiness;
+  root_services?: KBRootServiceItem[];
 }
 
 export interface KBSyncResponse {
@@ -239,6 +246,74 @@ export async function triggerKbSync(token: string, days = 30, limit = 100): Prom
     if (res.status === 401) throw new Error('Сессия администратора истекла');
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || 'Не удалось запустить синхронизацию базы знаний');
+  }
+  return res.json();
+}
+
+export interface KBSyncProgressResponse {
+  is_running: boolean;
+  started_at?: string | null;
+  updated_at?: string | null;
+  target_root_id?: string | null;
+  current_root?: string | null;
+  current_service_name?: string | null;
+  processed_roots: number;
+  total_roots: number;
+  percent: number;
+  total_indexed: number;
+  total_skipped: number;
+  total_duplicates: number;
+  service_stats?: Record<string, {
+    name: string;
+    existing: number;
+    indexed: number;
+    skipped: number;
+    duplicates: number;
+    quota: number;
+    status: string;
+  }>;
+  error?: string | null;
+  finished_at?: string | null;
+}
+
+export interface KBStratifiedSyncRequest {
+  quota_per_service: number;
+  days: number;
+  root_id?: string | null;
+}
+
+export async function triggerStratifiedKbSync(
+  token: string,
+  payload: KBStratifiedSyncRequest
+): Promise<{ status: string; message: string }> {
+  const res = await fetch('/api/v1/admin/kb/sync-stratified', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Сессия администратора истекла');
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Не удалось запустить умную синхронизацию');
+  }
+  return res.json();
+}
+
+export async function fetchKbSyncStatus(token: string): Promise<KBSyncProgressResponse> {
+  const res = await fetch('/api/v1/admin/kb/sync-status', {
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Сессия администратора истекла');
+    throw new Error('Не удалось получить статус синхронизации');
   }
   return res.json();
 }
