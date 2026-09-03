@@ -551,7 +551,33 @@ def classify_task_resolution(
     """
     sol_lower = solution_text.lower()
     st_id = status_id if status_id is not None else task.get("StatusId")
-    st_name = status_name or task.get("StatusName") or ("Закрыта" if st_id == 29 else "Отменена")
+    status_map = {
+        28: "Закрыта",
+        29: "Выполнена",
+        43: "Обработано 1-й линией",
+        30: "Отменена",
+        31: "Открыта",
+        27: "В работе",
+        35: "Требует уточнения",
+        36: "Приостановлена",
+        33: "На согласовании",
+        34: "На тестировании",
+    }
+    st_name = status_name or task.get("StatusName") or status_map.get(st_id, "Закрыта" if st_id == 29 else "Отменена")
+
+    # 0. Незавершенные заявки: Требует уточнения (StatusId: 35) или в работе
+    if st_id == 35 or "уточнен" in (st_name or "").lower():
+        return {
+            "resolution_type": "clarification",
+            "resolution_label": "Требует уточнения",
+            "resolution_badge_color": "amber",
+        }
+    if st_id in (31, 27, 36, 33, 34) or any(w in (st_name or "").lower() for w in ("открыт", "работ", "согласован", "приостановлен")):
+        return {
+            "resolution_type": "in_progress",
+            "resolution_label": st_name or "В работе",
+            "resolution_badge_color": "amber",
+        }
 
     # 1. Дубликат (Duplicate)
     if "дубликат" in sol_lower or "дубль" in sol_lower or "повтор" in sol_lower:
@@ -569,17 +595,20 @@ def classify_task_resolution(
             "resolution_badge_color": "sky",
         }
 
-    # 3. Отказ / Отклонено (Rejected)
-    rejection_markers = [
-        "отказ", "не согласован", "нет сз", "служебная записка не", "уволен", "не числится",
-        "нет оснований", "запрещено", "отклонен", "отсутствуют права", "почты нет", "учетной записи нет",
-    ]
-    if any(k in sol_lower for k in rejection_markers):
-        return {
-            "resolution_type": "rejected",
-            "resolution_label": "Отказ / Отклонено",
-            "resolution_badge_color": "rose",
-        }
+    # 3. Отказ / Отклонено (Rejected) — исключаем вопросы инженера заявителю
+    is_clarification_question = any(q in sol_lower for q in ("?", "уточните", "прошу дать ответ", "был ли", "был уволен", "уволен ли", "уволен или"))
+    if not is_clarification_question:
+        rejection_markers = [
+            "отказ", "не согласован", "нет сз", "служебная записка не", "сотрудник уволен", "пользователь уволен",
+            "в связи с увольнением", "не числится в штате", "нет оснований", "запрещено", "отклонен",
+            "отклонена", "отсутствуют права", "почты нет", "учетной записи нет",
+        ]
+        if any(k in sol_lower for k in rejection_markers):
+            return {
+                "resolution_type": "rejected",
+                "resolution_label": "Отказ / Отклонено",
+                "resolution_badge_color": "rose",
+            }
 
     # 4. Если статус 30 ("Отменена"), но нет специфичного маркера выше
     if st_id == 30:
@@ -619,7 +648,20 @@ def canonize_task_solution(
     creator_id = str(task.get("CreatorId") or "")
     executor_ids = {str(x).strip() for x in str(task.get("ExecutorIds") or "").split(",") if str(x).strip()}
     status_id = task.get("StatusId")
-    status_name = task.get("StatusName") or ("Закрыта" if status_id == 29 else "Отменена" if status_id == 30 else "Закрыта")
+    status_map = {
+        28: "Закрыта",
+        29: "Выполнена",
+        43: "Обработано 1-й линией",
+        30: "Отменена",
+        31: "Открыта",
+        27: "В работе",
+        35: "Требует уточнения",
+        36: "Приостановлена",
+        33: "На согласовании",
+        34: "На тестировании",
+    }
+    status_name = task.get("StatusName") or status_map.get(status_id, f"Статус {status_id}")
+    is_terminal = (status_id in (28, 29, 43, 30)) or (status_id is None)
 
     # 1. Очистка и дистилляция описания проблемы
     full_problem_raw = f"{raw_name}. {raw_desc}".strip()
@@ -671,16 +713,21 @@ def canonize_task_solution(
             else:
                 candidates_staff.append(comm)
 
-        # Выбираем наиболее авторитетный комментарий инженера
-        if candidates_closing:
-            solution_text = candidates_closing[0]
-        elif candidates_executor:
-            solution_text = candidates_executor[0]
-        elif candidates_staff:
-            solution_text = candidates_staff[0]
+        # Выбираем наиболее авторитетный комментарий инженера ТОЛЬКО для завершенных задач.
+        # Для незавершенных заявок (например 35 'Требует уточнения', 31 'Открыта')
+        # комментарии исполнителя являются вопросами или служебными пометками, а не решением!
+        if is_terminal:
+            if candidates_closing:
+                solution_text = candidates_closing[0]
+            elif candidates_executor:
+                solution_text = candidates_executor[0]
+            elif candidates_staff:
+                solution_text = candidates_staff[0]
+        else:
+            solution_text = ""
 
-    # Если в комментариях решения нет, проверяем поля самой задачи
-    if not solution_text:
+    # Если в комментариях решения нет, проверяем поля самой задачи (только для завершенных заявок)
+    if not solution_text and is_terminal:
         for field in ("Solution", "CloseReason", "Resolution"):
             val = clean_html(task.get(field) or "").strip()
             if val and len(val) >= 10 and not is_system_or_noise_comment(val):

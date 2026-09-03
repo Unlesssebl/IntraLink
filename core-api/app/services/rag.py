@@ -1290,6 +1290,17 @@ async def run_nightly_deep_audit_kb(
 
             for idx, item in enumerate(records, start=1):
                 tid = item.task_id
+                st_name = (item.status_name or "").lower()
+
+                # Автоматический отсев незавершенных заявок (например, 'Требует уточнения')
+                if any(w in st_name for w in ("уточнен", "работ", "открыт", "приостанов")):
+                    item.is_blacklisted = True
+                    item.quality_score = 0.0
+                    audit_state["blacklisted_count"] += 1
+                    add_audit_log(f"#{tid}: незавершенная заявка ('{item.status_name}') отправлена в Blacklist", "warn")
+                    await db.commit()
+                    continue
+
                 prob = item.problem or item.original_name or f"Заявка #{tid}"
                 sol = item.solution or ""
                 c_data = dict(item.classification_data or {})
@@ -1540,6 +1551,14 @@ async def sync_stratified_kb(
                             break
                         tid = t.get("Id")
                         if not tid:
+                            continue
+
+                        t_status_id = t.get("StatusId")
+                        # Защита SSOT: В базу знаний RAG допускаются ТОЛЬКО завершенные заявки (28, 29, 43, 30).
+                        # Заявки в статусах "Требует уточнения" (35), "Открыта" (31), "В работе" (27) запрещены!
+                        if t_status_id not in (28, 29, 43, 30) or (status_ids and t_status_id not in status_ids):
+                            s_stats["skipped"] += 1
+                            progress_state["total_skipped"] += 1
                             continue
 
                         # Edge Case 5: Blacklist Integrity & проверка наличия в БД

@@ -379,6 +379,26 @@ def test_classify_task_resolution_outcomes():
     assert r4["resolution_type"] == "redirected"
     assert r4["resolution_badge_color"] == "sky"
 
+    # 5. Clarification: вопрос инженера в статусе 35 ("Требует уточнения") не классифицируется как отказ
+    t5 = {"StatusId": 35, "StatusName": "Требует уточнения"}
+    r5 = classify_task_resolution(
+        t5,
+        "Добрый день, за указанным в текущей заявке ПК уже работает Ярулин. Данный сотрудник был уволен, переведен или будет работать совместно? Прошу дать ответ в комментариях.",
+        status_id=35,
+        status_name="Требует уточнения",
+    )
+    assert r5["resolution_type"] == "clarification"
+    assert r5["resolution_label"] == "Требует уточнения"
+
+    # 6. Незавершенная заявка в canonize_task_solution не возвращает решение (не индексируется как прецедент)
+    task_in_progress = {"Id": 140194, "StatusId": 35, "StatusName": "Требует уточнения"}
+    canon_in_progress = canonize_task_solution(
+        task_in_progress,
+        [{"Comment": "Данный сотрудник был уволен?", "EditorId": 10502, "StatusId": 35}]
+    )
+    assert canon_in_progress["solution"] == ""
+    assert canon_in_progress["resolution_type"] == "clarification"
+
 
 def test_evaluate_solution_quality_fast_comprehensive():
     """Тест эвристической фильтрации отписок (Уровень 1)."""
