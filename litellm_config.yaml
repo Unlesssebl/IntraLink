@@ -33,11 +33,11 @@ model_list:
       rpm: 15
 
   # =========================================================================
-  # 4. Модель эмбеддингов Google Gemini (3072 dim)
+  # 4. Актуальная модель эмбеддингов Google Gemini 2 (3072 dim)
   # =========================================================================
   - model_name: gemini-embedding-2
     litellm_params:
-      model: gemini/gemini-embedding-001
+      model: gemini/gemini-embedding-2
       api_key: os.environ/GEMINI_API_KEY
       rpm: 30
 
@@ -60,6 +60,7 @@ router_settings:
   fallbacks:
     - gemini-3.5-flash: ["gemini-3.5-flash-lite", "gemini-2.5-flash"]
     - gemini-3.5-flash-lite: ["gemini-2.5-flash"]
+    - gemini-embedding-2: ["gemini-embedding-001"]
 
 general_settings:
   master_key: os.environ/LITELLM_API_KEY
