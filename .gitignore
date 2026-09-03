@@ -14,8 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -156,4 +156,21 @@ intrabot.db-journal
 core_api.db
 core_api.db-journal
 /core-api-data/
-*.log
+core-api/chroma_db/
+helpdesk_agent/knowledge_base.json
+helpdesk-agent/knowledge_base.json
+helpdesk_agent/.session_state.json
+helpdesk-agent/.session_state.json
+helpdesk_agent/*.tmp
+helpdesk-agent/*.tmp
+helpdesk_agent/downloads/
+helpdesk-agent/downloads/
+*.log
+.secrets/
+
+# Node.js / Web
+node_modules/
+intra-web/dist/
+
+# Codegraph / Agent artifacts
+.codegraph/

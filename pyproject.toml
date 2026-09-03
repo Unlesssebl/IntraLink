@@ -1,7 +1,7 @@
 [project]
-name = "intraservice-tg-bot"
+name = "intralink"
 version = "0.1.0"
-description = "Add your description here"
+description = "IntraLink - Unified Helpdesk Gateway, AI Automation & Live Operations Dashboard for IntraService"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -17,15 +17,26 @@ dependencies = [
     "sqlalchemy>=2.0.30",
     "asyncpg>=0.29.0",
     "cryptography>=42.0.0",
+    "pywinrm>=0.4.3",
+    "smbprotocol>=1.12.0",
+    "impacket>=0.12.0",
+    "pgvector>=0.2.0",
+    "openai",
+    "orjson>=3.10.0",
+    "ldap3>=2.9.1",
+    "pyjwt>=2.13.0",
 ]
 
 [tool.pyright]
-extraPaths = ["bot", "core-api"]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["core-api", "telegram-bot", "execution-worker", "helpdesk-cli", "shared"]
+exclude = ["**/__pyrefly_virtual__"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["core-api/tests"]
-pythonpath = ["core-api"]
+pythonpath = ["core-api", "shared"]
 
 [dependency-groups]
 dev = [
@@ -33,4 +44,12 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4.0",
 ]
+
+[tool.pyrefly]
+project-excludes = [
+    "**/__pyrefly_virtual__/**",
+]
+search_path = ["core-api", "telegram-bot", "execution-worker", "helpdesk-cli", "shared"]
+
+
 

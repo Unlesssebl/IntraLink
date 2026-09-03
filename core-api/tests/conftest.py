@@ -6,10 +6,10 @@ app.config выполняет `settings = Settings()` на уровне моду
 Это достигается через переменные окружения (os.environ), которые
 pydantic-settings читает при инициализации.
 """
+
 import os
 import pytest
-import pytest_asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 # ---------------------------------------------------------------------------
 os.environ.setdefault("INTRASERVICE_URL", "http://intraservice.test/api/")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
 os.environ.setdefault("ENCRYPTION_KEY", "")
 os.environ.setdefault("BOT_API_KEY", "test-api-key")
 os.environ.setdefault("INTRASERVICE_TZ", "Europe/Moscow")

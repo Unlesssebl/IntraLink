@@ -1,0 +1,6 @@
+aiogram>=3.0.0
+aiohttp
+python-dotenv
+redis>=5.0.0
+orjson>=3.10.0
+

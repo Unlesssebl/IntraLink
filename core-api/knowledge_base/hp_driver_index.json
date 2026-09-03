@@ -1,0 +1,427 @@
+{
+  "version": "Aggregated UPD Index 2.0 (Centralized)",
+  "base_dir": "\\\\truenas\\Drivers\\printer\\Hp",
+  "generated_at": "2026-06-22T07:00:03.638682",
+  "models": {
+    "HP LaserJet P1505n": {
+      "driver_name": "HP LaserJet P1505n",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_P1005-P1505n/hpljp1005.inf"
+    },
+    "HP LaserJet P1006": {
+      "driver_name": "HP LaserJet P1006",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_P1005-P1505n/hpljp1005.inf"
+    },
+    "HP LaserJet P1008": {
+      "driver_name": "HP LaserJet P1008",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_P1005-P1505n/hpljp1005.inf"
+    },
+    "HP LaserJet P1505": {
+      "driver_name": "HP LaserJet P1505",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_P1005-P1505n/hpljp1005.inf"
+    },
+    "HP LaserJet P1007": {
+      "driver_name": "HP LaserJet P1007",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_P1005-P1505n/hpljp1005.inf"
+    },
+    "HP LaserJet P1005": {
+      "driver_name": "HP LaserJet P1005",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_P1005-P1505n/hpljp1005.inf"
+    },
+    "HP Universal Printing PCL 6 (v8.2.0)": {
+      "driver_name": "HP Universal Printing PCL 6 (v8.2.0)",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/UPD-PCL6/hpcu360u.inf"
+    },
+    "HP Universal Printing PCL 6": {
+      "driver_name": "HP Universal Printing PCL 6",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/UPD-PCL6/hpcu360u.inf"
+    },
+    "HP LaserJet MFP M129-M134 PCLmS": {
+      "driver_name": "HP LaserJet MFP M129-M134 PCLmS",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/x64LJM129-M134_UWWL_4-1_UW_4_1_Full_WebPack_44.3.2667/hpypclms24.inf"
+    },
+    "HP LaserJet MFP M129-M134 PCLm-S": {
+      "driver_name": "HP LaserJet MFP M129-M134 PCLm-S",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_MFP_M129-M134REST_WinUSB/hpypclms24_V4.inf"
+    },
+    "HP Universal Printing PCL 6 (v6.8.0)": {
+      "driver_name": "HP Universal Printing PCL 6 (v6.8.0)",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/Deskjet_F300_series_DOT4PRT-hp_color_LaserJet_5550_DOT4PRT/hpcu230u.inf"
+    },
+    "HP LaserJet 1022nw": {
+      "driver_name": "HP LaserJet 1022nw",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_1018-1022nw/HPLJ1020.INF"
+    },
+    "HP LaserJet 1020": {
+      "driver_name": "HP LaserJet 1020",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_1018-1022nw/HPLJ1020.INF"
+    },
+    "HP LaserJet 1022n": {
+      "driver_name": "HP LaserJet 1022n",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_1018-1022nw/HPLJ1020.INF"
+    },
+    "HP LaserJet 1018": {
+      "driver_name": "HP LaserJet 1018",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_1018-1022nw/HPLJ1020.INF"
+    },
+    "HP LaserJet 1022": {
+      "driver_name": "HP LaserJet 1022",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_1018-1022nw/HPLJ1020.INF"
+    },
+    "HP LaserJet M1120 MFP": {
+      "driver_name": "HP LaserJet M1120 MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_M1120_MFP-M1120n_MFP/HPM1120.INF"
+    },
+    "HP LaserJet M1120n MFP": {
+      "driver_name": "HP LaserJet M1120n MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_M1120_MFP-M1120n_MFP/HPM1120.INF"
+    },
+    "HP LaserJet MFP M28-M31 PCLmS": {
+      "driver_name": "HP LaserJet MFP M28-M31 PCLmS",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_MFP_M28-M31REST/hpypclms26.inf"
+    },
+    "HP LaserJet MFP M28-M31 PCLm-S": {
+      "driver_name": "HP LaserJet MFP M28-M31 PCLm-S",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_MFP_M28-M31REST/hpypclms26_V4.inf"
+    },
+    "HP Color Laser 150": {
+      "driver_name": "HP Color Laser 150",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Color_Laser_150/Printer/SPL/sht12c.inf"
+    },
+    "HP LaserJet Pro MFP M435 PCL 6": {
+      "driver_name": "HP LaserJet Pro MFP M435 PCL 6",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Pro_MFP_M435/hpcm435c.inf"
+    },
+    "HP LaserJet Pro MFP M225-M226 PCL 6": {
+      "driver_name": "HP LaserJet Pro MFP M225-M226 PCL 6",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Pro_MFP_M225-M226/hpcm225c.inf"
+    },
+    "hp LaserJet 1015 HB": {
+      "driver_name": "hp LaserJet 1015 HB",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/hp_LaserJet_1010_HB-1012_HB-1015_HB/hpc1015w.inf"
+    },
+    "hp LaserJet 1012 HB": {
+      "driver_name": "hp LaserJet 1012 HB",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/hp_LaserJet_1010_HB-1012_HB-1015_HB/hpc1015w.inf"
+    },
+    "hp LaserJet 1010 HB": {
+      "driver_name": "hp LaserJet 1010 HB",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/hp_LaserJet_1010_HB-1012_HB-1015_HB/hpc1015w.inf"
+    },
+    "HP LaserJet M14-M17 PCLm-S": {
+      "driver_name": "HP LaserJet M14-M17 PCLm-S",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_M14-M17_PCLm-S/hpypclms26_V4.inf"
+    },
+    "HP LaserJet M14-M17 PCLmS": {
+      "driver_name": "HP LaserJet M14-M17 PCLmS",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_M14-M17_PCLm-S/hpypclms26.inf"
+    },
+    "HP LaserJet Professional M1219nfs MFP": {
+      "driver_name": "HP LaserJet Professional M1219nfs MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1217nfw MFP": {
+      "driver_name": "HP LaserJet Professional M1217nfw MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1219nf MFP": {
+      "driver_name": "HP LaserJet Professional M1219nf MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1136 MFP": {
+      "driver_name": "HP LaserJet Professional M1136 MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1132 MFP": {
+      "driver_name": "HP LaserJet Professional M1132 MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1218nfs MFP": {
+      "driver_name": "HP LaserJet Professional M1218nfs MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1138 MFP": {
+      "driver_name": "HP LaserJet Professional M1138 MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1213nf MFP": {
+      "driver_name": "HP LaserJet Professional M1213nf MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1214nfh MFP": {
+      "driver_name": "HP LaserJet Professional M1214nfh MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1134 MFP": {
+      "driver_name": "HP LaserJet Professional M1134 MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1139 MFP": {
+      "driver_name": "HP LaserJet Professional M1139 MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1137 MFP": {
+      "driver_name": "HP LaserJet Professional M1137 MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1216nfh MFP": {
+      "driver_name": "HP LaserJet Professional M1216nfh MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1212nf MFP": {
+      "driver_name": "HP LaserJet Professional M1212nf MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HPM1210.INF"
+    },
+    "HP LaserJet Professional M1210 MFP Series Fax": {
+      "driver_name": "HP LaserJet Professional M1210 MFP Series Fax",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Professional_M1210_MFP_Series_Fax/HP1210FP.INF"
+    },
+    "HP LaserJet CP1022": {
+      "driver_name": "HP LaserJet CP1022",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/CP1020_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/CP1020.inf"
+    },
+    "HP LaserJet CP1028": {
+      "driver_name": "HP LaserJet CP1028",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/CP1020_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/CP1020.inf"
+    },
+    "HP LaserJet CP1027nw": {
+      "driver_name": "HP LaserJet CP1027nw",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/CP1020_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/CP1020.inf"
+    },
+    "HP LaserJet CP 1025": {
+      "driver_name": "HP LaserJet CP 1025",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/CP1020_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/CP1020.inf"
+    },
+    "HP LaserJet CP1023": {
+      "driver_name": "HP LaserJet CP1023",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/CP1020_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/CP1020.inf"
+    },
+    "HP LaserJet CP 1025nw": {
+      "driver_name": "HP LaserJet CP 1025nw",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/CP1020_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/CP1020.inf"
+    },
+    "HP LaserJet Professional CP1020 Series": {
+      "driver_name": "HP LaserJet Professional CP1020 Series",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/CP1020_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/CP1020.inf"
+    },
+    "HP LaserJet CP1028nw": {
+      "driver_name": "HP LaserJet CP1028nw",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/CP1020_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/CP1020.inf"
+    },
+    "HP LaserJet CP1021": {
+      "driver_name": "HP LaserJet CP1021",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/CP1020_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/CP1020.inf"
+    },
+    "HP LaserJet CP1022nw": {
+      "driver_name": "HP LaserJet CP1022nw",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/CP1020_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/CP1020.inf"
+    },
+    "HP Laser 103 107 108": {
+      "driver_name": "HP Laser 103 107 108",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Laser_103_107_108/Printer/SPL/shj2m.inf"
+    },
+    "HP LaserJet M1005": {
+      "driver_name": "HP LaserJet M1005",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_M1005/HPLJM1005.INF"
+    },
+    "HP Universal Printing PCL 5 (v6.1.0)": {
+      "driver_name": "HP Universal Printing PCL 5 (v6.1.0)",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Color_LaserJet_3000_DOT4-hp_color_LaserJet_9500_MFP_DOT4PAR/hpcu180b.inf"
+    },
+    "HP Universal Printing PCL 5": {
+      "driver_name": "HP Universal Printing PCL 5",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Color_LaserJet_3000_DOT4-hp_color_LaserJet_9500_MFP_DOT4PAR/hpcu180b.inf"
+    },
+    "HP Universal Printing PS (v6.4.1)": {
+      "driver_name": "HP Universal Printing PS (v6.4.1)",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Color_LaserJet_3000_DOT4PAR-color_LaserJet_5550_DOT4/hpcu196v.inf"
+    },
+    "HP Universal Printing PS": {
+      "driver_name": "HP Universal Printing PS",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Color_LaserJet_3000_DOT4PAR-color_LaserJet_5550_DOT4/hpcu196v.inf"
+    },
+    "HP Universal Printing PS (v7.2.0)": {
+      "driver_name": "HP Universal Printing PS (v7.2.0)",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Color_LaserJet_3000_DOT4PAR-color_LaserJet_5550_DOT4/hpcu300v.inf"
+    },
+    "HP LaserJet Pro MFP M127-M128 PCLmS": {
+      "driver_name": "HP LaserJet Pro MFP M127-M128 PCLmS",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LJ_M127128_Scan_Drv/hpcm127128.inf"
+    },
+    "HP LaserJet Pro M201-M202 PCL 6": {
+      "driver_name": "HP LaserJet Pro M201-M202 PCL 6",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_Pro_M201-M202/hpcm201c.inf"
+    },
+    "HP LaserJet M1530 MFP Series PCL 6": {
+      "driver_name": "HP LaserJet M1530 MFP Series PCL 6",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_M1530_MFP_Series/hpc1530u.inf"
+    },
+    "HP LaserJet M1319f MFP": {
+      "driver_name": "HP LaserJet M1319f MFP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_M1319f_FAX/HPM1319.INF"
+    },
+    "HP LaserJet M1319f FAX": {
+      "driver_name": "HP LaserJet M1319f FAX",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_M1319f_FAX/HP1319fp.INF"
+    },
+    "HP Designjet 800PS 24 by HP": {
+      "driver_name": "HP Designjet 800PS 24 by HP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 500PS42+HPGL2 Card": {
+      "driver_name": "HP Designjet 500PS42+HPGL2 Card",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 510ps 24in Printer": {
+      "driver_name": "HP Designjet 510ps 24in Printer",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 800PS 42 by HP": {
+      "driver_name": "HP Designjet 800PS 42 by HP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 500 plus 24": {
+      "driver_name": "HP Designjet 500 plus 24",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 800 24 by HP": {
+      "driver_name": "HP Designjet 800 24 by HP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 500 plus 42": {
+      "driver_name": "HP Designjet 500 plus 42",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 500 42+HPGL2 Card": {
+      "driver_name": "HP Designjet 500 42+HPGL2 Card",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 500ps plus 42": {
+      "driver_name": "HP Designjet 500ps plus 42",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 500PS24+HPGL2 Card": {
+      "driver_name": "HP Designjet 500PS24+HPGL2 Card",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 510 24in Printer": {
+      "driver_name": "HP Designjet 510 24in Printer",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 500ps plus 24": {
+      "driver_name": "HP Designjet 500ps plus 24",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 500 24+HPGL2 Card": {
+      "driver_name": "HP Designjet 500 24+HPGL2 Card",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 800 42 by HP": {
+      "driver_name": "HP Designjet 800 42 by HP",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 510 42in Printer": {
+      "driver_name": "HP Designjet 510 42in Printer",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Designjet 510ps 42in Printer": {
+      "driver_name": "HP Designjet 510ps 42in Printer",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Designjet_500_24HPGL2_Card-800PS_42_by_HP/hpdj510wumglen/dsgj510.inf"
+    },
+    "HP Laser MFP 131 133 135-138": {
+      "driver_name": "HP Laser MFP 131 133 135-138",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_Laser_MFP_131_133_135-138/Printer/SPL/shm4m.inf"
+    },
+    "HP LaserJet Pro MFP M125-M126 PCLmS": {
+      "driver_name": "HP LaserJet Pro MFP M125-M126 PCLmS",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LJ_M125126_Scan_Drv/hpcm125126.inf"
+    },
+    "HP LaserJet Professional P1104": {
+      "driver_name": "HP LaserJet Professional P1104",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1607dn": {
+      "driver_name": "HP LaserJet Professional P1607dn",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1109": {
+      "driver_name": "HP LaserJet Professional P1109",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1606dn": {
+      "driver_name": "HP LaserJet Professional P1606dn",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1566": {
+      "driver_name": "HP LaserJet Professional P1566",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1609dn": {
+      "driver_name": "HP LaserJet Professional P1609dn",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P 1102w": {
+      "driver_name": "HP LaserJet Professional P 1102w",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1107w": {
+      "driver_name": "HP LaserJet Professional P1107w",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1107": {
+      "driver_name": "HP LaserJet Professional P1107",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1608dn": {
+      "driver_name": "HP LaserJet Professional P1608dn",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1108w": {
+      "driver_name": "HP LaserJet Professional P1108w",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1568": {
+      "driver_name": "HP LaserJet Professional P1568",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1102w": {
+      "driver_name": "HP LaserJet Professional P1102w",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1569": {
+      "driver_name": "HP LaserJet Professional P1569",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1106": {
+      "driver_name": "HP LaserJet Professional P1106",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1102": {
+      "driver_name": "HP LaserJet Professional P1102",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1108": {
+      "driver_name": "HP LaserJet Professional P1108",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1109w": {
+      "driver_name": "HP LaserJet Professional P1109w",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1106w": {
+      "driver_name": "HP LaserJet Professional P1106w",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet Professional P1567": {
+      "driver_name": "HP LaserJet Professional P1567",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/P1100_USB_EWS_Device_Driver-P1600_USB_EWS_Device_Driver/HP1100.INF"
+    },
+    "HP LaserJet 200 color M251 PCL 6": {
+      "driver_name": "HP LaserJet 200 color M251 PCL 6",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_200_color_M251/hpcm251c.inf"
+    },
+    "HP LaserJet MFP M437-M443 PCL6": {
+      "driver_name": "HP LaserJet MFP M437-M443 PCL6",
+      "inf_path_suffix": "!HP-universal-drivers/extracted-drv-inf/HP_LaserJet_MFP_M437-M443/Printer/PCL/sha7m.inf"
+    }
+  }
+}

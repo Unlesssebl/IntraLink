@@ -1,201 +1,114 @@
-# IntraBot-gemini 🤖💼
+# IntraLink
 
-Современный асинхронный Телеграм-бот и API-шлюз для мониторинга, уведомлений и управления заявками в Helpdesk-системе **IntraService**. 
+Современная платформа комплексной автоматизации обработки и выполнения заявок в Helpdesk-системе **IntraService**.
 
-Проект построен на базе микросервисной архитектуры, разделяющей слой представления (Telegram-бот) и слой бизнес-логики/хранения данных (FastAPI Gateway).
+Система сочетает детерминированный движок правил (Rule Engine), централизованный семантический RAG-поиск (pgvector + FastEmbed), многоконтурную безопасность данных (Dual-Circuit Zero Trust DLP), интеграционный API-шлюз и модули прямого исполнения в инфраструктуре Windows (Active Directory, WinRM, сетевая печать).
 
 ---
 
-## 🏗 Архитектура системы
+## 🏗 Архитектура монорепозитория
 
-Система построена на событийно-ориентированном подходе и состоит из четырех основных компонентов, разворачиваемых в единой сети:
-1. **PostgreSQL** — реляционная база данных для хранения учетных данных пользователей IntraService (в зашифрованном виде) и состояния опроса (`last_task_id`, `last_check_time`).
-2. **Redis** — шина сообщений (Pub/Sub). Обеспечивает асинхронную доставку уведомлений от Core API к Telegram-боту в реальном времени.
-3. **Core API (FastAPI)** — защищенный микросервис-шлюз. Он управляет базой данных, взаимодействует с IntraService API, а также запускает встроенный фоновый **Worker** (`APScheduler`), который опрашивает IntraService и публикует новые события в Redis Pub/Sub.
-4. **Telegram Bot (aiogram 3.x)** — легкий интерфейсный сервис, который принимает команды пользователей и запускает фоновый **Redis Listener** для получения событий из шины Redis и мгновенной отправки уведомлений в Telegram.
+Проект построен по модульной сервисной архитектуре с единым источником правды (**Single Source of Truth**) в `core-api`:
+
+```text
+IntraLink/
+├── core-api/          # Единый шлюз состояния: FastAPI, PostgreSQL+pgvector, AI Hub, хостинг /admin
+│   └── app/poller.py  # Автономный демон опроса IntraService с Leader Lock в Redis
+├── execution-worker/  # Фоновый Windows Headless Daemon исполнения задач (AD WLAN, WinRM, SMB, принтеры)
+├── intralink-mcp/     # FastMCP Hub для AI-агента Antigravity (JSON-RPC 2.0 stdio инструменты)
+├── helpdesk-cli/      # Машинный инструментарий и SDK исключительно для AI-агента Antigravity (AGY)
+├── shared/            # Единый пакет общих алгоритмов (SSOT): normalizer, diagnostics, json_utils, printers
+├── telegram-bot/      # Мобильный пейджер инженера и HITL-согласования (aiogram 3.x, Redis Streams)
+├── intra-web/         # Фронтенд веб-панели администратора (React 19, Vite, Tailwind CSS v4)
+├── tools/             # Скрипты индексации драйверов печати
+└── docs/              # Системная документация проекта
+```
 
 > [!NOTE]
-> Схемы последовательности выполнения запросов (Data Flow) и подробная архитектурная диаграмма компонентов доступны в документе [architecture_schema.md](docs/architecture_schema.md).
+> Полные архитектурные схемы, контуры безопасности DLP и Data Flow описаны в **[`docs/architecture.md`](docs/architecture.md)**.  
+> Архитектурные инварианты («ПОЧЕМУ») и стандарты разработки зафиксированы в **[`docs/developer_guide.md`](docs/developer_guide.md)**.
 
 ---
 
-## 🚀 Основные возможности
+## 🚀 Ключевые возможности
 
-*   **Персональная авторизация**: Безопасный вход под учетными данными IntraService.
-*   **Безопасность данных**: Данные авторизации (логин/пароль) шифруются с помощью Fernet (`cryptography`) и сохраняются в PostgreSQL. Бот не хранит пароли локально, а сообщения с паролями удаляются из истории чата Telegram сразу после отправки.
-*   **Событийный фоновый мониторинг (Redis Pub/Sub)**:
-    *   Мгновенные уведомления обо всех **новых заявках** в системе IntraService.
-    *   Персональные уведомления о **новых комментариях** и **сменах статусов** для заявок, где пользователь является назначенным исполнителем.
-    *   Автоматический трекинг состояния опроса для исключения дублирования.
-*   **📋 Мои заявки**: Просмотр списка активных задач пользователя с поддержкой пагинации прямо в Telegram.
+* **Защищенный API Gateway (Core API)**: Единая точка доступа к REST API IntraService, Fernet-шифрование учетных записей, централизованный Rule Engine, декомпозированный `TriageService` и двухэтапный Hybrid RAG.
+* **Декларативный реестр навыков (Action Registry) & Policy Engine**: Каталог инфраструктурных действий с JSON-схемами, мгновенным аппаратным Killswitch (`HTTP 403 Forbidden`) и режимами автономного исполнения (`auto`) или ручного подтверждения (`confirm` / HitL).
+* **Шлюз инструментов FastMCP Hub (`intralink-mcp`)**: Автономный MCP-сервер инструментов для AI-агента Antigravity (пакетный триаж, карточки тикетов, телеметрия хостов, векторный RAG и постановка задач в Command Bus).
+* **Изолированный Poller с Leader Lock**: Независимый демон фонового опроса очереди от сервисного аккаунта под защитой распределенного замка (`lock:poller_leader`, TTL 15s) для предотвращения Split-Brain при масштабировании.
+* **Гарантированная доставка событий (Redis Streams)**: Поток `stream:intraservice_events` с Consumer Groups, подтверждением `XACK` и периодическим перехватом зависших сообщений `XAUTOCLAIM` (At-Least-Once).
+* **Исполнение в Windows-домене (Execution Worker)**: Фоновая обработка очереди `stream:execution_queue` на базе стандарта `BaseActionExecutor` (`Preflight ➔ Execute ➔ Verify`) — выдача сетевого доступа в AD (`WLAN-WORKNET`), создание учетных записей, удаленная установка принтеров через WinRM с WMI Bootstrap и защитой от коллизий сессий (`lock:host:<pc>`, TTL 30s).
+* **Многоконтурная безопасность данных (Zero Trust DLP)**:
+  * 🔴 **RED Zone (On-Prem)**: пароли и заявки СБ обрабатываются локально (Ollama Qwen2.5 / bge-m3).
+  * 🟡 **YELLOW Zone (Sanitized Cloud)**: ПДн, IP и имена хостов маскируются токенами через Redis PII Vault перед вызовом облачных моделей.
+  * 🟢 **GREEN Zone (Cloud Direct)**: открытые регламенты и технические вопросы.
+* **Прямой LDAPS-клиент Active Directory (порт 636)**: Управление доменными объектами и выдача доступа к корпоративному Wi-Fi (`WLAN-WORKNET`) без необходимости обращения к клиентскому ПК и без участия Windows-воркера.
+* **Многоуровневый каскад исполнения (Tiered Execution)**: Автоматическая установка принтеров через WinRM $\rightarrow$ LiteManager (порт 5650) $\rightarrow$ DameWare (порт 6129) $\rightarrow$ One-Liner ассистент оператора.
+* **Инструментарий AI-агента (AGY Toolset)**: Управление очередью прямо из диалога с AI-ассистентом через слэш-команды (`/triage`, `/task`, `/diag`, `/screen`, `/kb`, `/sync`, `/redirect`) и нативные MCP-инструменты.
+* **Мобильный пейджер (Telegram Bot)**: Моментальные уведомления, просмотр активных заявок инженера и кнопки подтверждения операций (Human-in-the-Loop) через единую шину Command Bus.
+* **Двухконтурный Web SPA (`/operator-panel` и `/admin`)**: React 19 интерфейс с центрами обработки заявок, вкладкой **Skills Hub** с тумблерами Killswitch, Live SSE Terminal мониторинга исполнения и 1-Click Action виджетами в карточке заявки.
 
 ---
 
 ## 🛠 Технологический стек
 
-### Core API (FastAPI)
-*   **FastAPI** — веб-фреймворк для создания REST API.
-*   **SQLAlchemy 2.0 (Async)** + **asyncpg** — асинхронная работа с базой данных PostgreSQL.
-*   **APScheduler** — встроенный планировщик для периодического опроса IntraService.
-*   **redis.asyncio** — асинхронная публикация событий в Redis.
-*   **cryptography** — симметричное шифрование учетных данных в БД.
-*   **aiohttp** — асинхронные запросы к REST API IntraService.
-
-### Telegram Bot (aiogram)
-*   **aiogram 3.x** — асинхронный фреймворк для Telegram Bot API.
-*   **redis.asyncio** — асинхронное прослушивание событий Redis Pub/Sub.
-*   **aiohttp** — взаимодействие с Core API.
+* **Бэкенд**: Python 3.11+, FastAPI, SQLAlchemy 2.0 (Async), asyncpg, ldap3, aiohttp, orjson, pyjwt, cryptography (Fernet).
+* **База данных и поиск**: PostgreSQL 16, pgvector (HNSW), FastEmbed (ONNX MiniLM-L12 + bge-reranker).
+* **Шина сообщений и кэш**: Redis 7 (Streams, Consumer Groups, Distributed Locks, PII Vault).
+* **ИИ и инференс**: Ollama (Qwen2.5:1.5B, bge-m3), LiteLLM Proxy / Gemini Cloud.
+* **Фронтенд**: React 19, TypeScript, Tailwind CSS v4, Vite 6 (`vite-plugin-singlefile`).
+* **Бот**: aiogram 3.x, aiohttp.
+* **Инфраструктура исполнения**: PowerShell, pywinrm, WMI / CIM over WinRM:5985, LiteManager / DameWare integration.
 
 ---
 
-## 📂 Структура проекта
+## ⚡ Быстрый запуск
 
-```text
-├── bot/                       # Сервис Telegram-бота (aiogram)
-│   ├── handlers/              # Обработчики событий Telegram
-│   │   ├── auth.py            # Авторизация (вход, выход)
-│   │   ├── start_help.py      # Команды /start, /help и меню кнопок
-│   │   └── tickets.py         # Пагинация и отображение списка заявок
-│   ├── services/
-│   │   ├── api_client.py      # HTTP-клиент для работы с Core API
-│   │   └── redis_listener.py  # Фоновый слушатель шины сообщений Redis Pub/Sub
-│   ├── config.py              # Конфигурация бота
-│   ├── main.py                # Точка входа для запуска бота
-│   ├── utils.py               # Вспомогательные функции (парсинг HTML, форматирование)
-│   └── requirements.txt
-│
-├── core-api/                  # Сервис API-шлюза (FastAPI)
-│   ├── app/
-│   │   ├── database/          # Слой базы данных (SQLAlchemy модели и сессии)
-│   │   │   └── db.py          # Инициализация БД PostgreSQL / SQLite
-│   │   ├── models/            # Схемы валидации Pydantic
-│   │   │   └── schemas.py
-│   │   ├── routers/           # Контроллеры FastAPI (endpoints)
-│   │   │   ├── auth.py        # /auth/login, /auth/logout
-│   │   │   ├── deps.py        # Зависимости (проверка API-ключа, сессии)
-│   │   │   ├── tasks.py       # /tasks (заявки, комментарии, жизненный цикл)
-│   │   │   └── users.py       # /users (профиль пользователя)
-│   │   ├── services/
-│   │   │   ├── crypto.py      # Модуль шифрования/дешифрования токенов
-│   │   │   ├── intraservice.py# Интеграционный клиент с REST API IntraService
-│   │   │   └── worker.py      # Фоновый воркер (опрос IntraService и публикация в Redis)
-│   │   ├── config.py          # Загрузка и валидация настроек (Pydantic Settings)
-│   │   └── main.py            # Настройка FastAPI приложения и роутеров
-│   ├── tests/                 # Юнит-тесты (pytest)
-│   │   ├── conftest.py        # Настройки тестов и фикстуры
-│   │   ├── test_crypto.py     # Тесты шифрования/дешифрования токенов
-│   │   ├── test_intraservice.py # Тесты интеграционного клиента IntraService
-│   │   └── test_worker.py     # Тесты фонового воркера (process_user и др.)
-│   └── requirements.txt
-│
-├── docs/                      # Документация по API IntraService и архитектуре
-├── docker-compose.yml         # Оркестрация контейнеров (Postgres, Redis, Core API, Bot)
-├── pyproject.toml             # Конфигурация для пакетного менеджера uv
-└── uv.lock                    # Блокировка зависимостей uv
-```
-
----
-
-## ⚙️ Установка и запуск
-
-### Способ 1. Запуск через Docker Compose (Рекомендуемый)
-
-Для быстрого развертывания всей инфраструктуры (БД Postgres, API-шлюз и Telegram-бот) в контейнерах:
-
-1. **Подготовьте файлы конфигурации**:
-   Создайте `.env` в папке `./bot` на основе `bot/.env.example`:
-   ```env
-   BOT_TOKEN=ваш_токен_телеграм_бота
-   CORE_API_URL=http://core-api:8000/api/v1
-   BOT_API_KEY=надежный_ключ_для_авторизации_бота
-   INTRAService_URL=https://ваш-домен.intraservice.ru/api/
-   POLLING_INTERVAL=10
-   ```
-
-   Создайте `.env` в папке `./core-api` на основе `core-api/.env.example`:
-   ```env
-   INTRASERVICE_URL=https://ваш-домен.intraservice.ru/api/
-   DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
-   BOT_API_KEY=надежный_ключ_для_авторизации_бота
-   SSL_VERIFY=False
-   # Ключ шифрования (сгенерируйте: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-   ENCRYPTION_KEY=ваш_сгенерированный_ключ
-   ```
-
-   > [!WARNING]
-   > Значение `BOT_API_KEY` в обоих файлах конфигурации должно совпадать!
-
-2. **Запустите службы**:
-   Выполните команду в корне проекта:
-   ```bash
-   docker compose up --build -d
-   ```
-   Эта команда соберет Docker-образы для Core API и Бота, поднимет контейнер PostgreSQL и автоматически применит миграции (создаст необходимые таблицы) при первом запуске FastAPI.
-
----
-
-### Способ 2. Локальный запуск (для разработки)
-
-#### Шаг 1. Настройка Базы Данных
-По умолчанию Core API использует PostgreSQL. Вы можете запустить Postgres локально или использовать SQLite для тестирования:
-* Для использования SQLite измените `DATABASE_URL` в `core-api/.env`:
-  ```env
-  DATABASE_URL=sqlite+aiosqlite:///./core_api.db
-  ```
-
-#### Шаг 2. Запуск Core API (FastAPI)
-Рекомендуется использовать быстрый менеджер пакетов [uv](https://github.com/astral-sh/uv):
-
-1. Перейдите в каталог `core-api`:
-   ```bash
-   cd core-api
-   ```
-2. Создайте файл `.env` на основе `core-api/.env.example`.
-3. Установите зависимости и запустите сервер:
-   ```bash
-   uv venv
-   # Активируйте виртуальное окружение:
-   # На Windows: .venv\Scripts\activate
-   # На macOS/Linux: source .venv/bin/activate
-
-   uv pip install -r requirements.txt
-   uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-   ```
-
-#### Шаг 3. Запуск Telegram Bot
-1. Откройте новый терминал и перейдите в каталог `bot`:
-   ```bash
-   cd bot
-   ```
-2. Создайте файл `.env` на основе `bot/.env.example` (укажите `CORE_API_URL=http://127.0.0.1:8000/api/v1`).
-3. Установите зависимости и запустите бота:
-   ```bash
-   uv venv
-   # Активируйте виртуальное окружение:
-   # На Windows: .venv\Scripts\activate
-   # На macOS/Linux: source .venv/bin/activate
-
-   uv pip install -r requirements.txt
-   uv run main.py
-   ```
-
----
-
-## 🧪 Тестирование
-
-Для запуска юнит-тестов (написанных с использованием `pytest` и `pytest-asyncio`):
-
+### 1. Запуск основной инфраструктуры в Docker:
 ```bash
-# Запустить тесты с детальным выводом
-uv run pytest -v
+docker compose up -d
+```
+Поднимает контейнеры: `postgres` (pgvector), `redis`, `core-api` (Gateway + Admin/Operator SPA) и `poller` (фоновый опрос с Leader Lock).
+
+#### Выбор режима Ollama и аппаратного ускорения AI:
+Инфраструктура поддерживает гибкое переключение режимов через переменную `COMPOSE_FILE` в файле `.env`:
+
+| Режим работы | Настройка в `.env` | Описание |
+|---|---|---|
+| **Хостовая Ollama (Рекомендуется)** | `COMPOSE_FILE=docker-compose.yml`<br>`OLLAMA_BASE_URL=http://localhost:11434` | Максимальная скорость (**~115 токенов/сек** на RTX 3050). Контейнер Ollama **не создается**, прямое подключение через `host.docker.internal:11434` без оверхеда. |
+| **CPU в Docker** | `COMPOSE_FILE=docker-compose.yml:docker-compose.ollama-cpu.yml` | Автономный запуск Ollama в контейнере на CPU без привязки к хосту. |
+| **NVIDIA в Docker (CUDA)** | `COMPOSE_FILE=docker-compose.yml:docker-compose.ollama-nvidia.yml`<br>`CUDA_VISIBLE_DEVICES=1` | Проброс GPU в контейнер через NVIDIA Container Toolkit с фиксацией на 8 ГБ RTX 3050. |
+| **AMD в Docker (Vulkan)** | `COMPOSE_FILE=docker-compose.yml:docker-compose.ollama-vulkan.yml` | Аппаратное ускорение графического процессора AMD через Vulkan (`/dev/dri`) без ROCm. |
+
+
+* **Операторский центр обработки заявок:** `http://localhost:8000/operator-panel`
+* **Консоль системного администратора:** `http://localhost:8000/admin`
+* **Интерактивная документация API:** `http://localhost:8000/docs`
+
+### 2. Запуск Telegram-бота (опционально):
+```bash
+docker compose --profile with-bot up -d telegram-bot
 ```
 
-Конфигурация тестов автоматически изолирует зависимости (базу данных, Redis и API-вызовы в IntraService).
+### 3. Запуск воркера исполнения в Windows:
+```powershell
+$env:REDIS_URL = "redis://localhost:6379/0"
+$env:CORE_API_URL = "http://localhost:8000/api/v1"
+$env:BOT_API_KEY = "<bot-api-key>"
 
----
+uv run python execution-worker/worker.py
+```
 
-## 🔒 Безопасность и API-ключ
+### 4. Взаимодействие с AI-агентом Antigravity (AGY):
+Инженеры работают с очередью через диалог с AI-ассистентом:
+* `/triage` — пакетный разбор стопки заявок со сводной матрицей;
+* `/task <ID>` — детальная карточка инцидента с RAG-поиском решений;
+* `/diag <ХОСТ>` — сетевая экспресс-диагностика доступности ПК;
+* `/screen <ID>` — визуальный анализ скриншотов из вложений;
+* `/kb <запрос>` — семантический поиск по базе исторических решений;
+* `/sync` — синхронизация закрытых заявок в векторную базу знаний.
 
-*   **`BOT_API_KEY`**: Все запросы от Telegram-бота к Core API защищены заголовком `X-Bot-Api-Key`. При несовпадении ключа Core API возвращает ошибку `401 Unauthorized`.
-*   Если `BOT_API_KEY` не задан в окружении Core API, при запуске генерируется случайный временный ключ безопасности (выводится предупреждение в логах). Рекомендуется всегда задавать статический секретный ключ в файлах `.env`.
-*   Пароли пользователей хранятся в БД в надежно зашифрованном виде (используется Fernet из библиотеки `cryptography`). При авторизации `login:password` конвертируется в Base64 и шифруется с помощью `ENCRYPTION_KEY`, что предотвращает утечку паролей в открытом виде при доступе к БД.
+CLI-справка по всем командам инструментария:
+```bash
+uv run python helpdesk-cli/helpdesk.py --help
+```

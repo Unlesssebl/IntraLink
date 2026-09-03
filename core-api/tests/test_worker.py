@@ -8,17 +8,16 @@
   - close_redis: корректное закрытие и обнуление
   - Форматирование сообщений уведомлений
 """
+
 import asyncio
 import json
 import pytest
-import pytest_asyncio
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Вспомогательные фабрики
 # ---------------------------------------------------------------------------
+
 
 def make_user(
     tg_user_id: int = 123456,
@@ -26,6 +25,7 @@ def make_user(
     is_password_b64: str = "dXNlcjpwYXNz",
     last_task_id: int = 10,
     last_check_time: str | None = "2025-06-01 10:00:00",
+    is_login: str = "test_user",
 ) -> MagicMock:
     """Создаёт мок объекта пользователя БД."""
     user = MagicMock()
@@ -34,6 +34,7 @@ def make_user(
     user.is_password_b64 = is_password_b64
     user.last_task_id = last_task_id
     user.last_check_time = last_check_time
+    user.is_login = is_login
     return user
 
 
@@ -71,6 +72,7 @@ def make_lifetime_event(
 # БЛОК 1: get_redis_client и close_redis
 # ---------------------------------------------------------------------------
 
+
 class TestRedisClientLifecycle:
     """Тесты управления жизненным циклом Redis-клиента."""
 
@@ -78,13 +80,16 @@ class TestRedisClientLifecycle:
         """
         get_redis_client должен возвращать один и тот же объект при повторных вызовах.
         """
-        with patch("app.services.worker.settings") as mock_settings, \
-             patch("app.services.worker.aioredis.from_url") as mock_from_url:
+        with (
+            patch("app.services.worker.settings") as mock_settings,
+            patch("app.services.worker.aioredis.from_url") as mock_from_url,
+        ):
             mock_settings.REDIS_URL = "redis://localhost:6379/0"
             mock_from_url.return_value = MagicMock()
 
             # Сбрасываем глобальное состояние перед тестом
             import app.services.worker as worker_module
+
             worker_module.redis_client = None
 
             client1 = worker_module.get_redis_client()
@@ -117,6 +122,7 @@ class TestRedisClientLifecycle:
         close_redis не должен падать, если клиент уже None.
         """
         import app.services.worker as worker_module
+
         worker_module.redis_client = None
 
         # Не должно бросать исключений
@@ -128,11 +134,14 @@ class TestRedisClientLifecycle:
 # БЛОК 2: process_user — граничные случаи (быстрый выход)
 # ---------------------------------------------------------------------------
 
+
 class TestProcessUserEarlyReturn:
     """Тесты ранних выходов из process_user при невалидных данных."""
 
     @pytest.mark.asyncio
-    async def test_user_not_found_in_db(self, mock_redis, utc_now, moscow_tz, base_web_url):
+    async def test_user_not_found_in_db(
+        self, mock_redis, utc_now, moscow_tz, base_web_url
+    ):
         """
         Если db.get(User, user_id) вернул None — функция должна вернуться без ошибок.
         """
@@ -159,7 +168,9 @@ class TestProcessUserEarlyReturn:
         mock_redis.publish.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_user_missing_auth_b64(self, mock_redis, utc_now, moscow_tz, base_web_url):
+    async def test_user_missing_auth_b64(
+        self, mock_redis, utc_now, moscow_tz, base_web_url
+    ):
         """
         Если у пользователя нет is_password_b64 — функция должна завершиться без публикации.
         """
@@ -239,8 +250,14 @@ class TestProcessUserEarlyReturn:
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock, return_value=None):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -257,6 +274,7 @@ class TestProcessUserEarlyReturn:
 # ---------------------------------------------------------------------------
 # БЛОК 3: process_user — happy path (новая заявка)
 # ---------------------------------------------------------------------------
+
 
 class TestProcessUserNewTask:
     """Тесты обработки НОВЫХ заявок."""
@@ -278,16 +296,23 @@ class TestProcessUserNewTask:
         mock_db_cm.__aenter__ = AsyncMock(return_value=mock_db)
         mock_db_cm.__aexit__ = AsyncMock(return_value=False)
 
-        new_task = make_task(task_id=20, name="Принтер не работает", status_name="Открыта")
+        new_task = make_task(
+            task_id=20, name="Принтер не работает", status_name="Открыта"
+        )
         tasks_response = {"Tasks": [new_task], "Statuses": []}
         # Обновлённые заявки — пустые (нет обновлений)
         updated_response = {"Tasks": [], "Statuses": []}
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response, updated_response]):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response, updated_response],
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -331,9 +356,14 @@ class TestProcessUserNewTask:
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response, updated_response]):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response, updated_response],
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -369,9 +399,14 @@ class TestProcessUserNewTask:
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response, updated_response]):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response, updated_response],
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -401,17 +436,19 @@ class TestProcessUserNewTask:
         mock_db_cm.__aexit__ = AsyncMock(return_value=False)
 
         task = make_task(task_id=20, status_name="", status_id=5)
-        tasks_response = {
-            "Tasks": [task],
-            "Statuses": [{"Id": 5, "Name": "В работе"}]
-        }
+        tasks_response = {"Tasks": [task], "Statuses": [{"Id": 5, "Name": "В работе"}]}
         updated_response = {"Tasks": [], "Statuses": []}
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response, updated_response]):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response, updated_response],
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -423,7 +460,7 @@ class TestProcessUserNewTask:
 
         call_args = mock_redis.publish.call_args
         payload = json.loads(call_args[0][1])
-        assert "В работе" in payload["message"]
+        assert "В работе" in payload["text"]
 
     @pytest.mark.asyncio
     async def test_new_task_status_fallback_to_na(
@@ -448,9 +485,14 @@ class TestProcessUserNewTask:
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response, updated_response]):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response, updated_response],
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -462,12 +504,13 @@ class TestProcessUserNewTask:
 
         call_args = mock_redis.publish.call_args
         payload = json.loads(call_args[0][1])
-        assert "N/A" in payload["message"]
+        assert "N/A" in payload["text"]
 
 
 # ---------------------------------------------------------------------------
 # БЛОК 4: process_user — happy path (комментарий)
 # ---------------------------------------------------------------------------
+
 
 class TestProcessUserNewComment:
     """Тесты обработки новых КОММЕНТАРИЕВ."""
@@ -496,15 +539,25 @@ class TestProcessUserNewComment:
 
         # last_check_time = 2025-06-01 10:00:00 UTC = 13:00:00 МСК
         # Комментарий в 13:01 МСК — строго позже last_check (условие > строгое)
-        lifetime = [make_lifetime_event(date="2025-06-01 13:01:00", comments="Всё починено!")]
+        lifetime = [
+            make_lifetime_event(date="2025-06-01 13:01:00", comments="Всё починено!")
+        ]
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response_empty, updated_response]), \
-             patch("app.services.worker.get_task_lifetime", new_callable=AsyncMock,
-                   return_value=lifetime):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response_empty, updated_response],
+            ),
+            patch(
+                "app.services.worker.get_task_lifetime",
+                new_callable=AsyncMock,
+                return_value=lifetime,
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -517,7 +570,7 @@ class TestProcessUserNewComment:
         mock_redis.publish.assert_awaited_once()
         payload = json.loads(mock_redis.publish.call_args[0][1])
         assert payload["event_type"] == "new_comment"
-        assert "Всё починено!" in payload["message"]
+        assert "Всё починено!" in payload["text"]
 
     @pytest.mark.asyncio
     async def test_old_comment_not_published(
@@ -542,15 +595,27 @@ class TestProcessUserNewComment:
         updated_response = {"Tasks": [updated_task], "Statuses": []}
 
         # Комментарий в 12:59 МСК — до last_check (13:00 МСК)
-        lifetime = [make_lifetime_event(date="2025-06-01 12:59:00", comments="Старый комментарий")]
+        lifetime = [
+            make_lifetime_event(
+                date="2025-06-01 12:59:00", comments="Старый комментарий"
+            )
+        ]
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response_empty, updated_response]), \
-             patch("app.services.worker.get_task_lifetime", new_callable=AsyncMock,
-                   return_value=lifetime):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response_empty, updated_response],
+            ),
+            patch(
+                "app.services.worker.get_task_lifetime",
+                new_callable=AsyncMock,
+                return_value=lifetime,
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -585,10 +650,17 @@ class TestProcessUserNewComment:
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response_empty, updated_response]), \
-             patch("app.services.worker.get_task_lifetime", new_callable=AsyncMock) as mock_lifetime:
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response_empty, updated_response],
+            ),
+            patch(
+                "app.services.worker.get_task_lifetime", new_callable=AsyncMock
+            ) as mock_lifetime,
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -605,6 +677,7 @@ class TestProcessUserNewComment:
 # ---------------------------------------------------------------------------
 # БЛОК 5: process_user — смена статуса
 # ---------------------------------------------------------------------------
+
 
 class TestProcessUserStatusChange:
     """Тесты обработки смены СТАТУСА заявки."""
@@ -631,19 +704,29 @@ class TestProcessUserStatusChange:
         updated_response = {"Tasks": [updated_task], "Statuses": []}
 
         # lifetime: событие смены статуса (нет комментария, есть StatusId)
-        lifetime = [make_lifetime_event(
-            date="2025-06-01 13:30:00",
-            comments="",
-            status_id=3,
-        )]
+        lifetime = [
+            make_lifetime_event(
+                date="2025-06-01 13:30:00",
+                comments="",
+                status_id=3,
+            )
+        ]
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response_empty, updated_response]), \
-             patch("app.services.worker.get_task_lifetime", new_callable=AsyncMock,
-                   return_value=lifetime):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response_empty, updated_response],
+            ),
+            patch(
+                "app.services.worker.get_task_lifetime",
+                new_callable=AsyncMock,
+                return_value=lifetime,
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -656,12 +739,85 @@ class TestProcessUserStatusChange:
         mock_redis.publish.assert_awaited_once()
         payload = json.loads(mock_redis.publish.call_args[0][1])
         assert payload["event_type"] == "status_change"
-        assert "Закрыта" in payload["message"]
+        assert "Закрыта" in payload["text"]
+
+
+# ---------------------------------------------------------------------------
+# БЛОК 5.5: process_user — назначение исполнителя
+# ---------------------------------------------------------------------------
+
+
+class TestProcessUserExecutorAssigned:
+    """Тесты обработки назначения исполнителя."""
+
+    @pytest.mark.asyncio
+    async def test_executor_assigned_published(
+        self, mock_redis, utc_now, moscow_tz, base_web_url
+    ):
+        """
+        Событие назначения исполнителя (Executors) должно публиковаться.
+        """
+        import app.services.worker as worker_module
+
+        user = make_user(is_user_id=42)
+        mock_db = AsyncMock()
+        mock_db.get = AsyncMock(return_value=user)
+        mock_db.commit = AsyncMock()
+        mock_db_cm = MagicMock()
+        mock_db_cm.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db_cm.__aexit__ = AsyncMock(return_value=False)
+
+        tasks_response_empty = {"Tasks": [], "Statuses": []}
+        updated_task = make_task(
+            task_id=5, executor_ids="42", status_name="Открыта", status_id=31
+        )
+        updated_response = {"Tasks": [updated_task], "Statuses": []}
+
+        # lifetime: событие смены исполнителя (Executors)
+        lifetime = [
+            {
+                "Date": "2025-06-01 13:30:00",
+                "EditorId": 8664,
+                "Editor": "Беликов Ален",
+                "Executors": "belikov IntraTest",
+            }
+        ]
+
+        semaphore = asyncio.Semaphore(5)
+
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response_empty, updated_response],
+            ),
+            patch(
+                "app.services.worker.get_task_lifetime",
+                new_callable=AsyncMock,
+                return_value=lifetime,
+            ),
+        ):
+            await worker_module.process_user(
+                user_id=123456,
+                redis_client=mock_redis,
+                base_web_url=base_web_url,
+                semaphore=semaphore,
+                current_time_utc=utc_now,
+                intraservice_tz=moscow_tz,
+            )
+
+        mock_redis.publish.assert_awaited_once()
+        payload = json.loads(mock_redis.publish.call_args[0][1])
+        assert payload["event_type"] == "executor_assigned"
+        assert "belikov IntraTest" in payload["text"]
+        assert payload["status_id"] == 31
 
 
 # ---------------------------------------------------------------------------
 # БЛОК 6: process_user — обработка ошибок и Redis
 # ---------------------------------------------------------------------------
+
 
 class TestProcessUserErrorHandling:
     """Тесты обработки ошибок в process_user."""
@@ -685,7 +841,9 @@ class TestProcessUserErrorHandling:
         mock_db_cm.__aexit__ = AsyncMock(return_value=False)
 
         failing_redis = AsyncMock()
-        failing_redis.publish = AsyncMock(side_effect=Exception("Redis connection refused"))
+        failing_redis.publish = AsyncMock(
+            side_effect=Exception("Redis connection refused")
+        )
 
         new_task = make_task(task_id=20)
         tasks_response = {"Tasks": [new_task], "Statuses": []}
@@ -693,9 +851,14 @@ class TestProcessUserErrorHandling:
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response, updated_response]):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response, updated_response],
+            ),
+        ):
             # Не должно бросать исключение
             await worker_module.process_user(
                 user_id=123456,
@@ -730,9 +893,14 @@ class TestProcessUserErrorHandling:
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response, None]):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response, None],
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -767,9 +935,14 @@ class TestProcessUserErrorHandling:
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response, updated_response]):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response, updated_response],
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -787,6 +960,7 @@ class TestProcessUserErrorHandling:
 # ---------------------------------------------------------------------------
 # БЛОК 7: Форматы ответа API (list vs dict)
 # ---------------------------------------------------------------------------
+
 
 class TestApiResponseFormats:
     """Тесты на обработку разных форматов ответа API (list / dict)."""
@@ -815,9 +989,14 @@ class TestApiResponseFormats:
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response_list, updated_response]):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response_list, updated_response],
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -859,11 +1038,19 @@ class TestApiResponseFormats:
 
         semaphore = asyncio.Semaphore(5)
 
-        with patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm), \
-             patch("app.services.worker.get_tasks", new_callable=AsyncMock,
-                   side_effect=[tasks_response_empty, updated_response]), \
-             patch("app.services.worker.get_task_lifetime", new_callable=AsyncMock,
-                   return_value=lifetime_dict):
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch(
+                "app.services.worker.get_tasks",
+                new_callable=AsyncMock,
+                side_effect=[tasks_response_empty, updated_response],
+            ),
+            patch(
+                "app.services.worker.get_task_lifetime",
+                new_callable=AsyncMock,
+                return_value=lifetime_dict,
+            ),
+        ):
             await worker_module.process_user(
                 user_id=123456,
                 redis_client=mock_redis,
@@ -875,4 +1062,240 @@ class TestApiResponseFormats:
 
         mock_redis.publish.assert_awaited_once()
         payload = json.loads(mock_redis.publish.call_args[0][1])
-        assert "Из словаря!" in payload["message"]
+        assert "Из словаря!" in payload["text"]
+
+
+# ---------------------------------------------------------------------------
+# БЛОК 8: check_updates с сервисным аккаунтом
+# ---------------------------------------------------------------------------
+
+
+class TestCheckUpdatesServiceUser:
+    """Тесты check_updates для работы с сервисным аккаунтом."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.worker.get_redis_client")
+    @patch("app.services.worker.settings")
+    @patch("app.services.worker.get_tasks", new_callable=AsyncMock)
+    async def test_check_updates_with_service_user(
+        self, mock_get_tasks, mock_settings, mock_get_redis, moscow_tz, utc_now
+    ):
+        """
+        Проверяет, что check_updates корректно считывает и обрабатывает задачи,
+        назначенные на сервисный аккаунт, генерируя событие с tg_user_id = None.
+        """
+        import app.services.worker as worker_module
+
+        # Настраиваем мок настроек
+        mock_settings.INTRASERVICE_SERVICE_USER_ID = 9999
+        mock_settings.INTRASERVICE_SERVICE_LOGIN = "intratest"
+        mock_settings.INTRASERVICE_SERVICE_PASSWORD = "password"
+        mock_settings.INTRASERVICE_TZ = "Europe/Moscow"
+        mock_settings.MAX_CONCURRENT_REQUESTS = 5
+        mock_settings.POLLING_INTERVAL = 30
+        mock_settings.INTRASERVICE_URL = "http://intraservice.test/api/"
+
+        # Настраиваем мок Redis
+        mock_redis_client = AsyncMock()
+        # имитируем, что last_check_time уже задан
+        # и service_last_task_id = 100
+        mock_redis_client.get.side_effect = lambda key: {
+            "worker:last_check_time": "2025-06-01 10:00:00",
+            "worker:service_last_task_id": "100",
+        }.get(key)
+        mock_get_redis.return_value = mock_redis_client
+
+        # Настраиваем мок сессии базы данных (пустая БД, нет обычных пользователей)
+        mock_db = AsyncMock()
+        mock_db_result = MagicMock()
+        mock_db_result.scalars.return_value.all.return_value = []
+        mock_db.execute = AsyncMock(return_value=mock_db_result)
+
+        mock_db_cm = MagicMock()
+        mock_db_cm.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db_cm.__aexit__ = AsyncMock(return_value=False)
+
+        # Настраиваем мок API IntraService
+        # Новая задача #105 назначена на исполнителя 9999
+        new_task = make_task(task_id=105, executor_ids="9999", name="Сервисный принтер")
+        mock_get_tasks.side_effect = [
+            {"Tasks": [new_task], "Statuses": []},  # new tasks
+            {"Tasks": [], "Statuses": []},  # updated tasks
+        ]
+
+        with (
+            patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+        ):
+            await worker_module.check_updates()
+
+        # Проверяем, что событие ушло в Redis с правильными полями
+        mock_redis_client.publish.assert_awaited_once()
+        call_args = mock_redis_client.publish.call_args
+        channel = call_args[0][0]
+        payload = json.loads(call_args[0][1])
+
+        assert channel == "intraservice_events"
+        assert payload["event_type"] == "new_task"
+        assert payload["tg_user_id"] is None
+        assert payload["is_user_id"] == 9999
+        assert payload["is_login"] == "intratest"
+        assert payload["task_id"] == 105
+
+        assert payload["task_id"] == 105
+
+        # Проверяем, что service_last_task_id обновился в Redis
+        mock_redis_client.set.assert_any_call("worker:service_last_task_id", 105)
+
+
+# ---------------------------------------------------------------------------
+# БЛОК 9: Тесты check_waiting_printer_tasks (умное возобновление задач)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckWaitingPrinterTasks:
+    """Тесты функции check_waiting_printer_tasks."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.worker.get_tasks_by_status", new_callable=AsyncMock)
+    async def test_no_tasks(self, mock_get_tasks):
+        """Если API вернул пустой список задач — ничего не делаем."""
+        import app.services.worker as worker_module
+
+        mock_get_tasks.return_value = []
+        redis = AsyncMock()
+        semaphore = asyncio.Semaphore(5)
+        users_by_is_id = {"9999": worker_module.VirtualServiceUser(9999, "intratest")}
+
+        await worker_module.check_waiting_printer_tasks(
+            "mock_auth", redis, semaphore, users_by_is_id
+        )
+
+        mock_get_tasks.assert_awaited_once_with("mock_auth", 35)
+        redis.get.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("app.services.worker.get_tasks_by_status", new_callable=AsyncMock)
+    async def test_already_processed(self, mock_get_tasks):
+        """Если задача уже обработана (есть в Redis) — пропускаем."""
+        import app.services.worker as worker_module
+
+        task = make_task(task_id=123, executor_ids="9999")
+        mock_get_tasks.return_value = [task]
+
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value="2026-06-17 12:00:00")
+        semaphore = asyncio.Semaphore(5)
+        users_by_is_id = {"9999": worker_module.VirtualServiceUser(9999, "intratest")}
+
+        await worker_module.check_waiting_printer_tasks(
+            "mock_auth", redis, semaphore, users_by_is_id
+        )
+
+        redis.get.assert_awaited_once_with("printer_resumed:123")
+        redis.set.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("app.services.worker.get_tasks_by_status", new_callable=AsyncMock)
+    async def test_last_comment_by_service(self, mock_get_tasks):
+        """Если последний комментарий оставлен сервисным аккаунтом — пропускаем."""
+        import app.services.worker as worker_module
+
+        task = make_task(task_id=123, executor_ids="9999")
+        mock_get_tasks.return_value = [task]
+
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+
+        # Последний комментарий от сервисного аккаунта (EditorId = 9891)
+        lifetime_event = make_lifetime_event(
+            date="2026-06-17 12:00:00", comments="Не вижу компьютер"
+        )
+        lifetime_event["EditorId"] = 9891  # settings.INTRASERVICE_SERVICE_USER_ID
+        lifetime_event["Editor"] = "intratest"
+
+        semaphore = asyncio.Semaphore(5)
+        users_by_is_id = {"9999": worker_module.VirtualServiceUser(9999, "intratest")}
+
+        with (
+            patch(
+                "app.services.worker.get_task_comments",
+                new_callable=AsyncMock,
+                return_value={"TaskLifetimes": [lifetime_event]},
+            ),
+            patch("app.services.worker.settings") as mock_settings,
+        ):
+            mock_settings.INTRASERVICE_SERVICE_USER_ID = 9891
+            mock_settings.INTRASERVICE_SERVICE_LOGIN = "intratest"
+            mock_settings.STATUS_WAITING_ID = 35
+
+            await worker_module.check_waiting_printer_tasks(
+                "mock_auth", redis, semaphore, users_by_is_id
+            )
+
+        redis.get.assert_awaited_once_with("printer_resumed:123")
+        redis.set.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("app.services.worker.get_tasks_by_status", new_callable=AsyncMock)
+    async def test_success_with_ip_and_pc(self, mock_get_tasks):
+        """Если пользователь написал IP и имя ПК (смешанный язык/кириллица) — обновляем поля и статус."""
+        import app.services.worker as worker_module
+
+        task = make_task(task_id=123, executor_ids="9999")
+        mock_get_tasks.return_value = [task]
+
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+
+        # Комментарий пользователя с кириллицей и IP
+        lifetime_event = make_lifetime_event(
+            date="2026-06-17 12:00:00",
+            comments="Компьютер КЗМ1234, а айпи принтера 10.244.15.55",
+        )
+        lifetime_event["EditorId"] = 1111  # обычный пользователь
+        lifetime_event["Editor"] = "Иванов Иван"
+
+        semaphore = asyncio.Semaphore(5)
+        users_by_is_id = {"9999": worker_module.VirtualServiceUser(9999, "intratest")}
+
+        with (
+            patch(
+                "app.services.worker.get_task_comments",
+                new_callable=AsyncMock,
+                return_value={"TaskLifetimes": [lifetime_event]},
+            ),
+            patch(
+                "app.services.worker.update_task_custom_fields",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_update_fields,
+            patch(
+                "app.services.worker.update_task_status",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_update_status,
+            patch("app.services.worker.settings") as mock_settings,
+        ):
+            mock_settings.INTRASERVICE_SERVICE_USER_ID = 9891
+            mock_settings.INTRASERVICE_SERVICE_LOGIN = "intratest"
+            mock_settings.STATUS_WAITING_ID = 35
+            mock_settings.STATUS_OPEN_ID = 31
+            mock_settings.PRINTER_PC_CUSTOM_FIELD_ID = 1112
+            mock_settings.PRINTER_IP_CUSTOM_FIELD_ID = 1103
+
+            await worker_module.check_waiting_printer_tasks(
+                "mock_auth", redis, semaphore, users_by_is_id
+            )
+
+        # Проверяем, что поля извлечены и транслитерированы (КЗМ1234 -> KZM1234)
+        mock_update_fields.assert_awaited_once_with(
+            "mock_auth",
+            123,
+            [
+                {"FieldId": 1103, "Value": "10.244.15.55"},
+                {"FieldId": 1112, "Value": "KZM1234"},
+            ],
+        )
+        mock_update_status.assert_awaited_once_with("mock_auth", 123, 31)
+        redis.set.assert_awaited_once()
+        assert "printer_resumed:123" in redis.set.call_args[0][0]

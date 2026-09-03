@@ -1,7 +1,9 @@
+name: intralink
+
 services:
   postgres:
-    image: postgres:16-alpine
-    container_name: intraservice_postgres
+    image: pgvector/pgvector:pg16
+    container_name: intralink_postgres
     restart: always
     environment:
       - POSTGRES_DB=intraservice
@@ -10,52 +12,149 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
 
   redis:
     image: redis:7-alpine
-    container_name: intraservice_redis
+    container_name: intralink_redis
+    restart: always
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: intralink_litellm
     restart: always
     ports:
-      - "6379:6379"
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    environment:
+      - LITELLM_API_KEY=${LITELLM_API_KEY:-sk-intraservice-master-key}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_API_KEY_2=${GEMINI_API_KEY_2}
+      - GEMINI_API_KEY_3=${GEMINI_API_KEY_3}
+    command:
+      - "--config"
+      - "/app/config.yaml"
+      - "--port"
+      - "4000"
+      - "--host"
+      - "0.0.0.0"
 
   core-api:
     build:
-      context: ./core-api
-      dockerfile: Dockerfile
-    container_name: intraservice_core_api
+      context: .
+      dockerfile: ./core-api/Dockerfile
+    container_name: intralink_core_api
     restart: always
     ports:
-      - "8000:8000"
+      - "${CORE_API_PORT:-8000}:8000"
+    volumes:
+      - ./docs/presentations:/app/docs/presentations:ro
     env_file:
-      - ./core-api/.env
+      - .env
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
       - REDIS_URL=redis://redis:6379/0
-      # Ключ шифрования. Сгенерируйте командой:
-      # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-      - ENCRYPTION_KEY=
+      - LITELLM_BASE_URL=http://litellm:4000/v1
+      - OLLAMA_BASE_URL=${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
+      - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    secrets:
+      - encryption_key
+      - service_password
+      - jwt_secret
+    dns:
+      - 10.244.0.11
+      - 172.18.128.50
+      - 8.8.8.8
+    dns_opt:
+      - timeout:1
+      - attempts:1
+    dns_search:
+      - corporate.loc
+    depends_on:
+      - postgres
+      - redis
+      - litellm
 
+  poller:
+    build:
+      context: .
+      dockerfile: ./core-api/Dockerfile
+    container_name: intralink_poller
+    command: python -m app.poller
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
+      - REDIS_URL=redis://redis:6379/0
+      - LITELLM_BASE_URL=http://litellm:4000/v1
+      - OLLAMA_BASE_URL=${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
+      - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    secrets:
+      - encryption_key
+      - service_password
+      - jwt_secret
+    dns:
+      - 10.244.0.11
+      - 172.18.128.50
+      - 8.8.8.8
+    dns_opt:
+      - timeout:1
+      - attempts:1
+    dns_search:
+      - corporate.loc
     depends_on:
       - postgres
       - redis
 
-  bot:
+  telegram-bot:
+    profiles:
+      - with-bot
     build:
-      context: ./bot
+      context: ./telegram-bot
       dockerfile: Dockerfile
-    container_name: intraservice_tg_bot
+    container_name: intralink_tg_bot
     restart: always
     env_file:
-      - ./bot/.env
+      - .env
     environment:
       - CORE_API_URL=http://core-api:8000/api/v1
       - REDIS_URL=redis://redis:6379/0
+    dns:
+      - 10.244.0.11
+      - 172.18.128.50
+      - 8.8.8.8
+    dns_opt:
+      - timeout:1
+      - attempts:1
+    dns_search:
+      - corporate.loc
     depends_on:
       - core-api
       - redis
 
 volumes:
   postgres_data:
+  redis_data:
 
-
+secrets:
+  encryption_key:
+    file: ./.secrets/encryption_key.txt
+  service_password:
+    file: ./.secrets/service_password.txt
+  jwt_secret:
+    file: ./.secrets/jwt_secret.txt
