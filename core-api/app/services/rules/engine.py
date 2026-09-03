@@ -29,11 +29,13 @@ class RuleEngine:
                 # решение (например, grant_wlan) вместо редиректа.
                 ServiceRedirectRule(priority=5),
                 CredentialsRule(priority=10),
+                # Сначала даем принтерному правилу сформировать специфичный
+                # ответ для недоступного МФУ, затем применяем общий offline gate.
+                PrinterRule(priority=12),
+                OfflineHostRule(priority=13),
                 PhysicalDeliveryRule(priority=15),
                 FileLockRule(priority=20),
-                PrinterRule(priority=25),
                 RemoteAccessRule(priority=30),
-                OfflineHostRule(priority=35),
                 RAGConsensusRule(priority=60),
                 StandardInWorkRule(priority=999),
             ]

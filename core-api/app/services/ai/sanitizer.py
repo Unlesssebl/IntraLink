@@ -279,6 +279,26 @@ class DataSanitizer:
                 requires_sanitization=False,
             )
 
+        # Раздел информационной безопасности является RED-контуром даже если
+        # конкретный текст не содержит распознаваемого regex-секрета.
+        if metadata.service_id is not None:
+            try:
+                from app.services.rules.catalog import get_root_number_for_service_id
+
+                if get_root_number_for_service_id(metadata.service_id) == "08":
+                    return RouteDecision(
+                        circuit=DataCircuit.RED,
+                        reason="Заявка относится к разделу информационной безопасности -> Строго локальный инференс",
+                        target_backend="ollama",
+                        target_model="local_qwen",
+                        requires_sanitization=False,
+                    )
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Некорректный service_id при выборе DLP-контура: %r",
+                    metadata.service_id,
+                )
+
         # 3. Анализ контента на наличие учетных данных
         san_res = sanitization_result or self.sanitize(prompt)
         if EntityType.CREDENTIAL.value in san_res.detected_types:

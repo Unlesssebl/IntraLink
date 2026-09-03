@@ -28,7 +28,10 @@ logging.basicConfig(
 logger = logging.getLogger("intralink.poller")
 
 LEADER_LOCK_KEY = "lock:poller_leader"
-LEADER_LOCK_TTL = 15  # Секунд действия замка лидера
+# Lease должен переживать один обычный цикл внешних HTTP-вызовов. Атомарное
+# продление ниже защищает владельца, а увеличенный TTL не дает lock истечь
+# посреди медленного ответа IntraService.
+LEADER_LOCK_TTL = max(60, settings.POLLING_INTERVAL * 3)
 
 _RENEW_LOCK_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then

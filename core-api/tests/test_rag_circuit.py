@@ -2,17 +2,20 @@
 Тесты для двухуровневого RAG и защиты векторизации по контурам данных (RED / YELLOW / GREEN).
 """
 import pytest
+import uuid
 from unittest.mock import AsyncMock, patch, MagicMock
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.ai import DataCircuit, RoutingMetadata
 from app.services import rag
+from app.services.ai import data_sanitizer
 
 
 @pytest.mark.asyncio
 async def test_get_embedding_vector_red_local_isolation():
     """Проверка, что для RED контура облачные LiteLLM / Gemini API никогда не вызываются."""
-    raw_text = "Пароль от рабочей станции NTEMW0144: SuperSecret123"
+    rag._EMBED_MEMORY_CACHE.clear()
+    raw_text = f"Пароль от рабочей станции NTEMW0144: SuperSecret123-{uuid.uuid4().hex}"
     dummy_vec = [0.1] * 3072
 
     # Мокируем локальную Ollama
@@ -36,6 +39,14 @@ async def test_get_embedding_vector_red_local_isolation():
         assert "/api/embed" in call_url
         assert "litellm" not in call_url
         assert "generativelanguage" not in call_url
+
+
+def test_security_service_metadata_forces_red_circuit():
+    decision = data_sanitizer.evaluate_circuit(
+        "Общий текст без явного секрета",
+        RoutingMetadata(service_id=72),
+    )
+    assert decision.circuit == DataCircuit.RED
 
 
 @pytest.mark.asyncio

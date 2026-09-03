@@ -1,4 +1,5 @@
 import pytest
+import json
 from unittest.mock import patch, AsyncMock
 from app.services.triage_service import TriageService
 from app.services.triage_session import TriageSessionManager
@@ -129,3 +130,67 @@ async def test_get_task_card_details(mock_lifetime, mock_task):
     assert card["task"]["Id"] == 202
     assert len(card["history"]) == 1
     assert card["history"][0]["Comment"] == "Жду решения"
+
+
+@pytest.mark.asyncio
+async def test_execution_proof_is_bound_to_successful_job_and_ticket():
+    redis = AsyncMock()
+    redis.get.return_value = json.dumps({
+        "job_id": "job_verified",
+        "action": "grant_wlan",
+        "task_id": 101,
+        "status": "success",
+    })
+
+    with patch("app.routers.triage.get_redis_client", return_value=redis):
+        ok, error = await TriageService._validate_execution_proof(
+            "job_verified", 101, {"grant_wlan"}
+        )
+        wrong_ticket_ok, _ = await TriageService._validate_execution_proof(
+            "job_verified", 202, {"grant_wlan"}
+        )
+
+    assert ok is True
+    assert error is None
+    assert wrong_ticket_ok is False
+
+
+@pytest.mark.asyncio
+@patch("app.services.intraservice.get_tasks_by_filter")
+async def test_cached_offline_telemetry_reaches_rule_engine(mock_get_tasks):
+    mock_get_tasks.return_value = [{
+        "Id": 303,
+        "Name": "Не открывается приложение",
+        "Description": "На рабочем компьютере не запускается приложение",
+        "ServiceId": 18,
+        "ServiceName": "02. Установка и настройка программ",
+        "StatusId": 26,
+        "_field_meta": {"pc_name": "WS-OFFLINE"},
+    }]
+    telemetry = {
+        "task_id": 303,
+        "pc_name": "WS-OFFLINE",
+        "canonical_name": "WS-OFFLINE",
+        "status": "OFFLINE",
+        "ping_ok": False,
+        "winrm_port_5985": False,
+        "smb_port_445": False,
+    }
+
+    with patch(
+        "app.routers.triage.get_skipped_task_ids",
+        new_callable=AsyncMock,
+        return_value=set(),
+    ), patch(
+        "app.routers.triage.get_task_telemetry",
+        new_callable=AsyncMock,
+        return_value=telemetry,
+    ):
+        result = await TriageService.prepare_triage_batch(
+            service_auth_b64="dXNlcjpwYXNz",
+            db=AsyncMock(),
+            filter_id=984,
+            limit=5,
+        )
+
+    assert result["tasks"][0]["suggested_action"]["template_key"] == "pc_offline"

@@ -4,6 +4,8 @@
 """
 
 import asyncio
+import hashlib
+import inspect
 import json
 import logging
 import time
@@ -378,6 +380,7 @@ class TriageService:
                 for k, v in sorted(ROOT_SERVICES.items())
             ],
             "services_catalog": list(catalog_map.values()),
+            "is_truncated": len(tasks) >= fetch_limit,
         }
 
     @classmethod
@@ -450,10 +453,27 @@ class TriageService:
             kb_matches=kb_matches,
         )
 
-        # Кэш синтеза решения LLM в Redis по хэшу задачи и длине истории переписки
+        # Ключ зависит от фактического содержимого, а не только от количества
+        # комментариев: редактирование описания/реплики не вернет устаревший ответ.
         ai_resolution = None
         redis = tr.get_redis_client()
-        cache_key = f"ai:resolution:{task_id}:{len(history)}"
+        cache_payload = json.dumps(
+            {
+                "task": {
+                    "name": t_name,
+                    "description": t_desc,
+                    "service_id": s_id,
+                },
+                "history": history,
+                "decision": decision,
+                "telemetry_collected_at": (telemetry or {}).get("collected_at"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        cache_digest = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:20]
+        cache_key = f"ai:resolution:{task_id}:{cache_digest}"
         if force:
             try:
                 keys = await redis.keys(f"ai:resolution:{task_id}:*")
@@ -682,7 +702,11 @@ class TriageService:
                         operator_id=str(op_user_id) if op_user_id else None,
                         status_id=status_id,
                     )
-                    db.add(audit_entry)
+                    add_result = db.add(audit_entry)
+                    # AsyncSession.add синхронный; awaitable встречается только
+                    # у тестовых/адаптерных сессий и поддерживается без warning.
+                    if inspect.isawaitable(add_result):
+                        await add_result
                     await db.commit()
                 except Exception as e:
                     logger.debug("Ошибка сохранения TriageAuditLog для заявки #%d: %s", tid, e)
