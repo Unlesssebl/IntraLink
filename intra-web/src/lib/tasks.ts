@@ -297,7 +297,27 @@ export async function bulkApplyTasks(tasks: BulkApplyItemPayload[]): Promise<Bul
 }
 
 export async function fetchTemplatesCatalog(): Promise<{ templates: any[]; map: Record<string, any> }> {
-  return apiFetch('/admin/api/templates');
+  try {
+    const res = await apiFetch<any>('/api/v1/rules-admin/templates-catalog');
+    if (res && res.templates) return res;
+  } catch {
+    // Fallback to /api/v1/rules-admin/templates
+  }
+  try {
+    const data = await apiFetch<any[]>('/api/v1/rules-admin/templates');
+    const rawList = Array.isArray(data) ? data : ((data as any)?.templates || []);
+    const templates = rawList.map((t: any) => ({
+      ...t,
+      template: t.template_text || t.template || '',
+    }));
+    const map: Record<string, any> = {};
+    templates.forEach((t: any) => {
+      map[t.key] = t;
+    });
+    return { templates, map };
+  } catch {
+    return { templates: [], map: {} };
+  }
 }
 
 // ---------------------------------------------------------------------------

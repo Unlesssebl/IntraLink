@@ -109,12 +109,11 @@ async def test_apply_task_action(
 
 @pytest.mark.asyncio
 async def test_get_templates_catalog():
-    from app.routers.admin import get_templates_catalog
-    res = await get_templates_catalog()
-    assert "templates" in res
-    assert "map" in res
-    assert len(res["templates"]) >= 5
-    assert "wifi_access" in res["map"]
+    from app.services.template_engine import load_templates
+    templates_map = load_templates()
+    assert isinstance(templates_map, dict)
+    assert len(templates_map) >= 5
+    assert "wifi_access" in templates_map
 
 
 @pytest.mark.asyncio

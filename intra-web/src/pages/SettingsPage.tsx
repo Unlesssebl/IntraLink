@@ -267,10 +267,22 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
         {/* Card 2: Domain Auth Configuration (Active Directory / WinRM) */}
         <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-4">
           <div className="flex items-center justify-between border-b border-neutral-100 dark:border-neutral-800 pb-3">
-            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Домен Active Directory & WinRM</h2>
-            <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${domainAuth.is_configured ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'}`}>
-              {domainAuth.is_configured ? 'Настроена' : 'Не настроена'}
-            </span>
+            <div>
+              <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Домен Active Directory & WinRM</h2>
+              <p className="text-[11px] text-neutral-400">Синхронизировано с SSOT Vault в PostgreSQL</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <a
+                href="/admin"
+                className="text-[11px] text-blue-500 hover:text-blue-400 hover:underline inline-flex items-center gap-1"
+              >
+                <span>Консоль Vault</span>
+                <span aria-hidden="true">→</span>
+              </a>
+              <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${domainAuth.is_configured ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'}`}>
+                {domainAuth.is_configured ? 'Настроена' : 'Не настроена'}
+              </span>
+            </div>
           </div>
 
           <form onSubmit={handleSaveDomainAuth} className="space-y-3 text-xs">

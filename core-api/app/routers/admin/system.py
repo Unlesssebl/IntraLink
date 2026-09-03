@@ -74,6 +74,7 @@ async def set_service_user(payload: ServiceUserRequest):
     Проверяет и сохраняет учетные данные сервисного аккаунта IntraService.
     """
     import app.routers.admin as admin
+    from app.services import vault
 
     auth_b64, user_id = await admin.verify_credentials(
         payload.login, payload.password
@@ -87,6 +88,16 @@ async def set_service_user(payload: ServiceUserRequest):
     r = admin.get_redis_client()
     encrypted = encrypt_token(auth_b64)
     await r.set("worker:service_auth_b64", encrypted)
+
+    # Сохраняем в PostgreSQL (SSOT)
+    try:
+        async with AsyncSessionLocal() as db:
+            await vault.save_service_account_credentials(
+                db, login=payload.login, password=payload.password
+            )
+    except Exception as e:
+        logger.warning("Не удалось сохранить сервисный аккаунт в PostgreSQL: %s", e)
+
     logger.info("Сервисный аккаунт %s успешно настроен", payload.login)
     return {"status": "success", "login": payload.login, "user_id": user_id}
 
@@ -96,12 +107,20 @@ async def set_service_user(payload: ServiceUserRequest):
 )
 async def delete_service_user():
     """
-    Удаляет сервисный аккаунт из Redis.
+    Удаляет сервисный аккаунт из Redis и PostgreSQL.
     """
     import app.routers.admin as admin
+    from app.services.vault import set_raw_setting, KEY_SERVICE_ACCOUNT
 
     r = admin.get_redis_client()
     await r.delete("worker:service_auth_b64")
+
+    try:
+        async with AsyncSessionLocal() as db:
+            await set_raw_setting(db, KEY_SERVICE_ACCOUNT, {})
+    except Exception as e:
+        logger.warning("Не удалось очистить сервисный аккаунт в PostgreSQL: %s", e)
+
     return {"status": "success"}
 
 

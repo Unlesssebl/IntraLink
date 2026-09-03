@@ -10,12 +10,18 @@ import {
   fetchKbExamples,
   blacklistKbExample,
   triggerKbSync,
+  fetchVaultStatus,
+  saveVaultServiceAccount,
+  saveVaultDomain,
+  saveVaultLocalAdmin,
+  testVaultWinrm,
   type LdapsConfigDTO,
   type HelpdeskConfigDTO,
   type LocalAdminConfigDTO,
   type ConnectionTestResult,
   type KBExampleItem,
   type KBStatsResponse,
+  type VaultStatusResponse,
 } from '../lib/adminApi';
 
 interface AdminPanelPageProps {
@@ -29,12 +35,37 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [loginError, setLoginError] = useState<string | null>(null);
 
   // Settings State
-  const [activeTab, setActiveTab] = useState<'ldaps' | 'helpdesk' | 'kb' | 'security'>('ldaps');
+  const [activeTab, setActiveTab] = useState<'vault' | 'ldaps' | 'helpdesk' | 'kb' | 'security'>('vault');
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Vault State (SSOT Credentials)
+  const [vaultStatus, setVaultStatus] = useState<VaultStatusResponse | null>(null);
+  const [loadingVault, setLoadingVault] = useState(false);
+
+  const [vaultServiceLogin, setVaultServiceLogin] = useState('');
+  const [vaultServicePassword, setVaultServicePassword] = useState('');
+  const [vaultServiceUrl, setVaultServiceUrl] = useState('');
+  const [savingVaultService, setSavingVaultService] = useState(false);
+
+  const [vaultDomainUser, setVaultDomainUser] = useState('');
+  const [vaultDomainPassword, setVaultDomainPassword] = useState('');
+  const [vaultDomainName, setVaultDomainName] = useState('corporate.loc');
+  const [vaultDomainDcHost, setVaultDomainDcHost] = useState('dc01.corporate.loc');
+  const [vaultDomainPort, setVaultDomainPort] = useState(636);
+  const [savingVaultDomain, setSavingVaultDomain] = useState(false);
+
+  const [vaultLocalAdminUser, setVaultLocalAdminUser] = useState('.\\Администратор');
+  const [vaultLocalAdminPassword, setVaultLocalAdminPassword] = useState('');
+  const [savingVaultLocal, setSavingVaultLocal] = useState(false);
+
+  const [winrmHost, setWinrmHost] = useState('');
+  const [winrmPort, setWinrmPort] = useState(5985);
+  const [testingWinrm, setTestingWinrm] = useState(false);
+  const [winrmResult, setWinrmResult] = useState<ConnectionTestResult | null>(null);
 
   // Knowledge Base State
   const [kbStats, setKbStats] = useState<KBStatsResponse | null>(null);
@@ -117,6 +148,117 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
       setLoadingSettings(false);
     }
   }, []);
+
+  const loadVault = useCallback(async (authToken: string) => {
+    setLoadingVault(true);
+    try {
+      const data = await fetchVaultStatus(authToken);
+      setVaultStatus(data);
+      if (data.service_account.login) setVaultServiceLogin(data.service_account.login);
+      if (data.service_account.base_url) setVaultServiceUrl(data.service_account.base_url);
+      if (data.domain.username) setVaultDomainUser(data.domain.username);
+      if (data.domain.domain) setVaultDomainName(data.domain.domain);
+      if (data.domain.dc_host) {
+        setVaultDomainDcHost(data.domain.dc_host);
+        setWinrmHost(prev => prev || data.domain.dc_host);
+      }
+      if (data.domain.ldaps_port) setVaultDomainPort(data.domain.ldaps_port);
+      if (data.local_admin.username) setVaultLocalAdminUser(data.local_admin.username);
+    } catch (err: any) {
+      if (err.message?.includes('истекла')) {
+        handleLogout();
+      } else {
+        console.error('Ошибка загрузки Vault:', err);
+      }
+    } finally {
+      setLoadingVault(false);
+    }
+  }, []);
+
+  const handleSaveVaultService = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token) return;
+    setSavingVaultService(true);
+    setStatusMessage(null);
+    try {
+      await saveVaultServiceAccount(token, {
+        login: vaultServiceLogin.trim(),
+        password: vaultServicePassword ? vaultServicePassword.trim() : undefined,
+        base_url: vaultServiceUrl.trim() || undefined,
+      });
+      setVaultServicePassword('');
+      setStatusMessage({ type: 'success', text: 'Сервисный аккаунт IntraService сохранен и синхронизирован с Redis (SSOT)' });
+      await loadVault(token);
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Ошибка сохранения сервисного аккаунта' });
+    } finally {
+      setSavingVaultService(false);
+    }
+  };
+
+  const handleSaveVaultDomain = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token) return;
+    setSavingVaultDomain(true);
+    setStatusMessage(null);
+    try {
+      await saveVaultDomain(token, {
+        username: vaultDomainUser.trim(),
+        password: vaultDomainPassword ? vaultDomainPassword.trim() : undefined,
+        domain: vaultDomainName.trim(),
+        dc_host: vaultDomainDcHost.trim(),
+        ldaps_port: Number(vaultDomainPort) || 636,
+      });
+      setVaultDomainPassword('');
+      setStatusMessage({ type: 'success', text: 'Единые доменные учетные данные (WinRM + LDAPS) сохранены в Vault и Redis' });
+      await loadVault(token);
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Ошибка сохранения доменных данных' });
+    } finally {
+      setSavingVaultDomain(false);
+    }
+  };
+
+  const handleSaveVaultLocal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token) return;
+    setSavingVaultLocal(true);
+    setStatusMessage(null);
+    try {
+      await saveVaultLocalAdmin(token, {
+        username: vaultLocalAdminUser.trim(),
+        password: vaultLocalAdminPassword ? vaultLocalAdminPassword.trim() : undefined,
+      });
+      setVaultLocalAdminPassword('');
+      setStatusMessage({ type: 'success', text: 'Учетные данные локального администратора сохранены в Vault' });
+      await loadVault(token);
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Ошибка сохранения локального администратора' });
+    } finally {
+      setSavingVaultLocal(false);
+    }
+  };
+
+  const handleTestWinrm = async () => {
+    if (!token || !winrmHost.trim()) return;
+    setTestingWinrm(true);
+    setWinrmResult(null);
+    try {
+      const res = await testVaultWinrm(token, {
+        target_host: winrmHost.trim(),
+        port: winrmPort,
+      });
+      setWinrmResult(res);
+    } catch (err: any) {
+      setWinrmResult({
+        success: false,
+        latency_ms: 0,
+        message: err.message || 'Ошибка проверки WinRM соединения',
+      });
+    } finally {
+      setTestingWinrm(false);
+    }
+  };
 
   const handleSaveLocalAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -209,8 +351,9 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   useEffect(() => {
     if (token) {
       loadSettings(token);
+      loadVault(token);
     }
-  }, [token, loadSettings]);
+  }, [token, loadSettings, loadVault]);
 
   // Save LDAPS
   const handleSaveLdaps = async (e: React.FormEvent) => {
@@ -397,6 +540,21 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
         {/* Navigation Tabs */}
         <div className="flex items-center gap-2 border-b border-neutral-800 pb-1">
           <button
+            onClick={() => setActiveTab('vault')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 cursor-pointer ${
+              activeTab === 'vault'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+            }`}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            </svg>
+            <span>Хранилище секретов (Vault SSOT)</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab('ldaps')}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 cursor-pointer ${
               activeTab === 'ldaps'
@@ -477,6 +635,378 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               )}
             </svg>
             <span>{statusMessage.text}</span>
+          </div>
+        )}
+
+        {/* Tab 0: Vault SSOT */}
+        {activeTab === 'vault' && (
+          <div className="space-y-6">
+            {/* Header & Refresh */}
+            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base font-semibold">Единое хранилище секретов (Credentials Vault SSOT)</h2>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-blue-500/10 text-blue-400 border border-blue-500/30">
+                    Fernet + Redis
+                  </span>
+                </div>
+                <p className="text-xs text-neutral-400 mt-1">
+                  Централизованное защищенное хранилище учетных записей в PostgreSQL (system_settings) с авто-прогревом токенов в Redis.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => token && loadVault(token)}
+                disabled={loadingVault}
+                className="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-neutral-200 rounded-xl text-xs font-medium border border-neutral-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+              >
+                <svg className={`w-3.5 h-3.5 ${loadingVault ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+                </svg>
+                <span>{loadingVault ? 'Опрос...' : 'Обновить статус'}</span>
+              </button>
+            </div>
+
+            {/* Readiness Cards Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* IntraService Status */}
+              <div className="bg-neutral-900/90 border border-neutral-800 rounded-xl p-4 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between text-xs text-neutral-400 mb-1">
+                    <span>IntraService API</span>
+                    <span className={`w-2 h-2 rounded-full ${vaultStatus?.service_account.is_configured ? 'bg-emerald-400' : 'bg-red-400'}`}></span>
+                  </div>
+                  <div className="text-sm font-semibold truncate">
+                    {vaultStatus?.service_account.login || 'Не настроен'}
+                  </div>
+                </div>
+                <div className="mt-3 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px]">
+                  <span className="text-neutral-500">Redis кэш:</span>
+                  <span className={vaultStatus?.service_account.redis_synced ? 'text-emerald-400 font-mono' : 'text-amber-400 font-mono'}>
+                    {vaultStatus?.service_account.redis_synced ? '🟢 Прогрет' : '🟡 Ожидает'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Domain & WinRM Status */}
+              <div className="bg-neutral-900/90 border border-neutral-800 rounded-xl p-4 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between text-xs text-neutral-400 mb-1">
+                    <span>Domain & WinRM</span>
+                    <span className={`w-2 h-2 rounded-full ${vaultStatus?.domain.is_configured ? 'bg-emerald-400' : 'bg-red-400'}`}></span>
+                  </div>
+                  <div className="text-sm font-semibold truncate">
+                    {vaultStatus?.domain.username || 'Не настроен'}
+                  </div>
+                </div>
+                <div className="mt-3 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px]">
+                  <span className="text-neutral-500">Redis токен:</span>
+                  <span className={vaultStatus?.domain.redis_synced ? 'text-emerald-400 font-mono' : 'text-amber-400 font-mono'}>
+                    {vaultStatus?.domain.redis_synced ? '🟢 Прогрет' : '🟡 Ожидает'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Local Admin Status */}
+              <div className="bg-neutral-900/90 border border-neutral-800 rounded-xl p-4 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between text-xs text-neutral-400 mb-1">
+                    <span>Локальный администратор</span>
+                    <span className={`w-2 h-2 rounded-full ${vaultStatus?.local_admin.is_configured ? 'bg-emerald-400' : 'bg-neutral-600'}`}></span>
+                  </div>
+                  <div className="text-sm font-semibold truncate">
+                    {vaultStatus?.local_admin.username || '.\\Администратор'}
+                  </div>
+                </div>
+                <div className="mt-3 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px]">
+                  <span className="text-neutral-500">Пароль fallback:</span>
+                  <span className={vaultStatus?.local_admin.is_configured ? 'text-emerald-400' : 'text-neutral-400'}>
+                    {vaultStatus?.local_admin.is_configured ? 'Зашифрован' : 'Не задан'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Execution Worker Status */}
+              <div className="bg-neutral-900/90 border border-neutral-800 rounded-xl p-4 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between text-xs text-neutral-400 mb-1">
+                    <span>Execution Worker</span>
+                    <span className={`w-2 h-2 rounded-full ${vaultStatus?.execution_worker.online ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-600'}`}></span>
+                  </div>
+                  <div className="text-sm font-semibold truncate">
+                    {vaultStatus?.execution_worker.online ? '🟢 Онлайн' : '⚪ Ожидание воркера'}
+                  </div>
+                </div>
+                <div className="mt-3 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px]">
+                  <span className="text-neutral-500">Heartbeat:</span>
+                  <span className="font-mono text-neutral-400 text-[10px]">win_daemon</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Forms Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Form 1: IntraService Service User */}
+              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold flex items-center gap-2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+                      <circle cx="9" cy="7" r="4"></circle>
+                      <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+                      <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                    </svg>
+                    <span>Сервисный аккаунт IntraService</span>
+                  </h3>
+                  <span className="text-[11px] font-mono text-neutral-400">worker:service_auth_b64</span>
+                </div>
+
+                <form onSubmit={handleSaveVaultService} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-400 mb-1">Логин сервисного аккаунта</label>
+                    <input
+                      type="text"
+                      value={vaultServiceLogin}
+                      onChange={e => setVaultServiceLogin(e.target.value)}
+                      placeholder="svc_intraservice"
+                      required
+                      className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-400 mb-1">Пароль аккаунта</label>
+                    <input
+                      type="password"
+                      value={vaultServicePassword}
+                      onChange={e => setVaultServicePassword(e.target.value)}
+                      placeholder={vaultStatus?.service_account.is_configured ? '•••••••• (оставьте пустым для сохранения текущего)' : 'Введите пароль'}
+                      className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-400 mb-1">URL IntraService API</label>
+                    <input
+                      type="text"
+                      value={vaultServiceUrl}
+                      onChange={e => setVaultServiceUrl(e.target.value)}
+                      placeholder="http://192.168.1.55/api"
+                      className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono text-xs"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={savingVaultService}
+                    className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                  >
+                    {savingVaultService ? 'Сохранение и синхронизация...' : 'Сохранить и синхронизировать с Redis'}
+                  </button>
+                </form>
+              </div>
+
+              {/* Form 2: Domain Credentials (WinRM + LDAPS SSOT) */}
+              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold flex items-center gap-2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+                      <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+                    </svg>
+                    <span>Единый доменный доступ (WinRM + LDAPS)</span>
+                  </h3>
+                  <span className="text-[11px] font-mono text-neutral-400">worker:domain_auth</span>
+                </div>
+
+                <form onSubmit={handleSaveVaultDomain} className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-neutral-400 mb-1">UPN логин пользователя</label>
+                      <input
+                        type="text"
+                        value={vaultDomainUser}
+                        onChange={e => setVaultDomainUser(e.target.value)}
+                        placeholder="svc_intralink@corporate.loc"
+                        required
+                        className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-neutral-400 mb-1">Доменный пароль</label>
+                      <input
+                        type="password"
+                        value={vaultDomainPassword}
+                        onChange={e => setVaultDomainPassword(e.target.value)}
+                        placeholder={vaultStatus?.domain.is_configured ? '•••••••• (сохранен)' : 'Введите доменный пароль'}
+                        className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="sm:col-span-1">
+                      <label className="block text-xs font-medium text-neutral-400 mb-1">Домен</label>
+                      <input
+                        type="text"
+                        value={vaultDomainName}
+                        onChange={e => setVaultDomainName(e.target.value)}
+                        placeholder="corporate.loc"
+                        className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono text-xs"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-1">
+                      <label className="block text-xs font-medium text-neutral-400 mb-1">Контроллер домена</label>
+                      <input
+                        type="text"
+                        value={vaultDomainDcHost}
+                        onChange={e => {
+                          setVaultDomainDcHost(e.target.value);
+                          if (!winrmHost) setWinrmHost(e.target.value);
+                        }}
+                        placeholder="dc01.corporate.loc"
+                        className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono text-xs"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-1">
+                      <label className="block text-xs font-medium text-neutral-400 mb-1">Порт LDAPS</label>
+                      <input
+                        type="number"
+                        value={vaultDomainPort}
+                        onChange={e => setVaultDomainPort(Number(e.target.value))}
+                        className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 pt-1">
+                    <button
+                      type="submit"
+                      disabled={savingVaultDomain}
+                      className="flex-1 py-2.5 px-4 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl text-xs font-medium transition-colors cursor-pointer shadow-sm text-center"
+                    >
+                      {savingVaultDomain ? 'Сохранение...' : 'Сохранить доменные данные'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleTestLdaps}
+                      disabled={testLoading}
+                      className="py-2.5 px-4 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-neutral-200 border border-neutral-700 rounded-xl text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5"
+                    >
+                      {testLoading ? 'Проверка...' : 'Тест LDAPS (636)'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            {/* Diagnostics & Fallback Row */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Экспресс-тест WinRM (порт 5985) */}
+              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold flex items-center gap-2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                    </svg>
+                    <span>Экспресс-тест порта WinRM (HTTP 5985)</span>
+                  </h3>
+                  <span className="text-[11px] font-mono text-neutral-400">Windows RPC</span>
+                </div>
+
+                <p className="text-xs text-neutral-400 leading-relaxed">
+                  Проверяет сетевую доступность службы Windows Remote Management (WinRM) на контроллере домена или рабочей станции заявителя.
+                </p>
+
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <input
+                    type="text"
+                    value={winrmHost}
+                    onChange={e => setWinrmHost(e.target.value)}
+                    placeholder="Хост или IP (например: dc01.corporate.loc или WS-001)"
+                    className="flex-1 px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleTestWinrm}
+                    disabled={testingWinrm || !winrmHost.trim()}
+                    className="py-2 px-4 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  >
+                    {testingWinrm ? 'Проверка...' : 'Проверить WinRM'}
+                  </button>
+                </div>
+
+                {winrmResult && (
+                  <div
+                    className={`p-3 rounded-xl border text-xs flex items-center justify-between gap-3 ${
+                      winrmResult.success
+                        ? 'bg-emerald-950/30 border-emerald-800 text-emerald-300'
+                        : 'bg-red-950/30 border-red-800 text-red-300'
+                    }`}
+                  >
+                    <span>{winrmResult.message}</span>
+                    {winrmResult.latency_ms > 0 && (
+                      <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-black/40 border border-white/10">
+                        {winrmResult.latency_ms} ms
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Local Admin Fallback Form */}
+              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold flex items-center gap-2">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                      <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                    </svg>
+                    <span>Резервный локальный администратор</span>
+                  </h3>
+                  <span className="text-[11px] font-mono text-neutral-400">DameWare / Fallback</span>
+                </div>
+
+                <form onSubmit={handleSaveVaultLocal} className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-neutral-400 mb-1">Имя пользователя</label>
+                      <input
+                        type="text"
+                        value={vaultLocalAdminUser}
+                        onChange={e => setVaultLocalAdminUser(e.target.value)}
+                        placeholder=".\Администратор"
+                        className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-neutral-400 mb-1">Пароль администратора</label>
+                      <input
+                        type="password"
+                        value={vaultLocalAdminPassword}
+                        onChange={e => setVaultLocalAdminPassword(e.target.value)}
+                        placeholder={vaultStatus?.local_admin.is_configured ? '•••••••• (сохранен)' : 'Введите пароль'}
+                        className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={savingVaultLocal}
+                    className="w-full py-2.5 px-4 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-neutral-200 border border-neutral-700 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {savingVaultLocal ? 'Сохранение...' : 'Сохранить локального администратора'}
+                  </button>
+                </form>
+              </div>
+            </div>
           </div>
         )}
 

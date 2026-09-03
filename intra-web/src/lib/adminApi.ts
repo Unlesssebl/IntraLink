@@ -231,3 +231,131 @@ export async function triggerKbSync(token: string, days = 30, limit = 100): Prom
   }
   return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Credentials Vault API (SSOT)
+// ---------------------------------------------------------------------------
+
+export interface VaultStatusResponse {
+  is_ready: boolean;
+  service_account: {
+    is_configured: boolean;
+    login: string | null;
+    redis_synced: boolean;
+    base_url: string;
+  };
+  domain: {
+    is_configured: boolean;
+    username: string | null;
+    domain: string;
+    dc_host: string;
+    ldaps_port: number;
+    redis_synced: boolean;
+  };
+  local_admin: {
+    is_configured: boolean;
+    username: string;
+  };
+  execution_worker: {
+    online: boolean;
+    heartbeat_key: string;
+  };
+}
+
+export async function fetchVaultStatus(token: string): Promise<VaultStatusResponse> {
+  const res = await fetch('/api/v1/admin/vault/status', {
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Сессия администратора истекла');
+    throw new Error('Не удалось загрузить статус Vault');
+  }
+  return res.json();
+}
+
+export async function saveVaultServiceAccount(
+  token: string,
+  payload: { login: string; password?: string; base_url?: string }
+): Promise<any> {
+  const res = await fetch('/api/v1/admin/vault/service-account', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Ошибка сохранения' }));
+    throw new Error(err.detail || 'Не удалось сохранить сервисный аккаунт');
+  }
+  return res.json();
+}
+
+export async function saveVaultDomain(
+  token: string,
+  payload: {
+    username: string;
+    password?: string;
+    domain?: string;
+    dc_host?: string;
+    ldaps_port?: number;
+    base_dn?: string;
+    wlan_group_name?: string;
+  }
+): Promise<any> {
+  const res = await fetch('/api/v1/admin/vault/domain', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Ошибка сохранения' }));
+    throw new Error(err.detail || 'Не удалось сохранить доменную конфигурацию');
+  }
+  return res.json();
+}
+
+export async function saveVaultLocalAdmin(
+  token: string,
+  payload: { username: string; password?: string }
+): Promise<any> {
+  const res = await fetch('/api/v1/admin/vault/local-admin', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Ошибка сохранения' }));
+    throw new Error(err.detail || 'Не удалось сохранить локального администратора');
+  }
+  return res.json();
+}
+
+export async function testVaultWinrm(
+  token: string,
+  payload: { target_host: string; port?: number; timeout_sec?: number }
+): Promise<ConnectionTestResult> {
+  const res = await fetch('/api/v1/admin/vault/test-winrm', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Ошибка проверки' }));
+    throw new Error(err.detail || 'Ошибка тестирования WinRM');
+  }
+  return res.json();
+}

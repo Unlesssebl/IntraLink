@@ -8,18 +8,18 @@
 
 * **Единый источник правды (SSOT):**
   * Проксирование и изоляция вызовов к REST API IntraService.
-  * Безопасное хранение зашифрованных учетных данных пользователей (Fernet).
-  * Централизованный Rule Engine и хранение канонических шаблонов триажа (PostgreSQL).
+  * Безопасное хранение зашифрованных учетных данных пользователей и инфраструктуры (Fernet) через единый Credentials Vault (`vault.py` + PostgreSQL `system_settings` + авто-прогрев Redis).
+  * Централизованный Rule Engine и хранение канонических шаблонов триажа в PostgreSQL (`triage_templates` + `rules_admin.py`).
   * Двухэтапный Hybrid RAG (`LiteLLM` / `gemini-embedding-2` 3072 dim + `pgvector` HNSW + Cross-Encoder Reranker с адаптивным GPU-ускорением через ONNX Runtime CUDA/DirectML/CPU).
   * Многоконтурный адаптивный AI Hub (LiteLLM Proxy с ротацией ключей, Gemini 3.5 Flash, DLP-маскирование, Redis PII Vault, роутинг RED/YELLOW/GREEN).
   * Адаптивный поиск Ollama и телеметрия GPU: прозрачное подключение к хостовой Ollama (`host.docker.internal:11434`), Docker-сети или локальному порту, автодетект NVIDIA RTX 3050 (CUDA) и AMD (Vulkan/DirectML) в `/api/v1/ai/health`.
   * Защитные механизмы: `Distributed Host Concurrency Locks` (`safety.py`) и `Dead Man's Switch`.
   * Фоновая экспресс-телеметрия хостов с нулевой задержкой (`host_telemetry.py`).
   * Прямое управление доменными объектами Active Directory по протоколу LDAPS (порт 636) через Linux Core API (`active_directory.py`).
-  * Хранение конфигурации и зашифрованных учетных данных (Fernet) в таблице `system_settings` (`admin_settings.py`).
+  * Хранение конфигурации и зашифрованных учетных данных (Fernet) в таблице `system_settings` (`admin_settings.py` + `vault.py`).
   * Резервный Fallback One-Liner генератор для экспресс-установки оборудования (`self_service.py`).
   * Модерация и администрирование базы знаний RAG (просмотр прецедентов, Blacklisting, статистика, дерево услуг) в `kb_admin.py`.
-  * Хостинг скомпилированного двухконтурного React 19 SPA (`/operator-panel` и `/admin`).
+  * Хостинг скомпилированного двухконтурного React 19 SPA (`/operator-panel` и `/admin` с единой вкладкой управления доступом и экспресс-диагностикой WinRM/LDAPS).
 
 * **Фоновый демон опроса (`app.poller`):**
   * Автономный процесс (отдельный Docker-контейнер), опрашивающий IntraService от сервисного аккаунта.

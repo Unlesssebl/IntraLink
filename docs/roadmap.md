@@ -1,6 +1,6 @@
 # 🗺️ Дорожная карта развития проекта IntraLink (Product & AI Roadmap)
 
-Документ фиксирует стратегические горизонты, этапы технологической эволюции и архитектурные инварианты системы IntraLink.
+Документ фиксирует стратегические горизонты, этапы технологической эволюции и архитектурные инварианты системы **IntraLink**.
 
 ---
 
@@ -39,63 +39,77 @@ flowchart TD
 ```mermaid
 timeline
     title План развития IntraLink
-    section Базис (v1.0 - Внедрено)
-        Core API & Telegram Bot : Единый шлюз SSOT, Redis Streams
-        Dual-Circuit Zero Trust DLP : Контуры RED / YELLOW / GREEN, PII Vault
-        Tier 1 RAG (pgvector) : Векторный поиск, FastEmbed / Ollama bge-m3
-        Machine-Actionable Tooling : AD WLAN, New User, WinRM, Принтеры
-    section Фоновая телеметрия & Hybrid RAG (Q3 2026)
-        Background Diagnostic Pre-fetch : Event-driven зонды (Ping, DNS, WMI, Spooler)
-        Advanced Hybrid RAG : Dense pgvector + Sparse BM25 + Reciprocal Rank Fusion
-        Local Cross-Encoder Reranker : bge-reranker-large в Ollama для 95%+ точности
-        Host Concurrency & Safety Locks : Redis lock:host:<pc_name> и Rate-Limiting
+    section Текущий базис (Внедрено)
+        Production Baseline : Core API, Redis Streams, DLP Vault, Pre-fetch, Hybrid RAG + Reranker
+    section Активный этап (Q3–Q4 2026)
+        Action Platform & MCP Hub : Санация кодовой базы, SSOT Credentials Vault, MCP Server, Web Command Center
     section AIOps & Мультимодальность (Q4 2026)
-        Real-time Outage Detection : Потоковая кластеризация тикетов (HDBSCAN + 15-мин окно)
-        Whisper Voice-to-Ticket : Локальная транскрибация голосовых сообщений в Telegram
+        Outage Detection & Voice : Потоковая кластеризация тикетов (HDBSCAN), Faster-Whisper Voice-to-Ticket
     section GraphRAG & Топология (Q1 2027)
-        IT Infrastructure Graph : Граф связей (Сотрудник ➔ ПК ➔ Свитч ➔ Принтер ➔ 1С)
-        Root Cause Analysis (RCA) : Автоматическое выявление первопричины инцидентов
+        IT Graph & Root Cause : Граф инфраструктуры (ПК ➔ Свитч ➔ Принтер ➔ 1С), топологический RCA
     section Локальный Fine-Tuning (Q2 2027)
-        LoRA / QDoRA Qwen-2.5-7B : Дообучение на датасете 10k+ закрытых тикетов
+        LoRA Qwen-2.5-7B : Дообучение на 10k+ тикетов под корпоративный стиль инженера
 ```
 
 ---
 
-## 📍 Этап 0. Текущее состояние (Baseline v1.0 — Внедрено)
+## 📍 Текущее состояние платформы (Production Baseline — Внедрено)
 
-- [x] **Модульный монорепозиторий:** `core-api`, `execution-worker`, `helpdesk-cli`, `telegram-bot`, `shared`.
-- [x] **Многоконтурная безопасность данных (Dual-Circuit DLP):**
-  - 🔴 **RED (On-Prem):** Изолированное исполнение на локальной Ollama (`bge-m3`, `qwen`) без выхода в интернет.
-  - 🟡 **YELLOW (Sanitized):** Автоматическое маскирование PII (ФИО, IP, хосты, телефоны, email) с сохранением в Redis PII Vault и обратным восстановлением (Rehydration).
-  - 🟢 **GREEN (Cloud):** Прямой защищенный инференс через LiteLLM Proxy / Gemini Cloud.
-- [x] **Tier 1 pgvector RAG:** Векторный поиск по исторической базе решений с авто-индексацией при закрытии задач.
-- [x] **Human-in-the-Loop (HitL) Триаж:** Пакетный разбор очереди (Filter 984), детекция дубликатов, списание трудозатрат и адаптивные шаблоны инженера Беликова Алена.
-- [x] **Прямое машинное действие:** Управление группами Active Directory (WLAN-WORKNET), создание учетных записей, сетевая экспресс-диагностика, WinRM-оркестрация принтеров.
+> [!NOTE]
+> Полная спецификация уже реализованных компонентов зафиксирована в [**docs/architecture.md**](architecture.md).
+
+* **Ядро и шина:** FastAPI Gateway + Poller Daemon (Leader Lock) + Redis Streams (`stream:intraservice_events`) с Consumer Groups и `XAUTOCLAIM`.
+* **Безопасность (Zero Trust DLP):** Трехконтурная маршрутизация инференса (🔴 RED On-Prem / 🟡 YELLOW PII Vault / 🟢 GREEN Cloud).
+* **Фоновая телеметрия (0ms latency):** Fail-Fast сетевой опрос (Ping 400ms, SMB:445, WinRM:5985, CIM Spooler/1C) с защитой подсетей и кэшем в Redis.
+* **Защитные контуры:** Distributed Host Concurrency Lock (`lock:host:<pc>`, TTL 30s) и аварийный тормоз Dead Man's Switch (Rate-Limiter).
+* **База знаний (Hybrid RAG):** Dense pgvector (3072-dim) + Sparse tsvector + Reciprocal Rank Fusion (RRF $k=60$) + локальный Cross-Encoder Reranker (`bge-reranker-base`).
+* **Клиенты:** React SPA (`/operator-panel`), Telegram-бот (aiogram 3.x) и Tooling SDK `helpdesk-cli` для AI-агента Antigravity.
 
 ---
 
-## 🚀 Этап 1. Фоновая телеметрия, Защитные механизмы и Hybrid RAG (Q3 2026 — Внедрено)
+## 🚀 Этап 1. Платформа автоматизации (Action Platform) & MCP Hub (Q3–Q4 2026 — В разработке)
 
-**Цель:** Обеспечить инженера 100% контекстом хоста с нулевой задержкой при открытии карточки и довести точность базы знаний до 95%+.
+**Цель:** Ликвидация накопленного техдолга, централизация секретов в едином SSOT Vault, стандартизация воркеров и запуск официального протокола MCP для симметричного управления через AI-агента AGY и Web UI Command Center.
 
-### Реализованные компоненты:
-1. [x] **Асинхронный фоновый Pre-fetch телеметрии хостов (`host_telemetry.py`):**
-   - Сеть: Fast ICMP Ping (400ms), DNS-разрешение (`.corporate.loc`), TCP-пробы портов SMB:445 и WinRM:5985 (300ms).
-   - Защита сетевой инфраструктуры: `subnet_rate_limit` (не более 3 одновременных зондов на подсеть `/24`).
-   - Система: CIM WinRM сбор метрик под защитой лока (`disk_free_gb`, службы `Spooler` и `1C:Enterprise`, активный пользователь).
-   - Кэширование в Redis (`diag:<task_id>`, `diag:host:<pc>`, TTL 10 мин, мгновенный вывод 0ms added latency).
-2. [x] **Защитные контуры исполнения (Safety & Resiliency — `safety.py`):**
-   - **Distributed Host Concurrency Lock:** распределенный лок в Redis (`lock:host:<pc_name>`, TTL 30s) с токеном владельца и Lua-скриптом — предотвращение конфликтов параллельных WinRM/WMI сессий (`0x80338029`).
-   - **Аварийный тормоз (Dead Man's Switch):** скользящее окно Redis ZSET (`ratelimit:triage:apply`) — блокировка массового применения > 10 заявок/мин без явного подтверждения оператором (`confirmed_by_human=True`).
-3. [x] **Advanced Hybrid RAG (Dense + Sparse RRF — `rag.py`):**
-   - **Query Distillation (AI):** нормализация запроса за <10ms: отсечение эмоционального шума и сохранение кодов ошибок (`0x80070005`, `0x0000011b`), моделей оборудования и служб.
-   - Полнотекстовый sparse-поиск (PostgreSQL `tsvector` / ILIKE) с ранжированием по ключевым термам и кодам ошибок.
-   - Слияние векторов и ключевых слов по алгоритму **Reciprocal Rank Fusion (RRF, $k=60$)**.
-4. [x] **Локальный Cross-Encoder Reranker (`rag.py`):**
-   - Двухэтапная переоценка кандидатов через модель `BAAI/bge-reranker-base` в неблокирующем потоке (`asyncio.to_thread`) с порогом релевантности $\ge 0.85$ и прозрачным fallback.
-5. [x] **Интеллектуальный синтез ответов и Канонизация базы знаний (`ai_synthesis.py`):**
-   - **Telemetry-Guided Response Synthesis:** органичное включение данных телеметрии и прецедентов RAG в экспертный каркас инженера Беликова Алена с соблюдением Zero Trust DLP (RED/YELLOW/GREEN).
-   - **Auto-KB Canonical Structuring:** автоматическое извлечение канонической триады `[Проблема] ➔ [Первопричина] ➔ [Решение]` из переписки закрытых заявок при синхронизации в базу знаний.
+### Ключевые компоненты:
+1. **✅ Санация кодовой базы и устранение рудиментов (Внедрено):**
+   - Ликвидированы дубликаты `core-api/app/utils/normalizer.py` и `json_utils.py` с переходом на единый пакет `shared/` (SSOT).
+   - Удален мертвый модуль `core-api/app/routers/admin/printers.py` и заброшенный Pub/Sub канал `printer_actions`.
+   - Заменен захардкоженный словарь `admin/templates.py` на динамическую базу PostgreSQL `triage_templates` (`rules_admin.py` + `templates-catalog`).
+2. **✅ Единое хранилище учетных записей (SSOT Credentials Vault) (Внедрено):**
+   - Миграция всех паролей (IntraService API, Domain WinRM/LDAPS, Local Admin) в таблицу PostgreSQL `system_settings` с шифрованием Fernet (`vault.py`).
+   - Автоматический прогрев и синхронизация кэша в Redis (`worker:domain_auth`, `worker:service_auth_b64`) при старте в `lifespan` и после сохранения.
+   - Единая карточка управления доступами в Web UI (`/admin`) с 1-клик тестированием связности (LDAPS / WinRM).
+3. **Конвергенция очередей и триажа (Queue Convergence — Следующий шаг):**
+   - Ликвидация устаревшего роутера `admin/queue.py` с захардкоженными ID исполнителей.
+   - Перевод Web UI (`intra-web`) на современное ядро `triage.py` (фоновый pre-fetch телеметрии 0ms, DLP PII Vault, защита Dead Man's Switch).
+4. **Стандартизация воркера и реанимация принтеров:**
+   - Реализация метода `install_printer` в `PrinterExecutor` и перенос `printers_knowledge_base.json` в `shared/` (SSOT).
+   - Перевод Telegram-бота (`printer_approvals.py`) на персистентную шину задач Redis Streams (`stream:execution_queue`).
+   - Внедрение стандарта `BaseActionExecutor`: обязательные фазы `Preflight ➔ Execute ➔ Verify`.
+5. **Декларативный реестр навыков (Action & Skill Registry):**
+   - Декларация манифестов действий (Pydantic / JSON Schema): `install_printer`, `grant_wlan`, `create_ad_user`, `install_software`, `diagnose_host`.
+   - Policy Engine: гибкая настройка политик исполнения (`full_auto`, `requires_hitl`, `disabled`).
+6. **Шлюз инструментов MCP для AI-агента (`intralink-mcp`):**
+   - FastMCP микросервис поверх Core API с авто-генерацией инструментов `@mcp.tool`.
+   - Двусторонний протокол Human-in-the-Loop при выполнении привилегированных действий агентом.
+7. **Automation Command Center в Web UI (`intra-web`):**
+   - Раздел **Skills Hub** в панели администратора: интерактивный каталог навыков с тумблерами политик и Killswitch.
+   - **Live SSE Terminal:** консольный вывод логов PowerShell/WMI в реальном времени при исполнении на удаленном ПК.
+   - **1-Click Actions:** контекстные виджеты быстрых действий в карточке заявки с AI-рекомендациями.
+
+### 🛡️ 5 критических инженерных нюансов исполнения:
+1. **WMI Bootstrap Lifecycle (Динамическое управление WinRM):**
+   - Перед операцией WinRM динамически включать службу `WinRM` на целевом ПК по WMI (RPC:135).
+   - В блоке `finally` (при успехе или сбое) гарантированно отключать `WinRM` обратно для минимизации поверхности сетевых атак.
+2. **Distributed Host Concurrency Lock (`lock:host:<pc_name>`):**
+   - Защитить выполнение любых задач мьютексом в Redis (TTL 30s) с токеном владельца и Lua-скриптом — предотвращение коллизий WinRM/CIM сессий и сбоев `0x80338029`.
+3. **Единый омниканальный контур HitL (Unified Approval Inbox):**
+   - Запрос подтверждения деструктивного действия публикуется в `job:{id}:confirm` и рассылается параллельно в Web UI (Live Modal), Telegram-бот и MCP-клиент. Первый ответивший атомарно разблокирует выполнение.
+4. **Сетевая топология (Linux Docker vs Windows Runner):**
+   - Изоляция окружений: Core API и базы живут в Docker, а `execution-worker` запущен строго на Windows-хосте домена `corporate.loc`. Общение только через Redis Streams без прямых файловых шарингов.
+5. **Универсальный One-Liner Fallback (`self_service.py`):**
+   - Расширение токен-генератора (`/api/v1/run/{token}`) на любое действие (софт, 1С, диагностика) при изоляции ПК за брандмауэром.
 
 ---
 

@@ -16,6 +16,8 @@ from app.services.active_directory import (
     test_ldaps_connection,
 )
 from app.services.crypto import decrypt_token, encrypt_token
+from app.services.intraservice import verify_credentials
+from app.services import vault
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,33 @@ class AllSettingsResponse(BaseModel):
     ldaps: LdapsSettingDTO
     helpdesk: HelpdeskSettingDTO
     local_admin: LocalAdminSettingDTO
+
+
+class VaultServiceAccountDTO(BaseModel):
+    login: str = Field(..., description="Логин сервисной учетной записи IntraService")
+    password: str | None = Field(None, description="Пароль учетной записи")
+    base_url: str | None = Field(None, description="Базовый URL IntraService API")
+
+
+class VaultDomainDTO(BaseModel):
+    username: str = Field(..., description="Имя доменного пользователя (UPN, svc_intralink@corp.loc)")
+    password: str | None = Field(None, description="Доменный пароль")
+    domain: str | None = Field(None, description="Домен (например: corporate.loc)")
+    dc_host: str | None = Field(None, description="Контроллер домена или IP")
+    ldaps_port: int = Field(636, description="Порт LDAPS (по умолчанию 636)")
+    base_dn: str | None = Field(None, description="Базовый DN каталога")
+    wlan_group_name: str | None = Field(None, description="Имя группы Wi-Fi")
+
+
+class VaultLocalAdminDTO(BaseModel):
+    username: str = Field(".\\Администратор", description="Имя локального администратора")
+    password: str | None = Field(None, description="Пароль локального администратора")
+
+
+class VaultWinrmTestRequest(BaseModel):
+    target_host: str = Field(..., description="Целевой хост или IP для проверки WinRM")
+    port: int = Field(5985, description="Порт WinRM (по умолчанию 5985)")
+    timeout_sec: float = Field(2.0, description="Таймаут проверки в секундах")
 
 
 # ==========================================
@@ -380,4 +409,110 @@ async def update_local_admin_settings(
         username=payload["username"],
         password=None,
         is_password_set=bool(encrypted_pwd),
+    )
+
+
+# ==========================================
+# Единый Credentials Vault API (SSOT)
+# ==========================================
+
+
+@router.get("/vault/status")
+async def get_vault_status_endpoint(
+    _: dict = Depends(require_admin_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Сводная проверка наличия и статуса всех инфраструктурных доступов без раскрытия паролей.
+    """
+    return await vault.get_vault_status(db)
+
+
+@router.post("/vault/service-account")
+async def save_vault_service_account_endpoint(
+    body: VaultServiceAccountDTO,
+    _: dict = Depends(require_admin_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Сохранение сервисного аккаунта IntraService в PostgreSQL с шифрованием Fernet
+    и авто-прогревом токена в Redis (worker:service_auth_b64).
+    """
+    if body.password and body.password.strip():
+        auth_b64, user_id = await verify_credentials(body.login.strip(), body.password.strip())
+        if not auth_b64:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Не удалось авторизовать сервисный аккаунт в IntraService (неверный логин или пароль)",
+            )
+    return await vault.save_service_account_credentials(
+        db,
+        login=body.login,
+        password=body.password,
+        base_url=body.base_url,
+    )
+
+
+@router.post("/vault/domain")
+async def save_vault_domain_endpoint(
+    body: VaultDomainDTO,
+    _: dict = Depends(require_admin_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Сохранение единой доменной учетной записи (WinRM + LDAPS) в PostgreSQL (Fernet)
+    с автоматическим прогревом токена в Redis (worker:domain_auth).
+    """
+    return await vault.save_domain_credentials(
+        db,
+        username=body.username,
+        password=body.password,
+        domain=body.domain,
+        dc_host=body.dc_host,
+        ldaps_port=body.ldaps_port,
+        base_dn=body.base_dn,
+        wlan_group=body.wlan_group_name,
+    )
+
+
+@router.post("/vault/local-admin")
+async def save_vault_local_admin_endpoint(
+    body: VaultLocalAdminDTO,
+    _: dict = Depends(require_admin_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Сохранение учетных данных резервного локального администратора с шифрованием Fernet.
+    """
+    return await vault.save_local_admin_credentials(
+        db,
+        username=body.username,
+        password=body.password,
+    )
+
+
+@router.post("/vault/test-ldaps", response_model=ConnectionTestResult)
+async def test_vault_ldaps_endpoint(
+    body: LdapsSettingDTO | None = None,
+    _: dict = Depends(require_admin_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Моментальная проверка соединения с Active Directory по LDAPS (порт 636).
+    """
+    return await test_ldaps_endpoint(body, _, db)
+
+
+@router.post("/vault/test-winrm")
+async def test_vault_winrm_endpoint(
+    body: VaultWinrmTestRequest,
+    _: dict = Depends(require_admin_auth),
+):
+    """
+    Моментальная экспресс-проверка доступности порта WinRM (5985).
+    """
+    return await vault.test_winrm_connection(
+        target_host=body.target_host.strip(),
+        port=body.port,
+        timeout_sec=body.timeout_sec,
     )

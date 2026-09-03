@@ -106,6 +106,37 @@ async def list_templates(
     return res.scalars().all()
 
 
+@router.get("/templates-catalog")
+async def get_templates_catalog_endpoint(
+    db: AsyncSession = Depends(get_db),
+):
+    """Возвращает каталог шаблонов в формате словаря для быстрого выбора в UI."""
+    query = select(TriageTemplate).where(TriageTemplate.is_active == True).order_by(TriageTemplate.id.asc())  # noqa: E712
+    res = await db.execute(query)
+    items = res.scalars().all()
+    templates = [
+        {
+            "id": t.id,
+            "key": t.key,
+            "name": t.name,
+            "category": t.category,
+            "status_id": t.status_id,
+            "status_name": t.status_name,
+            "expenses": t.expenses,
+            "template": t.template_text,
+            "template_text": t.template_text,
+            "is_active": t.is_active,
+        }
+        for t in items
+    ]
+    templates_map = {t["key"]: t for t in templates}
+    return {
+        "total": len(templates),
+        "templates": templates,
+        "map": templates_map,
+    }
+
+
 @router.post("/templates", response_model=TemplateResponse, status_code=status.HTTP_201_CREATED)
 async def create_template(
     payload: TemplateCreateUpdate,

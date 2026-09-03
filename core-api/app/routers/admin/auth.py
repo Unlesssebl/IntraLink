@@ -96,27 +96,23 @@ async def admin_me(username: str = Depends(verify_admin_jwt)):
     return {"username": username}
 
 
+from app.database.db import get_db
+from app.services import vault
+from sqlalchemy.ext.asyncio import AsyncSession
+
+
 @router.post("/admin/api/domain-auth", dependencies=[Depends(verify_admin_jwt)])
-async def set_domain_auth(payload: DomainAuthRequest):
+async def set_domain_auth(payload: DomainAuthRequest, db: AsyncSession = Depends(get_db)):
     """
-    Сохраняет доменную учетную запись (WINRM) в Redis в зашифрованном виде.
+    Сохраняет доменную учетную запись (WinRM + LDAPS) в PostgreSQL (SSOT)
+    с автоматическим прогревом токена в Redis (worker:domain_auth).
     """
     try:
-        r = get_redis_client()
-        password = payload.password
-        if not password:
-            encrypted_auth = await r.get("worker:domain_auth")
-            if encrypted_auth:
-                with contextlib.suppress(Exception):
-                    old_auth_json = decrypt_token(encrypted_auth)
-                    old_auth_data = json.loads(old_auth_json)
-                    password = old_auth_data.get("password")
-
-        auth_data = {"username": payload.username, "password": password or ""}
-        auth_json = json.dumps(auth_data)
-        encrypted_auth = encrypt_token(auth_json)
-        await r.set("worker:domain_auth", encrypted_auth)
-        logger.info("Доменная учетная запись обновлена в Redis из веб-панели")
+        await vault.save_domain_credentials(
+            db,
+            username=payload.username,
+            password=payload.password,
+        )
         return {"status": "success"}
     except Exception as e:
         logger.exception("Ошибка при сохранении доменной учетной записи: %s", e)
@@ -127,20 +123,14 @@ async def set_domain_auth(payload: DomainAuthRequest):
 
 
 @router.get("/admin/api/domain-auth", dependencies=[Depends(verify_admin_jwt)])
-async def get_domain_auth_status():
+async def get_domain_auth_status(db: AsyncSession = Depends(get_db)):
     """
-    Возвращает статус настройки доменной учетной записи.
+    Возвращает статус настройки доменной учетной записи из SSOT Vault.
     Пароль не возвращается в целях безопасности.
     """
-    try:
-        r = get_redis_client()
-        encrypted_auth = await r.get("worker:domain_auth")
-        if not encrypted_auth:
-            return {"is_configured": False, "username": None}
-
-        auth_json = decrypt_token(encrypted_auth)
-        auth_data = json.loads(auth_json)
-        return {"is_configured": True, "username": auth_data.get("username")}
-    except Exception as e:
-        logger.exception("Ошибка при чтении доменной учетной записи: %s", e)
-        return {"is_configured": False, "username": None}
+    status_info = await vault.get_vault_status(db)
+    dom = status_info.get("domain", {})
+    return {
+        "is_configured": dom.get("is_configured", False),
+        "username": dom.get("username"),
+    }

@@ -60,6 +60,15 @@ async def lifespan(_app: FastAPI):
     except Exception as e:
         logger.warning("Ошибка инициализации шаблонов триажа: %s", e)
 
+    # Авто-прогрев и синхронизация кэша секретов Vault в Redis
+    try:
+        from app.services.vault import sync_vault_to_redis
+        async with AsyncSessionLocal() as session:
+            await sync_vault_to_redis(session)
+        logger.info("Vault: кэш учетных данных успешно прогрет в Redis из PostgreSQL.")
+    except Exception as e:
+        logger.warning("Vault: ошибка авто-прогрева кэша в Redis: %s", e)
+
     # Запуск Pub/Sub слушателя инвалидации кэша правил
     invalidation_task = asyncio.create_task(
         start_rules_invalidation_listener(settings.REDIS_URL)
