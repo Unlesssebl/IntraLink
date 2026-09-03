@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   fetchSystemStatus,
   fetchDomainAuth,
-  saveDomainAuth,
   fetchTelegramUsers,
   addTelegramUser,
   toggleTelegramUser,
@@ -28,9 +27,6 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
     is_configured: false,
     username: null,
   });
-  const [domainUsername, setDomainUsername] = useState('');
-  const [domainPassword, setDomainPassword] = useState('');
-  const [savingDomainAuth, setSavingDomainAuth] = useState(false);
 
   // Telegram users state
   const [tgUsers, setTgUsers] = useState<Array<{ tg_user_id: number; username?: string; full_name?: string; is_active: boolean }>>([]);
@@ -62,7 +58,6 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
       if (sys.status === 'fulfilled') setSystemStatus(sys.value);
       if (dom.status === 'fulfilled') {
         setDomainAuth(dom.value);
-        if (dom.value.username) setDomainUsername(dom.value.username);
       }
       if (usersRes.status === 'fulfilled' && usersRes.value.users) {
         setTgUsers(usersRes.value.users);
@@ -78,30 +73,6 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
-
-  // Handle Domain Auth save
-  const handleSaveDomainAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!domainUsername.trim()) {
-      onToast({ type: 'warning', message: 'Укажите логин доменной учетной записи' });
-      return;
-    }
-
-    setSavingDomainAuth(true);
-    try {
-      await saveDomainAuth({
-        username: domainUsername.trim(),
-        password: domainPassword ? domainPassword : undefined,
-      });
-      setDomainAuth({ is_configured: true, username: domainUsername.trim() });
-      setDomainPassword('');
-      onToast({ type: 'success', message: 'Доменные учетные данные успешно сохранены в защищенном хранилище' });
-    } catch (err: any) {
-      onToast({ type: 'error', message: `Ошибка сохранения доменных данных: ${err.message || err}` });
-    } finally {
-      setSavingDomainAuth(false);
-    }
-  };
 
   // Handle Telegram user add
   const handleAddTgUser = async (e: React.FormEvent) => {
@@ -264,64 +235,52 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
           </div>
         </div>
 
-        {/* Card 2: Domain Auth Configuration (Active Directory / WinRM) */}
-        <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-4">
-          <div className="flex items-center justify-between border-b border-neutral-100 dark:border-neutral-800 pb-3">
-            <div>
-              <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Домен Active Directory & WinRM</h2>
-              <p className="text-[11px] text-neutral-400">Синхронизировано с SSOT Vault в PostgreSQL</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <a
-                href="/admin"
-                className="text-[11px] text-blue-500 hover:text-blue-400 hover:underline inline-flex items-center gap-1"
-              >
-                <span>Консоль Vault</span>
-                <span aria-hidden="true">→</span>
-              </a>
+        {/* Card 2: Domain Auth Status (Active Directory / WinRM) */}
+        <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-4 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between border-b border-neutral-100 dark:border-neutral-800 pb-3">
+              <div>
+                <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Домен Active Directory & WinRM</h2>
+                <p className="text-[11px] text-neutral-400">Централизованный SSOT Vault в PostgreSQL</p>
+              </div>
               <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${domainAuth.is_configured ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'}`}>
-                {domainAuth.is_configured ? 'Настроена' : 'Не настроена'}
+                {domainAuth.is_configured ? 'Сконфигурирована' : 'Не настроена'}
               </span>
             </div>
+
+            <div className="space-y-2.5 text-xs mt-3.5">
+              <div className="flex items-center justify-between py-1.5 border-b border-neutral-100 dark:border-neutral-850">
+                <span className="text-neutral-500 dark:text-neutral-400">Доменный пользователь:</span>
+                <span className="font-mono text-neutral-800 dark:text-neutral-200 font-medium">
+                  {domainAuth.username || '—'}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between py-1.5 border-b border-neutral-100 dark:border-neutral-850">
+                <span className="text-neutral-500 dark:text-neutral-400">Шифрование секретов:</span>
+                <span className="text-emerald-600 dark:text-emerald-400 font-medium">Fernet AES-128-CBC (SSOT)</span>
+              </div>
+
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-neutral-500 dark:text-neutral-400">Назначение учетной записи:</span>
+                <span className="text-neutral-700 dark:text-neutral-300">Установка принтеров, WMI, WinRM</span>
+              </div>
+            </div>
+
+            <p className="text-[11.5px] text-neutral-500 dark:text-neutral-400 mt-3 leading-relaxed">
+              Управление доменным доступом, контроллерами домена и LDAPS портами централизовано в защищенной консоли администратора.
+            </p>
           </div>
 
-          <form onSubmit={handleSaveDomainAuth} className="space-y-3 text-xs">
-            <div>
-              <label className="block text-neutral-600 dark:text-neutral-400 mb-1 font-medium">
-                Доменный логин (UPN или DOMAIN\user):
-              </label>
-              <input
-                type="text"
-                value={domainUsername}
-                onChange={e => setDomainUsername(e.target.value)}
-                placeholder="svc_helpdesk@corporate.loc"
-                className="w-full px-2.5 py-1.5 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded text-neutral-800 dark:text-neutral-200 focus:outline-none focus:border-blue-500 font-mono text-xs"
-              />
-            </div>
-
-            <div>
-              <label className="block text-neutral-600 dark:text-neutral-400 mb-1 font-medium">
-                Пароль {domainAuth.is_configured && '(оставьте пустым, чтобы не менять)'}:
-              </label>
-              <input
-                type="password"
-                value={domainPassword}
-                onChange={e => setDomainPassword(e.target.value)}
-                placeholder={domainAuth.is_configured ? '••••••••••••' : 'Введите пароль'}
-                className="w-full px-2.5 py-1.5 bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded text-neutral-800 dark:text-neutral-200 focus:outline-none focus:border-blue-500 text-xs"
-              />
-            </div>
-
-            <div className="pt-1">
-              <button
-                type="submit"
-                disabled={savingDomainAuth}
-                className="w-full py-1.5 px-3 bg-neutral-900 dark:bg-neutral-100 hover:bg-neutral-800 dark:hover:bg-white text-white dark:text-neutral-900 font-medium rounded text-xs transition-colors cursor-pointer"
-              >
-                {savingDomainAuth ? 'Сохранение...' : 'Сохранить доменные данные'}
-              </button>
-            </div>
-          </form>
+          <div className="pt-3 border-t border-neutral-100 dark:border-neutral-800">
+            <a
+              href="/admin"
+              className="w-full py-2 px-3 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-750 text-neutral-800 dark:text-neutral-200 font-medium rounded text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer text-center"
+            >
+              <span>Управление в консоли Vault SSOT</span>
+              <span aria-hidden="true">→</span>
+            </a>
+          </div>
         </div>
       </div>
 

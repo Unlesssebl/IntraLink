@@ -260,6 +260,8 @@ export interface VaultStatusResponse {
     domain: string;
     dc_host: string;
     ldaps_port: number;
+    base_dn?: string;
+    wlan_group_name?: string;
     redis_synced: boolean;
   };
   local_admin: {

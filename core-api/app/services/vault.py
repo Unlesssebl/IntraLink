@@ -144,6 +144,8 @@ async def get_vault_status(db: AsyncSession) -> dict[str, Any]:
     domain_user = domain_cfg.get("username") or domain_cfg.get("user_dn")
     domain_name = domain_cfg.get("domain") or domain_cfg.get("domain_name") or settings.AD_DOMAIN_NAME
     dc_host = domain_cfg.get("dc_host") or domain_cfg.get("server") or domain_name
+    base_dn = domain_cfg.get("base_dn") or f"DC={domain_name.replace('.', ',DC=')}"
+    wlan_group = domain_cfg.get("wlan_group_name") or settings.AD_WLAN_GROUP_NAME
 
     # 3. Локальный администратор
     local_cfg = await get_raw_setting(db, KEY_LOCAL_ADMIN) or {}
@@ -180,6 +182,8 @@ async def get_vault_status(db: AsyncSession) -> dict[str, Any]:
             "domain": domain_name,
             "dc_host": dc_host,
             "ldaps_port": domain_cfg.get("ldaps_port") or domain_cfg.get("port") or 636,
+            "base_dn": base_dn,
+            "wlan_group_name": wlan_group,
             "redis_synced": redis_domain_synced,
         },
         "local_admin": {

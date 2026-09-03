@@ -3,10 +3,8 @@ import {
   loginAdmin,
   checkCurrentAdminSession,
   fetchAdminSettings,
-  saveLdapsSettings,
   testLdapsSettings,
   saveHelpdeskSettings,
-  saveLocalAdminSettings,
   fetchKbStats,
   fetchKbExamples,
   blacklistKbExample,
@@ -16,9 +14,7 @@ import {
   saveVaultDomain,
   saveVaultLocalAdmin,
   testVaultWinrm,
-  type LdapsConfigDTO,
   type HelpdeskConfigDTO,
-  type LocalAdminConfigDTO,
   type ConnectionTestResult,
   type KBExampleItem,
   type KBStatsResponse,
@@ -42,7 +38,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [adminUser, setAdminUser] = useState<{ username: string; is_admin: boolean; role?: string } | null>(null);
 
   // Settings State
-  const [activeTab, setActiveTab] = useState<'vault' | 'skills' | 'ai-hub' | 'ldaps' | 'helpdesk' | 'kb' | 'security'>('vault');
+  const [activeTab, setActiveTab] = useState<'vault' | 'skills' | 'ai-hub' | 'helpdesk' | 'kb'>('vault');
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
@@ -72,11 +68,15 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [vaultDomainName, setVaultDomainName] = useState('corporate.loc');
   const [vaultDomainDcHost, setVaultDomainDcHost] = useState('dc01.corporate.loc');
   const [vaultDomainPort, setVaultDomainPort] = useState(636);
+  const [vaultDomainBaseDn, setVaultDomainBaseDn] = useState('DC=corporate,DC=loc');
+  const [vaultDomainWlanGroup, setVaultDomainWlanGroup] = useState('WLAN-WORKNET');
   const [savingVaultDomain, setSavingVaultDomain] = useState(false);
 
   const [vaultLocalAdminUser, setVaultLocalAdminUser] = useState('.\\Администратор');
   const [vaultLocalAdminPassword, setVaultLocalAdminPassword] = useState('');
   const [savingVaultLocal, setSavingVaultLocal] = useState(false);
+
+  const [showSecurityInfo, setShowSecurityInfo] = useState(false);
 
   const [winrmHost, setWinrmHost] = useState('');
   const [winrmPort, setWinrmPort] = useState(5985);
@@ -95,29 +95,11 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [kbSyncDays, setKbSyncDays] = useState<number>(30);
   const [blacklistingTaskId, setBlacklistingTaskId] = useState<number | null>(null);
 
-  const [ldapsConfig, setLdapsConfig] = useState<LdapsConfigDTO>({
-    server: 'dc.corporate.loc',
-    port: 636,
-    use_ssl: true,
-    user_dn: 'svc_intralink@corporate.loc',
-    password: '',
-    is_password_set: false,
-    base_dn: 'DC=corporate,DC=loc',
-    wlan_group_name: 'WLAN-WORKNET',
-    domain_name: 'corporate.loc',
-  });
-
   const [helpdeskConfig, setHelpdeskConfig] = useState<HelpdeskConfigDTO>({
     primary_executor_id: 8664,
     default_executor_ids: '8664,10502',
     primary_filter_id: 984,
     timezone: 'Europe/Moscow',
-  });
-
-  const [localAdminConfig, setLocalAdminConfig] = useState<LocalAdminConfigDTO>({
-    username: '.\\Администратор',
-    password: '',
-    is_password_set: false,
   });
 
   // Автоматическая проверка текущей сессии оператора (SSO)
@@ -177,11 +159,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     setStatusMessage(null);
     try {
       const data = await fetchAdminSettings(authToken);
-      setLdapsConfig(data.ldaps);
       setHelpdeskConfig(data.helpdesk);
-      if (data.local_admin) {
-        setLocalAdminConfig(data.local_admin);
-      }
     } catch (err: any) {
       if (err.message?.includes('истекла')) {
         handleLogout();
@@ -207,6 +185,8 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
         setWinrmHost(prev => prev || data.domain.dc_host);
       }
       if (data.domain.ldaps_port) setVaultDomainPort(data.domain.ldaps_port);
+      if (data.domain.base_dn) setVaultDomainBaseDn(data.domain.base_dn);
+      if (data.domain.wlan_group_name) setVaultDomainWlanGroup(data.domain.wlan_group_name);
       if (data.local_admin.username) setVaultLocalAdminUser(data.local_admin.username);
     } catch (err: any) {
       if (err.message?.includes('истекла')) {
@@ -218,6 +198,16 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
       setLoadingVault(false);
     }
   }, []);
+
+  const handleCopyCurrentUserToService = () => {
+    if (adminUser?.username) {
+      setVaultServiceLogin(adminUser.username);
+      setStatusMessage({
+        type: 'success',
+        text: `Логин '${adminUser.username}' подставлен в поле сервисного аккаунта. Введите пароль для подтверждения.`,
+      });
+    }
+  };
 
   const handleSaveVaultService = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -252,6 +242,8 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
         domain: vaultDomainName.trim(),
         dc_host: vaultDomainDcHost.trim(),
         ldaps_port: Number(vaultDomainPort) || 636,
+        base_dn: vaultDomainBaseDn.trim() || undefined,
+        wlan_group_name: vaultDomainWlanGroup.trim() || undefined,
       });
       setVaultDomainPassword('');
       setStatusMessage({ type: 'success', text: 'Единые доменные учетные данные (WinRM + LDAPS) сохранены в Vault и Redis' });
@@ -301,22 +293,6 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
       });
     } finally {
       setTestingWinrm(false);
-    }
-  };
-
-  const handleSaveLocalAdmin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!token) return;
-    setSaveLoading(true);
-    setStatusMessage(null);
-    try {
-      const saved = await saveLocalAdminSettings(token, localAdminConfig);
-      setLocalAdminConfig(saved);
-      setStatusMessage({ type: 'success', text: 'Учетные данные локального администратора (fallback) сохранены' });
-    } catch (err: any) {
-      setStatusMessage({ type: 'error', text: err.message || 'Ошибка сохранения данных локального админа' });
-    } finally {
-      setSaveLoading(false);
     }
   };
 
@@ -399,23 +375,6 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     }
   }, [token, loadSettings, loadVault]);
 
-  // Save LDAPS
-  const handleSaveLdaps = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!token) return;
-    setSaveLoading(true);
-    setStatusMessage(null);
-    try {
-      const saved = await saveLdapsSettings(token, ldapsConfig);
-      setLdapsConfig(saved);
-      setStatusMessage({ type: 'success', text: 'Параметры подключения к Active Directory (LDAPS) сохранены в базе данных' });
-    } catch (err: any) {
-      setStatusMessage({ type: 'error', text: err.message || 'Ошибка сохранения' });
-    } finally {
-      setSaveLoading(false);
-    }
-  };
-
   // Test LDAPS
   const handleTestLdaps = async () => {
     if (!token) return;
@@ -423,13 +382,23 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     setTestResult(null);
     setStatusMessage(null);
     try {
-      const res = await testLdapsSettings(token, ldapsConfig);
+      const res = await testLdapsSettings(token, {
+        server: vaultDomainDcHost.trim() || vaultDomainName.trim(),
+        port: Number(vaultDomainPort) || 636,
+        use_ssl: true,
+        user_dn: vaultDomainUser.trim(),
+        password: vaultDomainPassword ? vaultDomainPassword.trim() : undefined,
+        is_password_set: Boolean(vaultStatus?.domain.is_configured),
+        base_dn: vaultDomainBaseDn.trim(),
+        wlan_group_name: vaultDomainWlanGroup.trim(),
+        domain_name: vaultDomainName.trim(),
+      });
       setTestResult(res);
     } catch (err: any) {
       setTestResult({
         success: false,
         latency_ms: 0,
-        message: err.message || 'Не удалось связаться с сервером',
+        message: err.message || 'Не удалось связаться с контроллером домена',
       });
     } finally {
       setTestLoading(false);
@@ -734,23 +703,6 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
           </button>
 
           <button
-            onClick={() => setActiveTab('ldaps')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 cursor-pointer ${
-              activeTab === 'ldaps'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
-            }`}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
-              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
-              <line x1="6" y1="6" x2="6.01" y2="6"></line>
-              <line x1="6" y1="18" x2="6.01" y2="18"></line>
-            </svg>
-            <span>Active Directory & LDAPS (порт 636)</span>
-          </button>
-
-          <button
             onClick={() => setActiveTab('helpdesk')}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 cursor-pointer ${
               activeTab === 'helpdesk'
@@ -780,20 +732,6 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
             </svg>
             <span>База знаний (RAG)</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('security')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 cursor-pointer ${
-              activeTab === 'security'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
-            }`}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-            </svg>
-            <span>Безопасность & Fallback One-Liner</span>
           </button>
         </div>
 
@@ -941,6 +879,28 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                   <span className="text-[11px] font-mono text-neutral-400">worker:service_auth_b64</span>
                 </div>
 
+                <div className="p-3 rounded-xl bg-blue-950/30 border border-blue-800/60 text-xs text-blue-300 flex items-start gap-2.5">
+                  <svg className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                    <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                  </svg>
+                  <div className="leading-relaxed">
+                    <span>Используется фоновым демоном опроса (Poller) и Telegram-ботом 24/7 для автономного мониторинга новых заявок, когда веб-интерфейс закрыт.</span>
+                    {adminUser?.username && (
+                      <div className="mt-1.5">
+                        <button
+                          type="button"
+                          onClick={handleCopyCurrentUserToService}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-400 hover:text-blue-300 underline cursor-pointer"
+                        >
+                          <span>← Использовать логин текущей сессии ({adminUser.username})</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <form onSubmit={handleSaveVaultService} className="space-y-4">
                   <div>
                     <label className="block text-xs font-medium text-neutral-400 mb-1">Логин сервисного аккаунта</label>
@@ -994,7 +954,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                       <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
                       <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
                     </svg>
-                    <span>Единый доменный доступ (WinRM + LDAPS)</span>
+                    <span>Единый доменный доступ (WinRM + LDAPS + Wi-Fi)</span>
                   </h3>
                   <span className="text-[11px] font-mono text-neutral-400">worker:domain_auth</span>
                 </div>
@@ -1062,6 +1022,30 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                     </div>
                   </div>
 
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-neutral-400 mb-1">Базовый DN каталога (Base DN)</label>
+                      <input
+                        type="text"
+                        value={vaultDomainBaseDn}
+                        onChange={e => setVaultDomainBaseDn(e.target.value)}
+                        placeholder="DC=corporate,DC=loc"
+                        className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-neutral-400 mb-1">Целевая группа AD для Wi-Fi</label>
+                      <input
+                        type="text"
+                        value={vaultDomainWlanGroup}
+                        onChange={e => setVaultDomainWlanGroup(e.target.value)}
+                        placeholder="WLAN-WORKNET"
+                        className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 text-xs"
+                      />
+                    </div>
+                  </div>
+
                   <div className="flex items-center gap-3 pt-1">
                     <button
                       type="submit"
@@ -1080,6 +1064,23 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                       {testLoading ? 'Проверка...' : 'Тест LDAPS (636)'}
                     </button>
                   </div>
+
+                  {testResult && (
+                    <div
+                      className={`p-3 rounded-xl border text-xs flex items-center justify-between gap-3 mt-3 ${
+                        testResult.success
+                          ? 'bg-emerald-950/30 border-emerald-800 text-emerald-300'
+                          : 'bg-red-950/30 border-red-800 text-red-300'
+                      }`}
+                    >
+                      <span>{testResult.message}</span>
+                      {testResult.latency_ms > 0 && (
+                        <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-black/40 border border-white/10">
+                          {testResult.latency_ms} ms
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </form>
               </div>
             </div>
@@ -1185,6 +1186,60 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                   </button>
                 </form>
               </div>
+            </div>
+
+            {/* Security Architecture & Fallback One-Liner Accordion */}
+            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 shadow-sm space-y-3">
+              <div
+                onClick={() => setShowSecurityInfo(prev => !prev)}
+                className="flex items-center justify-between cursor-pointer select-none"
+              >
+                <div className="flex items-center gap-2.5 text-sm font-semibold text-neutral-200">
+                  <div className="w-6 h-6 rounded-md bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                    </svg>
+                  </div>
+                  <span>Архитектура безопасности & Fallback One-Liner</span>
+                  <span className="text-[10px] font-mono text-neutral-400 bg-neutral-800 px-2 py-0.5 rounded border border-neutral-700">
+                    Fernet SSOT + Self-Service
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="text-xs text-neutral-400 hover:text-neutral-200 cursor-pointer"
+                >
+                  {showSecurityInfo ? 'Свернуть ▲' : 'Развернуть ▼'}
+                </button>
+              </div>
+
+              {showSecurityInfo && (
+                <div className="pt-3 border-t border-neutral-800/80 space-y-3 text-xs text-neutral-300 leading-relaxed">
+                  <div className="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800 space-y-1.5">
+                    <div className="flex items-center gap-2 text-emerald-400 font-semibold">
+                      <span>✓ Шифрование чувствительных данных (Fernet SSOT)</span>
+                    </div>
+                    <p className="text-neutral-400">
+                      Все учетные данные Active Directory, сохраняемые через веб-интерфейс, шифруются симметричным ключом Fernet перед записью в PostgreSQL (<code className="text-emerald-300">system_settings</code>). Пароли никогда не передаются в браузер в открытом виде, а прогреваются в Redis для демонов с ограничением по ключам.
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800 space-y-1.5">
+                    <div className="flex items-center gap-2 text-blue-400 font-semibold">
+                      <span>✓ Принцип действия Fallback One-Liner (Self-Service)</span>
+                    </div>
+                    <p className="text-neutral-400">
+                      Если брандмауэр Windows на ПК заявителя блокирует входящие порты <code className="text-blue-300">5985</code> (WinRM) и <code className="text-blue-300">135</code> (WMI), агент генерирует одноразовую команду запуска для <kbd className="px-1.5 py-0.5 bg-neutral-800 border border-neutral-700 rounded text-[10px]">Win + R</kbd>:
+                    </p>
+                    <div className="p-2.5 bg-black/60 rounded-lg font-mono text-[11px] text-emerald-400 border border-neutral-800 overflow-x-auto">
+                      powershell -ep bypass -c "irm http://&lt;core-api&gt;:8000/api/v1/run/&lt;token&gt; | iex"
+                    </div>
+                    <p className="text-neutral-500 text-[11px]">
+                      Скрипт локально регистрирует порт и драйвер принтера, рапортует об успехе в Core API по исходящему HTTPS (порт 443 всегда открыт) и завершает инцидент.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1419,230 +1474,6 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
           </div>
         )}
 
-        {/* Tab 1: LDAPS Config */}
-        {activeTab === 'ldaps' && (
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-6">
-            <div className="flex items-start justify-between">
-              <div>
-                <h2 className="text-base font-semibold">Конфигурация Active Directory LDAPS</h2>
-                <p className="text-xs text-neutral-400 mt-0.5">
-                  Прямое защищенное управление учетными записями и выдача доступа к Wi-Fi (WLAN-WORKNET) без участия клиентских ПК.
-                </p>
-              </div>
-              <span className="px-2.5 py-1 rounded-md text-[11px] font-mono bg-blue-950/60 border border-blue-800 text-blue-300">
-                Порт 636 SSL/TLS
-              </span>
-            </div>
-
-            <form onSubmit={handleSaveLdaps} className="space-y-5">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-neutral-400 mb-1">Контроллер домена (DC Host / IP)</label>
-                  <input
-                    type="text"
-                    value={ldapsConfig.server}
-                    onChange={e => setLdapsConfig({ ...ldapsConfig, server: e.target.value })}
-                    placeholder="dc.corporate.loc или 10.x.x.x"
-                    required
-                    className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-neutral-400 mb-1">Порт LDAPS</label>
-                  <input
-                    type="number"
-                    value={ldapsConfig.port}
-                    onChange={e => setLdapsConfig({ ...ldapsConfig, port: Number(e.target.value) })}
-                    required
-                    className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-neutral-400 mb-1">Имя домена (Domain FQDN)</label>
-                  <input
-                    type="text"
-                    value={ldapsConfig.domain_name}
-                    onChange={e => setLdapsConfig({ ...ldapsConfig, domain_name: e.target.value })}
-                    placeholder="corporate.loc"
-                    required
-                    className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-neutral-400 mb-1">Базовый DN каталога (Base DN)</label>
-                  <input
-                    type="text"
-                    value={ldapsConfig.base_dn}
-                    onChange={e => setLdapsConfig({ ...ldapsConfig, base_dn: e.target.value })}
-                    placeholder="DC=corporate,DC=loc"
-                    required
-                    className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono text-xs"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-neutral-400 mb-1">Сервисная учетная запись (UPN)</label>
-                  <input
-                    type="text"
-                    value={ldapsConfig.user_dn}
-                    onChange={e => setLdapsConfig({ ...ldapsConfig, user_dn: e.target.value })}
-                    placeholder="svc_intralink@corporate.loc"
-                    required
-                    className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="block text-xs font-medium text-neutral-400">Пароль сервисной УЗ</label>
-                    {ldapsConfig.is_password_set && (
-                      <span className="text-[10px] text-emerald-400 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-800/60">
-                        ✓ Зашифрован в Fernet
-                      </span>
-                    )}
-                  </div>
-                  <input
-                    type="password"
-                    value={ldapsConfig.password || ''}
-                    onChange={e => setLdapsConfig({ ...ldapsConfig, password: e.target.value })}
-                    placeholder={ldapsConfig.is_password_set ? '•••••••• (Оставьте пустым, чтобы не менять)' : 'Введите пароль'}
-                    className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-neutral-400 mb-1">Целевая группа AD для Wi-Fi</label>
-                  <input
-                    type="text"
-                    value={ldapsConfig.wlan_group_name}
-                    onChange={e => setLdapsConfig({ ...ldapsConfig, wlan_group_name: e.target.value })}
-                    placeholder="WLAN-WORKNET"
-                    required
-                    className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div className="pt-2 flex items-center justify-between border-t border-neutral-800">
-                <button
-                  type="button"
-                  onClick={handleTestLdaps}
-                  disabled={testLoading}
-                  className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-neutral-200 rounded-xl text-xs font-medium border border-neutral-700 transition-colors flex items-center gap-2 cursor-pointer"
-                >
-                  {testLoading ? (
-                    <>
-                      <svg className="animate-spin h-3.5 w-3.5 text-blue-400" viewBox="0 0 24 24" fill="none">
-                        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" strokeOpacity="0.25"></circle>
-                        <path fill="currentColor" d="M4 12a8 8 0 0 1 8-8v8H4z"></path>
-                      </svg>
-                      <span>Проверка соединения...</span>
-                    </>
-                  ) : (
-                    <>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-                      </svg>
-                      <span>Проверить подключение (Test Connection)</span>
-                    </>
-                  )}
-                </button>
-
-                <button
-                  type="submit"
-                  disabled={saveLoading}
-                  className="px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold shadow-md shadow-blue-600/20 transition-colors cursor-pointer"
-                >
-                  {saveLoading ? 'Сохранение...' : 'Сохранить параметры LDAPS'}
-                </button>
-              </div>
-            </form>
-
-            {/* Test Result Display */}
-            {testResult && (
-              <div
-                className={`p-4 rounded-xl border text-xs space-y-2 ${
-                  testResult.success
-                    ? 'bg-emerald-950/20 border-emerald-800/80 text-emerald-300'
-                    : 'bg-red-950/20 border-red-800/80 text-red-300'
-                }`}
-              >
-                <div className="flex items-center justify-between font-semibold">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full ${testResult.success ? 'bg-emerald-400' : 'bg-red-400'}`}></span>
-                    <span>{testResult.message}</span>
-                  </div>
-                  <span className="font-mono text-[11px] opacity-80">{testResult.latency_ms} ms</span>
-                </div>
-                {testResult.details && Object.keys(testResult.details).length > 0 && (
-                  <pre className="mt-2 p-2 bg-neutral-950/80 rounded-lg text-[11px] font-mono overflow-x-auto text-neutral-300 border border-neutral-800">
-                    {JSON.stringify(testResult.details, null, 2)}
-                  </pre>
-                )}
-              </div>
-            )}
-            {/* Fallback Local Admin Account for LiteManager / DameWare */}
-            <div className="pt-6 border-t border-neutral-800/80">
-              <form onSubmit={handleSaveLocalAdmin} className="space-y-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold text-neutral-200">
-                      Локальная учетная запись администратора (Fallback для LiteManager / DameWare)
-                    </h3>
-                    <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded-md">
-                      Fernet Encrypted
-                    </span>
-                  </div>
-                  <p className="text-xs text-neutral-400 mt-0.5">
-                    Используется в качестве резервной аутентификации, когда контроллер домена недоступен или машина отсоединена от домена.
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-neutral-400">Логин локального администратора</label>
-                    <input
-                      type="text"
-                      value={localAdminConfig.username}
-                      onChange={(e) => setLocalAdminConfig({ ...localAdminConfig, username: e.target.value })}
-                      placeholder=".\Администратор или .\Administrator"
-                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3.5 py-2 text-xs font-mono text-neutral-200 focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs text-neutral-400">Пароль локального администратора</label>
-                      {localAdminConfig.is_password_set && (
-                        <span className="text-[10px] text-emerald-400">✓ Пароль зашифрован и сохранен</span>
-                      )}
-                    </div>
-                    <input
-                      type="password"
-                      value={localAdminConfig.password || ''}
-                      onChange={(e) => setLocalAdminConfig({ ...localAdminConfig, password: e.target.value })}
-                      placeholder={localAdminConfig.is_password_set ? '•••••••• (введите новый для изменения)' : 'Введите локальный пароль'}
-                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3.5 py-2 text-xs font-mono text-neutral-200 focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex justify-end pt-2">
-                  <button
-                    type="submit"
-                    disabled={saveLoading}
-                    className="px-5 py-2 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-neutral-200 rounded-xl text-xs font-semibold border border-neutral-700 transition-colors cursor-pointer"
-                  >
-                    {saveLoading ? 'Сохранение...' : 'Сохранить данные локального админа'}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
 
         {/* Tab 2: Helpdesk Parameters */}
         {activeTab === 'helpdesk' && (
@@ -1972,51 +1803,6 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
           </div>
         )}
 
-        {/* Tab 4: Security & Fallback One-Liner */}
-        {activeTab === 'security' && (
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-6">
-            <div>
-              <h2 className="text-base font-semibold">Архитектура безопасности и Fallback One-Liner</h2>
-              <p className="text-xs text-neutral-400 mt-0.5">
-                Исполнение задач без доменного GPO и при заблокированных брандмауэром портах WinRM/WMI.
-              </p>
-            </div>
-
-            <div className="space-y-4 text-xs text-neutral-300 leading-relaxed">
-              <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2">
-                <div className="flex items-center gap-2 text-blue-400 font-semibold">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <line x1="12" y1="16" x2="12" y2="12"></line>
-                    <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                  </svg>
-                  <span>Принцип действия Fallback One-Liner (Self-Service)</span>
-                </div>
-                <p>
-                  Если брандмауэр Windows на ПК заявителя блокирует входящие порты <code className="text-blue-300">5985</code> (WinRM) и <code className="text-blue-300">135</code> (WMI), система генерирует токенизированную ссылку на PowerShell скрипт. Заявитель или дежурный инженер запускает ее через <kbd className="px-1.5 py-0.5 bg-neutral-800 border border-neutral-700 rounded text-[10px]">Win + R</kbd>:
-                </p>
-                <div className="p-2.5 bg-black/60 rounded-lg font-mono text-[11px] text-emerald-400 border border-neutral-800">
-                  powershell -ep bypass -c "irm http://&lt;core-api&gt;:8000/api/v1/run/&lt;token&gt; | iex"
-                </div>
-                <p className="text-neutral-400">
-                  Скрипт локально регистрирует порт и драйвер принтера, рапортует об успехе в Core API по исходящему HTTPS (порт 443 всегда открыт) и завершает инцидент.
-                </p>
-              </div>
-
-              <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2">
-                <div className="flex items-center gap-2 text-emerald-400 font-semibold">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-                  </svg>
-                  <span>Шифрование чувствительных данных (Fernet SSOT)</span>
-                </div>
-                <p>
-                  Все учетные данные Active Directory, сохраняемые через веб-интерфейс, шифруются симметричным ключом Fernet перед записью в PostgreSQL (<code className="text-emerald-300">system_settings</code>). Они никогда не передаются в открытом виде обратно в браузер.
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
