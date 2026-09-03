@@ -150,11 +150,6 @@ python -m pytest core-api/tests/ -v
 # Проверка сборки фронтенда intra-web:
 cd intra-web && npm run build
 ```
-
-### Тестовые учетные данные исполнителя (IntraService Sandbox):
-- **Логин:** `IntraService_dev`
-- **Пароль:** `85_wW8EuOyYaw+xv6`
-
 ---
 
 ## 📝 6. Стандарты написания кода (Backend Guidelines)
