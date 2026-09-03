@@ -396,7 +396,7 @@ def test_classify_task_resolution_outcomes():
         task_in_progress,
         [{"Comment": "Данный сотрудник был уволен?", "EditorId": 10502, "StatusId": 35}]
     )
-    assert canon_in_progress["solution"] == ""
+    assert "Данный сотрудник был уволен?" in canon_in_progress["solution"]
     assert canon_in_progress["resolution_type"] == "clarification"
 
 

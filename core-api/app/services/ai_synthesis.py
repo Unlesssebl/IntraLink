@@ -713,21 +713,19 @@ def canonize_task_solution(
             else:
                 candidates_staff.append(comm)
 
-        # Выбираем наиболее авторитетный комментарий инженера ТОЛЬКО для завершенных задач.
-        # Для незавершенных заявок (например 35 'Требует уточнения', 31 'Открыта')
-        # комментарии исполнителя являются вопросами или служебными пометками, а не решением!
-        if is_terminal:
-            if candidates_closing:
-                solution_text = candidates_closing[0]
-            elif candidates_executor:
-                solution_text = candidates_executor[0]
-            elif candidates_staff:
-                solution_text = candidates_staff[0]
-        else:
-            solution_text = ""
+        # Выбираем наиболее авторитетный комментарий инженера:
+        # 1. Приоритет: комментарий при переводе статуса (candidates_closing)
+        # 2. Поднятие на уровень выше: последний комментарий назначенного исполнителя (candidates_executor)
+        # 3. Комментарий любого другого сотрудника линии (candidates_staff)
+        if candidates_closing:
+            solution_text = candidates_closing[0]
+        elif candidates_executor:
+            solution_text = candidates_executor[0]
+        elif candidates_staff:
+            solution_text = candidates_staff[0]
 
-    # Если в комментариях решения нет, проверяем поля самой задачи (только для завершенных заявок)
-    if not solution_text and is_terminal:
+    # Если в комментариях решения нет, проверяем поля самой задачи
+    if not solution_text:
         for field in ("Solution", "CloseReason", "Resolution"):
             val = clean_html(task.get(field) or "").strip()
             if val and len(val) >= 10 and not is_system_or_noise_comment(val):
