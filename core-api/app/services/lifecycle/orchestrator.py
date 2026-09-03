@@ -82,9 +82,21 @@ class AutonomousTicketOrchestrator:
         if not tasks:
             return []
 
-        logger.info("🤖 Найдено %d активных задач, назначенных на бота svc_intralink", len(tasks))
+        # Строгая фильтрация в Python: IntraService API GET /api/task игнорирует параметр ExecutorId в query!
+        bot_tasks = []
+        for t in tasks:
+            t_exec_id = t.get("ExecutorId")
+            t_exec_ids_raw = str(t.get("ExecutorIds") or "")
+            t_exec_ids = [int(x.strip()) for x in t_exec_ids_raw.split(",") if x.strip().isdigit()]
+            if t_exec_id == bot_user_id or bot_user_id in t_exec_ids:
+                bot_tasks.append(t)
 
-        for task in tasks:
+        if not bot_tasks:
+            return []
+
+        logger.info("🤖 Найдено %d активных задач, действительно назначенных на бота svc_intralink (ID: %s)", len(bot_tasks), bot_user_id)
+
+        for task in bot_tasks:
             task_id = int(task.get("Id") or 0)
             if not task_id:
                 continue
@@ -119,6 +131,15 @@ class AutonomousTicketOrchestrator:
         """Обработка отдельной задачи по шагам конечного автомата."""
         task_id = int(task.get("Id") or 0)
         status_id = int(task.get("StatusId") or 0)
+
+        # Железный Guard: задача должна быть назначена на бота!
+        bot_user_id = settings.INTRASERVICE_SERVICE_USER_ID
+        t_exec_id = task.get("ExecutorId")
+        t_exec_ids_raw = str(task.get("ExecutorIds") or "")
+        t_exec_ids = [int(x.strip()) for x in t_exec_ids_raw.split(",") if x.strip().isdigit()]
+        if t_exec_id != bot_user_id and bot_user_id not in t_exec_ids:
+            logger.debug("Задача #%d не назначена на бота svc_intralink (ExecutorId: %s). Пропуск.", task_id, t_exec_id)
+            return None
 
         # -------------------------------------------------------------
         # ВЕТКА 1: Статус 31 (Открыта) -> Проверка реквизитов / Запуск

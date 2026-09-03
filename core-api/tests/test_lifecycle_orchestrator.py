@@ -69,6 +69,7 @@ async def test_orchestrator_processes_open_task_missing_ip(mock_redis):
         "Name": "Подключить принтер",
         "Description": "Не печатает МФУ",
         "StatusId": settings.STATUS_OPEN_ID,
+        "ExecutorId": 10001,
         "CustomFields": [
             {"CustomFieldId": settings.PRINTER_PC_CUSTOM_FIELD_ID, "Value": "NTEMW0144"}
         ],
@@ -102,6 +103,7 @@ async def test_orchestrator_processes_open_task_ready_for_execution(mock_redis):
         "Name": "Установить принтер",
         "Description": "Подключение",
         "StatusId": settings.STATUS_OPEN_ID,
+        "ExecutorId": 10001,
         "CustomFields": [
             {"CustomFieldId": settings.PRINTER_PC_CUSTOM_FIELD_ID, "Value": "NTEMW0144"},
             {"CustomFieldId": settings.PRINTER_IP_CUSTOM_FIELD_ID, "Value": "10.128.4.52"},
@@ -139,6 +141,7 @@ async def test_orchestrator_processes_waiting_task_applicant_reply(mock_redis):
         "Id": 140303,
         "Name": "Установить принтер",
         "StatusId": settings.STATUS_WAITING_ID,
+        "ExecutorId": 10001,
         "CreatorId": 501,
     }
     comments = [
@@ -181,6 +184,7 @@ async def test_orchestrator_processes_in_progress_task_job_success(mock_redis):
         "Id": 140304,
         "Name": "Установить принтер",
         "StatusId": settings.STATUS_IN_PROGRESS_ID,
+        "ExecutorId": 10001,
     }
     job_id = "job_123456"
     mock_redis.store["task:140304:execution_job"] = job_id
@@ -222,6 +226,7 @@ async def test_orchestrator_max_clarification_attempts_exceeded(mock_redis):
         "Id": 140305,
         "Name": "Установить принтер",
         "StatusId": settings.STATUS_WAITING_ID,
+        "ExecutorId": 10001,
         "CreatorId": 501,
     }
     comments = [
@@ -264,6 +269,7 @@ async def test_orchestrator_execution_worker_timeout_escalation(mock_redis):
         "Id": 140306,
         "Name": "Установить принтер",
         "StatusId": settings.STATUS_IN_PROGRESS_ID,
+        "ExecutorId": 10001,
     }
     job_id = "job_stuck_123"
     mock_redis.store["task:140306:execution_job"] = job_id
@@ -293,3 +299,24 @@ async def test_orchestrator_execution_worker_timeout_escalation(mock_redis):
         assert results[0].escalated_to_human is True
         mock_update_status.assert_called_once_with("test_auth", 140306, settings.STATUS_OPEN_ID)
         assert mock_redis.store.get("task:140306:execution_job") is None
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_ignores_tasks_not_assigned_to_bot(mock_redis):
+    """Проверяет, что задачи, не назначенные на бота, строго игнорируются (защита от бага API IntraService)."""
+    orchestrator = AutonomousTicketOrchestrator()
+    task_unassigned = {
+        "Id": 140244,
+        "Name": "Чужая заявка",
+        "StatusId": settings.STATUS_OPEN_ID,
+        "ExecutorId": 99999,  # Не бот!
+    }
+
+    with patch("app.services.lifecycle.orchestrator.settings.AUTONOMOUS_LIFECYCLE_ENABLED", True), \
+         patch("app.services.lifecycle.orchestrator.settings.INTRASERVICE_SERVICE_USER_ID", 10001), \
+         patch("app.services.lifecycle.orchestrator.get_redis_client", return_value=mock_redis), \
+         patch("app.services.lifecycle.orchestrator.get_tasks", new_callable=AsyncMock) as mock_get_tasks:
+
+        mock_get_tasks.return_value = {"Tasks": [task_unassigned]}
+        results = await orchestrator.process_assigned_tasks("test_auth")
+        assert results == []
