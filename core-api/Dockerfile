@@ -18,6 +18,7 @@ WORKDIR /app
 # Настройка переменных окружения Python
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH="/app"
 
 # Установка системных зависимостей
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -28,7 +29,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY core-api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копирование исходного кода бэкенда
+# Копирование единого пакета общих утилит (SSOT) и бэкенда
+COPY shared/ ./shared/
 COPY core-api/ .
 COPY docs/presentations/ ./docs/presentations/
 

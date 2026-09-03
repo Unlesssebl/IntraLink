@@ -237,15 +237,22 @@ async def init_db() -> None:
                     "ALTER TABLE task_knowledge_base ALTER COLUMN embedding DROP NOT NULL;"
                 )
             )
-            # Создаем высокопроизводительный HNSW индекс для ускорения семантического поиска
-            await conn.execute(
-                text(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_task_kb_hnsw
-                    ON task_knowledge_base
-                    USING hnsw (embedding vector_cosine_ops)
-                    WITH (m = 16, ef_construction = 64);
-                    """
+
+    # Создание индекса HNSW в отдельной транзакции (pgvector HNSW строго ограничен 2000 измерениями)
+    if not settings.DATABASE_URL.startswith("sqlite") and settings.EMBEDDING_DIMENSION <= 2000:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_task_kb_hnsw
+                        ON task_knowledge_base
+                        USING hnsw (embedding vector_cosine_ops)
+                        WITH (m = 16, ef_construction = 64);
+                        """
+                    )
                 )
-            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Не удалось создать HNSW индекс для pgvector: %s", e)
 
