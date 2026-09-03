@@ -152,3 +152,35 @@ async def test_get_embedding_vector_gemini_fallback_when_litellm_fails():
 
         vec = await rag.get_embedding_vector(raw_text, circuit=DataCircuit.GREEN)
         assert vec == dummy_vec
+
+
+@pytest.mark.asyncio
+async def test_get_embedding_vector_caching_prevents_duplicate_http_calls():
+    """Проверка, что повторные вызовы с одинаковым текстом обслуживаются из кэша без HTTP-запросов."""
+    raw_text = "Тестовый текст для проверки многоуровневого кэширования эмбеддингов 12345"
+    dummy_vec = [0.42] * 3072
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value={"data": [{"embedding": dummy_vec}]})
+    mock_cm = AsyncMock()
+    mock_cm.__aenter__.return_value = mock_resp
+    mock_post = MagicMock(return_value=mock_cm)
+
+    with patch("app.services.rag.get_rag_http_session") as mock_session_getter:
+        mock_session = MagicMock()
+        mock_session.post = mock_post
+        mock_session_getter.return_value = mock_session
+
+        # 1-й вызов: промах кэша -> должен быть 1 HTTP POST
+        vec1 = await rag.get_embedding_vector(raw_text, circuit=DataCircuit.GREEN)
+        assert vec1 == dummy_vec
+        assert mock_post.call_count == 1
+
+        # 2-й и 3-й вызовы: попадание в RAM кэш -> НИ ОДНОГО нового HTTP POST!
+        vec2 = await rag.get_embedding_vector(raw_text, circuit=DataCircuit.GREEN)
+        vec3 = await rag.get_embedding_vector(raw_text, circuit=DataCircuit.GREEN)
+        assert vec2 == dummy_vec
+        assert vec3 == dummy_vec
+        assert mock_post.call_count == 1, "Повторные вызовы должны браться из кэша без спама в LiteLLM!"
+

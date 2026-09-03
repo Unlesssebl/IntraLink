@@ -128,6 +128,9 @@ async def get_triage_batch(
     include_skipped: bool = Query(
         False, description="Включить в выборку ранее пропущенные заявки"
     ),
+    include_rag: bool = Query(
+        False, description="Выполнять семантический RAG-поиск по прецедентам для всей пачки"
+    ),
     service_auth_b64: str = Depends(get_service_auth_b64),
     username: str = Depends(verify_admin_or_api_key),
     db: AsyncSession = Depends(get_db),
@@ -142,6 +145,7 @@ async def get_triage_batch(
         service_prefix=service_prefix,
         redirect_only=redirect_only,
         include_skipped=include_skipped,
+        include_rag=include_rag,
         operator_id=username,
     )
 

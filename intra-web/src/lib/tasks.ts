@@ -290,14 +290,14 @@ export function mapTaskToTicket(task: TaskItem): Ticket {
   };
 }
 
-export async function fetchQueue(filterId = 984, limit = 50): Promise<{
+export async function fetchQueue(filterId = 984, limit = 50, includeRag = false): Promise<{
   tickets: Ticket[];
   rawTasks: TaskItem[];
   total: number;
   rootServices: Array<{ id: number; name: string }>;
   subservicesByRoot: Record<number, Array<{ id: number; name: string; parent_id?: number }>>;
 }> {
-  const data = await apiFetch<any>(`/api/v1/triage/batch?filter_id=${filterId}&limit=${limit}`);
+  const data = await apiFetch<any>(`/api/v1/triage/batch?filter_id=${filterId}&limit=${limit}&include_rag=${includeRag}`);
   const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
   const normalizedTasks: TaskItem[] = tasks.map((item: any) => {
     if (item.task_id && item.suggested_action) {

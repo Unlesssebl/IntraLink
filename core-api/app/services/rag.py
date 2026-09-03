@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import logging
 import re
+from collections import OrderedDict
 from typing import Any
 import aiohttp
 from sqlalchemy import select, text
@@ -10,8 +12,42 @@ from app.config import settings
 from app.database.db import TaskKnowledgeBase
 from app.services import intraservice
 from app.services.ai import DataCircuit, RoutingMetadata, data_sanitizer
+from shared.json_utils import json_dumps, json_loads
 
 logger = logging.getLogger("core_api.rag")
+
+_EMBED_MEMORY_CACHE: OrderedDict[str, list[float]] = OrderedDict()
+_EMBED_CACHE_MAX_SIZE = 4096
+_EMBED_REDIS_TTL = 7 * 86400  # 7 дней
+
+
+def _get_redis_safe():
+    try:
+        from app.services.worker import get_redis_client
+
+        return get_redis_client()
+    except Exception:
+        return None
+
+
+def _get_embedding_cache_key(text_val: str, circuit: DataCircuit | None) -> str:
+    model_name = getattr(settings, "EMBEDDING_MODEL", "gemini-embedding-2")
+    circuit_val = circuit.value if circuit else "default"
+    text_hash = hashlib.sha256(text_val.encode("utf-8")).hexdigest()
+    return f"rag:emb:{model_name}:{circuit_val}:{text_hash}"
+
+
+async def _save_embedding_to_cache(cache_key: str, vec: list[float]) -> None:
+    _EMBED_MEMORY_CACHE[cache_key] = vec
+    if len(_EMBED_MEMORY_CACHE) > _EMBED_CACHE_MAX_SIZE:
+        _EMBED_MEMORY_CACHE.popitem(last=False)
+
+    try:
+        redis = _get_redis_safe()
+        if redis is not None:
+            await redis.set(cache_key, json_dumps(vec), ex=_EMBED_REDIS_TTL)
+    except Exception as e:
+        logger.debug("Ошибка записи эмбеддинга в Redis кэш: %s", e)
 
 _fastembed_model = None
 _fastembed_reranker = None
@@ -136,12 +172,36 @@ async def get_embedding_vector(
     - RED (Закрытый контур / force_local): строго локальные эмбеддеры (Ollama / FastEmbed) без отправки наружу.
     - YELLOW (Трансформируемый): автоматическая десенсибилизация перед вызовом Cloud LiteLLM / Gemini API.
     - GREEN (Открытый): прямой вызов Cloud LiteLLM / Gemini с fallback на локальные модели.
+    - Multi-tier Cache: быстрый LRU в RAM (0ms) + персистентный Redis (1ms, TTL 7 дней).
     """
     clean_text = clean_html(text_input).strip()[:4000]
     if not clean_text:
         return None
 
-    # 1. Если принудительно локальный режим или RED контур -> строго локальные эмбеддеры
+    cache_circuit = DataCircuit.RED if force_local else circuit
+    cache_key = _get_embedding_cache_key(clean_text, cache_circuit)
+
+    # 1. Быстрый RAM LRU Cache (0ms)
+    if cache_key in _EMBED_MEMORY_CACHE:
+        _EMBED_MEMORY_CACHE.move_to_end(cache_key)
+        return _EMBED_MEMORY_CACHE[cache_key]
+
+    # 2. Персистентный Redis Cache (1ms)
+    try:
+        redis = _get_redis_safe()
+        if redis is not None:
+            cached_raw = await redis.get(cache_key)
+            if cached_raw:
+                vec = json_loads(cached_raw)
+                if isinstance(vec, list) and len(vec) == settings.EMBEDDING_DIMENSION:
+                    _EMBED_MEMORY_CACHE[cache_key] = vec
+                    if len(_EMBED_MEMORY_CACHE) > _EMBED_CACHE_MAX_SIZE:
+                        _EMBED_MEMORY_CACHE.popitem(last=False)
+                    return vec
+    except Exception as e:
+        logger.debug("Ошибка чтения эмбеддинга из Redis кэша: %s", e)
+
+    # 3. Если принудительно локальный режим или RED контур -> строго локальные эмбеддеры
     if force_local or circuit == DataCircuit.RED:
         # Попытка через локальный сервис Ollama (/api/embed)
         if getattr(settings, "OLLAMA_BASE_URL", None):
@@ -163,6 +223,7 @@ async def get_embedding_vector(
                         if embeddings and len(embeddings) > 0:
                             vec = embeddings[0]
                             if len(vec) == settings.EMBEDDING_DIMENSION:
+                                await _save_embedding_to_cache(cache_key, vec)
                                 return vec
             except Exception:
                 pass
@@ -171,6 +232,7 @@ async def get_embedding_vector(
         try:
             vec = await asyncio.to_thread(_get_fastembed_vector_sync, clean_text)
             if vec and len(vec) == settings.EMBEDDING_DIMENSION:
+                await _save_embedding_to_cache(cache_key, vec)
                 return vec
             if vec and len(vec) != settings.EMBEDDING_DIMENSION:
                 logger.warning(
@@ -182,7 +244,7 @@ async def get_embedding_vector(
             logger.debug("Ошибка генерации вектора FastEmbed: %s", e)
         return None
 
-    # 2. Подготовка текста для облачных эмбеддеров (маскирование PII при YELLOW или если обнаружены сущности)
+    # 4. Подготовка текста для облачных эмбеддеров (маскирование PII при YELLOW или если обнаружены сущности)
     cloud_payload_text = clean_text
     if circuit == DataCircuit.YELLOW or circuit is None:
         san_res = data_sanitizer.sanitize(clean_text)
@@ -191,7 +253,7 @@ async def get_embedding_vector(
 
     session = await get_rag_http_session()
 
-    # 3. Попытка через LiteLLM Proxy
+    # 5. Попытка через LiteLLM Proxy
     if settings.LITELLM_BASE_URL:
         try:
             url = f"{settings.LITELLM_BASE_URL.rstrip('/')}/embeddings"
@@ -205,11 +267,12 @@ async def get_embedding_vector(
                     data = await resp.json()
                     vec = data.get("data", [{}])[0].get("embedding")
                     if vec and len(vec) == settings.EMBEDDING_DIMENSION:
+                        await _save_embedding_to_cache(cache_key, vec)
                         return vec
         except Exception:
             pass
 
-    # 4. Попытка через Gemini API (если передан GEMINI_API_KEY)
+    # 6. Попытка через Gemini API (если передан GEMINI_API_KEY)
     if getattr(settings, "GEMINI_API_KEY", None):
         try:
             embed_model = getattr(settings, "EMBEDDING_MODEL", "gemini-embedding-2")
@@ -223,11 +286,12 @@ async def get_embedding_vector(
                     data = await resp.json()
                     vec = data.get("embedding", {}).get("values", [])
                     if vec and len(vec) == settings.EMBEDDING_DIMENSION:
+                        await _save_embedding_to_cache(cache_key, vec)
                         return vec
         except Exception as e:
             logger.debug("Ошибка генерации Gemini эмбеддинга: %s", e)
 
-    # 5. Локальный Fallback (Ollama / FastEmbed)
+    # 7. Локальный Fallback (Ollama / FastEmbed)
     if getattr(settings, "OLLAMA_BASE_URL", None):
         try:
             ollama_url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/embed"
@@ -246,6 +310,7 @@ async def get_embedding_vector(
                     if embeddings and len(embeddings) > 0:
                         vec = embeddings[0]
                         if len(vec) == settings.EMBEDDING_DIMENSION:
+                            await _save_embedding_to_cache(cache_key, vec)
                             return vec
         except Exception:
             pass
@@ -254,6 +319,7 @@ async def get_embedding_vector(
         vec = await asyncio.to_thread(_get_fastembed_vector_sync, clean_text)
         if vec:
             if len(vec) == settings.EMBEDDING_DIMENSION:
+                await _save_embedding_to_cache(cache_key, vec)
                 return vec
             logger.warning(
                 "Размерность вектора FastEmbed (%d) не совпадает с EMBEDDING_DIMENSION (%d). Пропуск.",

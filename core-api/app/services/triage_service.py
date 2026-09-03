@@ -32,6 +32,7 @@ class TriageService:
         service_prefix: str | None = None,
         redirect_only: bool = False,
         include_skipped: bool = False,
+        include_rag: bool = False,
         operator_id: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -136,8 +137,8 @@ class TriageService:
                     redirect_mode=redirect_only,
                 )
 
-                # 3. Если правило общее/стандартное — ищем семантическое решение в pgvector RAG
-                if decision.get("rule_type") in ("standard_in_work", None) and not decision.get("is_redirect"):
+                # 3. Если правило общее/стандартное и запрошен RAG — ищем семантическое решение в pgvector RAG
+                if include_rag and decision.get("rule_type") in ("standard_in_work", None) and not decision.get("is_redirect"):
                     kb_matches = await tr.search_knowledge_base(
                         db=db, query_text=query_text, limit=2, distance_threshold=0.70
                     )
@@ -151,7 +152,7 @@ class TriageService:
                     else:
                         decision["decision_source"] = "standard_fallback"
                 else:
-                    decision["decision_source"] = "rule_engine"
+                    decision["decision_source"] = "rule_engine" if decision.get("rule_type") != "standard_in_work" else "standard_fallback"
 
             # Флаг готовности решения AI
             has_ai_solution = bool(
