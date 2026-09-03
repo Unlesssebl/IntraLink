@@ -10,6 +10,7 @@ import {
   IconDuplicate,
   IconRedirect,
   IconWrench,
+  IconUser,
   IconPlay,
   IconPaperclip,
   IconSparkles,
@@ -97,6 +98,7 @@ export default function QueuePage({
 }: Props) {
   const [view, setView] = useState<ViewMode>('table');
   const [filterTab, setFilterTab] = useState<FilterTab>('all');
+  const [showRuleEngineOnly, setShowRuleEngineOnly] = useState(false);
   const [showAiOnly, setShowAiOnly] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [inlineStatusTicketId, setInlineStatusTicketId] = useState<string | null>(null);
@@ -123,10 +125,17 @@ export default function QueuePage({
 
   // Counts for KPI within current scope
   const countTotal = scopedTickets.length;
+  const countRuleEngine = scopedTickets.filter(t => t.hasRuleEngine).length;
   const countAiReady = scopedTickets.filter(t => t.hasAiSolution).length;
   const countDuplicates = scopedTickets.filter(t => t.isDuplicate || t.ruleType === 'duplicate_task').length;
   const countRedirects = scopedTickets.filter(t => t.isRedirect || t.ruleType?.startsWith('redirect')).length;
-  const countRepair = scopedTickets.filter(t => t.ruleType === 'hardware_repair').length;
+  const countRepair = scopedTickets.filter(
+    t =>
+      t.ruleType === 'hardware_repair' ||
+      t.templateKey === 'hardware_repair' ||
+      t.templateKey === 'bring_device_112' ||
+      t.templateKey === 'bring_pc_112'
+  ).length;
   const countWifi = scopedTickets.filter(t => t.ruleType === 'wlan_access' || t.templateKey === 'wifi_access').length;
 
   // Adaptive smart tabs: hide tabs that have 0 items in selected service scope (Marks #3)
@@ -155,10 +164,18 @@ export default function QueuePage({
   }, [availableTabs, filterTab]);
 
   const filtered = scopedTickets.filter(t => {
+    if (showRuleEngineOnly && !t.hasRuleEngine) return false;
     if (showAiOnly && !t.hasAiSolution) return false;
     if (filterTab === 'duplicates' && !t.isDuplicate && t.ruleType !== 'duplicate_task') return false;
     if (filterTab === 'redirects' && !t.isRedirect && !t.ruleType?.startsWith('redirect')) return false;
-    if (filterTab === 'repair' && t.ruleType !== 'hardware_repair') return false;
+    if (
+      filterTab === 'repair' &&
+      t.ruleType !== 'hardware_repair' &&
+      t.templateKey !== 'hardware_repair' &&
+      t.templateKey !== 'bring_device_112' &&
+      t.templateKey !== 'bring_pc_112'
+    )
+      return false;
     if (filterTab === 'wifi' && t.ruleType !== 'wlan_access' && t.templateKey !== 'wifi_access') return false;
 
     // Search with null-guards (Audit E-5)
@@ -511,6 +528,30 @@ export default function QueuePage({
 
             <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-800" />
 
+            {/* Rule Engine Fast Toggle Button */}
+            <button
+              type="button"
+              onClick={() => setShowRuleEngineOnly(prev => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer border ${
+                showRuleEngineOnly
+                  ? 'bg-blue-600 text-white border-blue-500 shadow-2xs'
+                  : 'bg-white dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 border-neutral-250 dark:border-neutral-750 hover:bg-neutral-50 dark:hover:bg-neutral-800'
+              }`}
+              title={showRuleEngineOnly ? 'Показать все доступные заявки' : 'Показать только заявки с регламентом Rule Engine'}
+            >
+              <span className={showRuleEngineOnly ? 'text-white' : 'text-blue-600 dark:text-blue-400'}>⚡</span>
+              <span>Rule Engine</span>
+              <span
+                className={`text-[11px] font-bold px-1.5 py-0.2 rounded-full tabular-nums ${
+                  showRuleEngineOnly
+                    ? 'bg-white/20 text-white'
+                    : 'bg-blue-100 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300'
+                }`}
+              >
+                {countRuleEngine}
+              </span>
+            </button>
+
             {/* AI-Ready Fast Toggle Button */}
             <button
               type="button"
@@ -523,7 +564,7 @@ export default function QueuePage({
               title={showAiOnly ? 'Показать все доступные заявки' : 'Показать только заявки с готовым решением AI'}
             >
               <IconSparkles size={13} className={showAiOnly ? 'text-white' : 'text-purple-600 dark:text-purple-400'} />
-              <span>С решением AI</span>
+              <span>AI Решение</span>
               <span
                 className={`text-[11px] font-bold px-1.5 py-0.2 rounded-full tabular-nums ${
                   showAiOnly
@@ -778,6 +819,17 @@ export default function QueuePage({
                             {ticket.title}
                           </span>
 
+                          {/* Rule Engine Badge */}
+                          {ticket.hasRuleEngine && (
+                            <span
+                              className="px-1.5 py-0.2 rounded text-[10px] font-semibold border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 inline-flex items-center gap-1 shrink-0"
+                              title="Сработало регламентное правило Rule Engine"
+                            >
+                              <span className="text-[10px]">⚡</span>
+                              <span>Rule Engine</span>
+                            </span>
+                          )}
+
                           {/* AI Ready Solution Badge */}
                           {ticket.hasAiSolution && (
                             <span
@@ -802,7 +854,10 @@ export default function QueuePage({
                               <span>редирект</span>
                             </span>
                           )}
-                          {ticket.ruleType === 'hardware_repair' && (
+                          {(ticket.ruleType === 'hardware_repair' ||
+                            ticket.templateKey === 'hardware_repair' ||
+                            ticket.templateKey === 'bring_device_112' ||
+                            ticket.templateKey === 'bring_pc_112') && (
                             <span className={`${smartTagClass} inline-flex items-center gap-1`}>
                               <IconWrench size={11} className="text-neutral-500 shrink-0" />
                               <span>в ремонт</span>
@@ -812,6 +867,36 @@ export default function QueuePage({
                             <span className={`${smartTagClass} inline-flex items-center gap-1`}>
                               <IconWifi size={11} className="text-neutral-500 shrink-0" />
                               <span>wi-fi</span>
+                            </span>
+                          )}
+                          {(ticket.ruleType === '1c_cache' || ticket.templateKey === '1c_cache') && (
+                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
+                              <span>1с</span>
+                            </span>
+                          )}
+                          {(ticket.ruleType === 'printer_spooler' ||
+                            ticket.templateKey === 'printer_install' ||
+                            ticket.templateKey === 'printer_offline' ||
+                            ticket.templateKey === 'printer_ip_clarify') && (
+                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
+                              <span>печать</span>
+                            </span>
+                          )}
+                          {(ticket.ruleType === 'credentials_reset' ||
+                            ticket.templateKey === 'ad_password_reset' ||
+                            ticket.templateKey === 'password_reset_call') && (
+                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
+                              <span>пароль</span>
+                            </span>
+                          )}
+                          {(ticket.ruleType === 'user_creation' ||
+                            ticket.templateKey === 'user_created' ||
+                            ticket.templateKey === 'account_details_clarify' ||
+                            ticket.templateKey === 'account_pc_occupied' ||
+                            ticket.serviceId === 53) && (
+                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
+                              <IconUser size={11} className="text-neutral-500 shrink-0" />
+                              <span>создание уз</span>
                             </span>
                           )}
                           {ticket.hasKbMatches && (

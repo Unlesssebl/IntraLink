@@ -170,6 +170,28 @@ async def get_task_details_card(
     return card
 
 
+@router.post("/tasks/{task_id}/reanalyze", status_code=status.HTTP_200_OK)
+async def reanalyze_task_endpoint(
+    task_id: int,
+    service_auth_b64: str = Depends(get_service_auth_b64),
+    operator: str = Depends(verify_admin_or_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Принудительно сбрасывает кэш и перезапускает RuleEngine/RAG/LLM анализ по заявке."""
+    card = await TriageService.get_task_card_details(
+        service_auth_b64=service_auth_b64,
+        db=db,
+        task_id=task_id,
+        force=True,
+    )
+    if not card:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Заявка #{task_id} не найдена в IntraService.",
+        )
+    return card
+
+
 def extract_operator_user_id(
     authorization: str | None = None,
     admin_session: str | None = None,
@@ -389,3 +411,30 @@ async def rag_sync_endpoint(
         days=payload.days,
         limit=payload.limit,
     )
+
+
+@router.post("/cache/purge", status_code=status.HTTP_200_OK)
+async def purge_triage_cache_endpoint(
+    operator: str = Depends(verify_admin_or_api_key),
+):
+    """Глобальный сброс кэша вердиктов и резолюций AI/RuleEngine в Redis."""
+    redis = get_redis_client()
+    try:
+        keys = await redis.keys("ai:resolution:*")
+        deleted_count = 0
+        if keys:
+            deleted_count = await redis.delete(*keys)
+        TriageService._catalog_cache = {}
+        TriageService._catalog_cache_ts = 0.0
+        return {
+            "status": "ok",
+            "deleted_verdicts": deleted_count,
+            "message": "Кэш вердиктов и каталога успешно сброшен",
+        }
+    except Exception as e:
+        logger.exception("Ошибка при очистке кэша вердиктов: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка сброса кэша: {e}",
+        )
+

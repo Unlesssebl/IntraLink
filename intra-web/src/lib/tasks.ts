@@ -245,9 +245,9 @@ export function mapTaskToTicket(task: TaskItem): Ticket {
     priority,
     category: mapCategory(task.service_name || task.target_service_name),
     serviceId: task.service_id,
-    serviceName: task.service_name || '1-я линия техподдержки',
-    rootServiceId: task.root_service_id,
-    rootServiceName: task.root_service_name || 'Общие вопросы',
+    serviceName: task.service_name || task.target_service_name || 'Общие вопросы',
+    rootServiceId: (task as any).root_service_id ?? task.root_service_id ?? null,
+    rootServiceName: (task as any).root_service_name || task.root_service_name || 'Общие вопросы',
     servicePath: task.service_path,
     assigneeId: null,
     requesterName: task.creator || 'Не указан',
@@ -279,13 +279,16 @@ export function mapTaskToTicket(task: TaskItem): Ticket {
     aiPlan,
     circuit: (task as any).circuit || 'green',
     hasKbMatches: Boolean((task as any).kb_matches && (task as any).kb_matches.length > 0),
+    hasRuleEngine: Boolean(
+      (task as any).is_duplicate ||
+      task.is_redirect ||
+      (task.rule_type && task.rule_type !== 'standard_in_work') ||
+      (task.template_key && task.template_key !== 'in_work_standard')
+    ),
     hasAiSolution: Boolean(
       (task as any).has_ai_solution ||
       ((task as any).kb_matches && (task as any).kb_matches.length > 0) ||
-      (task as any).is_duplicate ||
-      task.is_redirect ||
-      task.rule_type === 'wlan_access' ||
-      task.rule_type === 'hardware_repair'
+      Boolean((task as any).ai_suggested_resolution)
     ),
   };
 }
@@ -326,9 +329,11 @@ export async function fetchQueue(filterId = 984, limit = 50, includeRag = false)
         target_service_name: action.target_service_name || '',
         is_redirect: action.is_redirect || false,
         has_attachments: item.has_attachments || false,
-        attachments: t._attachments_list || [],
+        attachments: (item.attachments || t._attachments_list || []).map(normalizeAttachmentItem),
         expenses: action.expenses || 10,
         score: action.score || 8,
+        executors: item.executors || t.Executors || t.Executor || '',
+        executor_ids: item.executor_ids || t.ExecutorIds || (t.ExecutorId ? [t.ExecutorId] : []),
         is_duplicate: item.is_duplicate || false,
         duplicate_info: item.duplicate_info || null,
         telemetry: item.telemetry || null,
@@ -338,13 +343,57 @@ export async function fetchQueue(filterId = 984, limit = 50, includeRag = false)
     return item;
   });
 
+  const rootServices: Array<{ id: number; name: string }> = Array.isArray(data?.root_services)
+    ? data.root_services.map((r: any) => ({ id: r.id, name: r.name }))
+    : [];
+
+  const subservicesByRoot: Record<number, Array<{ id: number; name: string; parent_id?: number }>> = {};
+  if (Array.isArray(data?.services_catalog)) {
+    for (const s of data.services_catalog) {
+      const rootId = s.root_id;
+      if (rootId && s.id !== rootId) {
+        if (!subservicesByRoot[rootId]) {
+          subservicesByRoot[rootId] = [];
+        }
+        subservicesByRoot[rootId].push({
+          id: s.id,
+          name: s.name,
+          parent_id: s.parent_id,
+        });
+      }
+    }
+  }
+
   const tickets = normalizedTasks.map(mapTaskToTicket);
   return {
     tickets,
     rawTasks: normalizedTasks,
     total: data.total_open || tickets.length,
-    rootServices: [],
-    subservicesByRoot: {},
+    rootServices,
+    subservicesByRoot,
+  };
+}
+
+export function normalizeAttachmentItem(item: any, idx: number = 0) {
+  if (typeof item === 'string') {
+    if (item.includes('|')) {
+      const [idPart, namePart] = item.split('|');
+      const numId = parseInt(idPart.trim(), 10);
+      return {
+        id: !isNaN(numId) ? numId : idx + 1,
+        FileName: namePart.trim(),
+        name: namePart.trim(),
+      };
+    }
+    return { id: idx + 1, FileName: item.trim(), name: item.trim() };
+  }
+  const id = item.Id ?? item.id ?? item.FileId;
+  const name = item.FileName ?? item.name ?? `Вложение ${idx + 1}`;
+  return {
+    ...item,
+    id: id ? Number(id) : idx + 1,
+    FileName: name,
+    name: name,
   };
 }
 
@@ -353,8 +402,7 @@ export async function fetchDiagnostics(host: string): Promise<HostDiagnostics> {
   return apiFetch<HostDiagnostics>(`/admin/api/diag/${encodeURIComponent(host)}`);
 }
 
-export async function fetchTaskDetails(taskId: number): Promise<TaskDetails> {
-  const data = await apiFetch<any>(`/api/v1/triage/tasks/${taskId}`);
+function normalizeTaskDetailsData(data: any): TaskDetails {
   const task = data?.task || {};
 
   // Извлекаем и нормализуем историю/комментарии
@@ -369,7 +417,7 @@ export async function fetchTaskDetails(taskId: number): Promise<TaskDetails> {
   if (rawAttachments && typeof rawAttachments === 'object' && !Array.isArray(rawAttachments)) {
     rawAttachments = rawAttachments.Attachment || rawAttachments.Attachments || rawAttachments.items || [];
   }
-  const attachments = Array.isArray(rawAttachments) ? rawAttachments : [];
+  const attachments = (Array.isArray(rawAttachments) ? rawAttachments : []).map(normalizeAttachmentItem);
 
   return {
     ...data,
@@ -383,6 +431,24 @@ export async function fetchTaskDetails(taskId: number): Promise<TaskDetails> {
     circuit_reason: data?.circuit_reason,
     requires_sanitization: data?.requires_sanitization,
   } as TaskDetails;
+}
+
+export async function fetchTaskDetails(taskId: number): Promise<TaskDetails> {
+  const data = await apiFetch<any>(`/api/v1/triage/tasks/${taskId}`);
+  return normalizeTaskDetailsData(data);
+}
+
+export async function reanalyzeTask(taskId: number): Promise<TaskDetails> {
+  const data = await apiFetch<any>(`/api/v1/triage/tasks/${taskId}/reanalyze`, {
+    method: 'POST',
+  });
+  return normalizeTaskDetailsData(data);
+}
+
+export async function purgeTriageCache(): Promise<{ deleted_verdicts: number; message: string }> {
+  return apiFetch<{ deleted_verdicts: number; message: string }>('/api/v1/triage/cache/purge', {
+    method: 'POST',
+  });
 }
 
 export async function fetchTicketSummary(
@@ -555,25 +621,6 @@ export async function submitCommand(payload: {
   });
 }
 
-export async function confirmCommand(
-  jobId: string,
-  decision: 'approve' | 'reject',
-  reason?: string
-): Promise<{ status: string; job_id: string; decision: string }> {
-  return apiFetch(`/api/v1/commands/${jobId}/confirm`, {
-    method: 'POST',
-    body: JSON.stringify({ decision, reason }),
-  });
-}
-
-export async function cancelCommand(
-  jobId: string,
-  reason?: string
-): Promise<{ status: string; job_id: string }> {
-  return apiFetch(`/api/v1/commands/${jobId}/cancel?reason=${encodeURIComponent(reason || 'Отменено')}`, {
-    method: 'POST',
-  });
-}
 
 export async function getExecutionJobStatus(jobId: string): Promise<{
   job_id: string;
@@ -587,47 +634,6 @@ export async function getExecutionJobStatus(jobId: string): Promise<{
   return apiFetch(`/api/v1/commands/${jobId}`);
 }
 
-export function streamJobEvents(
-  jobId: string,
-  callbacks: {
-    onProgress?: (data: { phase: string; pct: number; detail?: string }) => void;
-    onConfirmRequired?: (data: { prompt: string; details: any }) => void;
-    onResult?: (data: { status: string; message?: string; data?: any }) => void;
-    onError?: (err: any) => void;
-  }
-): () => void {
-  const es = new EventSource(`/api/v1/events/stream?job_id=${jobId}`);
-
-  es.addEventListener('progress', (e) => {
-    try {
-      const parsed = JSON.parse(e.data);
-      if (callbacks.onProgress) callbacks.onProgress(parsed.data || parsed);
-    } catch {}
-  });
-
-  es.addEventListener('confirm_required', (e) => {
-    try {
-      const parsed = JSON.parse(e.data);
-      if (callbacks.onConfirmRequired) callbacks.onConfirmRequired(parsed.data || parsed);
-    } catch {}
-  });
-
-  es.addEventListener('result', (e) => {
-    try {
-      const parsed = JSON.parse(e.data);
-      if (callbacks.onResult) callbacks.onResult(parsed.data || parsed);
-      es.close();
-    } catch {}
-  });
-
-  es.addEventListener('error', (err) => {
-    if (callbacks.onError) callbacks.onError(err);
-  });
-
-  return () => {
-    es.close();
-  };
-}
 
 export async function pollExecutionJob(
   jobId: string,
@@ -678,12 +684,6 @@ export async function fetchDomainAuth(): Promise<{ is_configured: boolean; usern
   return apiFetch('/admin/api/domain-auth');
 }
 
-export async function saveDomainAuth(payload: { username: string; password?: string }): Promise<{ status: string }> {
-  return apiFetch('/admin/api/domain-auth', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
 
 export async function fetchTelegramUsers(): Promise<{ users: Array<{ tg_user_id: number; username?: string; full_name?: string; is_active: boolean }> }> {
   return apiFetch('/admin/api/users');

@@ -597,14 +597,14 @@ class ActiveDirectoryExecutor:
         - Организация (Categories, CategoryIds или компания заявителя)
         """
         meta = task.get("_field_meta", {}).get("raw", {}) if isinstance(task.get("_field_meta"), dict) else {}
-        surname = (task.get("Field1069") or meta.get("1069") or "").strip()
-        name = (task.get("Field1070") or meta.get("1070") or "").strip()
-        patronymic = (task.get("Field1071") or meta.get("1071") or "").strip()
-        title = (task.get("Field1073") or meta.get("1073") or "").strip()
-        phone = (task.get("Field1075") or meta.get("1075") or "").strip()
-        dept = (task.get("Field1078") or meta.get("1078") or "").strip()
+        surname = (task.get("Field1057") or meta.get("1057") or task.get("Field1069") or meta.get("1069") or "").strip()
+        name = (task.get("Field1058") or meta.get("1058") or task.get("Field1070") or meta.get("1070") or "").strip()
+        patronymic = (task.get("Field1059") or meta.get("1059") or task.get("Field1071") or meta.get("1071") or "").strip()
+        title = (task.get("Field1065") or meta.get("1065") or task.get("Field1073") or meta.get("1073") or "").strip()
+        phone = (task.get("Field1066") or meta.get("1066") or task.get("Field1075") or meta.get("1075") or "").strip()
+        dept = (task.get("Field1064") or meta.get("1064") or task.get("Field1078") or meta.get("1078") or "").strip()
         room = (task.get("Field1079") or meta.get("1079") or "").strip()
-        pc_name = (task.get("Field1120") or meta.get("1120") or "").strip()
+        pc_name = (task.get("Field1068") or meta.get("1068") or task.get("Field1120") or meta.get("1120") or "").strip()
 
         # Fallback: парсинг из текста и темы задачи
         if not (surname and name):

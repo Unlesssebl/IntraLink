@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +14,7 @@ from app.services import intraservice
 from app.services.ai import RoutingMetadata, data_sanitizer
 from app.services.deduplication import DuplicateDetector
 from app.services.rules.catalog import (
+    ROOT_SERVICES,
     get_root_number_for_service_id,
 )
 
@@ -22,8 +24,62 @@ logger = logging.getLogger("core_api.services.triage_service")
 class TriageService:
     """Сервис бизнес-логики и оркестрации триажа заявок Helpdesk."""
 
-    @staticmethod
+    _catalog_cache: dict[int, dict[str, Any]] = {}
+    _catalog_cache_ts: float = 0.0
+
+    @classmethod
+    async def get_service_catalog_map(cls, service_auth_b64: str) -> dict[int, dict[str, Any]]:
+        """Кэширует справочник сервисов IntraService (ID -> {Name, RootNum, RootName, RootId})."""
+        now = time.monotonic()
+        if cls._catalog_cache and (now - cls._catalog_cache_ts < 300.0):
+            return cls._catalog_cache
+        try:
+            raw_services = await intraservice.get_services(service_auth_b64) or []
+            if isinstance(raw_services, dict):
+                services = raw_services.get("Services") or []
+            elif isinstance(raw_services, list):
+                services = raw_services
+            else:
+                services = []
+
+            root_id_to_num = {v["id"]: k for k, v in ROOT_SERVICES.items()}
+
+            cat_map: dict[int, dict[str, Any]] = {}
+            for s in services:
+                if not isinstance(s, dict):
+                    continue
+                sid = s.get("Id")
+                sname = s.get("Name")
+                parent_id = s.get("ParentId")
+                if sid:
+                    root_num = get_root_number_for_service_id(sid)
+                    if not root_num and parent_id:
+                        root_num = get_root_number_for_service_id(parent_id) or root_id_to_num.get(parent_id)
+
+                    root_info = ROOT_SERVICES.get(root_num) if root_num else None
+                    if not root_info and parent_id and parent_id in root_id_to_num:
+                        root_num = root_id_to_num[parent_id]
+                        root_info = ROOT_SERVICES.get(root_num)
+
+                    cat_map[sid] = {
+                        "id": sid,
+                        "name": sname,
+                        "parent_id": parent_id,
+                        "root_num": root_num,
+                        "root_id": root_info.get("id") if root_info else (parent_id or sid),
+                        "root_name": root_info.get("name") if root_info else (sname if not parent_id else "Общие вопросы"),
+                    }
+            if cat_map:
+                cls._catalog_cache = cat_map
+                cls._catalog_cache_ts = now
+            return cls._catalog_cache
+        except Exception as e:
+            logger.warning("Ошибка получения справочника сервисов IntraService: %s", e)
+            return cls._catalog_cache or {}
+
+    @classmethod
     async def prepare_triage_batch(
+        cls,
         service_auth_b64: str,
         db: AsyncSession,
         filter_id: int = 984,
@@ -70,6 +126,8 @@ class TriageService:
             if t.get("Id") not in skipped_ids and t.get("StatusId") not in (29, 30)
         ]
 
+        catalog_map = await cls.get_service_catalog_map(service_auth_b64)
+
         # Детекция дубликатов
         detector = DuplicateDetector()
         all_duplicates = detector.find_duplicates(active_tasks)
@@ -86,7 +144,7 @@ class TriageService:
             for t in active_tasks:
                 s_id = t.get("ServiceId")
                 root_num = get_root_number_for_service_id(s_id)
-                s_name = (t.get("ServiceName") or "").lower()
+                s_name = (t.get("ServiceName") or catalog_map.get(s_id, {}).get("name") or "").lower()
                 if root_num and root_num == p_clean:
                     filtered.append(t)
                 elif p_clean.lower() in s_name:
@@ -180,6 +238,13 @@ class TriageService:
                 pcs = extract_pc_names_from_text(t["Data"])
                 if pcs:
                     pc_name = pcs[0]
+
+            s_id = t.get("ServiceId")
+            s_info = catalog_map.get(s_id, {})
+            resolved_service_name = t.get("ServiceName") or s_info.get("name") or "Общие вопросы"
+            root_service_id = s_info.get("root_id")
+            root_service_name = s_info.get("root_name") or "Общие вопросы"
+
             result_items.append({
                 "task": t,
                 "task_id": t_id,
@@ -187,14 +252,19 @@ class TriageService:
                 "created": t.get("Created"),
                 "status_id": t.get("StatusId"),
                 "status_name": t.get("StatusName"),
-                "service_id": t.get("ServiceId"),
-                "service_name": t.get("ServiceName"),
+                "service_id": s_id,
+                "service_name": resolved_service_name,
+                "root_service_id": root_service_id,
+                "root_service_name": root_service_name,
                 "creator": t.get("Creator"),
                 "creator_phone": meta.get("phone") or t.get("CreatorPhone") or "—",
+                "executors": t.get("Executors") or t.get("Executor") or "",
+                "executor_ids": t.get("ExecutorIds") or ([t["ExecutorId"]] if t.get("ExecutorId") else []),
                 "pc_name": pc_name,
                 "room": meta.get("room") or "",
                 "has_attachments": t.get("_has_attachments", False),
                 "attachments_count": len(t.get("_attachments_list", [])),
+                "attachments": t.get("_attachments_list", []),
                 "suggested_action": decision,
                 "is_duplicate": is_dup,
                 "duplicate_info": dup_info,
@@ -212,13 +282,20 @@ class TriageService:
             "page": page,
             "tasks": result_items,
             "duplicates": all_duplicates[:10],
+            "root_services": [
+                {"id": v["id"], "name": v["name"], "num": k}
+                for k, v in sorted(ROOT_SERVICES.items())
+            ],
+            "services_catalog": list(catalog_map.values()),
         }
 
-    @staticmethod
+    @classmethod
     async def get_task_card_details(
+        cls,
         service_auth_b64: str,
         db: AsyncSession,
         task_id: int,
+        force: bool = False,
     ) -> dict[str, Any] | None:
         """
         Возвращает расширенную карточку задачи с нормализацией, историей переписки,
@@ -229,6 +306,16 @@ class TriageService:
         task = await intraservice.get_single_task(service_auth_b64, task_id)
         if not task:
             return None
+
+        # Обогащаем имя сервиса из каталога
+        catalog_map = await cls.get_service_catalog_map(service_auth_b64)
+        s_id = task.get("ServiceId")
+        if s_id:
+            s_info = catalog_map.get(s_id, {})
+            if not task.get("ServiceName") and s_info.get("name"):
+                task["ServiceName"] = s_info["name"]
+            task["RootServiceId"] = s_info.get("root_id")
+            task["RootServiceName"] = s_info.get("root_name")
 
         raw_history = await intraservice.get_task_lifetime(service_auth_b64, task_id) or []
         if isinstance(raw_history, dict):
@@ -265,12 +352,20 @@ class TriageService:
         ai_resolution = None
         redis = tr.get_redis_client()
         cache_key = f"ai:resolution:{task_id}:{len(history)}"
-        try:
-            cached_res = await redis.get(cache_key)
-            if cached_res:
-                ai_resolution = cached_res
-        except Exception:
-            pass
+        if force:
+            try:
+                keys = await redis.keys(f"ai:resolution:{task_id}:*")
+                if keys:
+                    await redis.delete(*keys)
+            except Exception:
+                pass
+        else:
+            try:
+                cached_res = await redis.get(cache_key)
+                if cached_res:
+                    ai_resolution = cached_res
+            except Exception:
+                pass
 
         if ai_resolution is None and not is_redirect and decision.get("rule_type") != "duplicate_task":
             ai_resolution = await tr.synthesize_triage_resolution(
@@ -278,6 +373,7 @@ class TriageService:
                 kb_matches=kb_matches,
                 telemetry=telemetry,
                 circuit=circuit_dec.circuit,
+                rule_decision=decision,
             )
             if ai_resolution:
                 try:

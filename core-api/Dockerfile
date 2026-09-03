@@ -23,6 +23,7 @@ ENV PYTHONPATH="/app"
 # Установка системных зависимостей
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 # Копирование и установка зависимостей Python

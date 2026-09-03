@@ -139,9 +139,10 @@ async def verify_admin_or_api_key(
     ),
     authorization: str | None = Header(None, alias="Authorization"),
     admin_session: str | None = Cookie(None),
+    token_query: str | None = Query(None, alias="token"),
 ) -> str:
     """
-    Универсальная зависимость: принимает либо сессию администратора (JWT Header/Cookie),
+    Универсальная зависимость: принимает либо сессию администратора (JWT Header/Cookie/Query token),
     либо API-ключ (X-Bot-Api-Key или query api_key).
     """
     token = None
@@ -151,6 +152,8 @@ async def verify_admin_or_api_key(
             token = bearer_val
     elif admin_session:
         token = admin_session.strip()
+    elif token_query:
+        token = token_query.strip()
 
     if token:
         for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
@@ -187,10 +190,11 @@ class OperatorContext(BaseModel):
 async def get_service_auth_b64(
     authorization: str | None = Header(None, alias="Authorization"),
     admin_session: str | None = Cookie(None),
+    token_query: str | None = Query(None, alias="token"),
 ) -> str:
     """
     Получает зашифрованный токен авторизации:
-    1. Если запрос от авторизованного оператора (Authorization Header или Cookie admin_session) — берем его актуальный зашифрованный токен из Redis.
+    1. Если запрос от авторизованного оператора (Authorization Header, Cookie admin_session или Query ?token=...) — берем его актуальный зашифрованный токен из Redis.
     2. Иначе используем глобальный сервисный аккаунт (из ENV или Redis).
     """
     import base64
@@ -206,6 +210,8 @@ async def get_service_auth_b64(
             token = bearer_val
     elif admin_session:
         token = admin_session.strip()
+    elif token_query:
+        token = token_query.strip()
 
     # Проверяем, есть ли активная сессия оператора
     if token:

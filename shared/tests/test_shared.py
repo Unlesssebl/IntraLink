@@ -41,3 +41,15 @@ def test_json_utils():
     assert isinstance(serialized, str)
     deserialized = json_loads(serialized)
     assert deserialized == data
+
+
+def test_extract_pc_names_from_text_spaces_and_noise():
+    from shared.normalizer import extract_pc_names_from_text
+    raw = "KMK 0090 ISMAGILOW, NTEMW1070 GANIEW, KMK 0091 HISMATOW, KPK 0080 STEPANOW"
+    pcs = extract_pc_names_from_text(raw)
+    assert pcs == ["KMK0090", "NTEMW1070", "KMK0091", "KPK0080"]
+
+    raw2 = "KZM0123 (LOGIN: NTEMW0831"
+    pcs2 = extract_pc_names_from_text(raw2)
+    assert pcs2 == ["KZM0123", "NTEMW0831"]
+

@@ -15,6 +15,7 @@ class RuleDecision:
     expenses: int
     comment: str
     is_redirect: bool = False
+    rule_type: str | None = None
     target_service_name: str = ""
     current_root: str | None = None
     target_root: str | None = None
@@ -27,6 +28,7 @@ class RuleDecision:
     def to_dict(self) -> dict[str, Any]:
         res: dict[str, Any] = {
             "template_key": self.template_key,
+            "rule_type": self.rule_type or self.template_key,
             "name": self.name,
             "status_id": self.status_id,
             "status_name": self.status_name,

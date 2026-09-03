@@ -33,7 +33,7 @@ class PhysicalDeliveryRule(BaseRule):
             "принести системный", "принести в 112", "принести устройство", "принесу ноутбук"
         ])
         if is_direct_delivery:
-            is_pc = any(w in user_text for w in ["пк", "компьютер", "системн", "блок", "ноутбук"])
+            is_pc = any(w in user_text for w in ["пк", "компьютер", "комп", "системн", "системник", "блок", "ноутбук", "моноблок"])
             key = "bring_pc_112" if is_pc else "bring_device_112"
             comment = (
                 "Ждем вас в АБК 3, каб. 112 с ПК.\nЕсли возникнут вопросы, напишите в комментариях к этой заявке."
@@ -42,6 +42,7 @@ class PhysicalDeliveryRule(BaseRule):
             )
             return RuleDecision(
                 template_key=key,
+                rule_type="hardware_repair",
                 name="Ждем в АБК-3 с ПК" if is_pc else "Принести устройство в каб. 112 (Диагностика/Ремонт)",
                 status_id=48,
                 status_name="Ожидание устройства",
@@ -57,9 +58,10 @@ class PhysicalDeliveryRule(BaseRule):
             "видеокарт", "материнск", "блок питания", "кулер", "замена термопасты"
         ])
         if is_hardware_issue:
-            is_pc = any(w in user_text for w in ["пк", "компьютер", "системн", "блок", "ноутбук"])
+            is_pc = any(w in user_text for w in ["пк", "компьютер", "комп", "системн", "системник", "блок", "ноутбук", "моноблок"])
             return RuleDecision(
                 template_key="hardware_repair" if is_pc else "bring_device_112",
+                rule_type="hardware_repair",
                 name="Обслуживание и ремонт ПК в 112 каб." if is_pc else "Принести устройство в каб. 112 (Диагностика/Ремонт)",
                 status_id=48,
                 status_name="Ожидание устройства",
@@ -104,11 +106,31 @@ class PhysicalDeliveryRule(BaseRule):
             device_name = "ноутбук" if is_notebook else "системный блок"
             return RuleDecision(
                 template_key="hardware_repair",
+                rule_type="hardware_repair",
                 name="Обслуживание и ремонт ПК в 112 каб.",
                 status_id=48,
                 status_name="Ожидание устройства",
                 expenses=10,
                 comment=f"Приносите {device_name} в АБК 3, 112 каб. на диагностику, обслуживание и настройку. О времени визита вы можете написать в комментариях к этой заявке.",
             )
+
+        # 4. Семантический шлюз (FastEmbed Semantic Anchors) для синонимов, сленга и контекста
+        try:
+            from .semantic_classifier import classify_semantic_intent
+            intent, score = classify_semantic_intent(user_text, threshold=0.75)
+            if intent in ("hardware_repair", "bring_device_112"):
+                is_notebook = any(w in user_text for w in ["ноутбук", "ноутах", "laptop"])
+                device_name = "ноутбук" if is_notebook else "системный блок"
+                return RuleDecision(
+                    template_key="hardware_repair" if intent == "hardware_repair" else "bring_device_112",
+                    rule_type="hardware_repair",
+                    name="Обслуживание и ремонт ПК в 112 каб." if intent == "hardware_repair" else "Принести устройство в каб. 112 (Диагностика/Ремонт)",
+                    status_id=48,
+                    status_name="Ожидание устройства",
+                    expenses=10,
+                    comment=f"Приносите {device_name} в АБК 3, 112 каб. на диагностику, обслуживание и настройку. О времени визита вы можете написать в комментариях к этой заявке.",
+                )
+        except Exception:
+            pass
 
         return None

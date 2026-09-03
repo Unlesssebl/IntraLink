@@ -39,16 +39,50 @@ def parse_task_datetime(dt_str: str | None) -> datetime | None:
         return None
 
 
+def extract_task_hardware(task: dict[str, Any]) -> tuple[str, str]:
+    """
+    Извлекает имя ПК и инвентарный номер из задачи (кастомные поля, парсер, сырые данные).
+    Возвращает (pc_name, inventory_number) в верхнем регистре.
+    """
+    meta = task.get("_field_meta") or {}
+    parsed = task.get("_parsed_fields") or {}
+    raw_data = task.get("Data") or ""
+    name = task.get("Name") or ""
+    desc = task.get("Description") or ""
+
+    # 1. ПК
+    pc = (meta.get("pc_name") or task.get("pc_name") or task.get("Host") or "").upper().strip()
+
+    # 2. Инвентарный номер
+    inv = (meta.get("inventory_number") or parsed.get("Оборудование / Инвентарный номер") or "").upper().strip()
+    if not inv and raw_data:
+        m = re.search(r'(?:инв|inv)[^\w\d№]*([0-9a-zа-яё\-]{3,15})', raw_data, re.I)
+        if m:
+            inv = m.group(1).upper()
+    if not inv:
+        m = re.search(r'(?:инв\.?\s*(?:№|номер)?\s*([0-9a-zа-яё\-]{3,15}))', f"{name} {desc}", re.I)
+        if m:
+            inv = m.group(1).upper()
+
+    return pc, inv
+
+
 class DuplicateDetector:
     """
     Интеллектуальный анализатор и детектор заявок-дубликатов в очереди IntraService.
     Обнаруживает:
-    1. Точные дубликаты (Дабл-клики / одинаковый текст и заявитель).
-    2. Семантические дубликаты по той же проблеме/приложению.
-    3. Аппаратные дубликаты (тот же ПК / инвентарник / МФУ).
+    1. Точные дубликаты (Дабл-клики / одинаковый текст и заявитель в пределах 24 часов).
+    2. Семантические дубликаты по тому же ПК / оборудованию.
+    3. Коллективные дубликаты на один ПК от разных сотрудников.
+
+    Защитные инварианты (Negative Constraints / Hard Veto):
+    - РАЗНЫЕ ПК: если в обеих заявках указаны разные ПК, они НЕ могут быть дубликатами.
+    - РАЗНЫЕ ИНВЕНТАРНЫЕ НОМЕРА: если указаны разные инвентарники, это разное оборудование.
+    - АКТЫ ТЕХНИЧЕСКОГО ОСВИДЕТЕЛЬСТВОВАНИЯ / СПИСАНИЯ: шаблонные массовые заявки на разные единицы техники.
+    - ВРЕМЕННОЙ ГОРИЗОНТ: заявки с разницей более 24 часов не считаются автоматическими дубликатами заявителя.
     """
 
-    def __init__(self, exact_threshold: float = 0.80, host_threshold: float = 0.60):
+    def __init__(self, exact_threshold: float = 0.85, host_threshold: float = 0.70):
         self.exact_threshold = exact_threshold
         self.host_threshold = host_threshold
 
@@ -81,8 +115,7 @@ class DuplicateDetector:
             m_name = master.get("Name") or ""
             m_desc = master.get("Description") or ""
             m_text = f"{m_name} {m_desc}".strip()
-            m_meta = master.get("_field_meta") or {}
-            m_pc = (m_meta.get("pc_name") or "").upper().strip()
+            m_pc, m_inv = extract_task_hardware(master)
             m_srv_id = master.get("ServiceId")
             m_created = parse_task_datetime(master.get("Created"))
 
@@ -97,51 +130,99 @@ class DuplicateDetector:
                 c_name = candidate.get("Name") or ""
                 c_desc = candidate.get("Description") or ""
                 c_text = f"{c_name} {c_desc}".strip()
-                c_meta = candidate.get("_field_meta") or {}
-                c_pc = (c_meta.get("pc_name") or "").upper().strip()
+                c_pc, c_inv = extract_task_hardware(candidate)
                 c_srv_id = candidate.get("ServiceId")
                 c_created = parse_task_datetime(candidate.get("Created"))
 
-                # Вычисляем сходство
+                # -------------------------------------------------------------
+                # 1. ЖЕСТКИЕ ЗАЩИТНЫЕ ОГРАНИЧЕНИЯ (HARD VETO)
+                # -------------------------------------------------------------
+
+                # VETO 1: Разные рабочие станции (ПК)
+                # Если в обеих заявках указано имя ПК и они не совпадают — это РАЗНЫЕ компьютеры!
+                if m_pc and c_pc and m_pc != c_pc:
+                    continue
+
+                # VETO 2: Разные инвентарные номера
+                # Если указаны разные инвентарные номера — это РАЗНЫЕ единицы оборудования!
+                if m_inv and c_inv and m_inv != c_inv:
+                    continue
+
+                # Вычисляем временную разницу
+                time_diff_hours = None
+                if m_created and c_created:
+                    time_diff_hours = abs((c_created - m_created).total_seconds()) / 3600.0
+
+                # VETO 3: Шаблоны массовых документов (Акты тех. освидетельствования / списание / дефектовка)
+                # Сотрудники создают отдельные заявки на каждый монитор, системник или ИБП.
+                is_batch_act = any(
+                    kw in m_name.lower() or kw in c_name.lower()
+                    for kw in ("акт технического", "акт тех", "освидетельствован", "дефектовк", "списани")
+                )
+                if is_batch_act:
+                    # При актах освидетельствования дубликатом может быть ТОЛЬКО дабл-клик
+                    # на ТОЧНО ТАКОЕ ЖЕ оборудование в течение 30 минут
+                    has_same_asset = (m_pc and c_pc and m_pc == c_pc) or (m_inv and c_inv and m_inv == c_inv)
+                    is_quick_double_click = (
+                        time_diff_hours is not None
+                        and time_diff_hours <= 0.5
+                        and calculate_text_similarity(m_text, c_text) >= 0.95
+                    )
+                    if not (has_same_asset and is_quick_double_click):
+                        continue
+
+                # VETO 4: Временной горизонт
+                # Если между заявками прошло более 24 часов и имя ПК не подтверждено как идентичное,
+                # это не может быть ошибочной повторной отправкой (дабл-кликом).
+                if time_diff_hours is not None and time_diff_hours > 24.0:
+                    same_confirmed_pc = bool(m_pc and c_pc and m_pc == c_pc)
+                    if not same_confirmed_pc:
+                        continue
+                    # Если даже на один ПК, но прошло более 72 часов (3 дня) — это отдельный инцидент
+                    if time_diff_hours > 72.0:
+                        continue
+
+                # -------------------------------------------------------------
+                # 2. ОЦЕНКА СХОДСТВА ТЕКСТА И КОНТЕКСТА
+                # -------------------------------------------------------------
                 sim_ratio = calculate_text_similarity(m_text, c_text)
                 same_creator = (m_creator_id and m_creator_id == c_creator_id) or (m_creator and m_creator == c_creator)
                 same_pc = bool(m_pc and c_pc and m_pc == c_pc)
                 same_service = (m_srv_id and m_srv_id == c_srv_id)
 
-                time_diff_hours = None
-                if m_created and c_created:
-                    time_diff_hours = abs((c_created - m_created).total_seconds()) / 3600.0
+                # Проверка описания: если в обеих заявках есть описание, оно не должно противоречить
+                desc_sim = 1.0
+                if len(m_desc.strip()) > 5 and len(c_desc.strip()) > 5:
+                    desc_sim = calculate_text_similarity(m_desc, c_desc)
 
                 is_dup = False
                 reason = ""
                 confidence = 0
 
-                # 1. Точный дубликат того же заявителя
-                if same_creator and sim_ratio >= self.exact_threshold:
-                    is_dup = True
-                    confidence = 10 if sim_ratio >= 0.95 else 9
-                    if time_diff_hours is not None and time_diff_hours <= 1.0:
-                        reason = f"Повторная отправка тем же заявителем через {int(time_diff_hours * 60)} мин. (Сходство текста {int(sim_ratio * 100)}%)"
-                    else:
-                        reason = f"Дубликат того же заявителя (Сходство текста {int(sim_ratio * 100)}%)"
+                # Правило 1: Быстрый дубликат того же заявителя (дабл-клик или нетерпеливая отправка)
+                # Требует: тот же заявитель, сходство текста >= exact_threshold, сходство описания >= 0.70, окно <= 24ч
+                if same_creator and sim_ratio >= self.exact_threshold and desc_sim >= 0.70:
+                    if time_diff_hours is not None and time_diff_hours <= 24.0:
+                        is_dup = True
+                        confidence = 10 if sim_ratio >= 0.95 else 9
+                        if time_diff_hours <= 1.0:
+                            reason = f"Повторная отправка тем же заявителем через {int(time_diff_hours * 60)} мин. (Сходство текста {int(sim_ratio * 100)}%)"
+                        else:
+                            reason = f"Повторная заявка того же заявителя через {int(time_diff_hours)} ч. (Сходство текста {int(sim_ratio * 100)}%)"
 
-                # 2. Тот же ПК и тот же заявитель с высокой схожестью проблемы
-                elif same_creator and same_pc and sim_ratio >= self.host_threshold:
-                    is_dup = True
-                    confidence = 9
-                    reason = f"Повторная заявка по тому же ПК {m_pc} (Сходство {int(sim_ratio * 100)}%)"
+                # Правило 2: Тот же ПК и тот же заявитель с подтвержденной схожестью проблемы (до 48ч)
+                elif same_creator and same_pc and sim_ratio >= self.host_threshold and desc_sim >= 0.60:
+                    if time_diff_hours is None or time_diff_hours <= 48.0:
+                        is_dup = True
+                        confidence = 9
+                        reason = f"Повторная заявка по тому же ПК {m_pc} (Сходство {int(sim_ratio * 100)}%)"
 
-                # 3. Разные заявители, но тот же ПК и одинаковый инцидент (коллективный дубль)
-                elif same_pc and sim_ratio >= self.exact_threshold:
-                    is_dup = True
-                    confidence = 8
-                    reason = f"Коллективный дубль на один ПК {m_pc} от разных сотрудников (Сходство {int(sim_ratio * 100)}%)"
-
-                # 4. Тот же заявитель и раздел каталога с очень высоким сходством темы
-                elif same_creator and same_service and calculate_text_similarity(m_name, c_name) >= 0.85:
-                    is_dup = True
-                    confidence = 9
-                    reason = f"Идентичная тема в том же разделе каталога услуг от {candidate.get('Creator')}"
+                # Правило 3: Коллективный дубль на один ПК от разных заявителей (до 12ч)
+                elif same_pc and sim_ratio >= self.exact_threshold and desc_sim >= 0.70:
+                    if time_diff_hours is None or time_diff_hours <= 12.0:
+                        is_dup = True
+                        confidence = 8
+                        reason = f"Коллективный дубль на один ПК {m_pc} от разных сотрудников (Сходство {int(sim_ratio * 100)}%)"
 
                 if is_dup:
                     already_marked_dup_ids.add(c_id)

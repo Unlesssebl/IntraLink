@@ -858,6 +858,11 @@ async def index_task_knowledge(
     Автоматически переключается на локальный контур при наличии паролей или конфиденциальности.
     """
     try:
+        from app.services.ai_synthesis import is_informative_solution
+        if not is_informative_solution(solution):
+            logger.debug("Заявка #%d отклонена Quality Gate RAG (неинформативное решение: '%s')", task_id, (solution or "")[:50])
+            return False
+
         embed_input = (
             f"Тема: {original_name}\nПроблема: {problem}\nРешение: {solution}"
         )
@@ -978,10 +983,11 @@ async def sync_historical_closed_tasks(
         canon = canonize_task_solution(t, lifetime)
         solution_text = canon.get("solution") or ""
 
-        if not solution_text or solution_text == "Заявка выполнена в штатном режиме.":
-            if not lifetime:
-                skipped_count += 1
-                continue
+        # Quality Gate: отсекаем неинформативные заявки без полезного технического решения
+        from app.services.ai_synthesis import is_informative_solution
+        if not is_informative_solution(solution_text):
+            skipped_count += 1
+            continue
 
         t_name = t.get("Name") or f"Заявка #{tid}"
         s_id = t.get("ServiceId") or 0

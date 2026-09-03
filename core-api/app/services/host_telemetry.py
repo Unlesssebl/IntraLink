@@ -243,11 +243,13 @@ async def fast_ping(
 
 
 async def probe_tcp_port(
-    host: str, port: int, timeout_sec: float = TCP_PROBE_TIMEOUT_SEC
+    host: str | None, port: int, timeout_sec: float = TCP_PROBE_TIMEOUT_SEC
 ) -> bool:
     """
     Быстрая неблокирующая проверка доступности TCP-порта (WinRM 5985 / SMB 445 / RPC 135).
     """
+    if not host:
+        return False
     try:
         conn = asyncio.open_connection(host, port)
         _, writer = await asyncio.wait_for(conn, timeout=timeout_sec)
@@ -587,26 +589,31 @@ async def collect_host_telemetry(
     async with _GLOBAL_TELEMETRY_SEMAPHORE:
         # 3. DNS Резолвинг
         resolved_ip = await resolve_dns_fast(canonical_pc, timeout_sec=0.4)
-        target_to_probe = resolved_ip or canonical_pc
+        target_to_probe = resolved_ip or (canonical_pc if canonical_pc and IP_REGEX.match(canonical_pc) else None)
         subnet = get_subnet_from_ip(resolved_ip)
 
         # 4. Выполнение каскада под защитой Subnet Rate-Limiter
         async with subnet_rate_limit(subnet, redis_client=r):
             # 5. Fail-Fast ICMP Ping (400 мс)
-            ping_res = await fast_ping(
-                target_to_probe, timeout_sec=PING_TIMEOUT_SEC
-            )
-            is_ping_ok = ping_res.get("is_online", False)
-            avg_rtt = ping_res.get("avg_rtt")
+            if target_to_probe:
+                ping_res = await fast_ping(
+                    target_to_probe, timeout_sec=PING_TIMEOUT_SEC
+                )
+                is_ping_ok = ping_res.get("is_online", False)
+                avg_rtt = ping_res.get("avg_rtt")
 
-            # 6. Проверка портов 5985 (WinRM) и 445 (SMB) (300 мс)
-            smb_task = probe_tcp_port(
-                target_to_probe, 445, timeout_sec=TCP_PROBE_TIMEOUT_SEC
-            )
-            winrm_task = probe_tcp_port(
-                target_to_probe, 5985, timeout_sec=TCP_PROBE_TIMEOUT_SEC
-            )
-            smb_ok, winrm_ok = await asyncio.gather(smb_task, winrm_task)
+                # 6. Проверка портов 5985 (WinRM) и 445 (SMB) (300 мс)
+                smb_task = probe_tcp_port(
+                    target_to_probe, 445, timeout_sec=TCP_PROBE_TIMEOUT_SEC
+                )
+                winrm_task = probe_tcp_port(
+                    target_to_probe, 5985, timeout_sec=TCP_PROBE_TIMEOUT_SEC
+                )
+                smb_ok, winrm_ok = await asyncio.gather(smb_task, winrm_task)
+            else:
+                is_ping_ok = False
+                avg_rtt = None
+                smb_ok, winrm_ok = False, False
 
             # Fallback на creator_ip, если хост не отвечает, но есть IP заявителя
             if not is_ping_ok and not smb_ok and not winrm_ok and creator_ip:

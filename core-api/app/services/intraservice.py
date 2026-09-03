@@ -360,12 +360,17 @@ async def get_services(auth_b64: str) -> list[dict[str, Any]] | None:
     """
     Получает каталог услуг из IntraService.
     """
-    return await _make_request(
+    res = await _make_request(
         endpoint="service",
         method="GET",
         auth_b64=auth_b64,
         params={"include": "parentid", "for": "createtask", "pagesize": "1000"},
     )
+    if isinstance(res, dict):
+        return res.get("Services") or []
+    if isinstance(res, list):
+        return res
+    return []
 
 
 async def get_single_task(
@@ -434,17 +439,26 @@ async def download_attachment_file(
 
     decrypted_auth = decrypt_token(auth_b64)
     headers = {"Authorization": f"Basic {decrypted_auth}"}
-    url = f"{settings.INTRASERVICE_URL.rstrip('/')}/api/task/{task_id}/attachment/{file_id}"
+    base_url = settings.INTRASERVICE_URL.rstrip("/")
+    if not base_url.endswith("/api"):
+        base_url = f"{base_url}/api"
+    url = f"{base_url}/taskfile/{file_id}"
 
     try:
-        async with _session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30.0)) as response:
+        async with _session.get(
+            url,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=30.0),
+            ssl=settings.SSL_VERIFY,
+        ) as response:
             if response.status == 200:
                 return await response.read()
             logger.warning(
-                "Ошибка скачивания вложения #%d для задачи #%d: HTTP %d",
+                "Ошибка скачивания вложения #%d для задачи #%d: HTTP %d (URL: %s)",
                 file_id,
                 task_id,
                 response.status,
+                url,
             )
             return None
     except Exception as e:

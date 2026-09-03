@@ -173,7 +173,7 @@ class Settings(BaseSettings):
 
     # Административная панель и ролевой доступ (RBAC)
     ADMIN_LOGINS: str = Field(
-        "belikov.a,IntraService_dev",
+        "belikov,belikov.a,IntraService_dev",
         description="Список логинов IntraService через запятую с правами администратора /admin",
     )
     ADMIN_PASSWORD: str | None = Field(

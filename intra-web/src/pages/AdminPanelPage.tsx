@@ -8,6 +8,7 @@ import {
   fetchKbStats,
   fetchKbExamples,
   blacklistKbExample,
+  purgeKnowledgeBase,
   triggerKbSync,
   fetchVaultStatus,
   saveVaultServiceAccount,
@@ -21,7 +22,7 @@ import {
   type VaultStatusResponse,
 } from '../lib/adminApi';
 import SkillsHub from '../components/SkillsHub';
-import { fetchAIHealth, fetchSanitizePreview } from '../lib/tasks';
+import { fetchAIHealth, fetchSanitizePreview, purgeTriageCache } from '../lib/tasks';
 import type { AIHealthData, SanitizePreviewResult } from '../lib/types';
 
 interface AdminPanelPageProps {
@@ -53,6 +54,23 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   );
   const [sanitizeResult, setSanitizeResult] = useState<SanitizePreviewResult | null>(null);
   const [testingSanitize, setTestingSanitize] = useState(false);
+  const [purgingTriageCache, setPurgingTriageCache] = useState(false);
+
+  const handlePurgeTriageCache = async () => {
+    setPurgingTriageCache(true);
+    setStatusMessage(null);
+    try {
+      const res = await purgeTriageCache();
+      setStatusMessage({
+        type: 'success',
+        text: `${res.message || 'Кэш вердиктов успешно очищен'} (удалено ключей: ${res.deleted_verdicts})`,
+      });
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Ошибка сброса кэша вердиктов' });
+    } finally {
+      setPurgingTriageCache(false);
+    }
+  };
 
   // Vault State (SSOT Credentials)
   const [vaultStatus, setVaultStatus] = useState<VaultStatusResponse | null>(null);
@@ -78,11 +96,6 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
   const [showSecurityInfo, setShowSecurityInfo] = useState(false);
 
-  const [winrmHost, setWinrmHost] = useState('');
-  const [winrmPort, setWinrmPort] = useState(5985);
-  const [testingWinrm, setTestingWinrm] = useState(false);
-  const [winrmResult, setWinrmResult] = useState<ConnectionTestResult | null>(null);
-
   // Knowledge Base State
   const [kbStats, setKbStats] = useState<KBStatsResponse | null>(null);
   const [kbExamples, setKbExamples] = useState<KBExampleItem[]>([]);
@@ -94,6 +107,9 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [kbSyncLoading, setKbSyncLoading] = useState<boolean>(false);
   const [kbSyncDays, setKbSyncDays] = useState<number>(30);
   const [blacklistingTaskId, setBlacklistingTaskId] = useState<number | null>(null);
+  const [isPurgeModalOpen, setIsPurgeModalOpen] = useState<boolean>(false);
+  const [purgeConfirmed, setPurgeConfirmed] = useState<boolean>(false);
+  const [purgingKb, setPurgingKb] = useState<boolean>(false);
 
   const [helpdeskConfig, setHelpdeskConfig] = useState<HelpdeskConfigDTO>({
     primary_executor_id: 8664,
@@ -182,7 +198,6 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
       if (data.domain.domain) setVaultDomainName(data.domain.domain);
       if (data.domain.dc_host) {
         setVaultDomainDcHost(data.domain.dc_host);
-        setWinrmHost(prev => prev || data.domain.dc_host);
       }
       if (data.domain.ldaps_port) setVaultDomainPort(data.domain.ldaps_port);
       if (data.domain.base_dn) setVaultDomainBaseDn(data.domain.base_dn);
@@ -275,27 +290,6 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     }
   };
 
-  const handleTestWinrm = async () => {
-    if (!token || !winrmHost.trim()) return;
-    setTestingWinrm(true);
-    setWinrmResult(null);
-    try {
-      const res = await testVaultWinrm(token, {
-        target_host: winrmHost.trim(),
-        port: winrmPort,
-      });
-      setWinrmResult(res);
-    } catch (err: any) {
-      setWinrmResult({
-        success: false,
-        latency_ms: 0,
-        message: err.message || 'Ошибка проверки WinRM соединения',
-      });
-    } finally {
-      setTestingWinrm(false);
-    }
-  };
-
   // KB Handlers
   const loadKbData = useCallback(
     async (authToken: string, page = 1, search = '') => {
@@ -336,7 +330,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     if (!token) return;
     if (
       !window.confirm(
-        `Вы уверены, что хотите занести задачу #${taskId} в черный список RAG? Она перестанет участвовать в семантическом поиске.`
+        `Вы уверены, что хотите скрыть прецедент #${taskId} из базы знаний? Это решение перестанет предлагаться AI-ассистентом.`
       )
     ) {
       return;
@@ -344,12 +338,29 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     setBlacklistingTaskId(taskId);
     try {
       await blacklistKbExample(token, taskId);
-      setStatusMessage({ type: 'success', text: `Задача #${taskId} занесена в черный список RAG.` });
+      setStatusMessage({ type: 'success', text: `Прецедент #${taskId} успешно скрыт из базы знаний RAG.` });
       await loadKbData(token, kbPage, kbSearch);
     } catch (err: any) {
-      setStatusMessage({ type: 'error', text: err.message || 'Ошибка добавления в черный список' });
+      setStatusMessage({ type: 'error', text: err.message || 'Ошибка скрытия из базы знаний' });
     } finally {
       setBlacklistingTaskId(null);
+    }
+  };
+
+  const handlePurgeKnowledgeBase = async () => {
+    if (!token || !purgeConfirmed) return;
+    setPurgingKb(true);
+    setStatusMessage(null);
+    try {
+      const res = await purgeKnowledgeBase(token);
+      setStatusMessage({ type: 'success', text: res.message || 'База знаний RAG успешно очищена' });
+      setIsPurgeModalOpen(false);
+      setPurgeConfirmed(false);
+      await loadKbData(token, 1, '');
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Ошибка очистки базы знаний' });
+    } finally {
+      setPurgingKb(false);
     }
   };
 
@@ -458,7 +469,8 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
   // Nav to Operator Panel
   const goToOperatorPanel = () => {
-    window.location.href = '/operator-panel';
+    window.history.pushState({}, '', '/operator-panel');
+    window.dispatchEvent(new PopStateEvent('popstate'));
   };
 
   // State: Проверка активной сессии
@@ -946,7 +958,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                 </form>
               </div>
 
-              {/* Form 2: Domain Credentials (WinRM + LDAPS SSOT) */}
+              {/* Form 2: Domain Credentials (AD & Wi-Fi) */}
               <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold flex items-center gap-2">
@@ -954,12 +966,15 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                       <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
                       <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
                     </svg>
-                    <span>Единый доменный доступ (WinRM + LDAPS + Wi-Fi)</span>
+                    <span>Доменная служба Active Directory и доступ к Wi-Fi</span>
                   </h3>
                   <span className="text-[11px] font-mono text-neutral-400">worker:domain_auth</span>
                 </div>
 
                 <form onSubmit={handleSaveVaultDomain} className="space-y-4">
+                  <div className="text-xs font-semibold text-neutral-400 border-b border-neutral-800 pb-1">
+                    Сервисная учетная запись (Active Directory / WinRM)
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-medium text-neutral-400 mb-1">UPN логин пользователя</label>
@@ -985,8 +1000,8 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="sm:col-span-1">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
                       <label className="block text-xs font-medium text-neutral-400 mb-1">Домен</label>
                       <input
                         type="text"
@@ -997,20 +1012,23 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                       />
                     </div>
 
-                    <div className="sm:col-span-1">
-                      <label className="block text-xs font-medium text-neutral-400 mb-1">Контроллер домена</label>
+                    <div>
+                      <label className="block text-xs font-medium text-neutral-400 mb-1">Контроллер домена (DC)</label>
                       <input
                         type="text"
                         value={vaultDomainDcHost}
-                        onChange={e => {
-                          setVaultDomainDcHost(e.target.value);
-                          if (!winrmHost) setWinrmHost(e.target.value);
-                        }}
+                        onChange={e => setVaultDomainDcHost(e.target.value)}
                         placeholder="dc01.corporate.loc"
                         className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono text-xs"
                       />
                     </div>
+                  </div>
 
+                  <div className="text-xs font-semibold text-neutral-400 border-b border-neutral-800 pb-1 pt-2">
+                    Параметры каталога LDAPS и группа Wi-Fi
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="sm:col-span-1">
                       <label className="block text-xs font-medium text-neutral-400 mb-1">Порт LDAPS</label>
                       <input
@@ -1020,10 +1038,8 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                         className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
                       />
                     </div>
-                  </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
+                    <div className="sm:col-span-2">
                       <label className="block text-xs font-medium text-neutral-400 mb-1">Базовый DN каталога (Base DN)</label>
                       <input
                         type="text"
@@ -1033,17 +1049,17 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                         className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono text-xs"
                       />
                     </div>
+                  </div>
 
-                    <div>
-                      <label className="block text-xs font-medium text-neutral-400 mb-1">Целевая группа AD для Wi-Fi</label>
-                      <input
-                        type="text"
-                        value={vaultDomainWlanGroup}
-                        onChange={e => setVaultDomainWlanGroup(e.target.value)}
-                        placeholder="WLAN-WORKNET"
-                        className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 text-xs"
-                      />
-                    </div>
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-400 mb-1">Целевая группа AD для Wi-Fi</label>
+                    <input
+                      type="text"
+                      value={vaultDomainWlanGroup}
+                      onChange={e => setVaultDomainWlanGroup(e.target.value)}
+                      placeholder="WLAN-WORKNET"
+                      className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 text-xs"
+                    />
                   </div>
 
                   <div className="flex items-center gap-3 pt-1">
@@ -1085,59 +1101,8 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               </div>
             </div>
 
-            {/* Diagnostics & Fallback Row */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Экспресс-тест WinRM (порт 5985) */}
-              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold flex items-center gap-2">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-                    </svg>
-                    <span>Экспресс-тест порта WinRM (HTTP 5985)</span>
-                  </h3>
-                  <span className="text-[11px] font-mono text-neutral-400">Windows RPC</span>
-                </div>
-
-                <p className="text-xs text-neutral-400 leading-relaxed">
-                  Проверяет сетевую доступность службы Windows Remote Management (WinRM) на контроллере домена или рабочей станции заявителя.
-                </p>
-
-                <div className="flex flex-col sm:flex-row gap-3">
-                  <input
-                    type="text"
-                    value={winrmHost}
-                    onChange={e => setWinrmHost(e.target.value)}
-                    placeholder="Хост или IP (например: dc01.corporate.loc или WS-001)"
-                    className="flex-1 px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono text-xs"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleTestWinrm}
-                    disabled={testingWinrm || !winrmHost.trim()}
-                    className="py-2 px-4 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                  >
-                    {testingWinrm ? 'Проверка...' : 'Проверить WinRM'}
-                  </button>
-                </div>
-
-                {winrmResult && (
-                  <div
-                    className={`p-3 rounded-xl border text-xs flex items-center justify-between gap-3 ${
-                      winrmResult.success
-                        ? 'bg-emerald-950/30 border-emerald-800 text-emerald-300'
-                        : 'bg-red-950/30 border-red-800 text-red-300'
-                    }`}
-                  >
-                    <span>{winrmResult.message}</span>
-                    {winrmResult.latency_ms > 0 && (
-                      <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-black/40 border border-white/10">
-                        {winrmResult.latency_ms} ms
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
+            {/* Fallback Local Admin Row */}
+            <div className="grid grid-cols-1 gap-6">
 
               {/* Local Admin Fallback Form */}
               <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
@@ -1471,6 +1436,31 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                 </div>
               )}
             </div>
+
+            {/* Карточка глобального сброса кэша вердиктов (marks.md #7) */}
+            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-3 mt-6">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-neutral-100 flex items-center gap-2">
+                    <span>Сброс кэша вердиктов AI и Rule Engine</span>
+                  </h3>
+                  <p className="text-xs text-neutral-400 mt-1 max-w-2xl">
+                    Очищает все сохраненные вердикты и AI-резолюции в Redis (<code className="text-amber-400 font-mono">ai:resolution:*</code>) и кэш каталога услуг. Используйте после изменения логики правил, шаблонов или кода движка для принудительного пересчета очереди.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handlePurgeTriageCache}
+                  disabled={purgingTriageCache}
+                  className="px-4 py-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-500/40 rounded-lg text-xs font-semibold cursor-pointer transition-colors flex items-center gap-2 disabled:opacity-50"
+                >
+                  <svg className={`w-3.5 h-3.5 ${purgingTriageCache ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
+                  </svg>
+                  <span>{purgingTriageCache ? 'Очистка кэша...' : 'Сбросить кэш вердиктов AI/Rules'}</span>
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1478,29 +1468,59 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
         {/* Tab 2: Helpdesk Parameters */}
         {activeTab === 'helpdesk' && (
           <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-6">
-            <div>
-              <h2 className="text-base font-semibold">Параметры Helpdesk и Очереди</h2>
-              <p className="text-xs text-neutral-400 mt-0.5">
-                Назначение исполнителей по умолчанию для списания трудозатрат и привязка фильтра первой линии.
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <h2 className="text-base font-semibold">Параметры Helpdesk и Очереди</h2>
+                <p className="text-xs text-neutral-400 mt-0.5">
+                  Привязка исполнителей по умолчанию для списания трудозатрат и фильтра первой линии IntraService.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setHelpdeskConfig({
+                  primary_executor_id: 8664,
+                  default_executor_ids: '8664,10502',
+                  primary_filter_id: 984,
+                  timezone: 'Europe/Moscow',
+                })}
+                className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded-lg text-xs font-medium border border-neutral-700 transition-colors cursor-pointer"
+              >
+                Восстановить рекомендуемые параметры (Беликов Ален / 984)
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-blue-950/20 border border-blue-800/40 text-xs text-neutral-300 space-y-1.5">
+              <div className="font-semibold text-blue-300 flex items-center gap-1.5">
+                <span>ℹ️ Текущие системные привязки</span>
+              </div>
+              <p className="text-neutral-400 leading-relaxed text-[11.5px]">
+                Значения берутся из переменных окружения сервиса (<code className="text-blue-400 font-mono">INTRASERVICE_FILTER_ID</code>, <code className="text-blue-400 font-mono">DEFAULT_EXECUTOR_IDS</code>). При необходимости вы можете переопределить их здесь.
               </p>
             </div>
 
             <form onSubmit={handleSaveHelpdesk} className="space-y-5">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-neutral-400 mb-1">ID основного инженера (Primary Assignee)</label>
+                  <label className="block text-xs font-medium text-neutral-300 mb-1 flex items-center justify-between">
+                    <span>ID основного инженера</span>
+                    <span className="text-[10.5px] font-normal text-neutral-400">Беликов Ален: 8664</span>
+                  </label>
                   <input
                     type="number"
                     value={helpdeskConfig.primary_executor_id}
                     onChange={e => setHelpdeskConfig({ ...helpdeskConfig, primary_executor_id: Number(e.target.value) })}
                     required
-                    className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
+                    className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono"
                   />
-                  <span className="text-[11px] text-neutral-500 mt-1 block">ID инженера, на которого списываются трудозатраты (по умолчанию 8664)</span>
+                  <span className="text-[11px] text-neutral-500 mt-1 block">Исполнитель, на которого по умолчанию списываются трудозатраты 1-й линии</span>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-neutral-400 mb-1">ID списка исполнителей (Default Assignees)</label>
+                  <label className="block text-xs font-medium text-neutral-300 mb-1 flex items-center justify-between">
+                    <span>Список исполнителей очереди</span>
+                    <span className="text-[10.5px] font-normal text-neutral-400">8664, 10502</span>
+                  </label>
                   <input
                     type="text"
                     value={helpdeskConfig.default_executor_ids}
@@ -1508,31 +1528,37 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                     required
                     className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono"
                   />
-                  <span className="text-[11px] text-neutral-500 mt-1 block">Через запятую: основной инженер и ассистент (например: 8664,10502)</span>
+                  <span className="text-[11px] text-neutral-500 mt-1 block">ID инженеров через запятую: основной инженер и ассистенты</span>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-neutral-400 mb-1">ID основного фильтра очереди IntraService</label>
+                  <label className="block text-xs font-medium text-neutral-300 mb-1 flex items-center justify-between">
+                    <span>ID фильтра очереди IntraService</span>
+                    <span className="text-[10.5px] font-normal text-neutral-400">Очередь 1-й линии: 984</span>
+                  </label>
                   <input
                     type="number"
                     value={helpdeskConfig.primary_filter_id}
                     onChange={e => setHelpdeskConfig({ ...helpdeskConfig, primary_filter_id: Number(e.target.value) })}
                     required
-                    className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
+                    className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 font-mono"
                   />
-                  <span className="text-[11px] text-neutral-500 mt-1 block">Номер фильтра очереди 1-й линии в IntraService (по умолчанию 984)</span>
+                  <span className="text-[11px] text-neutral-500 mt-1 block">ID фильтра входящих заявок первой линии в веб-версии IntraService</span>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-neutral-400 mb-1">Часовой пояс системы (Timezone)</label>
-                  <input
-                    type="text"
+                  <label className="block text-xs font-medium text-neutral-300 mb-1">Часовой пояс системы (Timezone)</label>
+                  <select
                     value={helpdeskConfig.timezone}
                     onChange={e => setHelpdeskConfig({ ...helpdeskConfig, timezone: e.target.value })}
-                    required
                     className="w-full px-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500"
-                  />
-                  <span className="text-[11px] text-neutral-500 mt-1 block">Часовой пояс API IntraService (например: Europe/Moscow)</span>
+                  >
+                    <option value="Europe/Moscow">Europe/Moscow (МСК, UTC+3)</option>
+                    <option value="Asia/Yekaterinburg">Asia/Yekaterinburg (ЕКБ, UTC+5)</option>
+                    <option value="Asia/Novosibirsk">Asia/Novosibirsk (НСК, UTC+7)</option>
+                    <option value="UTC">UTC (Всемирное координированное время)</option>
+                  </select>
+                  <span className="text-[11px] text-neutral-500 mt-1 block">Часовой пояс для сопоставления дат обновлений и истории заявок</span>
                 </div>
               </div>
 
@@ -1708,12 +1734,29 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                     {kbTotal} записей
                   </span>
                 </div>
-                {kbLoading && (
-                  <span className="text-xs text-neutral-400 flex items-center gap-1.5">
-                    <span className="w-3 h-3 border-2 border-neutral-400/30 border-t-neutral-400 rounded-full animate-spin"></span>
-                    Загрузка...
-                  </span>
-                )}
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPurgeConfirmed(false);
+                      setIsPurgeModalOpen(true);
+                    }}
+                    disabled={kbTotal === 0}
+                    className="px-2.5 py-1 text-xs font-semibold text-rose-400 hover:text-rose-300 hover:bg-rose-950/40 rounded-lg border border-rose-900/40 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    title="Полная очистка базы знаний RAG"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    </svg>
+                    <span>Очистить базу знаний</span>
+                  </button>
+                  {kbLoading && (
+                    <span className="text-xs text-neutral-400 flex items-center gap-1.5">
+                      <span className="w-3 h-3 border-2 border-neutral-400/30 border-t-neutral-400 rounded-full animate-spin"></span>
+                      Загрузка...
+                    </span>
+                  )}
+                </div>
               </div>
 
               {kbExamples.length === 0 && !kbLoading ? (
@@ -1740,14 +1783,14 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                         <button
                           onClick={() => handleBlacklistExample(item.task_id)}
                           disabled={blacklistingTaskId === item.task_id}
-                          title="Занести в черный список RAG"
-                          className="px-2.5 py-1 text-[11px] font-medium text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded-lg border border-red-900/40 transition-colors flex items-center gap-1 cursor-pointer"
+                          title="Скрыть прецедент из базы знаний RAG"
+                          className="px-2.5 py-1 text-[11px] font-medium text-amber-400 hover:text-amber-300 hover:bg-amber-950/40 rounded-lg border border-amber-900/40 transition-colors flex items-center gap-1 cursor-pointer"
                         >
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <circle cx="12" cy="12" r="10"></circle>
-                            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                            <line x1="1" y1="1" x2="23" y2="23"></line>
                           </svg>
-                          <span>{blacklistingTaskId === item.task_id ? 'Блокировка...' : 'В черный список'}</span>
+                          <span>{blacklistingTaskId === item.task_id ? 'Скрытие...' : 'Скрыть из базы знаний'}</span>
                         </button>
                       </div>
 
@@ -1802,6 +1845,62 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
             </div>
           </div>
         )}
+
+      {/* Safety Confirmation Modal for KB Purge */}
+      {isPurgeModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center shrink-0">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-neutral-100">Очистка базы знаний RAG</h3>
+                <p className="text-xs text-neutral-400">Удаление всех векторных прецедентов</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-neutral-300 leading-relaxed">
+              Вы собираетесь полностью удалить все проиндексированные решения ({kbTotal} записей) из базы PostgreSQL и сбросить кэш эмбеддингов в Redis. Это действие необратимо.
+            </p>
+
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-neutral-950/80 border border-neutral-800 text-xs text-neutral-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={purgeConfirmed}
+                onChange={e => setPurgeConfirmed(e.target.checked)}
+                className="mt-0.5 rounded border-neutral-700 text-rose-600 focus:ring-rose-500 bg-neutral-900"
+              />
+              <span>Я подтверждаю удаление всех векторов и сброс базы знаний</span>
+            </label>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsPurgeModalOpen(false);
+                  setPurgeConfirmed(false);
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-medium text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 transition-colors cursor-pointer"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                disabled={!purgeConfirmed || purgingKb}
+                onClick={handlePurgeKnowledgeBase}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white shadow-lg shadow-rose-900/30 transition-all cursor-pointer flex items-center gap-1.5"
+              >
+                {purgingKb ? 'Очистка...' : 'Очистить всё'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       </div>
     </div>

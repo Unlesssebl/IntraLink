@@ -73,21 +73,6 @@ export async function fetchAdminSettings(token: string): Promise<AllSettingsResp
   return res.json();
 }
 
-export async function saveLdapsSettings(token: string, payload: LdapsConfigDTO): Promise<LdapsConfigDTO> {
-  const res = await fetch('/api/v1/admin/settings/ldaps', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Ошибка сохранения настроек' }));
-    throw new Error(err.detail || 'Не удалось сохранить настройки LDAPS');
-  }
-  return res.json();
-}
 
 export async function testLdapsSettings(token: string, payload?: LdapsConfigDTO): Promise<ConnectionTestResult> {
   const res = await fetch('/api/v1/admin/settings/ldaps/test', {
@@ -121,21 +106,6 @@ export async function saveHelpdeskSettings(token: string, payload: HelpdeskConfi
   return res.json();
 }
 
-export async function saveLocalAdminSettings(token: string, payload: LocalAdminConfigDTO): Promise<LocalAdminConfigDTO> {
-  const res = await fetch('/api/v1/admin/settings/local-admin', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Ошибка сохранения настроек локального админа' }));
-    throw new Error(err.detail || 'Не удалось сохранить учетные данные локального администратора');
-  }
-  return res.json();
-}
 
 export interface KBExampleItem {
   task_id: number;
@@ -221,7 +191,24 @@ export async function blacklistKbExample(
   });
   if (!res.ok) {
     if (res.status === 401) throw new Error('Сессия администратора истекла');
-    throw new Error(`Не удалось занести задачу #${taskId} в черный список`);
+    throw new Error(`Не удалось скрыть задачу #${taskId} из базы знаний`);
+  }
+  return res.json();
+}
+
+export async function purgeKnowledgeBase(
+  token: string
+): Promise<{ status: string; deleted: number; message: string }> {
+  const res = await fetch('/api/v1/admin/kb/purge', {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Сессия администратора истекла');
+    throw new Error('Не удалось очистить базу знаний RAG');
   }
   return res.json();
 }
@@ -389,6 +376,7 @@ export interface SkillActionItem {
 
 export async function fetchSkills(token: string): Promise<SkillActionItem[]> {
   const res = await fetch('/api/v1/skills', {
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -408,6 +396,7 @@ export async function updateSkillPolicy(
 ): Promise<any> {
   const res = await fetch(`/api/v1/skills/${actionId}/policy`, {
     method: 'PATCH',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -424,6 +413,7 @@ export async function updateSkillPolicy(
 export async function resetSkillPolicy(token: string, actionId: string): Promise<any> {
   const res = await fetch(`/api/v1/skills/${actionId}/policy`, {
     method: 'DELETE',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,

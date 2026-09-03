@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from app.routers.deps import verify_admin_jwt
+from app.routers.deps import verify_admin_or_api_key
 from shared.diagnostics import (
     DOMAIN_SUFFIX,
     check_tcp_port,
@@ -151,7 +151,7 @@ async def _check_host_ping_and_ports(host_str: str) -> dict[str, Any]:
     }
 
 
-@router.get("/admin/api/diag/{host}", dependencies=[Depends(verify_admin_jwt)])
+@router.get("/admin/api/diag/{host}", dependencies=[Depends(verify_admin_or_api_key)])
 async def get_host_diagnostics(host: str):
     """
     Возвращает статус доступности рабочего места оператора в реальном времени.

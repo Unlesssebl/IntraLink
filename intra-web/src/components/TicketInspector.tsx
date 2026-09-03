@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { Ticket, Status } from '../data/mock';
 import { statusConfig, getStatusDotClass } from '../data/mock';
 import {
   fetchDiagnostics,
   applyTask,
   fetchTaskDetails,
+  reanalyzeTask,
   fetchTemplatesCatalog,
   enqueueExecution,
   pollExecutionJob,
@@ -62,7 +63,17 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     ping: 'idle', smb: 'idle', winrm: 'idle',
   });
   const [multiHostDiag, setMultiHostDiag] = useState<Record<string, { ping: DiagStatus; smb: DiagStatus; winrm: DiagStatus; rtt?: string | null; isOnline?: boolean }>>({});
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState<boolean>(() => {
+    return localStorage.getItem('intralink_inspector_expanded') === 'true';
+  });
+
+  const toggleExpanded = () => {
+    setExpanded(prev => {
+      const next = !prev;
+      localStorage.setItem('intralink_inspector_expanded', String(next));
+      return next;
+    });
+  };
   const [submitting, setSubmitting] = useState(false);
   const [templates, setTemplates] = useState<any[]>([]);
   const [selectedTemplateKey, setSelectedTemplateKey] = useState<string>('');
@@ -71,16 +82,76 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   const [confirmingCancel, setConfirmingCancel] = useState<boolean>(false);
 
   // AI & RAG States
-  const [activeRecTab, setActiveRecTab] = useState<'ai' | 'rule'>('ai');
   const [aiSummary, setAiSummary] = useState<TicketSummaryResult | null>(null);
   const [loadingAiSummary, setLoadingAiSummary] = useState(false);
   const [isAiSummaryExpanded, setIsAiSummaryExpanded] = useState(true);
   const [isRagExpanded, setIsRagExpanded] = useState(false);
+  const [isCommentsExpanded, setIsCommentsExpanded] = useState(false);
+
+  // Attachments Preview Lightbox & Resizing states (marks.md #2, #6, #7)
+  const [previewModalImg, setPreviewModalImg] = useState<{ url: string; name: string } | null>(null);
+  const [imgZoom, setImgZoom] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(false);
+  const [inspectorWidth, setInspectorWidth] = useState<number>(() => {
+    const saved = localStorage.getItem('intralink_inspector_width');
+    const parsed = saved ? parseInt(saved, 10) : 560;
+    return !isNaN(parsed) && parsed >= 420 ? parsed : 560;
+  });
+  const [isResizing, setIsResizing] = useState(false);
+
+  // Drag-to-resize listener
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const maxW = Math.min(1200, window.innerWidth * 0.92);
+      const minW = 420;
+      const newWidth = Math.max(minW, Math.min(maxW, window.innerWidth - e.clientX));
+      setInspectorWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      localStorage.setItem('intralink_inspector_width', String(inspectorWidth));
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing, inspectorWidth]);
 
   const actionsMenuRef = useRef<HTMLDivElement>(null);
   const rawId = ticket.rawId || parseInt(ticket.id.replace(/\D/g, ''), 10);
+
+  const handleReanalyze = async () => {
+    if (!rawId || reanalyzing) return;
+    setReanalyzing(true);
+    try {
+      const updated = await reanalyzeTask(rawId);
+      setDetails(updated);
+      if (updated.ai_suggested_resolution && updated.ai_suggested_resolution.trim().length > 10) {
+        setReplyText(updated.ai_suggested_resolution);
+      }
+      onToast({
+        type: 'success',
+        message: `Заявка #${rawId} переанализирована по актуальным правилам`,
+      });
+    } catch (err: any) {
+      onToast({
+        type: 'error',
+        message: `Ошибка переанализа: ${err.message || err}`,
+      });
+    } finally {
+      setReanalyzing(false);
+    }
+  };
   const effectiveHost = ticket.host || details?.pc_name || '';
-  const hostList = effectiveHost ? Array.from(new Set(effectiveHost.split(/[,;|\s]+/).map(h => h.trim()).filter(Boolean))) : [];
+  const hostList = effectiveHost
+    ? Array.from(new Set(effectiveHost.split(/[,;]+/).map(h => h.trim().replace(/\s+/g, '')).filter(Boolean)))
+    : [];
 
   // Load Task Details (comments, attachments, custom fields) from Core API
   const loadDetails = useCallback(async () => {
@@ -89,16 +160,22 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     try {
       const data = await fetchTaskDetails(rawId);
       setDetails(data);
-      // Auto-populate LLM synthesis if available and operator hasn't overridden
+      // Auto-populate LLM synthesis if available and operator hasn't typed custom text
       if (data.ai_suggested_resolution && data.ai_suggested_resolution.trim().length > 10) {
-        setReplyText(data.ai_suggested_resolution);
+        setReplyText(prev => {
+          const defaultInit = ticket.aiPlan?.comment || ticket.aiSuggestion || '';
+          if (!prev || prev === defaultInit) {
+            return data.ai_suggested_resolution!;
+          }
+          return prev;
+        });
       }
     } catch (err: any) {
       console.warn('Не удалось загрузить подробности заявки:', err);
     } finally {
       setLoadingDetails(false);
     }
-  }, [rawId]);
+  }, [rawId, ticket.aiPlan?.comment, ticket.aiSuggestion]);
 
   const handleGenerateAiSummary = async () => {
     if (!rawId || loadingAiSummary) return;
@@ -140,7 +217,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Reset local form when switching ticket
+  // Reset local form when switching ticket (strictly on ticket.id change, avoiding polling loops)
   useEffect(() => {
     const initialText = ticket.aiPlan?.comment || ticket.aiSuggestion || '';
     setReplyText(initialText);
@@ -155,9 +232,9 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     setLoadingAiSummary(false);
     setIsAiSummaryExpanded(true);
     setIsRagExpanded(false);
-    setActiveRecTab('ai');
+    setIsCommentsExpanded(false);
     loadDetails();
-  }, [ticket.id, ticket.aiPlan, ticket.aiSuggestion, ticket.expenses, loadDetails]);
+  }, [ticket.id, loadDetails]);
 
   // Network diagnostic runner
   const runDiag = async (targetHost?: string) => {
@@ -542,7 +619,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
   const panelClass = expanded
     ? 'fixed inset-0 z-40 flex flex-col bg-neutral-100 dark:bg-neutral-950 animate-in fade-in duration-150 overflow-hidden'
-    : 'fixed top-0 bottom-0 right-0 z-30 w-[540px] max-w-[94vw] flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-2xl animate-in slide-in-from-right duration-200';
+    : 'fixed top-0 bottom-0 right-0 z-30 flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-2xl animate-in slide-in-from-right duration-200';
 
   const rawComments = details?.comments;
   const commentsList: any[] = Array.isArray(rawComments)
@@ -564,6 +641,32 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     ? (rawAttachments as any).Attachments
     : [];
   const mainAction = getMainActionConfig();
+
+  // Проверка условий показа подсказки WinRM One-Liner (marks.md #5)
+  const hasFailedWorkerAttempt = useMemo(() => {
+    if (!details?.comments || !Array.isArray(details.comments)) return false;
+    return details.comments.some((c: any) => {
+      const text = (c.Comment || c.comment || c.text || '').toLowerCase();
+      return (
+        text.includes('ошибка подключения') ||
+        (text.includes('winrm') && (text.includes('сбой') || text.includes('не удалось') || text.includes('таймаут') || text.includes('отказано'))) ||
+        text.includes('worker error') ||
+        text.includes('failed')
+      );
+    });
+  }, [details?.comments]);
+
+  const isWinRMBlockedWhileOnline = useMemo(() => {
+    const d = multiHostDiag[effectiveHost] || diagStatus;
+    const isOnline = d.ping === 'ok' || d.smb === 'ok';
+    const isWinRMClosed = d.winrm === 'fail';
+    return isOnline && isWinRMClosed;
+  }, [multiHostDiag, effectiveHost, diagStatus]);
+
+  const showWinRMAssistant = Boolean(
+    (ticket.title?.toLowerCase().includes('принтер') || ticket.serviceName?.toLowerCase().includes('принтер')) &&
+    (hasFailedWorkerAttempt || isWinRMBlockedWhileOnline)
+  );
 
   // Adaptive Requester & Equipment Card Component
   const renderRequesterEquipmentCard = () => (
@@ -629,6 +732,21 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
               <span className="text-neutral-400 block text-[9.5px] uppercase font-bold tracking-wider mb-0.5">Размещение</span>
               <span className="text-neutral-800 dark:text-neutral-200 font-medium block truncate" title={[ticket.room || details?.room ? `каб. ${ticket.room || details?.room}` : '', ticket.department || details?.department].filter(Boolean).join(' · ')}>
                 {[ticket.room || details?.room ? `каб. ${ticket.room || details?.room}` : '', ticket.department || details?.department].filter(Boolean).join(' · ')}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Executor chip (rendered if present) */}
+        {ticket.executors && (
+          <div className="flex-1 min-w-[190px] bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 rounded-lg p-2.5 flex items-start gap-2">
+            <div className="w-6 h-6 rounded-md bg-indigo-100 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 flex items-center justify-center shrink-0 mt-0.5">
+              <IconUser size={13} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <span className="text-neutral-400 block text-[9.5px] uppercase font-bold tracking-wider mb-0.5">Исполнитель</span>
+              <span className="text-neutral-900 dark:text-neutral-100 font-semibold block truncate" title={ticket.executors}>
+                {ticket.executors}
               </span>
             </div>
           </div>
@@ -727,8 +845,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
               })}
             </div>
 
-            {/* Operator Assist Card if automatic WinRM is blocked */}
-            {((ticket.title && ticket.title.toLowerCase().includes('принтер')) || (ticket.serviceName && ticket.serviceName.toLowerCase().includes('принтер'))) && (
+            {/* Operator Assist Card if automatic WinRM is blocked (marks.md #5) */}
+            {showWinRMAssistant && (
               <div className="mt-2 p-2.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/60 rounded-lg space-y-1.5 text-xs">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5 text-amber-800 dark:text-amber-400 font-semibold text-[11.5px]">
@@ -764,274 +882,135 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     </div>
   );
 
-  // Dual Recommendation card: AI Synthesis (Strict Grounding) + Rule Engine + RAG Matches
-  const renderAiPlanCard = () => {
-    const aiResolution = details?.ai_suggested_resolution;
-    const rulePlan = ticket.aiPlan;
-    const circuit = details?.circuit || 'green';
-    const circuitReason = details?.circuit_reason || '';
+  // RAG Knowledge Base Precedents Accordion
+  const renderRagPrecedents = () => {
     const kbMatches = details?.kb_matches || [];
-
-    const circuitBadgeCls = {
-      red: 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30',
-      yellow: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30',
-      green: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30',
-    }[circuit] || 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30';
-
-    const circuitLabel = {
-      red: '🔴 RED (On-Prem Ollama)',
-      yellow: '🟡 YELLOW (Sanitized Cloud)',
-      green: '🟢 GREEN (Direct Cloud)',
-    }[circuit] || '🟢 GREEN';
+    if (!kbMatches || kbMatches.length === 0) return null;
 
     return (
-      <div className="space-y-2">
-        <div className="border border-blue-200 dark:border-blue-900/60 rounded-xl p-3 bg-blue-50/50 dark:bg-blue-950/20 shadow-xs space-y-2.5">
-          {/* Header with Dual Tabs and DLP Circuit Badge */}
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-1 bg-neutral-200/70 dark:bg-neutral-800 p-0.5 rounded-lg border border-neutral-300 dark:border-neutral-700">
-              <button
-                type="button"
-                onClick={() => setActiveRecTab('ai')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
-                  activeRecTab === 'ai'
-                    ? 'bg-white dark:bg-neutral-900 text-blue-600 dark:text-blue-400 shadow-xs'
-                    : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
-                }`}
-              >
-                <IconSparkles size={12} />
-                <span>Синтез LLM (Strict Grounding)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveRecTab('rule')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
-                  activeRecTab === 'rule'
-                    ? 'bg-white dark:bg-neutral-900 text-blue-600 dark:text-blue-400 shadow-xs'
-                    : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
-                }`}
-              >
-                <span>⚡ Регламент (Rule Engine)</span>
-              </button>
-            </div>
-
-            {/* Zero Trust DLP Badge */}
-            <span
-              className={`text-[10.5px] font-mono font-medium px-2 py-0.5 rounded-md border ${circuitBadgeCls}`}
-              title={circuitReason ? `Контур безопасности: ${circuitReason}` : `Контур данных: ${circuit}`}
-            >
-              {circuitLabel}
+      <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl overflow-hidden bg-white dark:bg-neutral-900 shadow-xs">
+        <button
+          type="button"
+          onClick={() => setIsRagExpanded(prev => !prev)}
+          className="w-full px-3 py-2 flex items-center justify-between text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/60 transition-colors cursor-pointer"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400">
+              📚 База знаний RAG
+            </span>
+            <span className="text-[10.5px] px-1.5 py-0.2 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 font-semibold font-mono">
+              {kbMatches.length} {kbMatches.length === 1 ? 'прецедент' : 'прецедента'}
             </span>
           </div>
+          <div className="flex items-center gap-1 text-[11px] text-neutral-500">
+            <span>{isRagExpanded ? 'Свернуть' : 'Развернуть'}</span>
+            <IconChevronDown size={14} className={`transition-transform duration-200 ${isRagExpanded ? 'rotate-180' : ''}`} />
+          </div>
+        </button>
 
-          {/* Tab 1: AI Grounded Synthesis */}
-          {activeRecTab === 'ai' && (
-            <div className="space-y-2">
-              <div className="text-[12.5px] text-neutral-800 dark:text-neutral-200">
-                <div className="flex items-center justify-between gap-2 mb-1">
-                  <div className="text-[11px] font-semibold text-neutral-600 dark:text-neutral-400 flex items-center gap-1">
-                    <span>Персонализированный ответ инженера</span>
-                    {loadingDetails && <span className="animate-pulse text-[10px] text-blue-500">(синтез...)</span>}
-                  </div>
-                  <span className="text-[10px] font-mono text-neutral-400">
-                    {circuit === 'red' ? 'Локальная модель' : 'С маскированием PII'}
-                  </span>
-                </div>
-                <div className="bg-white/95 dark:bg-neutral-900/90 p-2.5 rounded-lg border border-neutral-200/90 dark:border-neutral-800 text-[12px] text-neutral-800 dark:text-neutral-200 leading-relaxed font-sans">
-                  {aiResolution || rulePlan?.comment || 'Генерация заземленного ответа инженера...'}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between pt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
-                <div>
-                  Целевой статус: <strong className="text-neutral-700 dark:text-neutral-300">{rulePlan?.targetStatusName || 'В работе'}</strong>
-                  {rulePlan?.expensesMinutes ? ` · Списание: ${rulePlan.expensesMinutes} мин` : ''}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const textToSet = aiResolution || rulePlan?.comment || '';
-                    setReplyText(textToSet);
-                    if (rulePlan?.expensesMinutes) setExpenses(rulePlan.expensesMinutes);
-                    if (rulePlan?.targetStatusId) setSelectedStatusOverride(rulePlan.targetStatusId);
-                    onToast({ type: 'info', message: 'Синтез LLM подставлен в редактор ответа' });
-                  }}
-                  className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-semibold cursor-pointer inline-flex items-center gap-1"
+        {isRagExpanded && (
+          <div className="p-3 pt-1 border-t border-neutral-100 dark:border-neutral-800 space-y-2.5">
+            {kbMatches.map((m: any, idx: number) => {
+              const pct = Math.round((1 - (m.distance || 0.3)) * 100);
+              return (
+                <div
+                  key={m.task_id || idx}
+                  className="p-2.5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-950/40 text-xs space-y-1.5"
                 >
-                  <IconPencil size={11} />
-                  <span>Вставить в ответ</span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Tab 2: Rule Engine Deterministic Template */}
-          {activeRecTab === 'rule' && (
-            <div className="space-y-2">
-              <div className="text-[12.5px] text-neutral-800 dark:text-neutral-200">
-                <div className="font-semibold mb-1 text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${getStatusDotClass(rulePlan?.targetStatusId || 27)}`} />
-                  <span>{rulePlan?.actionTitle || 'Стандартное действие'}</span>
-                  {rulePlan?.actionBadge && (
-                    <span className="text-[10px] font-medium px-1.5 py-0.2 rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800">
-                      {rulePlan.actionBadge}
-                    </span>
-                  )}
-                </div>
-                <div className="bg-white/95 dark:bg-neutral-900/90 p-2.5 rounded-lg border border-neutral-200/90 dark:border-neutral-800 text-[12px] text-neutral-700 dark:text-neutral-300 italic leading-relaxed">
-                  «{rulePlan?.comment || ticket.aiSuggestion || 'Принято в работу специалистом 1-й линии техподдержки.'}»
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between pt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
-                <div>
-                  Статус: <strong className="text-neutral-700 dark:text-neutral-300">{rulePlan?.targetStatusName || 'В работе'}</strong> · Списание: <strong>{rulePlan?.expensesMinutes || 10} мин</strong>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setReplyText(rulePlan?.comment || ticket.aiSuggestion || '');
-                    setExpenses(rulePlan?.expensesMinutes || 10);
-                    if (rulePlan?.targetStatusId) setSelectedStatusOverride(rulePlan.targetStatusId);
-                    onToast({ type: 'info', message: 'Шаблон регламента подставлен в редактор' });
-                  }}
-                  className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-semibold cursor-pointer inline-flex items-center gap-1"
-                >
-                  <IconPencil size={11} />
-                  <span>Вставить регламент</span>
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* RAG Knowledge Base Precedents Accordion */}
-        {kbMatches.length > 0 && (
-          <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl overflow-hidden bg-white dark:bg-neutral-900 shadow-xs">
-            <button
-              type="button"
-              onClick={() => setIsRagExpanded(prev => !prev)}
-              className="w-full px-3 py-2 flex items-center justify-between text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/60 transition-colors cursor-pointer"
-            >
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400">
-                  📚 База знаний pgvector RAG
-                </span>
-                <span className="text-[10.5px] px-1.5 py-0.2 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 font-semibold font-mono">
-                  {kbMatches.length} {kbMatches.length === 1 ? 'прецедент' : 'прецедента'}
-                </span>
-              </div>
-              <div className="flex items-center gap-1 text-[11px] text-neutral-500">
-                <span>{isRagExpanded ? 'Свернуть' : 'Развернуть'}</span>
-                <IconChevronDown size={14} className={`transition-transform duration-200 ${isRagExpanded ? 'rotate-180' : ''}`} />
-              </div>
-            </button>
-
-            {isRagExpanded && (
-              <div className="p-3 pt-1 border-t border-neutral-100 dark:border-neutral-800 space-y-2.5">
-                {kbMatches.map((m: any, idx: number) => {
-                  const pct = Math.round((1 - (m.distance || 0.3)) * 100);
-                  return (
-                    <div
-                      key={m.task_id || idx}
-                      className="p-2.5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-950/40 text-xs space-y-1.5"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 font-semibold text-neutral-900 dark:text-neutral-100 truncate">
-                          <span className="text-purple-600 dark:text-purple-400 font-mono">#{m.task_id}</span>
-                          <span className="truncate">{m.name || m.problem}</span>
-                        </div>
-                        <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/60 dark:text-purple-300 font-semibold shrink-0">
-                          {pct}% сходство
-                        </span>
-                      </div>
-                      {m.problem && (
-                        <p className="text-[11px] text-neutral-500 dark:text-neutral-400 line-clamp-2">
-                          <strong>Симптом:</strong> {m.problem}
-                        </p>
-                      )}
-                      {m.solution && (
-                        <div className="bg-white dark:bg-neutral-900 p-2 rounded border border-neutral-200 dark:border-neutral-800 text-[11.5px] text-neutral-700 dark:text-neutral-300 leading-relaxed">
-                          <strong>Решение:</strong> {m.solution}
-                        </div>
-                      )}
-                      <div className="flex justify-end pt-0.5">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (m.solution) {
-                              setReplyText(m.solution);
-                              onToast({ type: 'info', message: `Решение из заявки #${m.task_id} подставлено в редактор` });
-                            }
-                          }}
-                          className="text-[11px] text-purple-600 dark:text-purple-400 hover:underline font-semibold cursor-pointer"
-                        >
-                          Вставить решение в ответ →
-                        </button>
-                      </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 font-semibold text-neutral-900 dark:text-neutral-100 truncate">
+                      <span className="text-purple-600 dark:text-purple-400 font-mono">#{m.task_id}</span>
+                      <span className="truncate">{m.name || m.problem}</span>
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/60 dark:text-purple-300 font-semibold shrink-0">
+                      {pct}% сходство
+                    </span>
+                  </div>
+                  {m.problem && (
+                    <p className="text-[11px] text-neutral-500 dark:text-neutral-400 line-clamp-2">
+                      <strong>Симптом:</strong> {m.problem}
+                    </p>
+                  )}
+                  {m.solution && (
+                    <div className="bg-white dark:bg-neutral-900 p-2 rounded border border-neutral-200 dark:border-neutral-800 text-[11.5px] text-neutral-700 dark:text-neutral-300 leading-relaxed">
+                      <strong>Решение:</strong> {m.solution}
+                    </div>
+                  )}
+                  <div className="flex justify-end pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (m.solution) {
+                          setReplyText(m.solution);
+                          onToast({ type: 'info', message: `Решение из заявки #${m.task_id} подставлено в редактор` });
+                        }
+                      }}
+                      className="text-[11px] text-purple-600 dark:text-purple-400 hover:underline font-semibold cursor-pointer"
+                    >
+                      Вставить решение в ответ →
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
     );
   };
 
-  // Attachments section
+  // Attachments section - compact view with click-to-preview lightbox modal (marks.md #2)
   const renderAttachments = () => (
     attachmentsList.length > 0 ? (
-      <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 bg-white dark:bg-neutral-900 shadow-xs space-y-2">
-        <div className="flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wider text-neutral-400">
-          <IconPaperclip size={12} />
-          <span>Вложения и скриншоты ({attachmentsList.length})</span>
+      <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl p-2.5 bg-white dark:bg-neutral-900 shadow-xs space-y-1.5">
+        <div className="flex items-center justify-between text-[10.5px] font-bold uppercase tracking-wider text-neutral-400">
+          <div className="flex items-center gap-1.5">
+            <IconPaperclip size={12} />
+            <span>Вложения ({attachmentsList.length})</span>
+          </div>
+          <span className="text-[9.5px] font-normal lowercase text-neutral-400">клик для превью</span>
         </div>
 
-        {attachmentsList.some(att => /\.(png|jpe?g|bmp|webp|gif)$/i.test(att.name || '')) && (
-          <div className="grid grid-cols-2 gap-2">
-            {attachmentsList.filter(att => /\.(png|jpe?g|bmp|webp|gif)$/i.test(att.name || '')).map(att => (
-              <a
-                key={att.id}
-                href={`/api/v1/tasks/${rawId}/attachments/${att.id}`}
-                target="_blank"
-                rel="noreferrer"
-                className="group relative block rounded-lg overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 hover:ring-2 hover:ring-blue-500 transition-all"
-              >
-                <img
-                  src={`/api/v1/tasks/${rawId}/attachments/${att.id}`}
-                  alt={att.name}
-                  className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-200"
-                  loading="lazy"
-                  onError={(e) => {
-                    (e.target as HTMLElement).style.display = 'none';
-                  }}
-                />
-                <div className="p-1 bg-white/95 dark:bg-neutral-900/95 text-[10.5px] font-mono truncate text-neutral-700 dark:text-neutral-300 flex items-center gap-1">
-                  <IconPaperclip size={10} className="shrink-0 text-neutral-400" />
-                  <span className="truncate">{att.name}</span>
-                </div>
-              </a>
-            ))}
-          </div>
-        )}
+        <div className="flex flex-wrap gap-1.5">
+          {attachmentsList.map((att: any, idx: number) => {
+            const isImg = /\.(png|jpe?g|bmp|webp|gif)$/i.test(att.name || att.FileName || '');
+            const attId = att.id || att.Id || idx + 1;
+            const attName = att.name || att.FileName || `Вложение ${idx + 1}`;
+            const downloadUrl = `/api/v1/tasks/${rawId}/attachments/${attId}?name=${encodeURIComponent(attName)}`;
 
-        <div className="space-y-1">
-          {attachmentsList.map(att => (
-            <a
-              key={att.id}
-              href={`/api/v1/tasks/${rawId}/attachments/${att.id}`}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center justify-between p-2 rounded-lg bg-neutral-50 dark:bg-neutral-800/60 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors text-[12px]"
-            >
-              <span className="truncate font-medium text-blue-600 dark:text-blue-400">{att.name}</span>
-              <span className="text-[11px] text-neutral-400 font-mono shrink-0 ml-2">
-                {att.size ? `${Math.round(att.size / 1024)} КБ` : 'Скачать'}
-              </span>
-            </a>
-          ))}
+            return (
+              <button
+                key={`${attId}-${idx}`}
+                type="button"
+                onClick={() => {
+                  if (isImg) {
+                    setImgZoom(false);
+                    setPreviewModalImg({ url: downloadUrl, name: attName });
+                  } else {
+                    window.open(downloadUrl, '_blank');
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-neutral-200 dark:border-neutral-750 bg-neutral-50 dark:bg-neutral-800/80 hover:bg-blue-50 dark:hover:bg-blue-950/40 hover:border-blue-300 dark:hover:border-blue-800 text-[11.5px] font-medium text-neutral-700 dark:text-neutral-200 transition-colors cursor-pointer group max-w-full"
+                title={isImg ? `Просмотреть скриншот: ${attName}` : `Открыть файл: ${attName}`}
+              >
+                {isImg ? (
+                  <svg className="w-3.5 h-3.5 text-blue-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                    <circle cx="8.5" cy="8.5" r="1.5" />
+                    <polyline points="21 15 16 10 5 21" />
+                  </svg>
+                ) : (
+                  <IconPaperclip size={12} className="text-neutral-400 group-hover:text-blue-500 shrink-0" />
+                )}
+                <span className="truncate max-w-[220px]">{attName}</span>
+                {att.size ? (
+                  <span className="text-[10px] text-neutral-400 font-mono shrink-0">
+                    {Math.round(att.size / 1024)} КБ
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
         </div>
       </div>
     ) : null
@@ -1049,146 +1028,188 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     </div>
   );
 
-  // Lifetime Comments section
-  const renderCommentsHistory = (expandedMode = false) => (
-    <div className={`bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 shadow-xs space-y-2 ${expandedMode ? 'flex flex-col flex-1 min-h-0' : ''}`}>
-      <span className="text-[10.5px] font-bold uppercase tracking-wider text-neutral-400 block shrink-0">
-        История переписки {loadingDetails ? '(Загрузка...)' : `(${commentsList.length})`}
-      </span>
+  // Lifetime Comments section (Collapsible by default for clean UX)
+  const renderCommentsHistory = (expandedMode = false) => {
+    const isVisible = expandedMode || isCommentsExpanded;
+    return (
+      <div className={`bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3 shadow-xs space-y-2 ${expandedMode ? 'flex flex-col flex-1 min-h-0' : ''}`}>
+        <button
+          type="button"
+          onClick={() => setIsCommentsExpanded(prev => !prev)}
+          className="w-full flex items-center justify-between text-left cursor-pointer group"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[10.5px] font-bold uppercase tracking-wider text-neutral-500 group-hover:text-neutral-800 dark:group-hover:text-neutral-200 transition-colors">
+              История переписки
+            </span>
+            <span className="text-[10px] px-2 py-0.2 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 font-semibold font-mono">
+              {loadingDetails ? 'Загрузка...' : `${commentsList.length} ${commentsList.length === 1 ? 'сообщение' : 'сообщений'}`}
+            </span>
+          </div>
+          <div className="flex items-center gap-1 text-[11px] text-neutral-400 group-hover:text-neutral-600 dark:group-hover:text-neutral-200">
+            <span>{isVisible ? 'Свернуть' : 'Развернуть'}</span>
+            <IconChevronDown size={14} className={`transition-transform duration-200 ${isVisible ? 'rotate-180' : ''}`} />
+          </div>
+        </button>
 
-      {/* AI Summary (TL;DR) for Comment Threads */}
-      {commentsList.length >= 2 && (
-        <div className="border border-blue-200 dark:border-blue-900/60 rounded-xl overflow-hidden bg-blue-50/40 dark:bg-blue-950/20 shadow-xs">
-          {!aiSummary && !loadingAiSummary ? (
-            <div className="p-2.5 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-300">
-                <IconSparkles size={13} className="text-blue-600 dark:text-blue-400 shrink-0" />
-                <span className="truncate">Цепочка из {commentsList.length} сообщений</span>
-              </div>
-              <button
-                type="button"
-                onClick={handleGenerateAiSummary}
-                className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors shrink-0"
-              >
-                <IconSparkles size={11} />
-                <span>AI Сводка (TL;DR)</span>
-              </button>
-            </div>
-          ) : loadingAiSummary ? (
-            <div className="p-3 flex items-center justify-center gap-2 text-xs text-blue-600 dark:text-blue-400">
-              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-              </svg>
-              <span>AI Hub анализирует цепочку переписки...</span>
-            </div>
-          ) : aiSummary ? (
-            <div className="p-3 space-y-2 text-xs">
-              <div className="flex items-center justify-between border-b border-blue-200/60 dark:border-blue-900/40 pb-1.5">
-                <div className="flex items-center gap-1.5 font-bold text-blue-800 dark:text-blue-300">
-                  <IconSparkles size={13} />
-                  <span>AI Сводка диалога (TL;DR)</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleGenerateAiSummary}
-                    className="text-[10.5px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
-                  >
-                    Обновить
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsAiSummaryExpanded(prev => !prev)}
-                    className="text-[10.5px] text-neutral-500 hover:underline cursor-pointer"
-                  >
-                    {isAiSummaryExpanded ? 'Свернуть' : 'Развернуть'}
-                  </button>
-                </div>
-              </div>
-
-              {isAiSummaryExpanded && (
-                <div className="space-y-1.5 pt-0.5">
-                  <div>
-                    <span className="font-semibold text-neutral-800 dark:text-neutral-200">Суть проблемы: </span>
-                    <span className="text-neutral-700 dark:text-neutral-300">{aiSummary.core_problem}</span>
+        {isVisible && (
+          <div className="space-y-2 pt-1 border-t border-neutral-100 dark:border-neutral-800">
+            {/* AI Summary (TL;DR) for Comment Threads */}
+            {commentsList.length >= 2 && (
+              <div className="border border-blue-200 dark:border-blue-900/60 rounded-xl overflow-hidden bg-blue-50/40 dark:bg-blue-950/20 shadow-xs">
+                {!aiSummary && !loadingAiSummary ? (
+                  <div className="p-2.5 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-300">
+                      <IconSparkles size={13} className="text-blue-600 dark:text-blue-400 shrink-0" />
+                      <span className="truncate">Цепочка из {commentsList.length} сообщений</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleGenerateAiSummary}
+                      className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors shrink-0"
+                    >
+                      <IconSparkles size={11} />
+                      <span>AI Сводка (TL;DR)</span>
+                    </button>
                   </div>
-
-                  {aiSummary.actions_taken && aiSummary.actions_taken.length > 0 && (
-                    <div>
-                      <span className="font-semibold text-neutral-800 dark:text-neutral-200">Предпринятые действия: </span>
-                      <ul className="list-disc list-inside text-neutral-600 dark:text-neutral-400 space-y-0.5 pl-1">
-                        {aiSummary.actions_taken.map((act, i) => (
-                          <li key={i}>{act}</li>
-                        ))}
-                      </ul>
+                ) : loadingAiSummary ? (
+                  <div className="p-3 flex items-center justify-center gap-2 text-xs text-blue-600 dark:text-blue-400">
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                    </svg>
+                    <span>AI Hub анализирует цепочку переписки...</span>
+                  </div>
+                ) : aiSummary ? (
+                  <div className="p-3 space-y-2 text-xs">
+                    <div className="flex items-center justify-between border-b border-blue-200/60 dark:border-blue-900/40 pb-1.5">
+                      <div className="flex items-center gap-1.5 font-bold text-blue-800 dark:text-blue-300">
+                        <IconSparkles size={13} />
+                        <span>AI Сводка диалога (TL;DR)</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleGenerateAiSummary}
+                          className="text-[10.5px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                        >
+                          Обновить
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsAiSummaryExpanded(prev => !prev)}
+                          className="text-[10.5px] text-neutral-500 hover:underline cursor-pointer"
+                        >
+                          {isAiSummaryExpanded ? 'Свернуть' : 'Развернуть'}
+                        </button>
+                      </div>
                     </div>
-                  )}
 
-                  {aiSummary.current_status && (
-                    <div>
-                      <span className="font-semibold text-neutral-800 dark:text-neutral-200">Текущее состояние: </span>
-                      <span className="text-neutral-700 dark:text-neutral-300">{aiSummary.current_status}</span>
-                    </div>
-                  )}
+                    {isAiSummaryExpanded && (
+                      <div className="space-y-1.5 pt-0.5">
+                        <div>
+                          <span className="font-semibold text-neutral-800 dark:text-neutral-200">Суть проблемы: </span>
+                          <span className="text-neutral-700 dark:text-neutral-300">{aiSummary.core_problem}</span>
+                        </div>
+                        {aiSummary.actions_taken && aiSummary.actions_taken.length > 0 && (
+                          <div>
+                            <span className="font-semibold text-neutral-800 dark:text-neutral-200">Предпринятые действия: </span>
+                            <ul className="list-disc list-inside text-neutral-600 dark:text-neutral-400 space-y-0.5 pl-1">
+                              {aiSummary.actions_taken.map((act, i) => (
+                                <li key={i}>{act}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {aiSummary.current_status && (
+                          <div>
+                            <span className="font-semibold text-neutral-800 dark:text-neutral-200">Текущее состояние: </span>
+                            <span className="text-neutral-700 dark:text-neutral-300">{aiSummary.current_status}</span>
+                          </div>
+                        )}
+                        {aiSummary.recommended_next_step && (
+                          <div className="bg-blue-100/70 dark:bg-blue-900/30 p-2 rounded border border-blue-200 dark:border-blue-800">
+                            <span className="font-semibold text-blue-900 dark:text-blue-200">Рекомендованный шаг: </span>
+                            <span className="text-blue-800 dark:text-blue-300">{aiSummary.recommended_next_step}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            )}
 
-                  {aiSummary.recommended_next_step && (
-                    <div className="bg-blue-100/70 dark:bg-blue-900/30 p-2 rounded border border-blue-200 dark:border-blue-800">
-                      <span className="font-semibold text-blue-900 dark:text-blue-200">Рекомендованный шаг: </span>
-                      <span className="text-blue-800 dark:text-blue-300">{aiSummary.recommended_next_step}</span>
+            {/* Comments Stream */}
+            <div className={`space-y-2 overflow-y-auto pr-1 ${expandedMode ? 'flex-1 min-h-0' : 'max-h-[350px]'}`}>
+              {commentsList.map((c: any, idx: number) => {
+                const author = c.author || c.Editor || c.UserName || c.Creator || 'Сотрудник';
+                const text = c.text || c.Comments || c.Comment || c.Description || '';
+                const isPrivate = Boolean(c.is_private || c.IsPrivate);
+                const created = c.created || c.Date || c.Created || '';
+                const commentId = c.id || c.Id || idx;
+                if (!text) return null;
+                return (
+                  <div
+                    key={commentId}
+                    className={`p-2.5 rounded-lg border text-[12px] ${
+                      isPrivate
+                        ? 'border-amber-200 dark:border-amber-800/60 bg-amber-50/50 dark:bg-amber-950/20'
+                        : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-neutral-950/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-semibold text-neutral-900 dark:text-neutral-100">{author}</span>
+                        {isPrivate && (
+                          <span className="text-[10px] bg-amber-100 text-amber-900 dark:bg-amber-900/80 dark:text-amber-200 px-1 py-0.2 rounded font-bold">
+                            Скрытый
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10.5px] text-neutral-400 font-mono">{formatTime(created)}</span>
                     </div>
-                  )}
+                    <p className="text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap">{text}</p>
+                  </div>
+                );
+              })}
+
+              {commentsList.length === 0 && !loadingDetails && (
+                <div className="text-[12px] text-neutral-400 italic py-2 text-center">
+                  В этой заявке пока нет комментариев
                 </div>
               )}
             </div>
-          ) : null}
-        </div>
-      )}
-
-      <div className={`space-y-2 overflow-y-auto pr-1 ${expandedMode ? 'flex-1 min-h-0' : 'max-h-[350px]'}`}>
-        {commentsList.map((c: any, idx: number) => {
-          const author = c.author || c.Editor || c.UserName || c.Creator || 'Сотрудник';
-          const text = c.text || c.Comments || c.Comment || c.Description || '';
-          const isPrivate = Boolean(c.is_private || c.IsPrivate);
-          const created = c.created || c.Date || c.Created || '';
-          const commentId = c.id || c.Id || idx;
-          if (!text) return null;
-          return (
-            <div
-              key={commentId}
-              className={`p-2.5 rounded-lg border text-[12px] ${
-                isPrivate
-                  ? 'border-amber-200 dark:border-amber-800/60 bg-amber-50/50 dark:bg-amber-950/20'
-                  : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-neutral-950/40'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="font-semibold text-neutral-900 dark:text-neutral-100">{author}</span>
-                  {isPrivate && (
-                    <span className="text-[10px] bg-amber-100 text-amber-900 dark:bg-amber-900/80 dark:text-amber-200 px-1 py-0.2 rounded font-bold">
-                      Скрытый
-                    </span>
-                  )}
-                </div>
-                <span className="text-[10.5px] text-neutral-400 font-mono">{formatTime(created)}</span>
-              </div>
-              <p className="text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap">{text}</p>
-            </div>
-          );
-        })}
-
-        {commentsList.length === 0 && !loadingDetails && (
-          <div className="text-[12px] text-neutral-400 italic py-2 text-center">
-            В этой заявке пока нет комментариев
           </div>
         )}
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
-    <div className={panelClass}>
+    <div
+      className={panelClass}
+      style={expanded ? undefined : { width: `${inspectorWidth}px`, maxWidth: '94vw' }}
+    >
+      {/* Draggable resize handle on left border (marks.md #6) */}
+      {!expanded && (
+        <div
+          onMouseDown={(e) => {
+            e.preventDefault();
+            setIsResizing(true);
+          }}
+          className={`absolute -left-1.5 top-0 bottom-0 w-3 cursor-col-resize z-30 transition-colors group flex items-center justify-center ${
+            isResizing ? 'bg-blue-500/20' : 'hover:bg-blue-500/20'
+          }`}
+          title="Потяните для изменения ширины панели (дважды кликните для сброса к 560px)"
+          onDoubleClick={() => {
+            setInspectorWidth(560);
+            localStorage.setItem('intralink_inspector_width', '560');
+          }}
+        >
+          <div className="w-0.5 h-12 rounded-full bg-neutral-300 dark:bg-neutral-700 group-hover:bg-blue-500 transition-colors" />
+        </div>
+      )}
       {/* 1. Header */}
       <div className="px-4 py-3 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 shrink-0 sticky top-0 z-20">
         <div className="flex items-center justify-between gap-2 mb-1.5">
@@ -1235,7 +1256,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
               <IconExternalLink size={10} />
             </a>
             <button
-              onClick={() => setExpanded(e => !e)}
+              onClick={toggleExpanded}
               className="w-6 h-6 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer border border-neutral-200 dark:border-neutral-700"
               title={expanded ? 'Свернуть' : 'Развернуть'}
             >
@@ -1268,9 +1289,9 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
               {renderRequesterEquipmentCard()}
               {renderDescription()}
               {renderAttachments()}
+              {renderRagPrecedents()}
             </div>
             <div className="flex flex-col gap-3 min-h-0 overflow-hidden">
-              {renderAiPlanCard()}
               {renderCommentsHistory(true)}
             </div>
           </div>
@@ -1278,61 +1299,138 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       ) : (
         <div className="flex-1 overflow-y-auto">
           <div className="p-3.5 space-y-3">
-            {renderAiPlanCard()}
             {renderRequesterEquipmentCard()}
-            {renderAttachments()}
             {renderDescription()}
+            {renderAttachments()}
+            {renderRagPrecedents()}
             {renderCommentsHistory()}
           </div>
         </div>
       )}
 
-      {/* 3. Compact Minimalist Dispatch Footer */}
+      {/* 3. Consolidated Action Footer */}
       <div className="border-t border-neutral-200 dark:border-neutral-800 p-3 shrink-0 bg-white dark:bg-neutral-900 shadow-md space-y-2">
-        {/* Row 1: Mode Switch, Template Dropdown & Reset Pills */}
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-2">
-            <div className="flex bg-neutral-100 dark:bg-neutral-800 p-0.5 rounded-lg border border-neutral-200 dark:border-neutral-700">
-              <button
-                type="button"
-                onClick={() => setReplyMode('reply')}
-                className={`px-2.5 py-0.5 rounded-md text-[11.5px] font-semibold transition-colors cursor-pointer ${
-                  replyMode === 'reply'
-                    ? 'bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-2xs'
-                    : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
-                }`}
-              >
-                Пользователю
-              </button>
-              <button
-                type="button"
-                onClick={() => setReplyMode('internal')}
-                className={`px-2.5 py-0.5 rounded-md text-[11.5px] font-semibold transition-colors cursor-pointer ${
-                  replyMode === 'internal'
-                    ? 'bg-amber-100 dark:bg-amber-900/80 text-amber-900 dark:text-amber-100 shadow-2xs'
-                    : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
-                }`}
-              >
-                Скрытый
-              </button>
-            </div>
+        {/* Info & Source Indicator Bar */}
+        <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Rule Engine & AI Solution Badges */}
+            {ticket.hasRuleEngine && (
+              <span className="px-2 py-0.5 rounded text-[10.5px] font-semibold border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 inline-flex items-center gap-1">
+                <span>⚡</span>
+                <span>Rule Engine</span>
+                {ticket.aiPlan?.actionBadge && <span className="opacity-75 font-normal">({ticket.aiPlan.actionBadge})</span>}
+              </span>
+            )}
+            {ticket.hasAiSolution && (
+              <span className="px-2 py-0.5 rounded text-[10.5px] font-semibold border border-purple-300 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/70 text-purple-700 dark:text-purple-300 inline-flex items-center gap-1">
+                <IconSparkles size={10} className="text-purple-600 dark:text-purple-400" />
+                <span>AI Решение</span>
+              </span>
+            )}
 
-            {selectedStatusOverride !== null && (
-              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-md text-[11px] font-medium text-neutral-800 dark:text-neutral-200">
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${getStatusDotClass(selectedStatusOverride)}`} />
-                <span>Статус: {getStatusNameById(selectedStatusOverride)}</span>
+            {/* Zero Trust DLP Circuit */}
+            <span
+              className={`text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded border ${
+                details?.circuit === 'red'
+                  ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30'
+                  : details?.circuit === 'yellow'
+                  ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30'
+                  : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+              }`}
+              title={details?.circuit_reason ? `Контур безопасности: ${details.circuit_reason}` : `Контур данных: ${details?.circuit || 'green'}`}
+            >
+              {details?.circuit === 'red' ? '🔴 RED' : details?.circuit === 'yellow' ? '🟡 YELLOW' : '🟢 GREEN'}
+            </span>
+
+            {/* Target Status Pill */}
+            <div className="flex items-center gap-1.5 px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-md text-[11px] font-medium text-neutral-800 dark:text-neutral-200">
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${getStatusDotClass(mainAction.statusId)}`} />
+              <span>Целевой статус: <strong>{getStatusNameById(mainAction.statusId)}</strong></span>
+              {selectedStatusOverride !== null && (
                 <button
                   type="button"
                   onClick={() => setSelectedStatusOverride(null)}
                   className="hover:text-rose-600 font-bold ml-1 cursor-pointer p-0.5"
                   title="Сбросить статус к стандартному"
                 >
-                  <svg width="8" height="8" viewBox="0 0 10 10" fill="none">
-                    <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                  </svg>
+                  ✕
                 </button>
-              </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Кнопка ручного перезапуска анализа (marks.md #7) */}
+            <button
+              type="button"
+              onClick={handleReanalyze}
+              disabled={reanalyzing}
+              className="text-[11px] text-neutral-600 dark:text-neutral-300 hover:text-blue-600 dark:hover:text-blue-400 font-medium cursor-pointer inline-flex items-center gap-1 shrink-0 px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-750 border border-neutral-200 dark:border-neutral-700 transition-colors disabled:opacity-50"
+              title="Принудительно сбросить кэш и перепрогнать правила и AI-синтез для этой заявки"
+            >
+              <svg className={`w-3 h-3 ${reanalyzing ? 'animate-spin text-blue-500' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
+              </svg>
+              <span>{reanalyzing ? 'Анализ...' : 'Переанализировать'}</span>
+            </button>
+
+            {/* If AI synthesized text is available and not applied */}
+            {details?.ai_suggested_resolution && details.ai_suggested_resolution !== replyText && (
+              <button
+                type="button"
+                onClick={() => {
+                  setReplyText(details.ai_suggested_resolution!);
+                  onToast({ type: 'info', message: 'Синтез AI подставлен в ответ' });
+                }}
+                className="text-[11px] text-purple-600 dark:text-purple-400 hover:underline font-semibold cursor-pointer inline-flex items-center gap-1 shrink-0"
+                title="Подставить ответ, сформированный AI"
+              >
+                <IconSparkles size={11} />
+                <span>Вставить ответ AI</span>
+              </button>
             )}
+
+            {/* Expenses Input */}
+            <div className="flex items-center gap-1 text-[11.5px] text-neutral-500 dark:text-neutral-400 font-medium">
+              <span>Списание:</span>
+              <input
+                type="number"
+                value={expenses}
+                onChange={e => setExpenses(Number(e.target.value))}
+                min={0}
+                max={240}
+                className="w-12 h-6 px-1 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded text-neutral-900 dark:text-neutral-100 text-center font-mono font-bold text-[11.5px]"
+              />
+              <span>мин</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Row 2: Mode Switch, Templates & Clear */}
+        <div className="flex items-center justify-between gap-2 flex-wrap pt-0.5">
+          <div className="flex bg-neutral-100 dark:bg-neutral-800 p-0.5 rounded-lg border border-neutral-200 dark:border-neutral-700">
+            <button
+              type="button"
+              onClick={() => setReplyMode('reply')}
+              className={`px-2.5 py-0.5 rounded-md text-[11.5px] font-semibold transition-colors cursor-pointer ${
+                replyMode === 'reply'
+                  ? 'bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-2xs'
+                  : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+              }`}
+            >
+              Пользователю
+            </button>
+            <button
+              type="button"
+              onClick={() => setReplyMode('internal')}
+              className={`px-2.5 py-0.5 rounded-md text-[11.5px] font-semibold transition-colors cursor-pointer ${
+                replyMode === 'internal'
+                  ? 'bg-amber-100 dark:bg-amber-900/80 text-amber-900 dark:text-amber-100 shadow-2xs'
+                  : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+              }`}
+            >
+              Скрытый
+            </button>
           </div>
 
           <div className="flex items-center gap-1.5">
@@ -1364,12 +1462,12 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           </div>
         </div>
 
-        {/* Row 2: Textarea */}
+        {/* Row 3: Textarea */}
         <textarea
           value={replyText}
           onChange={e => setReplyText(e.target.value)}
           placeholder={replyMode === 'reply' ? 'Напишите комментарий для пользователя...' : 'Скрытый комментарий (только для инженеров)...'}
-          rows={2}
+          rows={3}
           className={`w-full px-3 py-2 text-[13px] rounded-lg border text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-blue-500/50 transition-colors resize-none ${
             replyMode === 'internal'
               ? 'border-amber-300 dark:border-amber-800 bg-amber-50/20 dark:bg-amber-950/20'
@@ -1377,22 +1475,9 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           }`}
         />
 
-        {/* Row 3: Action Controls Bar */}
+        {/* Row 4: Action Controls Bar */}
         <div className="flex items-center justify-between gap-2 pt-0.5 flex-wrap">
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 text-[11.5px] text-neutral-500 dark:text-neutral-400 font-medium">
-              <span>Списание:</span>
-              <input
-                type="number"
-                value={expenses}
-                onChange={e => setExpenses(Number(e.target.value))}
-                min={0}
-                max={240}
-                className="w-12 h-6 px-1 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded text-neutral-900 dark:text-neutral-100 text-center font-mono font-bold text-[11.5px]"
-              />
-              <span>мин</span>
-            </div>
-
             {/* Other Statuses Menu */}
             <div className="relative" ref={actionsMenuRef}>
               <button
@@ -1519,6 +1604,64 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           </div>
         </div>
       </div>
+
+      {/* Lightbox Modal for Image Preview (marks.md #2) */}
+      {previewModalImg && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex flex-col items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => setPreviewModalImg(null)}
+        >
+          {/* Top Bar */}
+          <div
+            className="w-full max-w-4xl flex items-center justify-between pb-3 text-white px-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 truncate">
+              <IconPaperclip size={14} className="text-neutral-400" />
+              <span className="font-mono text-sm font-semibold truncate">{previewModalImg.name}</span>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={() => setImgZoom(z => !z)}
+                className="px-2.5 py-1 text-xs rounded bg-white/10 hover:bg-white/20 transition-colors cursor-pointer"
+              >
+                {imgZoom ? '1x' : '1.5x Zoom'}
+              </button>
+              <a
+                href={previewModalImg.url}
+                download={previewModalImg.name}
+                className="px-3 py-1 text-xs font-semibold rounded bg-blue-600 hover:bg-blue-500 transition-colors cursor-pointer text-white"
+              >
+                Скачать
+              </a>
+              <button
+                type="button"
+                onClick={() => setPreviewModalImg(null)}
+                className="p-1 rounded-full hover:bg-white/20 text-neutral-300 hover:text-white transition-colors cursor-pointer"
+                title="Закрыть (Esc)"
+              >
+                <IconClose size={18} />
+              </button>
+            </div>
+          </div>
+
+          {/* Image Canvas */}
+          <div
+            className="max-w-4xl max-h-[82vh] overflow-auto flex items-center justify-center rounded-xl bg-neutral-900/60 p-2 border border-white/10"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img
+              src={previewModalImg.url}
+              alt={previewModalImg.name}
+              className={`rounded-lg object-contain transition-all duration-200 cursor-zoom-in ${
+                imgZoom ? 'max-w-none scale-150' : 'max-w-full max-h-[78vh]'
+              }`}
+              onClick={() => setImgZoom(z => !z)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

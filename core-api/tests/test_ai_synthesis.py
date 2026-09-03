@@ -229,3 +229,66 @@ async def test_sync_historical_closed_tasks_canonization():
         assert "Срочно помогите" not in call_kwargs["problem"]
         assert "Spooler" in call_kwargs["solution"]
         assert "root_cause" in call_kwargs["classification_data"]
+
+
+# ===========================================================================
+# 5. Тесты Quality Gate (is_informative_solution) и привязки к регламенту
+# ===========================================================================
+
+
+def test_is_informative_solution_quality_gate():
+    """Проверка фильтра качества: отсечение неинформативных закрытых заявок."""
+    from app.services.ai_synthesis import is_informative_solution
+
+    # Пустые и шаблонные отписки не должны проходить Quality Gate
+    assert is_informative_solution("") is False
+    assert is_informative_solution("ок") is False
+    assert is_informative_solution("выполнено") is False
+    assert is_informative_solution("готово") is False
+    assert is_informative_solution("Заявка выполнена в штатном режиме.") is False
+    assert is_informative_solution("заявка выполнена в штатном режиме") is False
+    assert is_informative_solution("все работает спасибо") is False
+    assert is_informative_solution("короткий текст") is False
+
+    # Содержательные технические решения должны успешно проходить
+    assert is_informative_solution(
+        "Выполнена замена жесткого диска на SSD Kingston 480GB и установка Windows 10."
+    ) is True
+    assert is_informative_solution(
+        "Очистили кэш пользователя в папке AppData/1C, информационная база успешно запущена."
+    ) is True
+
+
+def test_synthesize_deterministic_fallback_with_rule_decision():
+    """Проверка того, что регламент из Rule Engine имеет наивысший приоритет."""
+    task = {"Id": 140251, "Name": "Сломался ПК", "Description": "Не включается"}
+    rule_decision = {
+        "rule_type": "hardware_repair",
+        "comment": "Приносите системный блок в АБК 3, 112 каб. на диагностику и обслуживание.",
+        "status_id": 48,
+    }
+
+    resp = _synthesize_deterministic_fallback(
+        task=task,
+        rule_decision=rule_decision,
+    )
+    assert resp == "Приносите системный блок в АБК 3, 112 каб. на диагностику и обслуживание."
+
+
+def test_physical_delivery_rule_semantic_anchors():
+    """Проверка срабатывания PhysicalDeliveryRule по семантическим прототипам."""
+    from app.services.rules.physical_device import PhysicalDeliveryRule
+
+    rule = PhysicalDeliveryRule()
+    # Текст без явных регулярок "диагностика пк" или "замена hdd", но с семантикой поломки оборудования
+    task = {
+        "Id": 140251,
+        "Name": "Разбит экран ноутбука",
+        "Description": "Уронили ноутбук со стола, треснул корпус и не загорается экран",
+    }
+    decision = rule.evaluate(task)
+    assert decision is not None
+    assert decision.status_id == 48
+    assert "112" in decision.comment
+    assert decision.template_key in ("hardware_repair", "bring_device_112")
+

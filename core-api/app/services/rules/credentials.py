@@ -43,6 +43,7 @@ class CredentialsRule(BaseRule):
         if is_password_issue:
             return RuleDecision(
                 template_key="password_reset_call",
+                rule_type="credentials_reset",
                 name="Сброс пароля учетной записи (звонок на 49-87)",
                 status_id=27,
                 status_name="В работе",
@@ -74,6 +75,7 @@ class CredentialsRule(BaseRule):
                 fio_display = f"{surname} {emp_name}" + (f" {patronymic}" if patronymic else "")
                 return RuleDecision(
                     template_key="user_created",
+                    rule_type="user_creation",
                     name=f"⚡ Создание пользователя AD ({sam_preview}) ➔ Выполнена (29)",
                     status_id=29,
                     status_name="Выполнена",
@@ -89,6 +91,7 @@ class CredentialsRule(BaseRule):
             else:
                 return RuleDecision(
                     template_key="account_details_clarify",
+                    rule_type="user_creation",
                     name="Уточнение реквизитов для создания УЗ",
                     status_id=35,
                     status_name="Требует уточнения",
@@ -106,6 +109,7 @@ class CredentialsRule(BaseRule):
         if is_wifi_request and not any(w in user_text for w in ["excel", "exle", "обменник", "папк", "диск", "1с", "принтер"]):
             return RuleDecision(
                 template_key="wifi_access",
+                rule_type="wlan_access",
                 name="⚡ Автовыдача доступа WLAN в AD ➔ Выполнена (29)",
                 status_id=29,
                 status_name="Выполнена",

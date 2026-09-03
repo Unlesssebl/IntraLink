@@ -377,10 +377,10 @@ def extract_pc_names_from_text(text: str | None) -> list[str]:
         return []
 
     found = []
-    # 1. Поиск токенов с префиксами ПК (NTEMW1234, KMK0089, ZTE1234, ткт1005 и т.п.)
-    token_pattern = re.compile(r"(?i)\b(?:[a-zа-яё]{2,6}[-_]?[0-9]{2,6})\b")
+    # 1. Поиск токенов с префиксами ПК (NTEMW1234, KMK 0089, ZTE 1234, ткт 1005 и т.п.)
+    token_pattern = re.compile(r"(?i)\b([a-zа-яё]{2,6})[\s\-_]?([0-9]{2,6})\b")
     for m in token_pattern.finditer(text):
-        token = m.group(0)
+        token = f"{m.group(1)}{m.group(2)}"
         norm = normalize_pc_name(token)
         if norm and is_valid_pc_name(norm) and norm not in found:
             found.append(norm)

@@ -209,10 +209,6 @@ export interface BulkApplyItemPayload {
   is_private?: boolean;
 }
 
-export interface BulkApplyRequest {
-  tasks: BulkApplyItemPayload[];
-}
-
 export interface SmartBulkApplyItemPayload {
   task_id: number;
   status_id: number;
@@ -238,16 +234,6 @@ export interface BulkApplyResponse {
   failed: Array<{ task_id: number; error: string }>;
 }
 
-export interface DuplicateInfoItem {
-  duplicate_task_id: number;
-  duplicate_task_name: string;
-  master_task_id: number;
-  master_task_name: string;
-  creator: string;
-  similarity_score?: number;
-  reason: string;
-}
-
 export interface RAGMatchItem {
   task_id: number;
   name: string;
@@ -259,55 +245,5 @@ export interface RAGMatchItem {
   similarity_pct: number;
   distance: number;
   storage_tier: string;
-}
-
-export interface RAGSearchResponse {
-  total: number;
-  matches: RAGMatchItem[];
-}
-
-export interface RAGSyncResponse {
-  status: string;
-  total_fetched: number;
-  total_closed: number;
-  indexed: number;
-  skipped: number;
-}
-
-export interface ExecutionJobRequest {
-  action: 'grant_wlan' | 'create_user' | 'diagnose_host' | 'install_printer' | string;
-  task_id?: number;
-  params?: Record<string, any>;
-  auto_close_ticket?: boolean;
-}
-
-export interface ExecutionJobResponse {
-  status: 'accepted' | 'success' | 'failed' | 'queued';
-  job_id: string;
-  action: string;
-  task_id?: number;
-  message?: string;
-  result?: any;
-}
-
-export interface SystemStatusResponse {
-  status: 'healthy' | 'degraded' | 'unhealthy';
-  intraservice_connected: boolean;
-  circuit_breaker_state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
-  service_user_configured: boolean;
-  service_user_login?: string;
-  redis_connected: boolean;
-  db_connected: boolean;
-  last_sync_time?: string;
-  worker_running: boolean;
-  catalog_services_count?: number;
-}
-
-export interface TelegramUserItem {
-  telegram_id: number;
-  username?: string;
-  full_name?: string;
-  is_active: boolean;
-  created_at?: string;
 }
 

@@ -208,7 +208,7 @@ async def check_tcp_port(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-async def resolve_dns(host: str, timeout: float = 1.0) -> str | None:
+async def resolve_dns(host: str, timeout: float = 2.0) -> str | None:
     """Резолвит DNS имя в IP-адрес с поддержкой доменного суффикса."""
     if re.match(r"^\d+\.\d+\.\d+\.\d+$", host):
         return host
@@ -216,14 +216,17 @@ async def resolve_dns(host: str, timeout: float = 1.0) -> str | None:
     loop = asyncio.get_running_loop()
 
     def _resolve(h: str) -> str | None:
+        # В Linux/Docker доменный суффикс .corporate.loc резолвится мгновенно (1мс),
+        # в то время как чистый хост без точки ждет таймаута DNS-поиска >1с.
+        if "." not in h:
+            try:
+                return socket.gethostbyname(f"{h}{DOMAIN_SUFFIX}")
+            except Exception:
+                pass
         try:
             return socket.gethostbyname(h)
         except Exception:
-            if "." not in h:
-                try:
-                    return socket.gethostbyname(f"{h}{DOMAIN_SUFFIX}")
-                except Exception:
-                    pass
+            pass
         return None
 
     try:
@@ -274,6 +277,9 @@ async def run_single_host_diag(target: str, creator_ip: str | None = None) -> di
             "is_online": is_online,
             "avg_rtt": ping_res.get("avg_rtt"),
             "icmp_ping_ok": ping_res.get("is_online", False),
+            "smb_ok": smb_ok,
+            "winrm_ok": winrm_ok,
+            "rpc_ok": rpc_ok,
             "smb_port_445": smb_ok,
             "winrm_port_5985": winrm_ok,
             "rpc_port_135": rpc_ok,

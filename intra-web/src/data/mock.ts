@@ -3,11 +3,6 @@ export type Priority = 'critical' | 'high' | 'medium' | 'low';
 export type Category = 'network' | 'hardware' | 'software' | 'access' | 'email';
 export type Page = 'queue' | 'settings';
 
-export interface Operator {
-  id: string;
-  name: string;
-  initials: string;
-}
 
 export interface TimelineEvent {
   id: string;
@@ -64,6 +59,7 @@ export interface Ticket {
   circuit?: 'red' | 'yellow' | 'green';
   hasKbMatches?: boolean;
   hasAiSolution?: boolean;
+  hasRuleEngine?: boolean;
 }
 
 export interface ToastMessage {
@@ -72,28 +68,6 @@ export interface ToastMessage {
   message: string;
 }
 
-export const operators: Operator[] = [
-  { id: '8664', name: 'Беликов Ален', initials: 'БА' },
-  { id: '10502', name: 'Беликов Ален (assitant)', initials: 'БА' },
-  { id: '1', name: 'Дежурный инженер 1-й линии', initials: 'ДЭ' },
-];
-
-export const savedFilters = [
-  { id: 'all', name: 'Все заявки в очереди', type: 'all' },
-  { id: 'new', name: 'Новые без исполнителя', type: 'new' },
-  { id: 'duplicates', name: 'Дубликаты', type: 'duplicates' },
-  { id: 'redirects', name: 'Редиректы в другие сервисы', type: 'redirects' },
-  { id: 'repair', name: 'Каб. 112 (ремонт)', type: 'repair' },
-  { id: 'wifi', name: 'Заявки на Wi-Fi', type: 'wifi' },
-];
-
-export const categoryLabel: Record<Category, string> = {
-  network: 'Сеть',
-  hardware: 'Оборудование',
-  software: 'ПО',
-  access: 'Доступ',
-  email: 'Почта',
-};
 
 export const getStatusDotClass = (statusIdOrName: number | Status | string): string => {
   if (typeof statusIdOrName === 'number') {

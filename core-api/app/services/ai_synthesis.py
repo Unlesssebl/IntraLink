@@ -35,6 +35,46 @@ _SIGNATURE_CLEANUP_RE = re.compile(
 
 
 
+_NON_INFORMATIVE_SOLUTIONS = {
+    "заявка выполнена в штатном режиме.",
+    "заявка выполнена в штатном режиме",
+    "выполнено",
+    "готово",
+    "сделано",
+    "ок",
+    "закрыто",
+    "закрыта",
+    "решено",
+    "устранено",
+    "проверено",
+    "все работает",
+    "всё работает",
+    "спасибо",
+    "принято в работу",
+    "заявка закрыта",
+    "выполнена",
+}
+
+
+def is_informative_solution(solution: str) -> bool:
+    """
+    Проверяет, содержит ли решение содержательное техническое описание.
+    Отсекает пустые отписки, шаблонные заглушки и комментарии короче 25 символов.
+    """
+    if not solution or not isinstance(solution, str):
+        return False
+    s_clean = solution.strip().lower()
+    if s_clean in _NON_INFORMATIVE_SOLUTIONS:
+        return False
+    s_alpha = re.sub(r"[^\w\s]", "", s_clean).strip()
+    if s_alpha in _NON_INFORMATIVE_SOLUTIONS:
+        return False
+    # Отсекаем слишком короткие фразы без технического смысла
+    if len(solution.strip()) < 25:
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # 1. Автоматическая канонизация решений закрытых заявок (Auto-KB Canonization)
 # ---------------------------------------------------------------------------
@@ -122,11 +162,18 @@ def _synthesize_deterministic_fallback(
     task: dict[str, Any],
     kb_matches: list[dict[str, Any]] | None = None,
     telemetry: dict[str, Any] | None = None,
+    rule_decision: dict[str, Any] | None = None,
 ) -> str:
     """
-    Детерминированный синтез ответа в каноническом стиле инженера Беликова Алена (Rule-based SSOT).
-    Гарантирует 100% мгновенный ответ даже при оффлайне нейросетей.
+    Детерминированный синтез ответа без LLM (0ms, 100% стабильность).
     """
+    # 0. Приоритет корпоративного регламента
+    r_key = (rule_decision.get("rule_type") or rule_decision.get("template_key")) if rule_decision else None
+    if rule_decision and r_key not in (None, "", "standard_in_work"):
+        rule_comment = (rule_decision.get("comment") or "").strip()
+        if rule_comment:
+            return rule_comment
+
     task_id = task.get("Id") or ""
     name = task.get("Name") or ""
     desc = task.get("Description") or ""
@@ -215,14 +262,16 @@ async def synthesize_triage_resolution(
     telemetry: dict[str, Any] | None = None,
     circuit: DataCircuit | None = None,
     force_deterministic: bool = False,
+    rule_decision: dict[str, Any] | None = None,
 ) -> str:
     """
     Синтезирует экспертный персонализированный ответ инженера Helpdesk
-    с жестким заземлением на факты (Strict Grounding) и детерминированными шлюзами.
+    с жестким заземлением на факты (Strict Grounding), детерминированными шлюзами
+    и привязкой к корпоративному регламенту (Rule Engine).
     """
     if force_deterministic:
         return _synthesize_deterministic_fallback(
-            task=task, kb_matches=kb_matches, telemetry=telemetry
+            task=task, kb_matches=kb_matches, telemetry=telemetry, rule_decision=rule_decision
         )
 
     task_id = task.get("Id") or 0
@@ -235,7 +284,7 @@ async def synthesize_triage_resolution(
     # Использует модульный SSOT-константу _NON_IT_KEYWORDS.
     if any(k in combined for k in _NON_IT_KEYWORDS):
         return _synthesize_deterministic_fallback(
-            task=task, kb_matches=kb_matches, telemetry=telemetry
+            task=task, kb_matches=kb_matches, telemetry=telemetry, rule_decision=rule_decision
         )
 
     # 2. Оценка контура безопасности
@@ -250,10 +299,17 @@ async def synthesize_triage_resolution(
     # 3. RED контур (пароли/учетки) — строго локальный детерминированный регламент (Zero Trust)
     if eval_circuit == DataCircuit.RED:
         return _synthesize_deterministic_fallback(
-            task=task, kb_matches=kb_matches, telemetry=telemetry
+            task=task, kb_matches=kb_matches, telemetry=telemetry, rule_decision=rule_decision
         )
 
     # 4. Подготовка заземленного контекста (Strict Grounding Context)
+    rule_fact = ""
+    r_key = (rule_decision.get("rule_type") or rule_decision.get("template_key")) if rule_decision else None
+    if rule_decision and r_key not in (None, "", "standard_in_work"):
+        r_comment = (rule_decision.get("comment") or "").strip()
+        if r_comment:
+            rule_fact = f"ПОДТВЕРЖДЕННЫЙ РЕГЛАМЕНТ КОМПАНИИ (ДЕЙСТВИЕ {r_key}): {r_comment}"
+
     fact_block = ""
     if kb_matches and len(kb_matches) > 0:
         top_sol = kb_matches[0].get("solution", "").strip()
@@ -271,7 +327,7 @@ async def synthesize_triage_resolution(
             f"Служба Spooler: {metrics.get('spooler', '?')}"
         )
 
-    if not fact_block and not telemetry_fact:
+    if not fact_block and not telemetry_fact and not rule_fact:
         fact_block = (
             "ПОДТВЕРЖДЕННЫЙ ФАКТ ВЫПОЛНЕНИЯ: Отсутствует (заявка только поступила, "
             "инженер еще не производил технических действий)."
@@ -280,22 +336,26 @@ async def synthesize_triage_resolution(
     system_prompt = (
         "Ты — опытный инженер 1-й линии Helpdesk Беликов Ален.\n"
         "Твоя задача — сформировать краткий (2-4 предложения), профессиональный и вежливый комментарий заявителю.\n"
-        "Ответ ОБЯЗАТЕЛЬНО должен начинаться со слова 'Здравствуйте!' и завершаться просьбой проверить результат.\n\n"
+        "Ответ ОБЯЗАТЕЛЬНО должен начинаться со слова 'Здравствуйте!' и завершаться вежливым призывом к действию или вопросом.\n\n"
         "ЖЕСТКИЕ ПРАВИЛА ЗАЗЕМЛЕНИЯ (STRICT GROUNDING):\n"
-        "1. ЗАПРЕТ НА ВЫДУМЫВАНИЕ ДЕЙСТВИЙ: Если в блоке 'ПОДТВЕРЖДЕННЫЙ ФАКТ' указано 'Отсутствует', "
+        "1. ПРИОРИТЕТ РЕГЛАМЕНТА: Если указан 'ПОДТВЕРЖДЕННЫЙ РЕГЛАМЕНТ КОМПАНИИ', ОБЯЗАТЕЛЬНО опирайся на него! "
+        "Сформулируй вежливый и четкий ответ заявителю на основе этого регламента (не придумывай альтернативных действий, не противоречь ему).\n"
+        "2. ЗАПРЕТ НА ВЫДУМЫВАНИЕ ДЕЙСТВИЙ: Если в блоке 'ПОДТВЕРЖДЕННЫЙ ФАКТ' указано 'Отсутствует' и нет регламента, "
         "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать, что проблема уже решена или что-то починено! "
         "В таком случае напиши, что заявка принята инженером в работу, проводится диагностика, и вежливо предложи "
         "1-2 первичных действия для проверки (например, проверить кабель питания/кнопку монитора/перезагрузить ПК).\n"
-        "2. ЕСЛИ ЕСТЬ ФАКТ РЕШЕНИЯ: Опирайся строго на него. Не додумывай несуществующие шаги.\n"
-        "3. ГРАММАТИКА: Пиши строго от первого лица ('Я проверил...', 'Пожалуйста, проверьте...'). "
+        "3. ЕСЛИ ЕСТЬ ФАКТ РЕШЕНИЯ ИЗ БАЗЫ ЗНАНИЙ: Опирайся строго на него. Не додумывай несуществующие шаги.\n"
+        "4. ГРАММАТИКА: Пиши строго от первого лица ('Я проверил...', 'Пожалуйста, проверьте...'). "
         "Не смешивай лица ('мы' и 'они'). Никаких дешевых эмодзи."
     )
+
+    context_lines = [line for line in [rule_fact, fact_block, telemetry_fact] if line]
+    context_text = "\n".join(context_lines)
 
     user_prompt = (
         f"Заявка #{task_id}: {t_name}\n"
         f"Описание проблемы от заявителя: {t_desc}\n"
-        f"{fact_block}\n"
-        f"{telemetry_fact}\n\n"
+        f"{context_text}\n\n"
         f"Сформируй регламентный комментарий заявителю в соответствии с правилами."
     )
 
@@ -318,5 +378,5 @@ async def synthesize_triage_resolution(
 
     # Fallback
     return _synthesize_deterministic_fallback(
-        task=task, kb_matches=kb_matches, telemetry=telemetry
+        task=task, kb_matches=kb_matches, telemetry=telemetry, rule_decision=rule_decision
     )

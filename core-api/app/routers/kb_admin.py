@@ -227,20 +227,58 @@ async def delete_or_blacklist_kb_example(
         example.solution = ""
 
         await db.commit()
-        logger.info("Задача #%d успешно занесена в черный список базы знаний RAG", task_id)
+        logger.info("Задача #%d успешно скрыта из базы знаний RAG", task_id)
         return {
             "status": "success",
             "task_id": task_id,
-            "message": f"Задача #{task_id} занесена в черный список RAG.",
+            "message": f"Задача #{task_id} скрыта из базы знаний RAG.",
         }
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Ошибка при занесении задачи #%d в черный список: %s", task_id, e)
+        logger.exception("Ошибка при скрытии задачи #%d из базы знаний: %s", task_id, e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось занести задачу в черный список: {e}",
+            detail=f"Не удалось скрыть задачу из базы знаний: {e}",
         )
+
+
+@router.delete("/purge", status_code=status.HTTP_200_OK)
+async def purge_knowledge_base(
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Полная очистка базы знаний RAG (удаление всех векторов и прецедентов из PostgreSQL
+    и сброс кэша эмбеддингов в Redis).
+    """
+    try:
+        from sqlalchemy import delete
+        result = await db.execute(delete(TaskKnowledgeBase))
+        deleted_count = result.rowcount
+        await db.commit()
+
+        # Очистка кэша RAG в Redis
+        try:
+            redis = get_redis_client()
+            keys = await redis.keys("rag:emb:*")
+            if keys:
+                await redis.delete(*keys)
+        except Exception as re:
+            logger.warning("Не удалось сбросить кэш эмбеддингов в Redis: %s", re)
+
+        logger.info("База знаний RAG успешно очищена. Удалено записей: %d", deleted_count)
+        return {
+            "status": "success",
+            "deleted": deleted_count,
+            "message": f"База знаний RAG успешно очищена. Удалено записей: {deleted_count}.",
+        }
+    except Exception as e:
+        logger.exception("Ошибка при полной очистке базы знаний RAG: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось очистить базу знаний: {e}",
+        )
+
 
 
 # ---------------------------------------------------------------------------

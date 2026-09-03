@@ -22,12 +22,12 @@ interface SubServiceItem {
 }
 
 interface Props {
-  currentPage: Page;
+  currentPage?: Page;
   onNavigate: (page: Page) => void;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
   sidebarMode: SidebarMode;
-  onSetSidebarMode: (mode: SidebarMode) => void;
+  onSetSidebarMode?: (mode: SidebarMode) => void;
   tickets: Ticket[];
   rootServices: RootServiceItem[];
   subservicesByRoot: Record<number, SubServiceItem[]>;
@@ -71,6 +71,7 @@ export default function Sidebar({
   selectedService,
   onSelectService,
   username,
+  onLogout,
 }: Props) {
   const [expandedRoots, setExpandedRoots] = useState<Set<number>>(new Set());
 
@@ -379,22 +380,38 @@ export default function Sidebar({
           </div>
         </div>
 
-        <button
-          onClick={onToggleTheme}
-          className="w-7 h-7 rounded-md flex items-center justify-center text-neutral-600 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/10 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-          title={theme === 'light' ? 'Переключить на темную тему' : 'Переключить на светлую тему'}
-        >
-          {theme === 'light' ? (
-            <svg width="14" height="14" viewBox="0 0 13 13" fill="none">
-              <circle cx="6.5" cy="6.5" r="2.5" stroke="currentColor" strokeWidth="1.3" />
-              <path d="M6.5 1v1.5M6.5 10.5V12M1 6.5h1.5M10.5 6.5H12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-            </svg>
-          ) : (
-            <svg width="14" height="14" viewBox="0 0 13 13" fill="none">
-              <path d="M11 7.5A5 5 0 015.5 2a5 5 0 100 9 5 5 0 005.5-3.5z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-            </svg>
+        <div className="flex items-center gap-1">
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              className="w-7 h-7 rounded-md flex items-center justify-center text-neutral-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-black/5 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+              title="Выйти из учетной записи"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            </button>
           )}
-        </button>
+
+          <button
+            onClick={onToggleTheme}
+            className="w-7 h-7 rounded-md flex items-center justify-center text-neutral-600 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/10 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+            title={theme === 'light' ? 'Переключить на темную тему' : 'Переключить на светлую тему'}
+          >
+            {theme === 'light' ? (
+              <svg width="14" height="14" viewBox="0 0 13 13" fill="none">
+                <circle cx="6.5" cy="6.5" r="2.5" stroke="currentColor" strokeWidth="1.3" />
+                <path d="M6.5 1v1.5M6.5 10.5V12M1 6.5h1.5M10.5 6.5H12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 13 13" fill="none">
+                <path d="M11 7.5A5 5 0 015.5 2a5 5 0 100 9 5 5 0 005.5-3.5z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
     </aside>
   );
