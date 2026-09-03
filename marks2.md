@@ -43,8 +43,8 @@
 
 ### Чек-лист реализации:
 - [x] 1. Добавление SVG-иконок в `intra-web/src/components/Icons.tsx` и очистка от эмодзи (Rule Engine, RAG, Circuit, batch-кнопки)
-- [ ] 2. Создание компонентов очереди в `intra-web/src/components/queue/`
+- [x] 2. Создание компонентов очереди в `intra-web/src/components/queue/` (`SmartBatchModal.tsx`, `BulkConfirmModal.tsx`)
 - [ ] 3. Декомпозиция `TicketInspector` в `intra-web/src/components/inspector/`
-- [ ] 4. Обновление геометрии и стилей таблицы `QueuePage.tsx`
-- [ ] 5. Замена эмодзи в `AdminPanelPage.tsx` и `SkillsHub.tsx`
-- [ ] 6. Контрольная сборка `npm run build` и верификация
+- [x] 4. Обновление геометрии и стилей таблицы `QueuePage.tsx` (`table-fixed`, равные расстояния, масштабирование UI)
+- [ ] 5. Замена эмодзи в `AdminPanelPage.tsx`
+- [x] 6. Контрольная сборка `npm run build` и верификация (пройдена успешно)

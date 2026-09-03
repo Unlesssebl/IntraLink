@@ -24,6 +24,9 @@ import {
   IconArrowRight,
 } from '../components/Icons';
 
+import SmartBatchModal, { type SmartBatchItem } from '../components/queue/SmartBatchModal';
+import BulkConfirmModal, { type BulkConfirmModalState } from '../components/queue/BulkConfirmModal';
+
 interface Props {
   tickets: Ticket[];
   selectedTicketId: string | null;
@@ -38,24 +41,6 @@ interface Props {
 
 type ViewMode = 'table' | 'kanban';
 type FilterTab = 'all' | 'duplicates' | 'redirects' | 'repair' | 'wifi';
-
-interface BulkConfirmModalState {
-  open: boolean;
-  actionType: 'take' | 'cancel' | 'resolve';
-  targetStatusId: number;
-  statusLabelName: string;
-  count: number;
-  hasRepair: boolean;
-  ticketIds: number[];
-}
-
-interface SmartBatchItem {
-  ticket: Ticket;
-  selected: boolean;
-  comment: string;
-  minutes: number;
-  isEditing: boolean;
-}
 
 interface SmartBatchModalState {
   open: boolean;
@@ -658,37 +643,37 @@ export default function QueuePage({
         {/* Table View (Matching style and layout from image-2.png) */}
         {view === 'table' && (
           <div className="flex-1 overflow-auto bg-white dark:bg-neutral-950">
-            <table className="w-full min-w-[1020px] text-[14px] border-collapse table-auto">
+            <table className="w-full min-w-[1040px] text-[14px] border-collapse table-fixed">
               <thead className="sticky top-0 z-10 bg-white dark:bg-neutral-950 border-b border-neutral-200 dark:border-neutral-800">
                 <tr>
-                  <th className="w-11 px-3.5 py-3 text-center">
+                  <th className="w-12 px-3.5 py-3 text-center">
                     <input
                       type="checkbox"
                       checked={selected.size === sorted.length && sorted.length > 0}
                       onChange={e => setSelected(e.target.checked ? new Set(sorted.map(t => t.id)) : new Set())}
-                      className="w-4 h-4 accent-blue-600 cursor-pointer rounded"
+                      className="w-4 h-4 accent-neutral-900 dark:accent-neutral-100 cursor-pointer rounded"
                     />
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-40 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     СТАТУС
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-44 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     РЕШЕНИЕ AI
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-auto px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     ЗАЯВКА
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-48 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     СЕРВИС
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-36 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     ХОСТ
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-40 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     ИСПОЛНИТЕЛЬ
                   </th>
                   <th
-                    className="w-24 px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 cursor-pointer select-none group whitespace-nowrap"
+                    className="w-28 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 cursor-pointer select-none group whitespace-nowrap"
                     onClick={() => toggleSort('sla')}
                   >
                     SLA<SortIcon col="sla" />
@@ -712,27 +697,27 @@ export default function QueuePage({
                   const hostList = parseHostList(ticket.host);
                   const primaryHost = hostList[0];
                   const otherHosts = hostList.slice(1);
-                  const smartTagClass = "px-1.5 py-0.2 border border-neutral-200/80 dark:border-neutral-700/80 bg-neutral-100/80 dark:bg-neutral-800/80 text-neutral-600 dark:text-neutral-400 rounded text-[11px] font-medium";
+                  const smartTagClass = "px-2 py-0.5 border border-neutral-200/80 dark:border-neutral-700/80 bg-neutral-100/80 dark:bg-neutral-800/80 text-neutral-600 dark:text-neutral-400 rounded text-[11.5px] font-medium";
 
                   return (
                     <tr
                       key={ticket.id}
                       onClick={() => onSelectTicket(isActive ? null : ticket.id)}
-                      className={`cursor-pointer transition-colors outline-none hover:!bg-blue-50/70 dark:hover:!bg-neutral-800/80 h-[58px] border-b border-neutral-100 dark:border-neutral-850 ${rowBg}`}
+                      className={`cursor-pointer transition-colors outline-none hover:!bg-blue-50/70 dark:hover:!bg-neutral-800/80 h-[66px] border-b border-neutral-100 dark:border-neutral-850 ${rowBg}`}
                     >
                       {/* Checkbox */}
-                      <td className="w-11 px-3.5 py-2.5 text-center" onClick={e => e.stopPropagation()}>
+                      <td className="w-12 px-3.5 py-3 text-center" onClick={e => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           checked={isSelected}
                           onChange={() => toggleSelect(ticket.id)}
-                          className="w-4 h-4 accent-blue-600 cursor-pointer rounded"
+                          className="w-4 h-4 accent-neutral-900 dark:accent-neutral-100 cursor-pointer rounded"
                         />
                       </td>
 
-                      {/* Status Indicator (Card/Button style, h-7 rounded-lg) */}
+                      {/* Status Indicator (Card/Button style, h-7.5 rounded-lg) */}
                       <td
-                        className="px-3.5 py-2.5 whitespace-nowrap"
+                        className="w-40 px-3.5 py-3 whitespace-nowrap"
                         onClick={e => {
                           e.stopPropagation();
                           setInlineStatusTicketId(inlineStatusTicketId === ticket.id ? null : ticket.id);
@@ -741,7 +726,7 @@ export default function QueuePage({
                         <div className="relative inline-block">
                           <button
                             type="button"
-                            className="group h-7 inline-flex items-center gap-1.5 px-2.5 rounded-lg text-[11.5px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
+                            className="group h-7.5 inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
                             title="Нажмите для изменения статуса"
                           >
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${statusConfig[ticket.status].dotClass}`} />
@@ -789,11 +774,11 @@ export default function QueuePage({
                         </div>
                       </td>
 
-                      {/* Unified Smart AI Solution & Action Button (h-7 rounded-lg, монохромный с консистентным пульсирующим dot целевого статуса) */}
-                      <td className="px-3.5 py-2.5 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                      {/* Unified Smart AI Solution & Action Button */}
+                      <td className="w-44 px-3.5 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
                         {ticket.statusId === 27 ? (
                           <div
-                            className="h-7 inline-flex items-center gap-1.5 px-2.5 rounded-lg text-[11.5px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 shadow-2xs"
+                            className="h-7.5 inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 shadow-2xs"
                             title="Заявка уже переведена в статус «В работе»"
                           >
                             <span className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse shrink-0" />
@@ -802,7 +787,7 @@ export default function QueuePage({
                         ) : (
                           <button
                             onClick={() => handleApplyTicketPlan(ticket)}
-                            className="group h-7 inline-flex items-center gap-1.5 px-2.5 rounded-lg text-[11.5px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
+                            className="group h-7.5 inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
                             title={ticket.aiPlan ? `${ticket.aiPlan.actionTitle}\nОтвет: «${ticket.aiPlan.comment}»\nСписание: ${ticket.aiPlan.expensesMinutes} мин` : 'Принять заявку в работу'}
                           >
                             <span
@@ -817,16 +802,16 @@ export default function QueuePage({
                       </td>
 
                       {/* Ticket Title (Top) & Requester Info (Bottom), Tags next to Description */}
-                      <td className="px-3.5 py-2.5 min-w-[280px]">
+                      <td className="w-auto px-3.5 py-3 min-w-0">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-neutral-900 dark:text-neutral-100 font-bold text-[13.5px] truncate max-w-md">
+                          <span className="text-neutral-900 dark:text-neutral-100 font-bold text-[15px] truncate max-w-lg">
                             {ticket.title}
                           </span>
 
                           {/* Rule Engine Badge */}
                           {ticket.hasRuleEngine && (
                             <span
-                              className="px-1.5 py-0.2 rounded text-[10px] font-semibold border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 inline-flex items-center gap-1 shrink-0"
+                              className="px-2 py-0.5 rounded text-[11px] font-semibold border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 inline-flex items-center gap-1 shrink-0"
                               title="Сработало регламентное правило Rule Engine"
                             >
                               <IconBolt size={10} className="text-blue-600 dark:text-blue-400 shrink-0" />
@@ -837,7 +822,7 @@ export default function QueuePage({
                           {/* AI Ready Solution Badge */}
                           {ticket.hasAiSolution && (
                             <span
-                              className="px-1.5 py-0.2 rounded text-[10px] font-semibold border border-purple-300 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/70 text-purple-700 dark:text-purple-300 inline-flex items-center gap-1 shrink-0"
+                              className="px-2 py-0.5 rounded text-[11px] font-semibold border border-purple-300 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/70 text-purple-700 dark:text-purple-300 inline-flex items-center gap-1 shrink-0"
                               title="Для этой заявки готово проверенное решение AI"
                             >
                               <IconSparkles size={10} className="text-purple-600 dark:text-purple-400 shrink-0" />
@@ -921,7 +906,7 @@ export default function QueuePage({
                           )}
                         </div>
 
-                        <div className="text-[12px] text-neutral-500 dark:text-neutral-400 mt-0.5 flex items-center gap-1.5 font-normal">
+                        <div className="text-[13px] text-neutral-500 dark:text-neutral-400 mt-1 flex items-center gap-1.5 font-normal">
                           <a
                             href={`/admin/api/tasks/${ticket.rawId}/open`}
                             target="_blank"
@@ -940,14 +925,14 @@ export default function QueuePage({
                       </td>
 
                       {/* Service / Category */}
-                      <td className="px-3.5 py-2.5 whitespace-nowrap">
-                        <span className="text-[13px] text-neutral-800 dark:text-neutral-200 font-normal truncate block max-w-[220px]" title={ticket.servicePath || ticket.serviceName}>
+                      <td className="w-48 px-3.5 py-3 whitespace-nowrap">
+                        <span className="text-[13.5px] text-neutral-800 dark:text-neutral-200 font-normal truncate block max-w-[200px]" title={ticket.servicePath || ticket.serviceName}>
                           {ticket.serviceName}
                         </span>
                       </td>
 
                       {/* Host (Clean Badge style) */}
-                      <td className="px-3.5 py-2.5 whitespace-nowrap">
+                      <td className="w-36 px-3.5 py-3 whitespace-nowrap">
                         {primaryHost ? (
                           <div className="relative inline-flex items-center gap-1.5">
                             <span
@@ -956,7 +941,7 @@ export default function QueuePage({
                                 navigator.clipboard.writeText(primaryHost);
                                 onToast({ type: 'info', message: `Хост ${primaryHost} скопирован в буфер` });
                               }}
-                              className="font-mono font-semibold text-[11.5px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200/80 dark:border-neutral-700/80 px-2 py-0.5 rounded cursor-pointer hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors"
+                              className="font-mono font-semibold text-[12px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200/80 dark:border-neutral-700/80 px-2 py-0.5 rounded cursor-pointer hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors"
                               title="Нажмите, чтобы скопировать хост"
                             >
                               {primaryHost}
@@ -1009,9 +994,9 @@ export default function QueuePage({
                       </td>
 
                       {/* Executors Column */}
-                      <td className="px-3.5 py-2.5 whitespace-nowrap">
+                      <td className="w-40 px-3.5 py-3 whitespace-nowrap">
                         {ticket.executors ? (
-                          <span className="text-[12px] text-neutral-800 dark:text-neutral-200 font-medium truncate block max-w-[140px]" title={ticket.executors}>
+                          <span className="text-[13px] text-neutral-800 dark:text-neutral-200 font-medium truncate block max-w-[150px]" title={ticket.executors}>
                             {ticket.executors}
                           </span>
                         ) : (
@@ -1020,13 +1005,13 @@ export default function QueuePage({
                       </td>
 
                       {/* SLA */}
-                      <td className="w-24 px-3.5 py-2.5 whitespace-nowrap">
+                      <td className="w-28 px-3.5 py-3 whitespace-nowrap">
                         {ticket.slaDeadline.getTime() < Date.now() ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-semibold bg-rose-50 text-rose-700 border border-rose-200/80 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-900/60">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200/80 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-900/60">
                             Просрочена
                           </span>
                         ) : (
-                          <span className="text-neutral-500 dark:text-neutral-400 font-mono text-[11.5px] tabular-nums font-medium">
+                          <span className="text-neutral-500 dark:text-neutral-400 font-mono text-[12.5px] tabular-nums font-medium">
                             {formatSla(ticket.slaDeadline)}
                           </span>
                         )}
@@ -1193,251 +1178,23 @@ export default function QueuePage({
 
       {/* Smart Batch Plan Modal (100% HITL Confirmation with In-line Edit) */}
       {smartBatchModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-2xs p-4">
-          <div className="w-full max-w-2xl bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl border border-neutral-200 dark:border-neutral-800 flex flex-col max-h-[85vh] animate-in fade-in zoom-in-95 duration-150">
-            {/* Header */}
-            <div className="px-6 py-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between shrink-0">
-              <div>
-                <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-                  <IconSparkles size={16} className="text-blue-600 dark:text-blue-400" />
-                  <span>Сводный план индивидуального выполнения</span>
-                  <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-200 rounded-full font-bold">
-                    {smartBatchModal.items.filter(x => x.selected).length} из {smartBatchModal.items.length}
-                  </span>
-                </h3>
-                <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-                  Каждая заявка будет исполнена в инфраструктуре и переведена в свой целевой статус с регламентным ответом заявителю
-                </p>
-              </div>
-              <button
-                onClick={() => setSmartBatchModal(null)}
-                disabled={processingBulk}
-                className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer p-1"
-              >
-                <svg width="16" height="16" viewBox="0 0 14 14" fill="none">
-                  <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                </svg>
-              </button>
-            </div>
-
-            {/* Body: Tickets list */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-3">
-              {smartBatchModal.items.map((item, idx) => {
-                const t = item.ticket;
-                const plan = t.aiPlan;
-                return (
-                  <div
-                    key={t.id}
-                    className={`p-3.5 rounded-xl border transition-all ${
-                      item.selected
-                        ? 'bg-neutral-50 dark:bg-neutral-800/60 border-neutral-200 dark:border-neutral-700 shadow-2xs'
-                        : 'bg-neutral-100/40 dark:bg-neutral-900/40 border-neutral-200/50 dark:border-neutral-800/50 opacity-60'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-start gap-3 flex-1 min-w-0">
-                        <input
-                          type="checkbox"
-                          checked={item.selected}
-                          onChange={e => {
-                            const checked = e.target.checked;
-                            setSmartBatchModal(prev => prev ? {
-                              ...prev,
-                              items: prev.items.map((it, i) => i === idx ? { ...it, selected: checked } : it),
-                            } : null);
-                          }}
-                          className="w-4 h-4 accent-blue-600 cursor-pointer rounded mt-1 shrink-0"
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap mb-1">
-                            <a
-                              href={`/admin/api/tasks/${t.rawId}/open`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="font-mono font-bold text-[13px] text-blue-600 dark:text-blue-400 hover:underline"
-                            >
-                              #{t.rawId}
-                            </a>
-                            <span className="font-bold text-[13.5px] text-neutral-900 dark:text-neutral-100 truncate max-w-sm">
-                              {t.title}
-                            </span>
-                            {plan && (
-                              <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${plan.badgeClass} inline-flex items-center gap-1`}>
-                                <IconSparkles size={11} className="opacity-70" />
-                                <span>{plan.actionBadge}</span>
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[12px] text-neutral-500 dark:text-neutral-400 flex items-center gap-2 flex-wrap">
-                            <span>{t.requesterName}</span>
-                            {t.room && <span>· каб. {t.room}</span>}
-                            {t.host && <span className="font-mono font-semibold bg-neutral-200 dark:bg-neutral-700 px-1.5 py-0.2 rounded text-[11px]">{t.host}</span>}
-                            <span>· {plan?.targetStatusName || t.statusName} ({item.minutes} мин)</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSmartBatchModal(prev => prev ? {
-                            ...prev,
-                            items: prev.items.map((it, i) => i === idx ? { ...it, isEditing: !it.isEditing } : it),
-                          } : null);
-                        }}
-                        className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-bold shrink-0 cursor-pointer px-1.5 py-0.5 inline-flex items-center gap-1"
-                      >
-                        {item.isEditing ? (
-                          'Свернуть'
-                        ) : (
-                          <>
-                            <IconPencil size={11} />
-                            <span>Изменить</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-
-                    {/* Editing block */}
-                    {item.isEditing ? (
-                      <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700 space-y-2">
-                        <label className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider block">
-                          Текст ответа заявителю:
-                        </label>
-                        <textarea
-                          value={item.comment}
-                          onChange={e => {
-                            const text = e.target.value;
-                            setSmartBatchModal(prev => prev ? {
-                              ...prev,
-                              items: prev.items.map((it, i) => i === idx ? { ...it, comment: text } : it),
-                            } : null);
-                          }}
-                          rows={2}
-                          className="w-full px-3 py-2 text-[12.5px] rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 outline-none resize-none"
-                        />
-                        <div className="flex items-center gap-2 text-[12px] text-neutral-500">
-                          <span>Трудозатраты:</span>
-                          <input
-                            type="number"
-                            value={item.minutes}
-                            onChange={e => {
-                              const m = Number(e.target.value);
-                              setSmartBatchModal(prev => prev ? {
-                                ...prev,
-                                items: prev.items.map((it, i) => i === idx ? { ...it, minutes: m } : it),
-                              } : null);
-                            }}
-                            min={0}
-                            max={240}
-                            className="w-14 h-6 px-1.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded text-center font-mono font-bold text-[11px]"
-                          />
-                          <span>мин</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-2 text-[12px] text-neutral-600 dark:text-neutral-400 italic bg-neutral-100/70 dark:bg-neutral-900/60 p-2 rounded-md line-clamp-2">
-                        «{item.comment}»
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Footer */}
-            <div className="px-6 py-4 border-t border-neutral-200 dark:border-neutral-800 flex items-center justify-between shrink-0 bg-neutral-50 dark:bg-neutral-950/60 rounded-b-2xl">
-              <div className="text-xs text-neutral-500 dark:text-neutral-400">
-                Выбрано к исполнению: <strong className="text-neutral-900 dark:text-neutral-100">{smartBatchModal.items.filter(x => x.selected).length}</strong>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <button
-                  onClick={() => setSmartBatchModal(null)}
-                  disabled={processingBulk}
-                  className="px-4 py-2 text-[13px] font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-800 rounded-lg transition-colors cursor-pointer"
-                >
-                  Отмена
-                </button>
-                <button
-                  onClick={executeSmartBatch}
-                  disabled={processingBulk || smartBatchModal.items.filter(x => x.selected).length === 0}
-                  className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[13px] font-bold rounded-lg transition-all shadow-md cursor-pointer disabled:opacity-50 flex items-center gap-2"
-                >
-                  {processingBulk ? (
-                    <>
-                      <svg className="animate-spin h-4 w-4 text-white" viewBox="0 0 24 24" fill="none">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-                      </svg>
-                      <span>Выполнение пакета...</span>
-                    </>
-                  ) : (
-                    <>
-                      <IconRocket size={14} />
-                      <span>Запустить выполнение ({smartBatchModal.items.filter(x => x.selected).length})</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <SmartBatchModal
+          items={smartBatchModal.items}
+          processingBulk={processingBulk}
+          onClose={() => setSmartBatchModal(null)}
+          onUpdateItems={setSmartBatchModal}
+          onExecute={executeSmartBatch}
+        />
       )}
 
       {/* Bulk Confirm Modal (Audit C-3: Verified Execution Safeguard) */}
       {bulkModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-2xs p-4">
-          <div className="w-full max-w-md bg-white dark:bg-neutral-900 rounded-xl shadow-2xl border border-neutral-200 dark:border-neutral-800 p-5 space-y-4 animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100">
-                Подтверждение массового действия
-              </h3>
-              <button
-                onClick={() => setBulkModal(null)}
-                className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
-              >
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              </button>
-            </div>
-
-            <p className="text-[13.5px] text-neutral-700 dark:text-neutral-300 leading-relaxed">
-              Вы уверены, что хотите перевести <strong>{bulkModal.count}</strong> {bulkModal.count === 1 ? 'заявку' : 'заявок'} в статус{' '}
-              <span className="font-bold underline">«{bulkModal.statusLabelName}»</span>?
-            </p>
-
-            {/* List of ticket IDs */}
-            <div className="bg-neutral-100 dark:bg-neutral-800/80 p-2.5 rounded-lg text-[12px] font-mono text-neutral-700 dark:text-neutral-300 max-h-24 overflow-y-auto">
-              {bulkModal.ticketIds.map(id => `#${id}`).join(', ')}
-            </div>
-
-            {/* Warning if hardware repair is selected for bulk resolve */}
-            {bulkModal.hasRepair && bulkModal.actionType === 'resolve' && (
-              <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-lg text-[12.5px] text-amber-900 dark:text-amber-200 leading-snug flex items-start gap-2">
-                <IconAlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
-                <div><strong>Внимание (Verified Execution):</strong> в выборке присутствуют заявки на аппаратный ремонт (Каб. 112). Завершайте их только после физической выдачи устройства заявителю!</div>
-              </div>
-            )}
-
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                onClick={() => setBulkModal(null)}
-                disabled={processingBulk}
-                className="px-4 py-2 text-[13px] font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors cursor-pointer"
-              >
-                Отмена
-              </button>
-              <button
-                onClick={executeBulkAction}
-                disabled={processingBulk}
-                className="px-4 py-2 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 text-[13px] font-bold rounded-lg hover:bg-neutral-800 dark:hover:bg-neutral-200 transition-colors cursor-pointer disabled:opacity-50"
-              >
-                {processingBulk ? 'Выполнение...' : 'Подтвердить'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <BulkConfirmModal
+          modal={bulkModal}
+          processingBulk={processingBulk}
+          onClose={() => setBulkModal(null)}
+          onConfirm={executeBulkAction}
+        />
       )}
     </div>
   );
