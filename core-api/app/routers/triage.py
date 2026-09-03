@@ -3,7 +3,9 @@
 Спроектирован как тонкий контроллер (SRP), делегирующий логику в TriageService и TriageSessionManager.
 """
 
+import json
 import logging
+import time
 from typing import Any
 import jwt
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, status
@@ -267,6 +269,21 @@ async def apply_triage_action(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=first_err,
         )
+
+    # Публикуем событие применения триажа в шину событий SSE
+    if not payload.dry_run and results and any(r.get("update_ok", False) for r in results):
+        try:
+            r = get_redis_client()
+            event_payload = {
+                "event": "triage_applied",
+                "task_ids": payload.task_ids,
+                "status_id": payload.status_id,
+                "operator_user_id": op_user_id,
+                "timestamp": time.time(),
+            }
+            await r.publish("events:all", json.dumps(event_payload, ensure_ascii=False))
+        except Exception as ex:
+            logger.debug("Не удалось опубликовать событие triage_applied в Redis: %s", ex)
 
     return {"results": results}
 

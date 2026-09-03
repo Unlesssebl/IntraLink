@@ -11,6 +11,7 @@ import CommandPalette from './components/CommandPalette';
 import ToastContainer from './components/Toast';
 import { AuthProvider, useAuth } from './lib/auth';
 import { fetchQueue } from './lib/tasks';
+import { useLiveEvents } from './hooks/useLiveEvents';
 
 function MainApp() {
   const { isLoggedIn, user, loading: authLoading, logout } = useAuth();
@@ -83,7 +84,7 @@ function MainApp() {
     }
   }, [isLoggedIn, loadQueue]);
 
-  // Smart background polling (every 15s when logged in & page visible)
+  // Fallback heartbeat background polling (reduced to 60s, since SSE delivers 0ms updates)
   useEffect(() => {
     if (!isLoggedIn) return;
 
@@ -92,7 +93,7 @@ function MainApp() {
       if (isAutoRefresh && document.visibilityState === 'visible') {
         loadQueue(true);
       }
-    }, 15000);
+    }, 60000);
 
     return () => clearInterval(interval);
   }, [isLoggedIn, loadQueue]);
@@ -124,6 +125,43 @@ function MainApp() {
   const updateTicket = useCallback((id: string, changes: Partial<Ticket>) => {
     setTickets(prev => prev.map(t => (t.id === id ? { ...t, ...changes } : t)));
   }, []);
+
+  // Live SSE stream for real-time ticket updates, worker actions, and HitL confirmations
+  const { isConnected: isLiveConnected } = useLiveEvents({
+    enabled: isLoggedIn,
+    onQueueRefreshNeeded: (reason) => {
+      console.debug('[LiveEvents] Фоновое обновление очереди заявок:', reason);
+      loadQueue(true);
+    },
+    onTaskStatusUpdated: (taskIds, newStatusId) => {
+      const idSet = new Set(taskIds.map(String));
+      const statusMap: Record<number, { status: any; statusName: string }> = {
+        29: { status: 'closed', statusName: 'Выполнена' },
+        26: { status: 'in_progress', statusName: 'В работе' },
+        30: { status: 'cancelled', statusName: 'Отменена' },
+        35: { status: 'client_hold', statusName: 'На согласовании' },
+        36: { status: 'client_hold', statusName: 'Ждем поставку' },
+        37: { status: 'client_hold', statusName: 'Ждем пользователя' },
+        48: { status: 'client_hold', statusName: 'Плановые работы' },
+      };
+      const mapped = statusMap[newStatusId];
+      if (mapped) {
+        setTickets(prev =>
+          prev.map(t =>
+            idSet.has(t.id) || idSet.has(String(t.rawId))
+              ? { ...t, status: mapped.status, statusName: mapped.statusName }
+              : t
+          )
+        );
+      }
+    },
+    onConfirmRequired: (jobId, prompt) => {
+      addToast({
+        type: 'warning',
+        message: `HitL подтверждение: ${prompt}`,
+      });
+    },
+  });
 
   const selectedTicket = tickets.find(t => t.id === selectedTicketId) ?? null;
 
@@ -183,6 +221,7 @@ function MainApp() {
           onResetService={() => setSelectedService({ rootId: null, serviceId: null, name: null })}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
+          isLiveConnected={isLiveConnected}
         />
 
         <main className="flex-1 overflow-hidden relative">

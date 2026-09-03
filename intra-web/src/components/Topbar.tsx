@@ -12,6 +12,7 @@ interface Props {
   onResetService: () => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
+  isLiveConnected?: boolean;
 }
 
 export default function Topbar({
@@ -24,6 +25,7 @@ export default function Topbar({
   onResetService,
   searchQuery,
   onSearchChange,
+  isLiveConnected = false,
 }: Props) {
   const getSidebarTitle = () => {
     if (sidebarMode === 'full') return 'Компактный вид (01..16)';
@@ -132,6 +134,19 @@ export default function Topbar({
 
       {/* Right Controls */}
       <div className="flex items-center gap-2 shrink-0">
+        {/* Live SSE Status Badge */}
+        <div
+          className={`h-8 px-2.5 flex items-center gap-1.5 rounded-lg text-xs font-mono border transition-colors select-none ${
+            isLiveConnected
+              ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+              : 'bg-neutral-100 dark:bg-neutral-900 text-neutral-400 border-neutral-200 dark:border-neutral-800'
+          }`}
+          title={isLiveConnected ? 'Шина событий активна (Real-time SSE)' : 'Подключение к шине событий...'}
+        >
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isLiveConnected ? 'bg-emerald-500 animate-pulse' : 'bg-neutral-400'}`} />
+          <span className="hidden sm:inline text-[11px] font-medium">{isLiveConnected ? 'Live' : 'Connecting'}</span>
+        </div>
+
         <a
           href="/admin"
           className="h-8 px-2.5 flex items-center gap-1.5 rounded-lg text-xs font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors border border-neutral-200/80 dark:border-neutral-800 cursor-pointer"

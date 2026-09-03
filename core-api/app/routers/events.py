@@ -46,9 +46,9 @@ async def event_stream(
                 await pubsub.subscribe(channel_name)
                 logger.info("SSE клиент подписался на канал %s", channel_name)
             else:
-                # Подписка на глобальный канал и паттерн всех задач
-                await pubsub.subscribe("events:all")
-                await pubsub.psubscribe("job:*:events")
+                # Подписка на глобальный канал, обновления задач и паттерны событий
+                await pubsub.subscribe("events:all", "channel:task_updates")
+                await pubsub.psubscribe("job:*:events", "intraservice_events:*")
                 logger.info("SSE клиент подписался на глобальный поток событий")
 
             # Отправляем директиву retry: 3000 (RFC 8895) и приветственное событие
@@ -71,12 +71,12 @@ async def event_stream(
                         if isinstance(data, bytes):
                             data = data.decode("utf-8")
                         
-                        # Парсим тип события, если в JSON есть поле "event"
+                        # Парсим тип события (event или type)
                         event_type = "message"
                         try:
                             parsed = json.loads(data)
-                            if isinstance(parsed, dict) and "event" in parsed:
-                                event_type = parsed["event"]
+                            if isinstance(parsed, dict):
+                                event_type = parsed.get("event") or parsed.get("type") or "message"
                         except Exception:
                             pass
 
@@ -98,8 +98,8 @@ async def event_stream(
                 if job_id:
                     await pubsub.unsubscribe(f"job:{job_id}:events")
                 else:
-                    await pubsub.punsubscribe("job:*:events")
-                    await pubsub.unsubscribe("events:all")
+                    await pubsub.punsubscribe("job:*:events", "intraservice_events:*")
+                    await pubsub.unsubscribe("events:all", "channel:task_updates")
                 await pubsub.close()
             except Exception as ex:
                 logger.debug("Ошибка закрытия pubsub SSE: %s", ex)
