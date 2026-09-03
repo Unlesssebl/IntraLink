@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
@@ -125,7 +125,6 @@ app = FastAPI(
     title="IntraService Core API Gateway",
     description="Микросервис-шлюз для интеграции с API IntraService",
     version="1.0.0",
-    default_response_class=ORJSONResponse,
     lifespan=lifespan,
 )
 

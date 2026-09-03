@@ -10,6 +10,9 @@ import type {
   BulkApplyResponse,
   SmartBulkApplyItemPayload,
   TicketAIPlan,
+  TicketSummaryResult,
+  AIHealthData,
+  SanitizePreviewResult,
 } from './types';
 
 export function mapStatusIdToStatus(statusId: number, statusName?: string): Status {
@@ -42,14 +45,65 @@ export function mapCategory(serviceName: string = ''): Category {
 export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
   const ruleType = task.rule_type || '';
   const templateKey = task.template_key || '';
-  const isRedirect = task.is_redirect || ruleType.startsWith('redirect') || templateKey.includes('redirect');
-  const isDuplicate = (task as any).is_duplicate || ruleType === 'duplicate_task';
-  const isWifi = ruleType === 'wlan_access' || templateKey === 'wifi_access' || /wi-?fi|wlan/i.test(task.name);
-  const isRepair = ruleType === 'hardware_repair' || templateKey === 'hardware_repair';
-  const isOffline = ruleType === 'pc_offline' || templateKey === 'pc_offline';
-  const is1c = /1с|1c/i.test(task.name) || /1с|1c/i.test(task.service_name || '');
-  const isPrinter = /принтер|мфу|печать/i.test(task.name) || /принтер|мфу/i.test(task.service_name || '');
+  const isDuplicate = Boolean((task as any).is_duplicate || ruleType === 'duplicate_task');
+  const isRedirect = Boolean(task.is_redirect || ruleType.startsWith('redirect') || templateKey.includes('redirect'));
+  const isRepair = Boolean(ruleType === 'hardware_repair' || templateKey === 'hardware_repair');
+  const isWifi = Boolean(ruleType === 'wlan_access' || templateKey === 'wifi_access');
+  const isOffline = Boolean(ruleType === 'pc_offline' || templateKey === 'pc_offline');
+  const is1c = Boolean(ruleType === '1c_cache' || templateKey === '1c_cache');
+  const isPrinter = Boolean(ruleType === 'printer_issue' || templateKey === 'printer_issue');
 
+  // 1. Приоритет #1: Дубликат (Транзакционное отсечение)
+  if (isDuplicate) {
+    const masterId = (task as any).duplicate_info?.master_task_id || '';
+    return {
+      actionType: 'duplicate',
+      actionBadge: masterId ? `Дубликат #${masterId}` : 'Дубликат',
+      actionTitle: `Отмена дубликата (привязка к #${masterId || '...'})`,
+      targetStatusId: 30,
+      targetStatusName: 'Отменена',
+      comment: task.suggested_comment || `Заявка отменена как повторная (дубликат инцидента #${masterId}). Все работы ведутся в основной заявке. По вопросам звоните на 49-87.`,
+      expensesMinutes: task.expenses || 5,
+      requiresDomainJob: false,
+      confidenceScore: 0.99,
+      badgeClass: 'bg-neutral-100 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-200 border-neutral-300 dark:border-neutral-700',
+    };
+  }
+
+  // 2. Приоритет #2: Редирект в другой отдел
+  if (isRedirect) {
+    const targetSvc = task.target_service_name || 'соответствующий раздел';
+    return {
+      actionType: 'redirect',
+      actionBadge: 'Редирект',
+      actionTitle: `Перенаправление в «${targetSvc}»`,
+      targetStatusId: 30,
+      targetStatusName: 'Отменена',
+      comment: task.suggested_comment || `Заявка отменена, т. к. создана не в подходящем разделе. Требуется оставить заявку в подходящем разделе: ${targetSvc}. По вопросам звоните на 49-87.`,
+      expensesMinutes: task.expenses || 5,
+      requiresDomainJob: false,
+      confidenceScore: 0.95,
+      badgeClass: 'bg-amber-50 text-amber-900 dark:bg-amber-950/60 dark:text-amber-200 border-amber-300 dark:border-amber-800',
+    };
+  }
+
+  // 3. Приоритет #3: Физический ремонт (Каб. 112)
+  if (isRepair) {
+    return {
+      actionType: 'hardware_repair',
+      actionBadge: 'В ремонт (Каб. 112)',
+      actionTitle: 'Приглашение на диагностику в каб. 112',
+      targetStatusId: 48,
+      targetStatusName: 'Ожидание устройства',
+      comment: task.suggested_comment || 'Приносите системный блок / ноутбук в АБК 3, 112 каб. на аппаратную диагностику и обслуживание.',
+      expensesMinutes: task.expenses || 10,
+      requiresDomainJob: false,
+      confidenceScore: 0.94,
+      badgeClass: 'bg-indigo-50 text-indigo-900 dark:bg-indigo-950/60 dark:text-indigo-200 border-indigo-300 dark:border-indigo-800',
+    };
+  }
+
+  // 4. Приоритет #4: Wi-Fi доступ
   if (isWifi) {
     return {
       actionType: 'grant_wlan',
@@ -69,53 +123,7 @@ export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
     };
   }
 
-  if (isDuplicate) {
-    const masterId = (task as any).duplicate_info?.master_task_id || '';
-    return {
-      actionType: 'duplicate',
-      actionBadge: masterId ? `Дубликат #${masterId}` : 'Дубликат',
-      actionTitle: `Отмена дубликата (привязка к #${masterId || '...'})`,
-      targetStatusId: 30,
-      targetStatusName: 'Отменена',
-      comment: task.suggested_comment || `Заявка отменена как повторная (дубликат инцидента #${masterId}). Все работы ведутся в основной заявке. По вопросам звоните на 49-87.`,
-      expensesMinutes: task.expenses || 5,
-      requiresDomainJob: false,
-      confidenceScore: 0.99,
-      badgeClass: 'bg-neutral-100 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-200 border-neutral-300 dark:border-neutral-700',
-    };
-  }
-
-  if (isRedirect) {
-    const targetSvc = task.target_service_name || 'соответствующий раздел';
-    return {
-      actionType: 'redirect',
-      actionBadge: 'Редирект',
-      actionTitle: `Перенаправление в «${targetSvc}»`,
-      targetStatusId: 30,
-      targetStatusName: 'Отменена',
-      comment: task.suggested_comment || `Заявка отменена, т. к. создана не в подходящем разделе. Требуется оставить заявку в подходящем разделе: ${targetSvc}. По вопросам звоните на 49-87.`,
-      expensesMinutes: task.expenses || 5,
-      requiresDomainJob: false,
-      confidenceScore: 0.95,
-      badgeClass: 'bg-amber-50 text-amber-900 dark:bg-amber-950/60 dark:text-amber-200 border-amber-300 dark:border-amber-800',
-    };
-  }
-
-  if (isRepair) {
-    return {
-      actionType: 'hardware_repair',
-      actionBadge: 'В ремонт (Каб. 112)',
-      actionTitle: 'Приглашение на диагностику в каб. 112',
-      targetStatusId: 48,
-      targetStatusName: 'Ожидание устройства',
-      comment: task.suggested_comment || 'Приносите системный блок / ноутбук в АБК 3, 112 каб. на аппаратную диагностику и обслуживание.',
-      expensesMinutes: task.expenses || 10,
-      requiresDomainJob: false,
-      confidenceScore: 0.94,
-      badgeClass: 'bg-indigo-50 text-indigo-900 dark:bg-indigo-950/60 dark:text-indigo-200 border-indigo-300 dark:border-indigo-800',
-    };
-  }
-
+  // 5. Оффлайн хост
   if (isOffline) {
     return {
       actionType: 'offline_host',
@@ -128,6 +136,24 @@ export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
       requiresDomainJob: false,
       confidenceScore: 0.92,
       badgeClass: 'bg-rose-50 text-rose-900 dark:bg-rose-950/60 dark:text-rose-200 border-rose-300 dark:border-rose-800',
+    };
+  }
+
+  // 6. RAG-прецедент (если есть подтвержденный поиск в базе знаний)
+  const kbMatches = (task as any).kb_matches;
+  if (kbMatches && kbMatches.length > 0) {
+    const topMatch = kbMatches[0];
+    return {
+      actionType: 'standard',
+      actionBadge: `RAG #${topMatch.task_id} (${topMatch.similarity_pct || 70}%)`,
+      actionTitle: `Решение из базы знаний #${topMatch.task_id}`,
+      targetStatusId: task.target_status_id || 27,
+      targetStatusName: task.target_status_name || 'В работе',
+      comment: topMatch.solution || task.suggested_comment || 'Принято в работу специалистом 1-й линии.',
+      expensesMinutes: task.expenses || 10,
+      requiresDomainJob: false,
+      confidenceScore: (topMatch.similarity_pct || 75) / 100,
+      badgeClass: 'bg-purple-50 text-purple-900 dark:bg-purple-950/60 dark:text-purple-200 border-purple-300 dark:border-purple-800',
     };
   }
 
@@ -251,6 +277,16 @@ export function mapTaskToTicket(task: TaskItem): Ticket {
     executors: task.executors || '',
     executorIds: task.executor_ids || [],
     aiPlan,
+    circuit: (task as any).circuit || 'green',
+    hasKbMatches: Boolean((task as any).kb_matches && (task as any).kb_matches.length > 0),
+    hasAiSolution: Boolean(
+      (task as any).has_ai_solution ||
+      ((task as any).kb_matches && (task as any).kb_matches.length > 0) ||
+      (task as any).is_duplicate ||
+      task.is_redirect ||
+      task.rule_type === 'wlan_access' ||
+      task.rule_type === 'hardware_repair'
+    ),
   };
 }
 
@@ -343,20 +379,59 @@ export async function fetchTaskDetails(taskId: number): Promise<TaskDetails> {
     ai_suggested_resolution: data?.ai_suggested_resolution,
     kb_matches: Array.isArray(data?.kb_matches) ? data.kb_matches : [],
     telemetry: data?.telemetry,
+    circuit: data?.circuit,
+    circuit_reason: data?.circuit_reason,
+    requires_sanitization: data?.requires_sanitization,
   } as TaskDetails;
 }
 
+export async function fetchTicketSummary(
+  taskId: number,
+  taskName: string,
+  taskDesc: string = '',
+  comments: any[] = [],
+  bypassCache: boolean = false
+): Promise<TicketSummaryResult> {
+  return apiFetch<TicketSummaryResult>('/api/v1/ai/summarize', {
+    method: 'POST',
+    body: JSON.stringify({
+      task_id: taskId,
+      task_name: taskName,
+      task_desc: taskDesc,
+      comments: comments,
+      bypass_cache: bypassCache,
+    }),
+  });
+}
+
+export async function fetchAIHealth(): Promise<AIHealthData> {
+  return apiFetch<AIHealthData>('/api/v1/ai/health');
+}
+
+export async function fetchSanitizePreview(text: string): Promise<SanitizePreviewResult> {
+  return apiFetch<SanitizePreviewResult>('/api/v1/ai/sanitize-preview', {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  });
+}
+
 export async function applyTask(taskId: number, payload: SingleApplyPayload): Promise<any> {
-  return apiFetch('/api/v1/triage/apply', {
+  const res = await apiFetch('/api/v1/triage/apply', {
     method: 'POST',
     body: JSON.stringify({
       task_ids: [taskId],
       status_id: payload.status_id,
       comment: payload.comment || '',
-      expenses: payload.minutes || 10,
+      expenses: payload.minutes ?? 10,
       executor_ids: payload.executor_ids,
+      confirmed_by_human: true,
     }),
   });
+  const first = res?.results?.[0];
+  if (first && first.update_ok === false) {
+    throw new Error(first.error || 'Ошибка IntraService: статус заявки не был обновлен.');
+  }
+  return res;
 }
 
 export async function bulkApplyTasks(tasks: BulkApplyItemPayload[]): Promise<BulkApplyResponse> {
@@ -668,7 +743,7 @@ export async function smartBulkApplyTasks(
         status_id: item.status_id,
         comment: item.comment,
         minutes: item.minutes,
-        executor_ids: item.executor_ids || '8664,10502',
+        executor_ids: item.executor_ids,
         is_private: item.is_private || false,
       });
 

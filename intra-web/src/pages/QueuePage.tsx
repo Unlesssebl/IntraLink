@@ -33,7 +33,7 @@ interface Props {
 }
 
 type ViewMode = 'table' | 'kanban';
-type FilterTab = 'all' | 'new' | 'duplicates' | 'redirects' | 'repair' | 'wifi';
+type FilterTab = 'all' | 'duplicates' | 'redirects' | 'repair' | 'wifi';
 
 interface BulkConfirmModalState {
   open: boolean;
@@ -97,6 +97,7 @@ export default function QueuePage({
 }: Props) {
   const [view, setView] = useState<ViewMode>('table');
   const [filterTab, setFilterTab] = useState<FilterTab>('all');
+  const [showAiOnly, setShowAiOnly] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [inlineStatusTicketId, setInlineStatusTicketId] = useState<string | null>(null);
   const [openHostTicketId, setOpenHostTicketId] = useState<string | null>(null);
@@ -122,7 +123,7 @@ export default function QueuePage({
 
   // Counts for KPI within current scope
   const countTotal = scopedTickets.length;
-  const countNew = scopedTickets.filter(t => t.status === 'new').length;
+  const countAiReady = scopedTickets.filter(t => t.hasAiSolution).length;
   const countDuplicates = scopedTickets.filter(t => t.isDuplicate || t.ruleType === 'duplicate_task').length;
   const countRedirects = scopedTickets.filter(t => t.isRedirect || t.ruleType?.startsWith('redirect')).length;
   const countRepair = scopedTickets.filter(t => t.ruleType === 'hardware_repair').length;
@@ -131,7 +132,6 @@ export default function QueuePage({
   // Adaptive smart tabs: hide tabs that have 0 items in selected service scope (Marks #3)
   const availableTabs: { key: FilterTab; label: string; count: number }[] = [
     { key: 'all', label: 'Все заявки', count: countTotal },
-    { key: 'new', label: 'Новые', count: countNew },
   ];
 
   if (countDuplicates > 0) {
@@ -155,7 +155,7 @@ export default function QueuePage({
   }, [availableTabs, filterTab]);
 
   const filtered = scopedTickets.filter(t => {
-    if (filterTab === 'new' && t.status !== 'new') return false;
+    if (showAiOnly && !t.hasAiSolution) return false;
     if (filterTab === 'duplicates' && !t.isDuplicate && t.ruleType !== 'duplicate_task') return false;
     if (filterTab === 'redirects' && !t.isRedirect && !t.ruleType?.startsWith('redirect')) return false;
     if (filterTab === 'repair' && t.ruleType !== 'hardware_repair') return false;
@@ -221,7 +221,6 @@ export default function QueuePage({
         minutes: plan.expensesMinutes,
         requires_domain_job: plan.requiresDomainJob,
         domain_job: plan.domainJob,
-        executor_ids: '8664,10502',
       };
 
       const res = await smartBulkApplyTasks([payload]);
@@ -270,13 +269,14 @@ export default function QueuePage({
           minutes: item.minutes,
           requires_domain_job: plan?.requiresDomainJob,
           domain_job: plan?.domainJob,
-          executor_ids: '8664,10502',
         };
       });
 
       const res = await smartBulkApplyTasks(payload);
 
+      const failedIds = new Set(res.errors.map(e => String(e.task_id)));
       activeItems.forEach(item => {
+        if (failedIds.has(String(item.ticket.rawId))) return;
         const plan = item.ticket.aiPlan;
         const targetStatusId = plan?.targetStatusId || 27;
         const newStatus = targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : (targetStatusId === 35 || targetStatusId === 48 ? 'waiting' : 'in_progress');
@@ -508,6 +508,32 @@ export default function QueuePage({
                 </button>
               ))}
             </div>
+
+            <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-800" />
+
+            {/* AI-Ready Fast Toggle Button */}
+            <button
+              type="button"
+              onClick={() => setShowAiOnly(prev => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer border ${
+                showAiOnly
+                  ? 'bg-purple-600 text-white border-purple-500 shadow-2xs'
+                  : 'bg-white dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 border-neutral-250 dark:border-neutral-750 hover:bg-neutral-50 dark:hover:bg-neutral-800'
+              }`}
+              title={showAiOnly ? 'Показать все доступные заявки' : 'Показать только заявки с готовым решением AI'}
+            >
+              <IconSparkles size={13} className={showAiOnly ? 'text-white' : 'text-purple-600 dark:text-purple-400'} />
+              <span>С решением AI</span>
+              <span
+                className={`text-[11px] font-bold px-1.5 py-0.2 rounded-full tabular-nums ${
+                  showAiOnly
+                    ? 'bg-white/20 text-white'
+                    : 'bg-purple-100 dark:bg-purple-950/80 text-purple-700 dark:text-purple-300'
+                }`}
+              >
+                {countAiReady}
+              </span>
+            </button>
 
             <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-800" />
 
@@ -752,6 +778,17 @@ export default function QueuePage({
                             {ticket.title}
                           </span>
 
+                          {/* AI Ready Solution Badge */}
+                          {ticket.hasAiSolution && (
+                            <span
+                              className="px-1.5 py-0.2 rounded text-[10px] font-semibold border border-purple-300 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/70 text-purple-700 dark:text-purple-300 inline-flex items-center gap-1 shrink-0"
+                              title="Для этой заявки готово проверенное решение AI"
+                            >
+                              <IconSparkles size={10} className="text-purple-600 dark:text-purple-400 shrink-0" />
+                              <span>AI Решение</span>
+                            </span>
+                          )}
+
                           {/* Smart tag badges placed right beside title/description */}
                           {ticket.isDuplicate && (
                             <span className={`${smartTagClass} inline-flex items-center gap-1`}>
@@ -775,6 +812,16 @@ export default function QueuePage({
                             <span className={`${smartTagClass} inline-flex items-center gap-1`}>
                               <IconWifi size={11} className="text-neutral-500 shrink-0" />
                               <span>wi-fi</span>
+                            </span>
+                          )}
+                          {ticket.hasKbMatches && (
+                            <span className="px-1.5 py-0.2 rounded text-[10px] font-medium border border-purple-200 dark:border-purple-800/80 bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 inline-flex items-center gap-1" title="Есть похожие решения в базе знаний RAG">
+                              <span>📚 RAG</span>
+                            </span>
+                          )}
+                          {ticket.circuit === 'red' && (
+                            <span className="px-1 py-0.2 rounded text-[9.5px] font-mono font-bold border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400" title="Контур RED: пароли/AD, закрытый On-Prem">
+                              RED
                             </span>
                           )}
                           {ticket.hasAttachments && (

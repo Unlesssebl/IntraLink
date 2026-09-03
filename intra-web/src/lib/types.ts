@@ -141,6 +141,46 @@ export interface TaskDetails {
   attachments: TaskAttachment[];
   cls_info: TaskClassification;
   rights?: TaskRights;
+  task?: any;
+  history?: any[];
+  ai_suggested_resolution?: string;
+  suggested_action?: any;
+  kb_matches?: RAGMatchItem[];
+  telemetry?: any;
+  circuit?: 'red' | 'yellow' | 'green';
+  circuit_reason?: string;
+  requires_sanitization?: boolean;
+}
+
+export interface TicketSummaryResult {
+  core_problem: string;
+  actions_taken: string[];
+  current_status: string;
+  recommended_next_step: string;
+}
+
+export interface AIHealthData {
+  ollama_available: boolean;
+  ollama_url: string;
+  ollama_model: string;
+  litellm_available: boolean;
+  litellm_url: string;
+  gpu_detected: boolean;
+  gpu_name?: string | null;
+  gpu_backend?: string | null;
+  vram_allocated_bytes?: number | null;
+}
+
+export interface SanitizePreviewResult {
+  original_text: string;
+  sanitized_text: string;
+  entity_map: Record<string, string>;
+  detected_types: string[];
+  route_decision: {
+    circuit: 'red' | 'yellow' | 'green';
+    reason: string;
+    requires_sanitization: boolean;
+  };
 }
 
 

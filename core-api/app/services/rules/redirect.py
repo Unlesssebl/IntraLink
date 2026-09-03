@@ -196,6 +196,18 @@ class ServiceRedirectRule(BaseRule):
                 if any(w in full_text.lower() for w in ["создать", "создание", "новый пользователь", "учетная запись"]):
                     return None
 
+            # 1-я линия Helpdesk обслуживает и 02 (ПО), и 03 (Компьютеры/Оргтехника):
+            # между ними заявки НЕ отменяются и НЕ редиректятся!
+            if current_root in ("02", "03") and target_root in ("02", "03"):
+                return None
+
+            # Если заявка на обслуживание, ввод в эксплуатацию или настройку ПК / нового компьютера:
+            if current_root == "03" and any(w in full_text.lower() for w in [
+                "новый компьютер", "новые компьютер", "на новый компьютер", "компьютер", "пк",
+                "ноутбук", "windows", "wechat", "браузер", "рабочее место", "подготовка", "снабжени"
+            ]):
+                return None
+
             if current_root == "02" and any(w in full_text.lower() for w in ["установка", "установить", "настройка программ", "программ"]) and not any(w in full_text.lower() for w in ["картридж", "ремонт", "замятие", "весы"]):
                 return None
 

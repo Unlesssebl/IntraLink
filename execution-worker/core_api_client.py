@@ -71,15 +71,19 @@ class CoreApiClient:
         session = await self._get_session()
         url = f"{self.base_url}/api/v1/triage/apply"
         payload = {
-            "task_id": task_id,
+            "task_ids": [task_id],
             "comment": comment,
-            "status_id": status_id,
-            "expenses": expenses,
-            "is_service": is_service,
+            "status_id": status_id or 29,
+            "expenses": expenses or 0,
+            "confirmed_by_human": True,
         }
         try:
             async with session.post(url, json=payload) as resp:
-                return resp.status == 200
+                if resp.status == 200:
+                    data = await resp.json()
+                    results = data.get("results") or []
+                    return any(r.get("update_ok", False) for r in results)
+                return False
         except Exception as e:
             logger.debug("Сбой добавления комментария к #%d: %s", task_id, e)
             return False

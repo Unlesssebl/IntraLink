@@ -689,6 +689,22 @@ async def search_knowledge_base(
     if not search_query:
         search_query = clean_query
 
+    # Кэш результатов RAG в Redis (TTL 10 минут) для устранения повторных эмбеддингов
+    import hashlib
+    import json
+    from app.services.worker import get_redis_client
+
+    cache_key = f"rag:cache:{hashlib.md5(search_query.encode()).hexdigest()}:{limit}:{distance_threshold}:{int(hybrid)}:{int(rerank)}"
+    try:
+        redis = get_redis_client()
+        cached = await redis.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    final_matches: list[dict[str, Any]] = []
+
     # 1. Если гибридный режим активен
     if hybrid:
         candidate_limit = max(limit * 5, 15) if rerank else limit * 3
@@ -729,22 +745,33 @@ async def search_knowledge_base(
                     threshold=rerank_threshold,
                     circuit=eval_circuit,
                 )
-                return reranked
-
-            return fused_matches[:limit]
+                final_matches = reranked
+            else:
+                final_matches = fused_matches[:limit]
 
     # 2. Dense-only поиск (fallback)
-    dense_matches = await dense_vector_search(
-        db=db,
-        query_text=clean_query,
-        limit=limit,
-        distance_threshold=distance_threshold,
-        circuit=eval_circuit,
-        metadata=metadata,
-    )
-    for m in dense_matches:
-        m["distilled_query"] = search_query
-    return dense_matches
+    if not final_matches:
+        dense_matches = await dense_vector_search(
+            db=db,
+            query_text=clean_query,
+            limit=limit,
+            distance_threshold=distance_threshold,
+            circuit=eval_circuit,
+            metadata=metadata,
+        )
+        for m in dense_matches:
+            m["distilled_query"] = search_query
+        final_matches = dense_matches
+
+    # Сохранение в Redis кэш
+    if final_matches:
+        try:
+            redis = get_redis_client()
+            await redis.set(cache_key, json.dumps(final_matches), ex=600)
+        except Exception:
+            pass
+
+    return final_matches
 
 
 async def index_task_knowledge(

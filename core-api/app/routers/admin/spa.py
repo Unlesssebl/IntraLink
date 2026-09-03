@@ -2,11 +2,25 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.get("/admin/api/tasks/{task_id}/open")
+@router.get("/api/v1/tasks/{task_id}/open")
+async def open_task_in_intraservice(task_id: int):
+    """
+    Перенаправляет браузер оператора напрямую на веб-страницу заявки в IntraService.
+    """
+    base_url = settings.INTRASERVICE_URL.replace("/api", "").rstrip("/")
+    target_url = f"{base_url}/Task/View/{task_id}"
+    return RedirectResponse(url=target_url, status_code=status.HTTP_302_FOUND)
+
 
 # Путь к файлу шаблона админ-панели (static/admin/index.html)
 HTML_PATH = Path(__file__).resolve().parent.parent.parent / "static" / "admin" / "index.html"

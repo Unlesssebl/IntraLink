@@ -107,16 +107,58 @@ class TriageService:
             t_desc = t.get("Description") or ""
             query_text = f"{t_name}. {t_desc}".strip()
 
-            # Семантический RAG-поиск
-            kb_matches = await tr.search_knowledge_base(
-                db=db, query_text=query_text, limit=2, distance_threshold=0.70
-            )
+            is_dup = t_id in dup_map
+            dup_info = dup_map.get(t_id)
 
-            # Rule Engine рекомендация
-            decision = tr.auto_detect_template(
-                task=t,
-                kb_matches=kb_matches,
-                redirect_mode=redirect_only,
+            kb_matches = []
+            decision = None
+
+            # 1. Приоритет #1: Дубликат (Транзакционный дедупликатор БД)
+            if is_dup:
+                master_id = (dup_info or {}).get("master_task_id", "")
+                decision = {
+                    "template_key": "duplicate_task",
+                    "name": f"Отмена дубликата (привязка к #{master_id})" if master_id else "Отмена дубликата",
+                    "status_id": 30,
+                    "status_name": "Отменена",
+                    "expenses": 5,
+                    "comment": f"Заявка отменена как повторная (дубликат инцидента #{master_id}). Все работы ведутся в основной заявке. По вопросам звоните на 49-87.",
+                    "is_redirect": False,
+                    "rule_type": "duplicate_task",
+                    "confidence": 0.99,
+                    "decision_source": "db_dedup",
+                }
+            else:
+                # 2. Быстрый прогон через модульный RuleEngine (Wi-Fi, Ремонт, Редирект, Принтер)
+                decision = tr.auto_detect_template(
+                    task=t,
+                    kb_matches=None,
+                    redirect_mode=redirect_only,
+                )
+
+                # 3. Если правило общее/стандартное — ищем семантическое решение в pgvector RAG
+                if decision.get("rule_type") in ("standard_in_work", None) and not decision.get("is_redirect"):
+                    kb_matches = await tr.search_knowledge_base(
+                        db=db, query_text=query_text, limit=2, distance_threshold=0.70
+                    )
+                    if kb_matches:
+                        decision = tr.auto_detect_template(
+                            task=t,
+                            kb_matches=kb_matches,
+                            redirect_mode=redirect_only,
+                        )
+                        decision["decision_source"] = "rag_consensus"
+                    else:
+                        decision["decision_source"] = "standard_fallback"
+                else:
+                    decision["decision_source"] = "rule_engine"
+
+            # Флаг готовности решения AI
+            has_ai_solution = bool(
+                decision and (
+                    decision.get("rule_type") != "standard_in_work"
+                    or len(kb_matches) > 0
+                )
             )
 
             # Zero Trust DLP оценка контура
@@ -124,9 +166,6 @@ class TriageService:
                 prompt=query_text,
                 metadata=RoutingMetadata(service_id=t.get("ServiceId")),
             )
-
-            is_dup = t_id in dup_map
-            dup_info = dup_map.get(t_id)
 
             # Экспресс-телеметрия хоста (0ms из кэша Redis)
             telemetry = await tr.get_task_telemetry(t_id)
@@ -163,6 +202,7 @@ class TriageService:
                 "circuit": circuit_dec.circuit.value,
                 "circuit_reason": circuit_dec.reason,
                 "requires_sanitization": circuit_dec.requires_sanitization,
+                "has_ai_solution": has_ai_solution,
             })
 
         return {
@@ -205,9 +245,13 @@ class TriageService:
         t_desc = task.get("Description") or ""
         query_text = f"{t_name}. {t_desc}".strip()
 
-        kb_matches = await tr.search_knowledge_base(
-            db=db, query_text=query_text, limit=3, distance_threshold=0.70
-        )
+        # Проверяем редирект в другой отдел
+        is_redirect = bool(tr.detect_service_redirect(task))
+        kb_matches = []
+        if not is_redirect:
+            kb_matches = await tr.search_knowledge_base(
+                db=db, query_text=query_text, limit=3, distance_threshold=0.70
+            )
 
         decision = tr.auto_detect_template(task=task, kb_matches=kb_matches)
 
@@ -216,12 +260,29 @@ class TriageService:
             metadata=RoutingMetadata(service_id=task.get("ServiceId")),
         )
 
-        ai_resolution = await tr.synthesize_triage_resolution(
-            task=task,
-            kb_matches=kb_matches,
-            telemetry=telemetry,
-            circuit=circuit_dec.circuit,
-        )
+        # Кэш синтеза решения LLM в Redis по хэшу задачи и длине истории переписки
+        ai_resolution = None
+        redis = tr.get_redis_client()
+        cache_key = f"ai:resolution:{task_id}:{len(history)}"
+        try:
+            cached_res = await redis.get(cache_key)
+            if cached_res:
+                ai_resolution = cached_res
+        except Exception:
+            pass
+
+        if ai_resolution is None and not is_redirect and decision.get("rule_type") != "duplicate_task":
+            ai_resolution = await tr.synthesize_triage_resolution(
+                task=task,
+                kb_matches=kb_matches,
+                telemetry=telemetry,
+                circuit=circuit_dec.circuit,
+            )
+            if ai_resolution:
+                try:
+                    await redis.set(cache_key, ai_resolution, ex=3600)
+                except Exception:
+                    pass
 
         return {
             "task": task,
@@ -233,6 +294,7 @@ class TriageService:
             "circuit": circuit_dec.circuit.value,
             "circuit_reason": circuit_dec.reason,
             "requires_sanitization": circuit_dec.requires_sanitization,
+            "has_ai_solution": bool(len(kb_matches) > 0 or (decision and decision.get("rule_type") != "standard_in_work")),
         }
 
     @staticmethod
@@ -245,17 +307,19 @@ class TriageService:
         expenses: int = 0,
         executor_ids: str | None = None,
         dry_run: bool = False,
+        operator_user_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Применяет решение к заявке/группе заявок:
         1. Перевод в статус 27 (В работе) при необходимости.
         2. Перевод в целевой статус (29, 30, 35, 48) с комментарием.
-        3. Списание трудозатрат.
-        4. Автообучение pgvector RAG при закрытии.
+        3. Списание трудозатрат от имени авторизованного оператора.
+        4. Автообучение pgvector RAG при подтвержденном закрытии.
         """
         import app.routers.triage as tr
 
-        exec_ids = executor_ids or settings.DEFAULT_EXECUTOR_IDS
+        op_user_id = operator_user_id or settings.PRIMARY_EXECUTOR_ID
+        exec_ids = executor_ids or (str(op_user_id) if op_user_id else settings.DEFAULT_EXECUTOR_IDS)
         results = []
 
         for tid in task_ids:
@@ -264,6 +328,8 @@ class TriageService:
                     "task_id": tid,
                     "status": "simulated",
                     "target_status_id": status_id,
+                    "update_ok": True,
+                    "expenses_ok": True,
                 })
                 continue
 
@@ -285,24 +351,25 @@ class TriageService:
                 executor_ids=exec_ids,
             )
 
-            # 3. Списание трудозатрат
+            # 3. Списание трудозатрат от имени авторизованного оператора
             exp_ok = True
             if expenses and expenses > 0:
                 exp_ok = await intraservice.add_task_expenses(
                     auth_b64=service_auth_b64,
                     task_id=tid,
                     minutes=expenses,
-                    user_id=settings.PRIMARY_EXECUTOR_ID,
+                    user_id=op_user_id,
                 )
 
-            # 4. Авто-индексация RAG
+            # 4. Авто-индексация RAG (строго только при успешном обновлении тикета в IntraService)
             clean_comment = comment.strip() if comment else ""
             should_index = False
-            if status_id == 29 and clean_comment:
-                should_index = True
-            elif status_id == 30 and len(clean_comment) >= 35:
-                if not clean_comment.startswith("Заявка переведена в статус Отменена"):
+            if upd_ok:
+                if status_id == 29 and clean_comment:
                     should_index = True
+                elif status_id == 30 and len(clean_comment) >= 35:
+                    if not clean_comment.startswith("Заявка переведена в статус Отменена"):
+                        should_index = True
 
             if should_index:
                 try:
@@ -333,9 +400,10 @@ class TriageService:
 
             results.append({
                 "task_id": tid,
-                "status": "success" if (upd_ok and exp_ok) else "partial_failure",
+                "status": "success" if (upd_ok and exp_ok) else ("failed" if not upd_ok else "partial_failure"),
                 "update_ok": upd_ok,
                 "expenses_ok": exp_ok,
+                "error": None if upd_ok else "Ошибка обновления статуса/комментария заявки в IntraService (проверьте доступные переходы статусов и права роли).",
             })
 
         return results

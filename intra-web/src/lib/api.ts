@@ -5,11 +5,17 @@ export async function apiFetch<T = any>(url: string, options: RequestInit = {}):
     'Content-Type': 'application/json',
   };
 
+  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('intralink_admin_token') : null;
+  if (token) {
+    defaultHeaders['Authorization'] = `Bearer ${token}`;
+  }
+
   if (options.body instanceof FormData) {
     delete defaultHeaders['Content-Type'];
   }
 
   const mergedOptions: RequestInit = {
+    credentials: 'include',
     ...options,
     headers: {
       ...defaultHeaders,

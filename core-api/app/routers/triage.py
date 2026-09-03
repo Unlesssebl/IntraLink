@@ -5,13 +5,19 @@
 
 import logging
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import jwt
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.db import get_db
-from app.routers.deps import get_service_auth_b64, verify_admin_or_api_key
+from app.routers.deps import (
+    OperatorContext,
+    get_operator_context,
+    get_service_auth_b64,
+    verify_admin_or_api_key,
+)
 from app.services import intraservice
 from app.services.ai_synthesis import synthesize_triage_resolution
 from app.services.host_telemetry import (
@@ -160,11 +166,39 @@ async def get_task_details_card(
     return card
 
 
+def extract_operator_user_id(
+    authorization: str | None = None,
+    admin_session: str | None = None,
+) -> int | None:
+    token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        bearer_val = authorization[7:].strip()
+        if bearer_val and bearer_val != "sso_session":
+            token = bearer_val
+    elif admin_session:
+        token = admin_session.strip()
+
+    if token:
+        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
+            if not sec:
+                continue
+            try:
+                payload = jwt.decode(token, sec, algorithms=["HS256"])
+                uid = payload.get("user_id")
+                if uid:
+                    return int(uid)
+            except Exception:
+                pass
+    return None
+
+
 @router.post("/apply", status_code=status.HTTP_200_OK)
 async def apply_triage_action(
     payload: ApplyTriageRequest,
     service_auth_b64: str = Depends(get_service_auth_b64),
     db: AsyncSession = Depends(get_db),
+    authorization: str | None = Header(None, alias="Authorization"),
+    admin_session: str | None = Cookie(None),
 ):
     """Атомарное применение решения к группе заявок (с защитой Dead Man's Switch)."""
     if not payload.task_ids:
@@ -187,6 +221,7 @@ async def apply_triage_action(
                 detail=str(e),
             )
 
+    op_user_id = extract_operator_user_id(authorization, admin_session)
     results = await TriageService.apply_triage_resolution(
         service_auth_b64=service_auth_b64,
         db=db,
@@ -196,7 +231,17 @@ async def apply_triage_action(
         expenses=payload.expenses,
         executor_ids=payload.executor_ids,
         dry_run=payload.dry_run,
+        operator_user_id=op_user_id,
     )
+
+    # Если ни одна задача не была успешно обновлена в IntraService, возвращаем ошибку клиенту
+    if not payload.dry_run and results and all(not r.get("update_ok", False) for r in results):
+        first_err = results[0].get("error") or "Не удалось обновить заявку в IntraService (проверьте доступные переходы статусов и права роли)."
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=first_err,
+        )
+
     return {"results": results}
 
 

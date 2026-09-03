@@ -61,6 +61,9 @@ export interface Ticket {
   executors?: string;
   executorIds?: Array<number | string>;
   aiPlan?: TicketAIPlan;
+  circuit?: 'red' | 'yellow' | 'green';
+  hasKbMatches?: boolean;
+  hasAiSolution?: boolean;
 }
 
 export interface ToastMessage {

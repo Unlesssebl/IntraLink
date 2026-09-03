@@ -342,7 +342,7 @@ class WindowsExecutionWorker:
                         await self.api_client.add_comment(
                             task_id=task_id,
                             comment=f"Добрый день! Доступ к сети Wi-Fi успешно предоставлен для учетной записи {identity}.",
-                            status_id=30,  # Выполнена/Закрыта
+                            status_id=29,  # Выполнена
                             expenses=15,
                         )
 

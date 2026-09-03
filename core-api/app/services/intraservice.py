@@ -553,6 +553,8 @@ async def update_task_full(
 ) -> bool:
     """
     Атомарно обновляет задачу (статус, комментарий, исполнители) в одном PUT запросе.
+    Если передача исполнителей блокируется правами роли (400), безопасно выполняет
+    обновление статуса и комментария без ExecutorIds.
     """
     payload: dict[str, Any] = {"Id": task_id}
     if status_id is not None:
@@ -568,5 +570,30 @@ async def update_task_full(
         auth_b64=auth_b64,
         json_data=payload,
     )
-    return res is not None
+    if res is not None:
+        return True
+
+    # Если запрос с ExecutorIds отклонен (например, ограничение роли IntraService),
+    # пробуем применить статус и комментарий без ExecutorIds, чтобы не потерять решение инженера
+    if executor_ids and (status_id is not None or comment is not None):
+        fallback_payload: dict[str, Any] = {"Id": task_id}
+        if status_id is not None:
+            fallback_payload["StatusId"] = status_id
+        if comment:
+            fallback_payload["Comment"] = comment
+            fallback_payload["IsPrivateComment"] = is_private
+        fallback_res = await _make_request(
+            endpoint=f"task/{task_id}",
+            method="PUT",
+            auth_b64=auth_b64,
+            json_data=fallback_payload,
+        )
+        if fallback_res is not None:
+            logger.warning(
+                "Задача #%d обновлена без назначения исполнителя (ограничение прав IntraService)",
+                task_id,
+            )
+            return True
+
+    return False
 

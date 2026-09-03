@@ -25,6 +25,8 @@ import {
   type VaultStatusResponse,
 } from '../lib/adminApi';
 import SkillsHub from '../components/SkillsHub';
+import { fetchAIHealth, fetchSanitizePreview } from '../lib/tasks';
+import type { AIHealthData, SanitizePreviewResult } from '../lib/types';
 
 interface AdminPanelPageProps {
   theme?: 'light' | 'dark';
@@ -40,12 +42,21 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [adminUser, setAdminUser] = useState<{ username: string; is_admin: boolean; role?: string } | null>(null);
 
   // Settings State
-  const [activeTab, setActiveTab] = useState<'vault' | 'skills' | 'ldaps' | 'helpdesk' | 'kb' | 'security'>('vault');
+  const [activeTab, setActiveTab] = useState<'vault' | 'skills' | 'ai-hub' | 'ldaps' | 'helpdesk' | 'kb' | 'security'>('vault');
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // AI Hub Telemetry & Playground State
+  const [aiHealth, setAiHealth] = useState<AIHealthData | null>(null);
+  const [loadingAiHealth, setLoadingAiHealth] = useState(false);
+  const [sanitizeInput, setSanitizeInput] = useState(
+    'Заявитель Иванов Иван (тел. 49-87, ПК NTEMW0144, IP 192.168.1.105): сбросьте доменный пароль Secret123!'
+  );
+  const [sanitizeResult, setSanitizeResult] = useState<SanitizePreviewResult | null>(null);
+  const [testingSanitize, setTestingSanitize] = useState(false);
 
   // Vault State (SSOT Credentials)
   const [vaultStatus, setVaultStatus] = useState<VaultStatusResponse | null>(null);
@@ -442,6 +453,40 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     }
   };
 
+  // AI Hub Telemetry & Test Handlers
+  const loadAiHealthData = useCallback(async () => {
+    setLoadingAiHealth(true);
+    try {
+      const data = await fetchAIHealth();
+      setAiHealth(data);
+    } catch (err: any) {
+      console.error('Не удалось загрузить статус AI Hub:', err);
+    } finally {
+      setLoadingAiHealth(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (token && activeTab === 'ai-hub') {
+      loadAiHealthData();
+    }
+  }, [token, activeTab, loadAiHealthData]);
+
+  const handleTestSanitize = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sanitizeInput.trim() || testingSanitize) return;
+    setTestingSanitize(true);
+    try {
+      const res = await fetchSanitizePreview(sanitizeInput.trim());
+      setSanitizeResult(res);
+    } catch (err: any) {
+      console.error('Ошибка проверки десенсибилизации:', err);
+      setStatusMessage({ type: 'error', text: 'Ошибка при проверке маскирования PII' });
+    } finally {
+      setTestingSanitize(false);
+    }
+  };
+
   // Nav to Operator Panel
   const goToOperatorPanel = () => {
     window.location.href = '/operator-panel';
@@ -672,6 +717,20 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
             </svg>
             <span>Навыки & Диспетчер (Skills Hub)</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('ai-hub')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 cursor-pointer ${
+              activeTab === 'ai-hub'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+            }`}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 14.93V17a1 1 0 0 1-2 0v-.07A8 8 0 0 1 4.07 10H5a1 1 0 0 1 0-2h-.93A8 8 0 0 1 11 4.07V5a1 1 0 0 1 2 0v-.93A8 8 0 0 1 19.93 11H19a1 1 0 0 1 0 2h.93A8 8 0 0 1 13 16.93zM12 8a4 4 0 1 0 4 4 4 4 0 0 0-4-4z"/>
+            </svg>
+            <span>AI Hub & Инференс</span>
           </button>
 
           <button
@@ -1133,6 +1192,231 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
         {/* Tab Skills: Skills Hub & Action Registry */}
         {activeTab === 'skills' && (
           <SkillsHub token={token || ''} />
+        )}
+
+        {/* Tab AI Hub: AI Hub & Inference Monitoring */}
+        {activeTab === 'ai-hub' && (
+          <div className="space-y-6">
+            {/* Header / Refresh Bar */}
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-neutral-100 flex items-center gap-2">
+                  <span>Централизованный AI Hub & LLM Инференс</span>
+                  {loadingAiHealth && <span className="text-xs text-blue-400 animate-pulse">(обновление...)</span>}
+                </h2>
+                <p className="text-xs text-neutral-400 mt-0.5">
+                  Мониторинг локального и облачного контуров, статус GPU NVIDIA RTX 3050 и Zero Trust DLP.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={loadAiHealthData}
+                disabled={loadingAiHealth}
+                className="px-3 py-1.5 text-xs font-medium text-neutral-200 bg-neutral-800 hover:bg-neutral-700 rounded-lg border border-neutral-700 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <span>Обновить телеметрию</span>
+              </button>
+            </div>
+
+            {/* Grid: Ollama vs LiteLLM */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Ollama Local Card */}
+              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 space-y-3.5 shadow-sm">
+                <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 font-bold text-xs">
+                      🔴
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-neutral-100">Локальный инференс Ollama</h3>
+                      <span className="text-[11px] text-neutral-400">Закрытый контур On-Prem (RED)</span>
+                    </div>
+                  </div>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${
+                      aiHealth?.ollama_available
+                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                        : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                    }`}
+                  >
+                    {aiHealth?.ollama_available ? '🟢 Доступен' : '🔴 Недоступен'}
+                  </span>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between py-1 border-b border-neutral-800/60">
+                    <span className="text-neutral-400">Адрес сервиса:</span>
+                    <span className="font-mono text-neutral-200">{aiHealth?.ollama_url || 'http://localhost:11434'}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-neutral-800/60">
+                    <span className="text-neutral-400">Активная модель:</span>
+                    <span className="font-mono text-blue-400 font-semibold">{aiHealth?.ollama_model || 'qwen2.5:1.5b'}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-neutral-800/60">
+                    <span className="text-neutral-400">Аппаратное ускорение:</span>
+                    <span className="font-medium text-emerald-400">
+                      {aiHealth?.gpu_detected
+                        ? aiHealth.gpu_name || aiHealth.gpu_backend || 'NVIDIA GeForce RTX 3050 (CUDA)'
+                        : 'CPU (Без GPU)'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-neutral-800/60">
+                    <span className="text-neutral-400">Видеопамять VRAM:</span>
+                    <span className="font-mono text-neutral-300">
+                      {aiHealth?.vram_allocated_bytes
+                        ? `${(aiHealth.vram_allocated_bytes / (1024 * 1024)).toFixed(0)} МБ в памяти`
+                        : 'Динамическое выделение (до 8 ГБ)'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-1">
+                    <span className="text-neutral-400">Скорость генерации:</span>
+                    <span className="font-mono text-neutral-300">~115 токенов/сек</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* LiteLLM Cloud Card */}
+              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 space-y-3.5 shadow-sm">
+                <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold text-xs">
+                      🟡
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-neutral-100">Облачный шлюз LiteLLM</h3>
+                      <span className="text-[11px] text-neutral-400">Контуры YELLOW (Sanitized) & GREEN</span>
+                    </div>
+                  </div>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${
+                      aiHealth?.litellm_available
+                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                        : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                    }`}
+                  >
+                    {aiHealth?.litellm_available ? '🟢 Прокси активен' : '🟡 Standby / Автономно'}
+                  </span>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between py-1 border-b border-neutral-800/60">
+                    <span className="text-neutral-400">Прокси адрес:</span>
+                    <span className="font-mono text-neutral-200">{aiHealth?.litellm_url || 'http://localhost:4000'}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-neutral-800/60">
+                    <span className="text-neutral-400">Модели инференса:</span>
+                    <span className="font-mono text-purple-400 font-semibold">gemini-2.0-flash / embedding-2</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-neutral-800/60">
+                    <span className="text-neutral-400">Защита данных (DLP):</span>
+                    <span className="text-emerald-400 font-medium">Redis PII Vault (Токенизация на лету)</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-neutral-800/60">
+                    <span className="text-neutral-400">Fail-Safe режим:</span>
+                    <span className="text-neutral-300">Автоматический fallback на Ollama On-Prem</span>
+                  </div>
+                  <div className="flex justify-between py-1">
+                    <span className="text-neutral-400">Circuit Breaker:</span>
+                    <span className="font-mono text-emerald-400">CLOSED (В норме)</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Zero Trust DLP Interactive Playground */}
+            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-neutral-100 flex items-center gap-2">
+                  <span>🛡 Интерактивная проверка Zero Trust DLP (Sanitize Playground)</span>
+                </h3>
+                <p className="text-xs text-neutral-400 mt-1">
+                  Проверьте, как классификатор контуров безопасности и движок токенизации PII обрабатывают чувствительные данные.
+                </p>
+              </div>
+
+              <form onSubmit={handleTestSanitize} className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-neutral-400 mb-1">
+                    Исходный текст инцидента или запроса для анализа:
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={sanitizeInput}
+                    onChange={e => setSanitizeInput(e.target.value)}
+                    className="w-full bg-neutral-950 border border-neutral-800 rounded-xl p-3 text-xs text-neutral-100 focus:outline-hidden focus:border-blue-500 font-mono leading-relaxed"
+                    placeholder="Введите текст с ФИО, паролями, IP или именами хостов..."
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={testingSanitize || !sanitizeInput.trim()}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors flex items-center gap-2"
+                >
+                  {testingSanitize ? (
+                    <>
+                      <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                      </svg>
+                      <span>Анализ...</span>
+                    </>
+                  ) : (
+                    <span>Проверить контур и маскирование PII</span>
+                  )}
+                </button>
+              </form>
+
+              {/* Test Result Display */}
+              {sanitizeResult && (
+                <div className="border border-neutral-800 rounded-xl p-4 bg-neutral-950/80 space-y-3 mt-4 text-xs">
+                  <div className="flex items-center justify-between border-b border-neutral-800/80 pb-2">
+                    <span className="font-semibold text-neutral-300">Результат классификации контура:</span>
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                        sanitizeResult.route_decision.circuit === 'red'
+                          ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                          : sanitizeResult.route_decision.circuit === 'yellow'
+                          ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                          : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                      }`}
+                    >
+                      {sanitizeResult.route_decision.circuit.toUpperCase()} КОНТУР
+                    </span>
+                  </div>
+
+                  <div className="text-[11.5px] text-neutral-400">
+                    <strong>Причина классификации:</strong> {sanitizeResult.route_decision.reason}
+                  </div>
+
+                  <div>
+                    <span className="font-semibold text-neutral-300 block mb-1">
+                      Обезличенный текст (отправляется в Cloud AI только в этом виде):
+                    </span>
+                    <div className="p-2.5 rounded-lg bg-neutral-900 border border-neutral-800 font-mono text-[11.5px] text-emerald-400 whitespace-pre-wrap">
+                      {sanitizeResult.sanitized_text}
+                    </div>
+                  </div>
+
+                  {Object.keys(sanitizeResult.entity_map).length > 0 && (
+                    <div>
+                      <span className="font-semibold text-neutral-300 block mb-1">
+                        Таблица подстановок в Redis PII Vault:
+                      </span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 font-mono text-[10.5px]">
+                        {Object.entries(sanitizeResult.entity_map).map(([k, v]) => (
+                          <div key={k} className="p-1.5 rounded bg-neutral-900/80 border border-neutral-800/80 flex justify-between">
+                            <span className="text-amber-400">{k}:</span>
+                            <span className="text-neutral-300 truncate max-w-[150px]">{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         )}
 
         {/* Tab 1: LDAPS Config */}

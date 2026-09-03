@@ -1,8 +1,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Ticket, Status } from '../data/mock';
 import { statusConfig, getStatusDotClass } from '../data/mock';
-import { fetchDiagnostics, applyTask, fetchTaskDetails, fetchTemplatesCatalog, enqueueExecution, pollExecutionJob } from '../lib/tasks';
-import type { TaskDetails } from '../lib/types';
+import {
+  fetchDiagnostics,
+  applyTask,
+  fetchTaskDetails,
+  fetchTemplatesCatalog,
+  enqueueExecution,
+  pollExecutionJob,
+  fetchTicketSummary,
+} from '../lib/tasks';
+import type { TaskDetails, TicketSummaryResult, RAGMatchItem } from '../lib/types';
 import {
   IconUser,
   IconPhone,
@@ -62,6 +70,13 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState<boolean>(false);
   const [confirmingCancel, setConfirmingCancel] = useState<boolean>(false);
 
+  // AI & RAG States
+  const [activeRecTab, setActiveRecTab] = useState<'ai' | 'rule'>('ai');
+  const [aiSummary, setAiSummary] = useState<TicketSummaryResult | null>(null);
+  const [loadingAiSummary, setLoadingAiSummary] = useState(false);
+  const [isAiSummaryExpanded, setIsAiSummaryExpanded] = useState(true);
+  const [isRagExpanded, setIsRagExpanded] = useState(false);
+
   const actionsMenuRef = useRef<HTMLDivElement>(null);
   const rawId = ticket.rawId || parseInt(ticket.id.replace(/\D/g, ''), 10);
   const effectiveHost = ticket.host || details?.pc_name || '';
@@ -74,12 +89,38 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     try {
       const data = await fetchTaskDetails(rawId);
       setDetails(data);
+      // Auto-populate LLM synthesis if available and operator hasn't overridden
+      if (data.ai_suggested_resolution && data.ai_suggested_resolution.trim().length > 10) {
+        setReplyText(data.ai_suggested_resolution);
+      }
     } catch (err: any) {
       console.warn('Не удалось загрузить подробности заявки:', err);
     } finally {
       setLoadingDetails(false);
     }
   }, [rawId]);
+
+  const handleGenerateAiSummary = async () => {
+    if (!rawId || loadingAiSummary) return;
+    setLoadingAiSummary(true);
+    try {
+      const res = await fetchTicketSummary(
+        rawId,
+        ticket.title,
+        ticket.description || details?.description || '',
+        commentsList,
+        false
+      );
+      setAiSummary(res);
+      setIsAiSummaryExpanded(true);
+      onToast({ type: 'success', message: 'Сводка переписки успешно сформирована AI Hub' });
+    } catch (err: any) {
+      console.error('Ошибка суммаризации переписки:', err);
+      onToast({ type: 'error', message: 'Не удалось сгенерировать AI-сводку переписки' });
+    } finally {
+      setLoadingAiSummary(false);
+    }
+  };
 
   // Load Templates catalog
   useEffect(() => {
@@ -110,6 +151,11 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     setExpenses(ticket.aiPlan?.expensesMinutes || ticket.expenses || 10);
     setDiagStatus({ ping: 'idle', smb: 'idle', winrm: 'idle' });
     setMultiHostDiag({});
+    setAiSummary(null);
+    setLoadingAiSummary(false);
+    setIsAiSummaryExpanded(true);
+    setIsRagExpanded(false);
+    setActiveRecTab('ai');
     loadDetails();
   }, [ticket.id, ticket.aiPlan, ticket.aiSuggestion, ticket.expenses, loadDetails]);
 
@@ -277,12 +323,17 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
     setSubmitting(true);
     try {
-      await applyTask(rawId, {
+      const res = await applyTask(rawId, {
         status_id: targetStatusId,
         comment: textToSend || 'Взято в работу инженером 1-й линии',
         minutes: expenses,
         is_private: replyMode === 'internal',
       });
+
+      const firstRes = res?.results?.[0];
+      if (firstRes && firstRes.update_ok === false) {
+        throw new Error(firstRes.error || 'IntraService отклонил изменение заявки');
+      }
 
       const newStatus = targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : (targetStatusId === 35 || targetStatusId === 36 || targetStatusId === 37 || targetStatusId === 48 ? 'waiting' : 'in_progress');
       const newStatusName = getStatusNameById(targetStatusId);
@@ -329,12 +380,17 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         await pollExecutionJob(job.job_id, 15000, 1000);
       }
 
-      await applyTask(rawId, {
+      const res = await applyTask(rawId, {
         status_id: selectedStatusOverride ?? plan.targetStatusId,
         comment: replyText.trim() || plan.comment,
         minutes: expenses || plan.expensesMinutes,
         is_private: replyMode === 'internal',
       });
+
+      const firstRes = res?.results?.[0];
+      if (firstRes && firstRes.update_ok === false) {
+        throw new Error(firstRes.error || 'IntraService отклонил изменение заявки');
+      }
 
       const finalStatusId = selectedStatusOverride ?? plan.targetStatusId;
       const newStatus = finalStatusId === 29 || finalStatusId === 30 ? 'resolved' : (finalStatusId === 35 || finalStatusId === 48 ? 'waiting' : 'in_progress');
@@ -378,9 +434,20 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           action: 'grant_wlan',
           task_id: rawId,
           params: { username },
-          auto_close_ticket: true,
+          auto_close_ticket: false,
         });
         await pollExecutionJob(job.job_id, 15000, 1000);
+
+        const res = await applyTask(rawId, {
+          status_id: 29,
+          comment: `Добрый день! Доступ к сети Wi-Fi успешно предоставлен для учетной записи ${username}.`,
+          minutes: 10,
+        });
+        const firstRes = res?.results?.[0];
+        if (firstRes && firstRes.update_ok === false) {
+          throw new Error(firstRes.error || 'IntraService отклонил изменение заявки');
+        }
+
         onToast({ type: 'success', message: `Заявка #${rawId} выполнена: доступ к Wi-Fi предоставлен` });
         onUpdateTicket(ticket.id, { status: 'resolved', statusId: 29, statusName: 'Выполнена' });
         onClose();
@@ -697,53 +764,221 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     </div>
   );
 
-  // AI Plan recommendation card
-  const renderAiPlanCard = () => (
-    ticket.aiPlan ? (
-      <div className="border border-blue-200 dark:border-blue-900/60 rounded-xl p-3 bg-blue-50/50 dark:bg-blue-950/20 shadow-xs space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5">
-            <span className={`w-2 h-2 rounded-full shrink-0 animate-pulse ${getStatusDotClass(ticket.aiPlan.targetStatusId)}`} />
-            <span className="text-[12px] font-bold text-neutral-800 dark:text-neutral-200">План решения AI</span>
-            <span className="text-[11px] font-medium px-2 py-0.5 rounded-lg border border-neutral-200/90 dark:border-neutral-750 bg-neutral-100/80 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200">
-              {ticket.aiPlan.actionBadge}
+  // Dual Recommendation card: AI Synthesis (Strict Grounding) + Rule Engine + RAG Matches
+  const renderAiPlanCard = () => {
+    const aiResolution = details?.ai_suggested_resolution;
+    const rulePlan = ticket.aiPlan;
+    const circuit = details?.circuit || 'green';
+    const circuitReason = details?.circuit_reason || '';
+    const kbMatches = details?.kb_matches || [];
+
+    const circuitBadgeCls = {
+      red: 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30',
+      yellow: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30',
+      green: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30',
+    }[circuit] || 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30';
+
+    const circuitLabel = {
+      red: '🔴 RED (On-Prem Ollama)',
+      yellow: '🟡 YELLOW (Sanitized Cloud)',
+      green: '🟢 GREEN (Direct Cloud)',
+    }[circuit] || '🟢 GREEN';
+
+    return (
+      <div className="space-y-2">
+        <div className="border border-blue-200 dark:border-blue-900/60 rounded-xl p-3 bg-blue-50/50 dark:bg-blue-950/20 shadow-xs space-y-2.5">
+          {/* Header with Dual Tabs and DLP Circuit Badge */}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-1 bg-neutral-200/70 dark:bg-neutral-800 p-0.5 rounded-lg border border-neutral-300 dark:border-neutral-700">
+              <button
+                type="button"
+                onClick={() => setActiveRecTab('ai')}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
+                  activeRecTab === 'ai'
+                    ? 'bg-white dark:bg-neutral-900 text-blue-600 dark:text-blue-400 shadow-xs'
+                    : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+                }`}
+              >
+                <IconSparkles size={12} />
+                <span>Синтез LLM (Strict Grounding)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveRecTab('rule')}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
+                  activeRecTab === 'rule'
+                    ? 'bg-white dark:bg-neutral-900 text-blue-600 dark:text-blue-400 shadow-xs'
+                    : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+                }`}
+              >
+                <span>⚡ Регламент (Rule Engine)</span>
+              </button>
+            </div>
+
+            {/* Zero Trust DLP Badge */}
+            <span
+              className={`text-[10.5px] font-mono font-medium px-2 py-0.5 rounded-md border ${circuitBadgeCls}`}
+              title={circuitReason ? `Контур безопасности: ${circuitReason}` : `Контур данных: ${circuit}`}
+            >
+              {circuitLabel}
             </span>
           </div>
-          <span className="text-[10.5px] font-mono font-semibold text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/50 px-1.5 py-0.2 rounded">
-            Уверенность {Math.round(ticket.aiPlan.confidenceScore * 100)}%
-          </span>
+
+          {/* Tab 1: AI Grounded Synthesis */}
+          {activeRecTab === 'ai' && (
+            <div className="space-y-2">
+              <div className="text-[12.5px] text-neutral-800 dark:text-neutral-200">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <div className="text-[11px] font-semibold text-neutral-600 dark:text-neutral-400 flex items-center gap-1">
+                    <span>Персонализированный ответ инженера</span>
+                    {loadingDetails && <span className="animate-pulse text-[10px] text-blue-500">(синтез...)</span>}
+                  </div>
+                  <span className="text-[10px] font-mono text-neutral-400">
+                    {circuit === 'red' ? 'Локальная модель' : 'С маскированием PII'}
+                  </span>
+                </div>
+                <div className="bg-white/95 dark:bg-neutral-900/90 p-2.5 rounded-lg border border-neutral-200/90 dark:border-neutral-800 text-[12px] text-neutral-800 dark:text-neutral-200 leading-relaxed font-sans">
+                  {aiResolution || rulePlan?.comment || 'Генерация заземленного ответа инженера...'}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+                <div>
+                  Целевой статус: <strong className="text-neutral-700 dark:text-neutral-300">{rulePlan?.targetStatusName || 'В работе'}</strong>
+                  {rulePlan?.expensesMinutes ? ` · Списание: ${rulePlan.expensesMinutes} мин` : ''}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const textToSet = aiResolution || rulePlan?.comment || '';
+                    setReplyText(textToSet);
+                    if (rulePlan?.expensesMinutes) setExpenses(rulePlan.expensesMinutes);
+                    if (rulePlan?.targetStatusId) setSelectedStatusOverride(rulePlan.targetStatusId);
+                    onToast({ type: 'info', message: 'Синтез LLM подставлен в редактор ответа' });
+                  }}
+                  className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-semibold cursor-pointer inline-flex items-center gap-1"
+                >
+                  <IconPencil size={11} />
+                  <span>Вставить в ответ</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Tab 2: Rule Engine Deterministic Template */}
+          {activeRecTab === 'rule' && (
+            <div className="space-y-2">
+              <div className="text-[12.5px] text-neutral-800 dark:text-neutral-200">
+                <div className="font-semibold mb-1 text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${getStatusDotClass(rulePlan?.targetStatusId || 27)}`} />
+                  <span>{rulePlan?.actionTitle || 'Стандартное действие'}</span>
+                  {rulePlan?.actionBadge && (
+                    <span className="text-[10px] font-medium px-1.5 py-0.2 rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800">
+                      {rulePlan.actionBadge}
+                    </span>
+                  )}
+                </div>
+                <div className="bg-white/95 dark:bg-neutral-900/90 p-2.5 rounded-lg border border-neutral-200/90 dark:border-neutral-800 text-[12px] text-neutral-700 dark:text-neutral-300 italic leading-relaxed">
+                  «{rulePlan?.comment || ticket.aiSuggestion || 'Принято в работу специалистом 1-й линии техподдержки.'}»
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+                <div>
+                  Статус: <strong className="text-neutral-700 dark:text-neutral-300">{rulePlan?.targetStatusName || 'В работе'}</strong> · Списание: <strong>{rulePlan?.expensesMinutes || 10} мин</strong>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReplyText(rulePlan?.comment || ticket.aiSuggestion || '');
+                    setExpenses(rulePlan?.expensesMinutes || 10);
+                    if (rulePlan?.targetStatusId) setSelectedStatusOverride(rulePlan.targetStatusId);
+                    onToast({ type: 'info', message: 'Шаблон регламента подставлен в редактор' });
+                  }}
+                  className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-semibold cursor-pointer inline-flex items-center gap-1"
+                >
+                  <IconPencil size={11} />
+                  <span>Вставить регламент</span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
-        <div className="text-[12.5px] text-neutral-800 dark:text-neutral-200">
-          <div className="font-semibold mb-1 text-neutral-900 dark:text-neutral-100">
-            {ticket.aiPlan.actionTitle}
-          </div>
-          <div className="bg-white/90 dark:bg-neutral-900/80 p-2 rounded-lg border border-neutral-200/80 dark:border-neutral-800 text-[12px] text-neutral-700 dark:text-neutral-300 italic leading-relaxed">
-            «{ticket.aiPlan.comment}»
-          </div>
-        </div>
+        {/* RAG Knowledge Base Precedents Accordion */}
+        {kbMatches.length > 0 && (
+          <div className="border border-neutral-200 dark:border-neutral-800 rounded-xl overflow-hidden bg-white dark:bg-neutral-900 shadow-xs">
+            <button
+              type="button"
+              onClick={() => setIsRagExpanded(prev => !prev)}
+              className="w-full px-3 py-2 flex items-center justify-between text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/60 transition-colors cursor-pointer"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400">
+                  📚 База знаний pgvector RAG
+                </span>
+                <span className="text-[10.5px] px-1.5 py-0.2 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 font-semibold font-mono">
+                  {kbMatches.length} {kbMatches.length === 1 ? 'прецедент' : 'прецедента'}
+                </span>
+              </div>
+              <div className="flex items-center gap-1 text-[11px] text-neutral-500">
+                <span>{isRagExpanded ? 'Свернуть' : 'Развернуть'}</span>
+                <IconChevronDown size={14} className={`transition-transform duration-200 ${isRagExpanded ? 'rotate-180' : ''}`} />
+              </div>
+            </button>
 
-        <div className="flex items-center justify-between pt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
-          <div>
-            Статус: <strong className="text-neutral-700 dark:text-neutral-300">{ticket.aiPlan.targetStatusName}</strong> · Списание: <strong>{ticket.aiPlan.expensesMinutes} мин</strong>
+            {isRagExpanded && (
+              <div className="p-3 pt-1 border-t border-neutral-100 dark:border-neutral-800 space-y-2.5">
+                {kbMatches.map((m: any, idx: number) => {
+                  const pct = Math.round((1 - (m.distance || 0.3)) * 100);
+                  return (
+                    <div
+                      key={m.task_id || idx}
+                      className="p-2.5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-950/40 text-xs space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 font-semibold text-neutral-900 dark:text-neutral-100 truncate">
+                          <span className="text-purple-600 dark:text-purple-400 font-mono">#{m.task_id}</span>
+                          <span className="truncate">{m.name || m.problem}</span>
+                        </div>
+                        <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/60 dark:text-purple-300 font-semibold shrink-0">
+                          {pct}% сходство
+                        </span>
+                      </div>
+                      {m.problem && (
+                        <p className="text-[11px] text-neutral-500 dark:text-neutral-400 line-clamp-2">
+                          <strong>Симптом:</strong> {m.problem}
+                        </p>
+                      )}
+                      {m.solution && (
+                        <div className="bg-white dark:bg-neutral-900 p-2 rounded border border-neutral-200 dark:border-neutral-800 text-[11.5px] text-neutral-700 dark:text-neutral-300 leading-relaxed">
+                          <strong>Решение:</strong> {m.solution}
+                        </div>
+                      )}
+                      <div className="flex justify-end pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (m.solution) {
+                              setReplyText(m.solution);
+                              onToast({ type: 'info', message: `Решение из заявки #${m.task_id} подставлено в редактор` });
+                            }
+                          }}
+                          className="text-[11px] text-purple-600 dark:text-purple-400 hover:underline font-semibold cursor-pointer"
+                        >
+                          Вставить решение в ответ →
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              setReplyText(ticket.aiPlan?.comment || '');
-              setExpenses(ticket.aiPlan?.expensesMinutes || 10);
-              setSelectedStatusOverride(ticket.aiPlan?.targetStatusId || null);
-              onToast({ type: 'info', message: 'План подставлен в редактор для правок' });
-            }}
-            className="text-[11.5px] text-blue-600 dark:text-blue-400 hover:underline font-semibold cursor-pointer inline-flex items-center gap-1"
-          >
-            <IconPencil size={11} />
-            <span>Редактировать</span>
-          </button>
-        </div>
+        )}
       </div>
-    ) : null
-  );
+    );
+  };
 
   // Attachments section
   const renderAttachments = () => (
@@ -820,6 +1055,95 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       <span className="text-[10.5px] font-bold uppercase tracking-wider text-neutral-400 block shrink-0">
         История переписки {loadingDetails ? '(Загрузка...)' : `(${commentsList.length})`}
       </span>
+
+      {/* AI Summary (TL;DR) for Comment Threads */}
+      {commentsList.length >= 2 && (
+        <div className="border border-blue-200 dark:border-blue-900/60 rounded-xl overflow-hidden bg-blue-50/40 dark:bg-blue-950/20 shadow-xs">
+          {!aiSummary && !loadingAiSummary ? (
+            <div className="p-2.5 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-300">
+                <IconSparkles size={13} className="text-blue-600 dark:text-blue-400 shrink-0" />
+                <span className="truncate">Цепочка из {commentsList.length} сообщений</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleGenerateAiSummary}
+                className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors shrink-0"
+              >
+                <IconSparkles size={11} />
+                <span>AI Сводка (TL;DR)</span>
+              </button>
+            </div>
+          ) : loadingAiSummary ? (
+            <div className="p-3 flex items-center justify-center gap-2 text-xs text-blue-600 dark:text-blue-400">
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+              </svg>
+              <span>AI Hub анализирует цепочку переписки...</span>
+            </div>
+          ) : aiSummary ? (
+            <div className="p-3 space-y-2 text-xs">
+              <div className="flex items-center justify-between border-b border-blue-200/60 dark:border-blue-900/40 pb-1.5">
+                <div className="flex items-center gap-1.5 font-bold text-blue-800 dark:text-blue-300">
+                  <IconSparkles size={13} />
+                  <span>AI Сводка диалога (TL;DR)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleGenerateAiSummary}
+                    className="text-[10.5px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                  >
+                    Обновить
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsAiSummaryExpanded(prev => !prev)}
+                    className="text-[10.5px] text-neutral-500 hover:underline cursor-pointer"
+                  >
+                    {isAiSummaryExpanded ? 'Свернуть' : 'Развернуть'}
+                  </button>
+                </div>
+              </div>
+
+              {isAiSummaryExpanded && (
+                <div className="space-y-1.5 pt-0.5">
+                  <div>
+                    <span className="font-semibold text-neutral-800 dark:text-neutral-200">Суть проблемы: </span>
+                    <span className="text-neutral-700 dark:text-neutral-300">{aiSummary.core_problem}</span>
+                  </div>
+
+                  {aiSummary.actions_taken && aiSummary.actions_taken.length > 0 && (
+                    <div>
+                      <span className="font-semibold text-neutral-800 dark:text-neutral-200">Предпринятые действия: </span>
+                      <ul className="list-disc list-inside text-neutral-600 dark:text-neutral-400 space-y-0.5 pl-1">
+                        {aiSummary.actions_taken.map((act, i) => (
+                          <li key={i}>{act}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {aiSummary.current_status && (
+                    <div>
+                      <span className="font-semibold text-neutral-800 dark:text-neutral-200">Текущее состояние: </span>
+                      <span className="text-neutral-700 dark:text-neutral-300">{aiSummary.current_status}</span>
+                    </div>
+                  )}
+
+                  {aiSummary.recommended_next_step && (
+                    <div className="bg-blue-100/70 dark:bg-blue-900/30 p-2 rounded border border-blue-200 dark:border-blue-800">
+                      <span className="font-semibold text-blue-900 dark:text-blue-200">Рекомендованный шаг: </span>
+                      <span className="text-blue-800 dark:text-blue-300">{aiSummary.recommended_next_step}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      )}
 
       <div className={`space-y-2 overflow-y-auto pr-1 ${expandedMode ? 'flex-1 min-h-0' : 'max-h-[350px]'}`}>
         {commentsList.map((c: any, idx: number) => {
