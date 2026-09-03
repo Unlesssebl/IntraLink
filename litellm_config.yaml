@@ -33,15 +33,15 @@ model_list:
       rpm: 15
 
   # =========================================================================
-  # 4. Актуальная модель эмбеддингов Google Gemini 2 (3072 dim)
+  # 4. Актуальная модель эмбеддингов Google Gemini (3072 dim)
   # =========================================================================
-  - model_name: gemini-embedding-2
+  - model_name: gemini-embedding-001
     litellm_params:
-      model: gemini/gemini-embedding-2
+      model: gemini/gemini-embedding-001
       api_key: os.environ/GEMINI_API_KEY
       rpm: 30
 
-  - model_name: gemini-embedding-001
+  - model_name: gemini-embedding-2
     litellm_params:
       model: gemini/gemini-embedding-001
       api_key: os.environ/GEMINI_API_KEY

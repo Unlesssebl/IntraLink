@@ -98,7 +98,7 @@ class Settings(BaseSettings):
         "gemini-3.5-flash", description="Имя LLM модели для классификации и извлечения"
     )
     EMBEDDING_MODEL: str = Field(
-        "gemini-embedding-2", description="Имя модели эмбеддингов"
+        "gemini-embedding-001", description="Имя модели эмбеддингов"
     )
     EMBEDDING_DIMENSION: int = Field(
         3072, description="Размерность векторов модели эмбеддингов"
