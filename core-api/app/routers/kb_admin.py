@@ -390,7 +390,7 @@ async def get_kb_statistics(
                 except Exception:
                     pass
 
-        from app.services.rag import get_all_root_services, get_subservice_ids_for_root
+        from app.services.rag import get_all_root_services, get_subservice_ids_for_root, check_embedding_health
         roots = get_all_root_services()
 
         root_counts: dict[str, int] = {}
@@ -399,12 +399,20 @@ async def get_kb_statistics(
             cnt = sum(services_stats.get(str(s), {}).get("total", 0) for s in sids)
             root_counts[r["root_id"]] = cnt
 
+        embed_ok, embed_msg = await check_embedding_health()
+
         return {
             "total_active_examples": total_examples,
             "total_blacklisted_examples": blacklisted_count,
             "services_count": len(services_stats),
             "services": services_stats,
             "sync_readiness": readiness,
+            "embedding_readiness": {
+                "ready": embed_ok,
+                "message": embed_msg,
+                "model": getattr(settings, "EMBEDDING_MODEL", "gemini-embedding-001"),
+                "dimension": getattr(settings, "EMBEDDING_DIMENSION", 3072),
+            },
             "root_services": roots,
             "root_counts": root_counts,
         }
@@ -431,6 +439,15 @@ async def trigger_kb_sync(
     Запуск прямой синхронизации закрытых заявок из IntraService в векторную базу pgvector.
     Работает in-process в Core API без ожидания внешних сервисов.
     """
+    # Pre-flight Check работоспособности сервиса эмбеддингов
+    from app.services.rag import check_embedding_health
+    embed_ok, embed_msg = await check_embedding_health()
+    if not embed_ok:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=f"Служба генерации эмбеддингов недоступна ({embed_msg}). Синхронизация отменена во избежание холостого прогона.",
+        )
+
     try:
         result = await sync_historical_closed_tasks(
             auth_b64=service_auth_b64,
@@ -465,6 +482,15 @@ async def trigger_stratified_kb_sync(
     """
     Асинхронный запуск фонового умного наполнения RAG по корневым разделам (01..17).
     """
+    # Pre-flight Check работоспособности сервиса эмбеддингов
+    from app.services.rag import check_embedding_health
+    embed_ok, embed_msg = await check_embedding_health()
+    if not embed_ok:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=f"Служба генерации эмбеддингов недоступна ({embed_msg}). Синхронизация отменена во избежание холостого прогона.",
+        )
+
     redis = get_redis_client()
     lock = await redis.get("lock:kb_sync")
     if lock:

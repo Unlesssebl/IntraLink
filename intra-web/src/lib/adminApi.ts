@@ -133,6 +133,13 @@ export interface KBSyncReadiness {
   message: string;
 }
 
+export interface KBEmbeddingReadiness {
+  ready: boolean;
+  message: string;
+  model: string;
+  dimension: number;
+}
+
 export interface KBRootServiceItem {
   root_id: string;
   root_service_id: number;
@@ -145,6 +152,7 @@ export interface KBStatsResponse {
   services_count: number;
   services: Record<string, { total: number; by_status: Record<string, number> }>;
   sync_readiness?: KBSyncReadiness;
+  embedding_readiness?: KBEmbeddingReadiness;
   root_services?: KBRootServiceItem[];
   root_counts?: Record<string, number>;
 }
@@ -268,6 +276,7 @@ export interface KBSyncProgressResponse {
   total_indexed: number;
   total_skipped: number;
   total_duplicates: number;
+  total_ai_errors?: number;
   service_stats?: Record<string, {
     name: string;
     existing: number;

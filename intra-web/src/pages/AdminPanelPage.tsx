@@ -1764,6 +1764,32 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               </div>
             )}
 
+            {/* Warning banner if Embedding service is not ready */}
+            {kbStats?.embedding_readiness && !kbStats.embedding_readiness.ready && (
+              <div className="p-4 rounded-2xl bg-rose-950/20 border border-rose-800/40 text-xs text-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                <div className="flex items-start gap-3">
+                  <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-mono text-[10px] font-bold uppercase tracking-wider shrink-0 mt-0.5 border border-rose-500/30">
+                    СБОЙ AI HUB
+                  </span>
+                  <div>
+                    <p className="font-semibold text-rose-100">
+                      Служба генерации эмбеддингов недоступна
+                    </p>
+                    <p className="text-rose-300/80 text-[11.5px] mt-0.5 leading-relaxed font-mono">
+                      {kbStats.embedding_readiness.message}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => token && loadKbData(token, 1, '')}
+                  className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-500/40 rounded-xl text-xs font-medium cursor-pointer transition-colors shrink-0 text-center"
+                >
+                  Проверить связь
+                </button>
+              </div>
+            )}
+
             {/* Sync & Search Control Panel */}
             <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -1829,9 +1855,15 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
                   <button
                     onClick={handleTriggerStratifiedSync}
-                    disabled={kbSyncLoading || (kbStats?.sync_readiness ? !kbStats.sync_readiness.ready : false)}
+                    disabled={
+                      kbSyncLoading ||
+                      (kbStats?.sync_readiness ? !kbStats.sync_readiness.ready : false) ||
+                      (kbStats?.embedding_readiness ? !kbStats.embedding_readiness.ready : false)
+                    }
                     title={
-                      kbStats?.sync_readiness && !kbStats.sync_readiness.ready
+                      kbStats?.embedding_readiness && !kbStats.embedding_readiness.ready
+                        ? `Сбой AI Hub: ${kbStats.embedding_readiness.message}`
+                        : kbStats?.sync_readiness && !kbStats.sync_readiness.ready
                         ? kbStats.sync_readiness.message
                         : 'Запустить умное квотирование по разделам каталога с дедупликацией'
                     }
@@ -1855,16 +1887,29 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               </div>
 
               {/* Live Background Sync Progress Card */}
-              {kbSyncProgress && (kbSyncProgress.is_running || (kbSyncProgress.percent > 0 && kbSyncProgress.percent < 100)) && (
-                <div className="p-4 rounded-xl bg-neutral-950 border border-blue-900/50 space-y-2.5 shadow-inner">
+              {kbSyncProgress && (kbSyncProgress.is_running || (kbSyncProgress.percent > 0 && kbSyncProgress.percent < 100) || kbSyncProgress.error) && (
+                <div className={`p-4 rounded-xl bg-neutral-950 border space-y-2.5 shadow-inner ${
+                  kbSyncProgress.error ? 'border-rose-800/60' : 'border-blue-900/50'
+                }`}>
                   <div className="flex items-center justify-between text-xs">
                     <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping"></span>
-                      <span className="font-semibold text-blue-300">
-                        {kbSyncProgress.current_service_name
-                          ? `Обработка: ${kbSyncProgress.current_service_name}`
-                          : 'Подготовка разделов каталога...'}
-                      </span>
+                      {kbSyncProgress.error ? (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                          <span className="font-semibold text-rose-300">
+                            Синхронизация остановлена (сбой)
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping"></span>
+                          <span className="font-semibold text-blue-300">
+                            {kbSyncProgress.current_service_name
+                              ? `Обработка: ${kbSyncProgress.current_service_name}`
+                              : 'Подготовка разделов каталога...'}
+                          </span>
+                        </>
+                      )}
                     </div>
                     <span className="font-mono text-neutral-400">
                       {kbSyncProgress.percent}% ({kbSyncProgress.processed_roots}/{kbSyncProgress.total_roots} разделов)
@@ -1874,10 +1919,27 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                   {/* Progress bar */}
                   <div className="w-full bg-neutral-800 rounded-full h-1.5 overflow-hidden">
                     <div
-                      className="bg-blue-500 h-1.5 rounded-full transition-all duration-300 ease-out"
+                      className={`h-1.5 rounded-full transition-all duration-300 ease-out ${
+                        kbSyncProgress.error ? 'bg-rose-500' : 'bg-blue-500'
+                      }`}
                       style={{ width: `${kbSyncProgress.percent}%` }}
                     ></div>
                   </div>
+
+                  {/* Prominent Circuit Breaker / Failure Alert Box */}
+                  {kbSyncProgress.error && (
+                    <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-800/50 text-[11.5px] font-mono text-rose-200 space-y-1">
+                      <div className="font-semibold flex items-center gap-1.5 text-rose-300">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <circle cx="12" cy="12" r="10"></circle>
+                          <line x1="12" y1="8" x2="12" y2="12"></line>
+                          <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                        </svg>
+                        <span>Причина остановки процесса:</span>
+                      </div>
+                      <p className="leading-relaxed break-words">{kbSyncProgress.error}</p>
+                    </div>
+                  )}
 
                   <div className="flex flex-wrap items-center justify-between text-[11px] text-neutral-400 pt-0.5">
                     <div className="flex items-center gap-3">
@@ -1890,6 +1952,11 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                       <span>
                         Отсеяно дублей: <strong className="text-amber-400 font-mono">{kbSyncProgress.total_duplicates}</strong>
                       </span>
+                      {(kbSyncProgress.total_ai_errors ?? 0) > 0 && (
+                        <span>
+                          Сбоев AI Hub: <strong className="text-rose-400 font-mono">{kbSyncProgress.total_ai_errors}</strong>
+                        </span>
+                      )}
                     </div>
                     <span className="text-neutral-500 font-mono text-[10px]">
                       Лимит: {kbSyncQuota} на раздел

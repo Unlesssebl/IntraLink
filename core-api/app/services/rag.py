@@ -19,6 +19,24 @@ logger = logging.getLogger("core_api.rag")
 _EMBED_MEMORY_CACHE: OrderedDict[str, list[float]] = OrderedDict()
 _EMBED_CACHE_MAX_SIZE = 4096
 _EMBED_REDIS_TTL = 7 * 86400  # 7 дней
+_last_embedding_error: str | None = None
+
+
+async def check_embedding_health() -> tuple[bool, str]:
+    """
+    Выполняет пробный Pre-flight запрос к сервису генерации эмбеддингов.
+    Возвращает (True, "OK: 3072 dim") или (False, "Описание ошибки").
+    """
+    global _last_embedding_error
+    _last_embedding_error = None
+    try:
+        vec = await get_embedding_vector("preflight diagnostic health probe", circuit=DataCircuit.YELLOW)
+        if vec and len(vec) == settings.EMBEDDING_DIMENSION:
+            return True, f"OK ({settings.EMBEDDING_MODEL}, {len(vec)} dim)"
+        err = _last_embedding_error or f"Не удалось получить вектор целевой размерности ({settings.EMBEDDING_DIMENSION})"
+        return False, err
+    except Exception as e:
+        return False, str(e)
 
 
 def _get_redis_safe():
@@ -253,6 +271,8 @@ async def get_embedding_vector(
 
     session = await get_rag_http_session()
 
+    global _last_embedding_error
+
     # 5. Попытка через LiteLLM Proxy
     if settings.LITELLM_BASE_URL:
         try:
@@ -262,35 +282,54 @@ async def get_embedding_vector(
                 "input": [cloud_payload_text],
                 "model": settings.EMBEDDING_MODEL,
             }
-            async with session.post(url, headers=headers, json=payload) as resp:
+            async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=8.0)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     vec = data.get("data", [{}])[0].get("embedding")
                     if vec and len(vec) == settings.EMBEDDING_DIMENSION:
                         await _save_embedding_to_cache(cache_key, vec)
                         return vec
-        except Exception:
-            pass
+                    _last_embedding_error = f"LiteLLM вернул вектор {len(vec) if vec else 0} dim (ожидалось {settings.EMBEDDING_DIMENSION})"
+                else:
+                    err_txt = await resp.text()
+                    _last_embedding_error = f"LiteLLM HTTP {resp.status}: {err_txt[:140]}"
+                    logger.warning("Сбой генерации вектора через LiteLLM: %s", _last_embedding_error)
+        except Exception as e:
+            _last_embedding_error = f"LiteLLM исключение: {e}"
+            logger.debug("Исключение LiteLLM Proxy: %s", e)
 
-    # 6. Попытка через Gemini API (если передан GEMINI_API_KEY)
-    if getattr(settings, "GEMINI_API_KEY", None):
+    # 6. Попытка напрямую через Gemini API (с ротацией ключей GEMINI_API_KEY, _2, _3)
+    gemini_keys = [
+        getattr(settings, "GEMINI_API_KEY", None),
+        getattr(settings, "GEMINI_API_KEY_2", None),
+        getattr(settings, "GEMINI_API_KEY_3", None),
+    ]
+    gemini_keys = [k for k in gemini_keys if k]
+    if gemini_keys:
         candidate_models = [getattr(settings, "EMBEDDING_MODEL", "gemini-embedding-001"), "gemini-embedding-001"]
-        for embed_model in dict.fromkeys(candidate_models):
-            try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{embed_model}:embedContent?key={settings.GEMINI_API_KEY}"
-                payload = {
-                    "model": f"models/{embed_model}",
-                    "content": {"parts": [{"text": cloud_payload_text}]},
-                }
-                async with session.post(url, json=payload) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        vec = data.get("embedding", {}).get("values", [])
-                        if vec and len(vec) == settings.EMBEDDING_DIMENSION:
-                            await _save_embedding_to_cache(cache_key, vec)
-                            return vec
-            except Exception as e:
-                logger.debug("Ошибка генерации Gemini эмбеддинга для %s: %s", embed_model, e)
+        for g_key in gemini_keys:
+            for embed_model in dict.fromkeys(candidate_models):
+                try:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{embed_model}:embedContent?key={g_key}"
+                    payload = {
+                        "model": f"models/{embed_model}",
+                        "content": {"parts": [{"text": cloud_payload_text}]},
+                    }
+                    async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8.0)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            vec = data.get("embedding", {}).get("values", [])
+                            if vec and len(vec) == settings.EMBEDDING_DIMENSION:
+                                await _save_embedding_to_cache(cache_key, vec)
+                                return vec
+                            _last_embedding_error = f"Gemini API вернул {len(vec)} dim (ожидалось {settings.EMBEDDING_DIMENSION})"
+                        else:
+                            err_txt = await resp.text()
+                            _last_embedding_error = f"Gemini API HTTP {resp.status} ({embed_model}): {err_txt[:140]}"
+                            logger.debug("Сбой прямого Gemini API: %s", _last_embedding_error)
+                except Exception as e:
+                    _last_embedding_error = f"Gemini API исключение ({embed_model}): {e}"
+                    logger.debug("Ошибка генерации Gemini эмбеддинга для %s: %s", embed_model, e)
 
     # 7. Локальный Fallback (Ollama / FastEmbed)
     if getattr(settings, "OLLAMA_BASE_URL", None):
@@ -1178,6 +1217,7 @@ async def sync_stratified_kb(
         "total_indexed": 0,
         "total_skipped": 0,
         "total_duplicates": 0,
+        "total_ai_errors": 0,
         "service_stats": {},
         "error": None,
         "finished_at": None,
@@ -1188,6 +1228,7 @@ async def sync_stratified_kb(
     cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M")
 
     try:
+        consecutive_ai_errors = 0
         async with AsyncSessionLocal() as db:
             for idx, root_info in enumerate(target_roots, start=1):
                 r_id = root_info["root_id"]
@@ -1306,9 +1347,32 @@ async def sync_stratified_kb(
 
                         vec = await get_embedding_vector(embed_input)
                         if not vec:
-                            s_stats["skipped"] += 1
-                            progress_state["total_skipped"] += 1
+                            consecutive_ai_errors += 1
+                            progress_state["total_ai_errors"] = progress_state.get("total_ai_errors", 0) + 1
+                            s_stats["ai_errors"] = s_stats.get("ai_errors", 0) + 1
+                            err_reason = _last_embedding_error or "сервис генерации векторов вернул None"
+                            logger.warning(
+                                "Сбой генерации вектора для заявки #%d (сбоев подряд: %d): %s",
+                                tid,
+                                consecutive_ai_errors,
+                                err_reason,
+                            )
+                            if consecutive_ai_errors >= 3:
+                                err_msg = (
+                                    f"Circuit Breaker: 3 сбоя генерации векторов подряд. "
+                                    f"Причина: {err_reason}. "
+                                    f"Синхронизация аварийно остановлена во избежание холостого прогона."
+                                )
+                                logger.error(err_msg)
+                                progress_state["is_running"] = False
+                                progress_state["error"] = err_msg
+                                progress_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+                                await _save_sync_progress(redis, progress_state)
+                                return progress_state
                             continue
+
+                        # Успех: сбрасываем счетчик подряд идущих сбоев AI
+                        consecutive_ai_errors = 0
 
                         # Edge Case 3: Семантическая дедупликация (Cosine Gate > 0.90)
                         is_dup = await check_semantic_duplicate(

@@ -1,4 +1,5 @@
 import json
+import jwt
 from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -212,5 +213,36 @@ async def test_kb_admin_stratified_sync_endpoints():
                 cookies={"admin_session": cookie_val} if cookie_val else {},
             )
             assert status_res.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_kb_admin_preflight_check_blocks_when_embedder_fails():
+    """Тест: при сбое сервиса эмбеддингов запуск синхронизации отклоняется с кодом 424."""
+    cookie_val = jwt.encode(
+        {"sub": "admin_user", "role": "admin"},
+        "test-secret-key-12345678901234567890",
+        algorithm="HS256",
+    )
+
+    with patch.object(settings, "JWT_SECRET", "test-secret-key-12345678901234567890"), \
+         patch("app.routers.kb_admin.get_service_auth_b64", return_value="test_auth_b64"), \
+         patch("app.services.rag.check_embedding_health", new_callable=AsyncMock) as mock_health:
+        mock_health.return_value = (False, "LiteLLM HTTP 400: Invalid model name")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"admin_session": cookie_val},
+        ) as client:
+            res = await client.post(
+                "/api/v1/admin/kb/sync-stratified",
+                json={"quota_per_service": 20, "days": 60, "root_id": "03"},
+                headers={"Authorization": "Bearer sso_session"},
+            )
+            assert res.status_code == 424
+            data = res.json()
+            assert "Служба генерации эмбеддингов недоступна" in data["detail"]
+            assert "LiteLLM HTTP 400" in data["detail"]
+
 
 
