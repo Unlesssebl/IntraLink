@@ -14,9 +14,10 @@
 IntraLink/
 ├── core-api/          # Единый шлюз состояния: FastAPI, PostgreSQL+pgvector, AI Hub, хостинг /admin
 │   └── app/poller.py  # Автономный демон опроса IntraService с Leader Lock в Redis
-├── execution-worker/  # Фоновый Windows Headless Daemon исполнения задач (AD WLAN, WinRM, SMB)
+├── execution-worker/  # Фоновый Windows Headless Daemon исполнения задач (AD WLAN, WinRM, SMB, принтеры)
+├── intralink-mcp/     # FastMCP Hub для AI-агента Antigravity (JSON-RPC 2.0 stdio инструменты)
 ├── helpdesk-cli/      # Машинный инструментарий и SDK исключительно для AI-агента Antigravity (AGY)
-├── shared/            # Единый пакет общих алгоритмов (SSOT): normalizer, diagnostics, json_utils
+├── shared/            # Единый пакет общих алгоритмов (SSOT): normalizer, diagnostics, json_utils, printers
 ├── telegram-bot/      # Мобильный пейджер инженера и HITL-согласования (aiogram 3.x, Redis Streams)
 ├── intra-web/         # Фронтенд веб-панели администратора (React 19, Vite, Tailwind CSS v4)
 ├── tools/             # Скрипты индексации драйверов печати
@@ -31,19 +32,21 @@ IntraLink/
 
 ## 🚀 Ключевые возможности
 
-* **Защищенный API Gateway (Core API)**: Единая точка доступа к REST API IntraService, Fernet-шифрование учетных записей, централизованный Rule Engine и двухэтапный Hybrid RAG.
+* **Защищенный API Gateway (Core API)**: Единая точка доступа к REST API IntraService, Fernet-шифрование учетных записей, централизованный Rule Engine, декомпозированный `TriageService` и двухэтапный Hybrid RAG.
+* **Декларативный реестр навыков (Action Registry) & Policy Engine**: Каталог инфраструктурных действий с JSON-схемами, мгновенным аппаратным Killswitch (`HTTP 403 Forbidden`) и режимами автономного исполнения (`auto`) или ручного подтверждения (`confirm` / HitL).
+* **Шлюз инструментов FastMCP Hub (`intralink-mcp`)**: Автономный MCP-сервер инструментов для AI-агента Antigravity (пакетный триаж, карточки тикетов, телеметрия хостов, векторный RAG и постановка задач в Command Bus).
 * **Изолированный Poller с Leader Lock**: Независимый демон фонового опроса очереди от сервисного аккаунта под защитой распределенного замка (`lock:poller_leader`, TTL 15s) для предотвращения Split-Brain при масштабировании.
 * **Гарантированная доставка событий (Redis Streams)**: Поток `stream:intraservice_events` с Consumer Groups, подтверждением `XACK` и периодическим перехватом зависших сообщений `XAUTOCLAIM` (At-Least-Once).
-* **Исполнение в Windows-домене (Execution Worker)**: Фоновая обработка очереди `stream:execution_queue` — выдача сетевого доступа в AD (`WLAN-WORKNET`), создание учетных записей, удаленная установка принтеров через WinRM/CIM с поддержкой Dead-Letter Queue (DLQ).
+* **Исполнение в Windows-домене (Execution Worker)**: Фоновая обработка очереди `stream:execution_queue` на базе стандарта `BaseActionExecutor` (`Preflight ➔ Execute ➔ Verify`) — выдача сетевого доступа в AD (`WLAN-WORKNET`), создание учетных записей, удаленная установка принтеров через WinRM с WMI Bootstrap и защитой от коллизий сессий (`lock:host:<pc>`, TTL 30s).
 * **Многоконтурная безопасность данных (Zero Trust DLP)**:
   * 🔴 **RED Zone (On-Prem)**: пароли и заявки СБ обрабатываются локально (Ollama Qwen2.5 / bge-m3).
   * 🟡 **YELLOW Zone (Sanitized Cloud)**: ПДн, IP и имена хостов маскируются токенами через Redis PII Vault перед вызовом облачных моделей.
   * 🟢 **GREEN Zone (Cloud Direct)**: открытые регламенты и технические вопросы.
 * **Прямой LDAPS-клиент Active Directory (порт 636)**: Управление доменными объектами и выдача доступа к корпоративному Wi-Fi (`WLAN-WORKNET`) без необходимости обращения к клиентскому ПК и без участия Windows-воркера.
 * **Многоуровневый каскад исполнения (Tiered Execution)**: Автоматическая установка принтеров через WinRM $\rightarrow$ LiteManager (порт 5650) $\rightarrow$ DameWare (порт 6129) $\rightarrow$ One-Liner ассистент оператора.
-* **Инструментарий AI-агента (AGY Toolset)**: Управление очередью прямо из диалога с AI-ассистентом через слэш-команды (`/triage`, `/task`, `/diag`, `/screen`, `/kb`, `/sync`, `/redirect`).
-* **Мобильный пейджер (Telegram Bot)**: Моментальные уведомления, просмотр активных заявок инженера и кнопки подтверждения операций (Human-in-the-Loop).
-* **Двухконтурный Web SPA (`/operator-panel` и `/admin`)**: React 19 интерфейс, разделенный на операторский центр обработки заявок 1-й линии с 1-клик вызовами LiteManager/DameWare (`/operator-panel`) и защищенную консоль системного администратора (`/admin`) с шифрованием Fernet.
+* **Инструментарий AI-агента (AGY Toolset)**: Управление очередью прямо из диалога с AI-ассистентом через слэш-команды (`/triage`, `/task`, `/diag`, `/screen`, `/kb`, `/sync`, `/redirect`) и нативные MCP-инструменты.
+* **Мобильный пейджер (Telegram Bot)**: Моментальные уведомления, просмотр активных заявок инженера и кнопки подтверждения операций (Human-in-the-Loop) через единую шину Command Bus.
+* **Двухконтурный Web SPA (`/operator-panel` и `/admin`)**: React 19 интерфейс с центрами обработки заявок, вкладкой **Skills Hub** с тумблерами Killswitch, Live SSE Terminal мониторинга исполнения и 1-Click Action виджетами в карточке заявки.
 
 ---
 

@@ -12,13 +12,14 @@
 
 | Сервис / Модуль | Стек технологий | Роль в системе |
 |---|---|---|
-| **Core API Gateway** | FastAPI, SQLAlchemy 2.0 (async), pgvector, Redis, ldap3 | Единый шлюз состояния, движок правил (Rule Engine), AI Hub (DLP/PII Vault), семантический RAG, прямое управление AD по LDAPS (636), хостинг SPA (`/operator-panel` и `/admin`) |
+| **Core API Gateway** | FastAPI, SQLAlchemy 2.0 (async), pgvector, Redis, ldap3 | Единый шлюз состояния, Command Bus, ActionRegistry & PolicyEngine (Killswitch), AI Hub (DLP/PII Vault), семантический RAG, прямое управление AD по LDAPS (636), хостинг SPA (`/operator-panel` и `/admin`) |
 | **Poller Service** | Python, aiohttp, Redis Leader Lock | Автономный фоновый демон опроса IntraService с распределенным замком лидера (`lock:poller_leader`) против Split-Brain |
-| **Execution Worker** | Python, Redis Streams, PowerShell, WinRM | Windows Headless Daemon оркестрации принтеров (WinRM/CIM) и фоновых задач через Consumer Group `execution_group` |
+| **Execution Worker** | Python, Redis Streams, PowerShell, WinRM | Windows Headless Daemon оркестрации принтеров (WinRM/CIM, WMI Bootstrap) и фоновых задач на базе `BaseActionExecutor` |
+| **IntraLink MCP Hub** | Python, FastMCP (JSON-RPC 2.0 stdio) | Автономный шлюз инструментов Model Context Protocol для AI-агента Antigravity (AGY) |
 | **Helpdesk CLI** | Python, aiohttp, Typer | Машинный инструментарий (Tooling SDK) исключительно для AI-агента Antigravity (AGY) при обработке слэш-команд |
-| **Shared (SSOT)** | Python, orjson | Единый пакет общих алгоритмов нормализации оборудования (`normalizer.py`), экспресс-диагностики (`diagnostics.py`) и сериализации |
-| **Telegram Bot** | aiogram 3.x, aiohttp | Мобильный пейджер и HITL-согласования с гарантированной доставкой через Redis Streams (`stream:intraservice_events`) и `XAUTOCLAIM` |
-| **Intra Web UI** | React 19, Vite, Tailwind CSS v4 | Двухконтурный интерфейс: операторский центр очереди 1-й линии (`/operator-panel`) и защищенная консоль администратора (`/admin`) |
+| **Shared (SSOT)** | Python, orjson, Pydantic | Единый пакет общих алгоритмов нормализации оборудования (`normalizer.py`), экспресс-диагностики (`diagnostics.py`), базы знаний принтеров (`printers.py`) и сериализации |
+| **Telegram Bot** | aiogram 3.x, aiohttp | Мобильный пейджер и HITL-согласования через Command Bus и персистентную доставку Redis Streams (`stream:intraservice_events`) |
+| **Intra Web UI** | React 19, Vite, Tailwind CSS v4 | Двухконтурный интерфейс: операторский центр очереди 1-й линии (`/operator-panel`), Skills Hub с Live SSE Terminal и защищенная консоль администратора (`/admin`) |
 
 ---
 

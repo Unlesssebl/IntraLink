@@ -1,154 +1,215 @@
 """
-Модуль удаленной установки и диагностики принтеров (WinRM, SMB, WMI).
+Модуль удаленной установки и диагностики принтеров в среде Windows (WinRM, SMB, WMI).
+Наследуется от BaseActionExecutor с полным жизненным циклом Preflight ➔ Execute ➔ Verify.
 """
+
 import asyncio
-import json
 import logging
-import os
-import subprocess
-from dataclasses import dataclass
+import re
+import socket
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-logger = logging.getLogger(__name__)
+from executors.base import ActionResult, BaseActionExecutor
+from shared.printers import find_printer_by_name, load_printers_kb
 
-KB_PATH = Path(__file__).resolve().parent.parent / "knowledge_base" / "printers_knowledge_base.json"
+logger = logging.getLogger("execution_worker.executors.printers")
 
-
-@dataclass
-class PrinterExecutionResult:
-    success: bool
-    target_pc: str
-    printer_name: str
-    message: str
-    error: Optional[str] = None
+# Алиас для обратной совместимости
+PrinterExecutionResult = ActionResult
 
 
-class PrinterExecutor:
+class PrinterExecutor(BaseActionExecutor):
     """
-    Исполнитель для удаленной диагностики и установки принтеров на рабочих станциях.
+    Исполнитель удаленной установки и диагностики принтеров на рабочих станциях.
+    Реализует жизненный цикл BaseActionExecutor:
+    1. Preflight: WMI Bootstrap WinRM, валидация хоста, поиск в KB принтеров, резолв IP принтера.
+    2. Execute: развертывание драйвера из UNC-шары, создание TCP/IP порта, регистрация очереди печати.
+    3. Verify: проверка присутствия принтера в системе и его готовности.
     """
 
-    def __init__(self, kb_path: Path = KB_PATH):
-        self.kb_path = kb_path
-        self._kb_data = None
+    def __init__(self, redis_client=None):
+        super().__init__(redis_client=redis_client)
 
-    def _load_kb(self) -> dict[str, Any]:
-        if self._kb_data is None:
-            if self.kb_path.exists():
-                try:
-                    with open(self.kb_path, "r", encoding="utf-8") as f:
-                        self._kb_data = json.load(f)
-                except Exception as e:
-                    logger.error("Ошибка загрузки базы знаний принтеров: %s", e)
-                    self._kb_data = {}
+    # -----------------------------------------------------------------------
+    # Preflight
+    # -----------------------------------------------------------------------
+
+    async def preflight(
+        self, target_pc: str, log: list[str], **kwargs
+    ) -> tuple[bool, str]:
+        printer_name = kwargs.get("printer_name", "")
+        printer_ip = kwargs.get("printer_ip")
+
+        if not target_pc or not printer_name:
+            return False, "Параметры target_pc и printer_name обязательны."
+
+        log.append(f"Целевой ПК: {target_pc}, запрашиваемый принтер: {printer_name}")
+
+        # 1. Проверка доступности и Bootstrap WinRM
+        winrm_ready = await self.bootstrap_winrm(target_pc, log)
+        if not winrm_ready:
+            return False, f"Хост {target_pc} недоступен по WinRM (5985) и WMI (135)."
+
+        # 2. Поиск профиля принтера в SSOT базе знаний
+        printer_cfg = find_printer_by_name(printer_name)
+        if not printer_cfg:
+            log.append(f"⚠️ Профиль для принтера '{printer_name}' не найден в KB. Будет использован стандартный драйвер.")
+        else:
+            log.append(f"Найден профиль KB: {printer_cfg.display_name} (Драйвер: {printer_cfg.driver_name})")
+
+        # 3. Резолвинг IP-адреса принтера
+        resolved_ip = printer_ip
+        if not resolved_ip:
+            # Попытка извлечь IP или хостнейм принтера из названия очереди
+            ip_match = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", printer_name)
+            if ip_match:
+                resolved_ip = ip_match.group(0)
             else:
-                self._kb_data = {}
-        return self._kb_data
+                try:
+                    resolved_ip = await asyncio.to_thread(socket.gethostbyname, printer_name)
+                except Exception:
+                    # Если сетевое имя принтера резолвится в домене
+                    pass
 
-    @staticmethod
-    def run_remote_powershell_sync(target_pc: str, script: str, timeout: int = 40) -> dict[str, Any]:
-        """
-        Синхронно выполняет PowerShell скрипт на удаленной машине через WinRM / WMI.
-        """
-        ps_wrapper = f"""
-        $ErrorActionPreference = 'Stop'
-        try {{
-            $res = Invoke-Command -ComputerName "{target_pc}" -ScriptBlock {{
-                {script}
-            }} -ErrorAction Stop
-            Write-Output (ConvertTo-Json @{{ success = $true; data = $res }})
-        }} catch {{
-            Write-Output (ConvertTo-Json @{{ success = $false; error = $_.Exception.Message }})
+        if not resolved_ip:
+            log.append(f"ℹ️ Прямой IP принтера не указан. Установка будет выполнена по сетевому имени {printer_name}.")
+            resolved_ip = printer_name
+
+        kwargs["_resolved_ip"] = resolved_ip
+        kwargs["_printer_cfg"] = printer_cfg
+        return True, "Preflight проверки пройдены успешно."
+
+    # -----------------------------------------------------------------------
+    # Execute
+    # -----------------------------------------------------------------------
+
+    async def execute(
+        self, target_pc: str, log: list[str], **kwargs
+    ) -> ActionResult:
+        printer_name = kwargs.get("printer_name", "")
+        printer_ip = kwargs.get("_resolved_ip") or kwargs.get("printer_ip") or printer_name
+        printer_cfg = kwargs.get("_printer_cfg") or find_printer_by_name(printer_name)
+
+        driver_name = printer_cfg.driver_name if printer_cfg else "HP Universal Printing PCL 6"
+        inf_path = printer_cfg.driver_inf_path if printer_cfg else ""
+        port_name = f"IP_{printer_ip}"
+
+        log.append(f"Установка порта {port_name} ({printer_ip}) и драйвера '{driver_name}'...")
+
+        # Формирование безопасного PowerShell скрипта установки
+        ps_script = f"""
+        # 1. Инсталляция драйвера при наличии INF в сетевой шаре
+        $inf = "{inf_path}"
+        if ($inf -and (Test-Path $inf)) {{
+            Write-Output "INF драйвера найден: $inf"
+            pnputil.exe /add-driver $inf /install | Out-Null
         }}
-        """
-        cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_wrapper]
-        try:
-            res = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
-            if res.returncode != 0:
-                return {"success": False, "error": res.stderr.strip()}
-            out = res.stdout.strip()
-            if out:
-                json_start = out.find("{")
-                json_end = out.rfind("}")
-                if json_start != -1 and json_end != -1:
-                    return json.loads(out[json_start : json_end + 1])
-            return {"success": True, "raw": out}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
 
-    @classmethod
-    async def run_remote_powershell(
-        cls, target_pc: str, script: str, timeout: int = 40
-    ) -> dict[str, Any]:
+        # 2. Создание стандартного TCP/IP порта
+        $portName = "{port_name}"
+        $ip = "{printer_ip}"
+        if (-not (Get-PrinterPort -Name $portName -ErrorAction SilentlyContinue)) {{
+            Add-PrinterPort -Name $portName -PrinterHostAddress $ip -ErrorAction Stop
+            Write-Output "Порт $portName успешно создан."
+        }}
+
+        # 3. Регистрация очереди печати
+        $pName = "{printer_name}"
+        $drv = "{driver_name}"
+        if (-not (Get-Printer -Name $pName -ErrorAction SilentlyContinue)) {{
+            # Если драйвер еще не зарегистрирован, пробуем добавить с доступным или generic
+            try {{
+                Add-Printer -Name $pName -PortName $portName -DriverName $drv -ErrorAction Stop
+            }} catch {{
+                # Fallback на Generic / Text Only при отсутствии точного драйвера
+                Add-Printer -Name $pName -PortName $portName -DriverName "Generic / Text Only" -ErrorAction SilentlyContinue
+            }}
+            Write-Output "Очередь печати $pName зарегистрирована."
+        }} else {{
+            Write-Output "Очередь $pName уже существовала, обновлен порт."
+            Set-Printer -Name $pName -PortName $portName -ErrorAction SilentlyContinue
+        }}
+
+        Get-Printer -Name $pName | Select-Object Name, PortName, DriverName, PrinterStatus
         """
-        Асинхронная неблокирующая обертка над PowerShell через asyncio.to_thread.
-        Предотвращает микрозадержки event loop при масштабировании.
-        """
-        return await asyncio.to_thread(
-            cls.run_remote_powershell_sync, target_pc, script, timeout
+
+        res = await self.run_remote_powershell(target_pc, ps_script, timeout=60)
+        if not res.get("success"):
+            err_msg = res.get("error", "Неизвестная ошибка PowerShell")
+            log.append(f"Ошибка выполнения PowerShell: {err_msg}")
+            return ActionResult(
+                success=False,
+                message=f"Ошибка установки принтера: {err_msg}",
+                error=err_msg,
+                log=log,
+            )
+
+        log.append("Скрипт PowerShell выполнен успешно.")
+        return ActionResult(
+            success=True,
+            message=f"Принтер '{printer_name}' успешно установлен на {target_pc}",
+            log=log,
+            payload={"raw_output": res.get("data") or res.get("raw")},
         )
 
-    def check_printer_installed_sync(self, target_pc: str, printer_name: str) -> bool:
-        """
-        Синхронная проверка установки принтера на удаленной рабочей станции.
-        """
+    # -----------------------------------------------------------------------
+    # Verify
+    # -----------------------------------------------------------------------
+
+    async def verify(
+        self, target_pc: str, log: list[str], **kwargs
+    ) -> tuple[bool, str]:
+        printer_name = kwargs.get("printer_name", "")
+        log.append(f"Проверка наличия принтера '{printer_name}' в системе {target_pc}...")
+
         script = f"Get-Printer -Name '*{printer_name}*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name"
-        res = self.run_remote_powershell_sync(target_pc, script)
-        return bool(res.get("success") and res.get("data"))
+        res = await self.run_remote_powershell(target_pc, script, timeout=20)
+
+        if res.get("success") and res.get("data"):
+            found_name = res["data"]
+            log.append(f"🟢 Подтверждено: принтер '{found_name}' обнаружен в списке устройств.")
+            return True, f"Принтер {found_name} активен."
+
+        # Если имя отличается по маске, проверим общий список принтеров
+        fallback_script = "Get-Printer | Select-Object -ExpandProperty Name"
+        fallback_res = await self.run_remote_powershell(target_pc, fallback_script, timeout=20)
+        if fallback_res.get("success") and fallback_res.get("data"):
+            printers_list = fallback_res["data"]
+            if isinstance(printers_list, str):
+                printers_list = [printers_list]
+            for p in printers_list:
+                if printer_name.lower() in p.lower():
+                    log.append(f"🟢 Подтверждено по совпадению: принтер '{p}' активен.")
+                    return True, f"Принтер {p} активен."
+
+        return False, f"Принтер '{printer_name}' не найден в выводе Get-Printer после установки."
+
+    # -----------------------------------------------------------------------
+    # Главная точка входа для Windows Execution Worker
+    # -----------------------------------------------------------------------
+
+    async def install_printer(
+        self, target_pc: str, printer_name: str, printer_ip: str | None = None
+    ) -> ActionResult:
+        """
+        Удаленная установка принтера с полным циклом Preflight ➔ Execute ➔ Verify.
+        Метод вызывается из worker.py.
+        """
+        return await self.run_action(
+            target_pc=target_pc,
+            printer_name=printer_name,
+            printer_ip=printer_ip,
+        )
+
+    # -----------------------------------------------------------------------
+    # Обратная совместимость с ранее существовавшими методами
+    # -----------------------------------------------------------------------
 
     async def check_printer_installed(self, target_pc: str, printer_name: str) -> bool:
-        """
-        Асинхронная проверка установки принтера на удаленной рабочей станции.
-        """
         script = f"Get-Printer -Name '*{printer_name}*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name"
         res = await self.run_remote_powershell(target_pc, script)
         return bool(res.get("success") and res.get("data"))
-
-    def install_network_printer_sync(
-        self,
-        target_pc: str,
-        printer_ip: str,
-        driver_name: str,
-        printer_name: str,
-    ) -> PrinterExecutionResult:
-        """
-        Синхронная удаленная установка сетевого принтера (создание TCP/IP порта + добавление очереди).
-        """
-        port_name = f"IP_{printer_ip}"
-        script = f"""
-        # 1. Создание TCP/IP порта
-        if (-not (Get-PrinterPort -Name '{port_name}' -ErrorAction SilentlyContinue)) {{
-            Add-PrinterPort -Name '{port_name}' -PrinterHostAddress '{printer_ip}'
-        }}
-        # 2. Добавление принтера
-        if (-not (Get-Printer -Name '{printer_name}' -ErrorAction SilentlyContinue)) {{
-            Add-Printer -Name '{printer_name}' -PortName '{port_name}' -DriverName '{driver_name}'
-        }}
-        Get-Printer -Name '{printer_name}' | Select-Object Name, PortName, DriverName
-        """
-        res = self.run_remote_powershell_sync(target_pc, script)
-        if res.get("success"):
-            return PrinterExecutionResult(
-                success=True,
-                target_pc=target_pc,
-                printer_name=printer_name,
-                message=f"Принтер '{printer_name}' успешно установлен на {target_pc}",
-            )
-        return PrinterExecutionResult(
-            success=False,
-            target_pc=target_pc,
-            printer_name=printer_name,
-            message=f"Ошибка установки принтера: {res.get('error')}",
-            error=res.get("error"),
-        )
 
     async def install_network_printer(
         self,
@@ -156,14 +217,9 @@ class PrinterExecutor:
         printer_ip: str,
         driver_name: str,
         printer_name: str,
-    ) -> PrinterExecutionResult:
-        """
-        Асинхронная неблокирующая установка сетевого принтера через asyncio.to_thread.
-        """
-        return await asyncio.to_thread(
-            self.install_network_printer_sync,
-            target_pc,
-            printer_ip,
-            driver_name,
-            printer_name,
+    ) -> ActionResult:
+        return await self.install_printer(
+            target_pc=target_pc,
+            printer_name=printer_name,
+            printer_ip=printer_ip,
         )

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.db import JobLog, get_db
 from app.routers.deps import verify_admin_or_api_key
+from app.services.actions import get_policy_engine
 from app.services.worker import get_redis_client
 
 logger = logging.getLogger("core_api.routers.commands")
@@ -70,6 +71,7 @@ class ConfirmDecisionRequest(BaseModel):
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/submit", status_code=status.HTTP_202_ACCEPTED)
 async def submit_command(
     payload: SubmitCommandRequest,
     initiator_identity: str = Depends(verify_admin_or_api_key),
@@ -116,8 +118,21 @@ async def submit_command(
     job_uuid = uuid.uuid4()
     job_id = f"job_{job_uuid.hex[:12]}"
 
+    # Проверка политики исполнения и Killswitch
+    policy_engine = get_policy_engine()
+    effective_mode, is_allowed, reason = await policy_engine.evaluate_execution_mode(
+        action_id=payload.type,
+        requested_mode=payload.mode,
+    )
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=reason,
+        )
+    command_mode = effective_mode
+
     # Режим dry_run (симуляция)
-    if payload.mode == "dry_run":
+    if command_mode == "dry_run" or payload.mode == "dry_run":
         return {
             "status": "dry_run_success",
             "job_id": job_id,
@@ -136,7 +151,7 @@ async def submit_command(
         command_type=payload.type,
         target_json=payload.target,
         params_json=payload.params,
-        mode=payload.mode,
+        mode=command_mode,
         initiator=initiator_str,
         source=source_str,
         status="queued",
@@ -160,7 +175,7 @@ async def submit_command(
         "task_id": task_id or 0,
         "target": payload.target,
         "params": payload.params,
-        "mode": payload.mode,
+        "mode": command_mode,
         "initiator": initiator_str,
         "source": source_str,
         "priority": payload.priority,

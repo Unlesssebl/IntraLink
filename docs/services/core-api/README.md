@@ -9,6 +9,9 @@
 * **Единый источник правды (SSOT):**
   * Проксирование и изоляция вызовов к REST API IntraService.
   * Безопасное хранение зашифрованных учетных данных пользователей и инфраструктуры (Fernet) через единый Credentials Vault (`vault.py` + PostgreSQL `system_settings` + авто-прогрев Redis).
+  * Декомпозированный сервис триажа очереди `TriageService` и менеджер сессий `TriageSessionManager` (`core-api/app/services/`).
+  * Единая шина команд (Command Bus) и декларативный реестр действий `ActionRegistry` с Pydantic JSON-схемами и типами целей.
+  * Динамический движок политик `PolicyEngine` с аппаратным Killswitch (`disabled` -> HTTP 403), HitL (`confirm`) и автоматическим режимом (`auto`).
   * Централизованный Rule Engine и хранение канонических шаблонов триажа в PostgreSQL (`triage_templates` + `rules_admin.py`).
   * Двухэтапный Hybrid RAG (`LiteLLM` / `gemini-embedding-2` 3072 dim + `pgvector` HNSW + Cross-Encoder Reranker с адаптивным GPU-ускорением через ONNX Runtime CUDA/DirectML/CPU).
   * Многоконтурный адаптивный AI Hub (LiteLLM Proxy с ротацией ключей, Gemini 3.5 Flash, DLP-маскирование, Redis PII Vault, роутинг RED/YELLOW/GREEN).

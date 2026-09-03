@@ -23,6 +23,7 @@ import {
   type KBStatsResponse,
   type VaultStatusResponse,
 } from '../lib/adminApi';
+import SkillsHub from '../components/SkillsHub';
 
 interface AdminPanelPageProps {
   theme?: 'light' | 'dark';
@@ -35,7 +36,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [loginError, setLoginError] = useState<string | null>(null);
 
   // Settings State
-  const [activeTab, setActiveTab] = useState<'vault' | 'ldaps' | 'helpdesk' | 'kb' | 'security'>('vault');
+  const [activeTab, setActiveTab] = useState<'vault' | 'skills' | 'ldaps' | 'helpdesk' | 'kb' | 'security'>('vault');
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
@@ -555,6 +556,20 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
           </button>
 
           <button
+            onClick={() => setActiveTab('skills')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 cursor-pointer ${
+              activeTab === 'skills'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+            }`}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+            </svg>
+            <span>Навыки & Диспетчер (Skills Hub)</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab('ldaps')}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 cursor-pointer ${
               activeTab === 'ldaps'
@@ -1008,6 +1023,11 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               </div>
             </div>
           </div>
+        )}
+
+        {/* Tab Skills: Skills Hub & Action Registry */}
+        {activeTab === 'skills' && (
+          <SkillsHub token={token || ''} />
         )}
 
         {/* Tab 1: LDAPS Config */}

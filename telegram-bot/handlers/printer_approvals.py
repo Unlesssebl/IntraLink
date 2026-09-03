@@ -76,16 +76,42 @@ def get_start_keyboard(task_id: int) -> InlineKeyboardMarkup:
 
 
 async def _publish_response(task_id: int, action: str, tg_user_id: int, **kwargs):
-    redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
-    payload = {
-        "event_type": "approval_response",
-        "task_id": task_id,
-        "action": action,
-        "tg_user_id": tg_user_id,
-    }
-    payload.update(kwargs)
-    await redis.publish("printer_actions", json.dumps(payload))
-    await redis.close()
+    # 1. Отправляем в Command Bus Core API
+    try:
+        target_pc = kwargs.get("target_pc", "")
+        printer_name = kwargs.get("printer_name", "") or kwargs.get("model_key", "")
+        job_id = kwargs.get("job_id")
+        if job_id and action in ("approve", "reject"):
+            await api_client.confirm_command(
+                job_id=job_id,
+                decision=action,
+                operator=f"tg_{tg_user_id}",
+            )
+        elif action == "approve":
+            await api_client.submit_command(
+                command_type="install_printer",
+                target={"task_id": task_id, "host": target_pc, "printer_name": printer_name},
+                mode="auto",
+                initiator=f"tg_{tg_user_id}",
+                source="bot",
+            )
+    except Exception as e:
+        logger.error("Ошибка отправки решения в Command Bus: %s", e)
+
+    # 2. Redis Pub/Sub fallback
+    try:
+        redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
+        payload = {
+            "event_type": "approval_response",
+            "task_id": task_id,
+            "action": action,
+            "tg_user_id": tg_user_id,
+        }
+        payload.update(kwargs)
+        await redis.publish("printer_actions", json.dumps(payload))
+        await redis.close()
+    except Exception as e:
+        logger.debug("Redis publish error: %s", e)
 
 
 # ==========================================

@@ -218,6 +218,15 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     if ((selectedTemplateKey === 'wifi_access' || ticket.ruleType === 'wlan_access') && isStatusAllowed(29)) {
       return { label: 'Выдать доступ к Wi-Fi', statusId: 29, buttonClass: primaryBtnClass, actionType: 'wlan' as const };
     }
+    const isPrinterTask =
+      selectedTemplateKey === 'printer_install' ||
+      ticket.ruleType === 'printer_install' ||
+      ticket.serviceName?.toLowerCase().includes('принтер') ||
+      ticket.serviceName?.toLowerCase().includes('печать') ||
+      ticket.title?.toLowerCase().includes('принтер');
+    if (isPrinterTask && isStatusAllowed(29)) {
+      return { label: 'Установить принтер', statusId: 29, buttonClass: primaryBtnClass, actionType: 'printer' as const };
+    }
     if ((selectedTemplateKey === 'hardware_repair' || ticket.ruleType === 'hardware_repair') && isStatusAllowed(48)) {
       return { label: 'В ремонт (каб. 112)', statusId: 48, buttonClass: primaryBtnClass };
     }
@@ -377,6 +386,32 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         onClose();
       } catch (err: any) {
         onToast({ type: 'error', message: `Ошибка исполнения: ${err.message || err}` });
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+    if (cfg.actionType === 'printer') {
+      const pc_name = effectiveHost || ticket.host;
+      if (!pc_name) {
+        onToast({ type: 'warning', message: 'Имя ПК не указано для удаленной установки принтера' });
+        return;
+      }
+      setSubmitting(true);
+      try {
+        onToast({ type: 'info', message: `Отправка задачи установки принтера на ${pc_name}...` });
+        const job = await enqueueExecution({
+          action: 'install_printer',
+          task_id: rawId,
+          params: { pc_name, printer_name: ticket.title },
+          auto_close_ticket: true,
+        });
+        await pollExecutionJob(job.job_id, 30000, 1500);
+        onToast({ type: 'success', message: `Заявка #${rawId}: принтер успешно установлен на ${pc_name}` });
+        onUpdateTicket(ticket.id, { status: 'resolved', statusId: 29, statusName: 'Выполнена' });
+        onClose();
+      } catch (err: any) {
+        onToast({ type: 'error', message: `Ошибка установки принтера: ${err.message || err}` });
       } finally {
         setSubmitting(false);
       }
@@ -707,13 +742,13 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             {attachmentsList.filter(att => /\.(png|jpe?g|bmp|webp|gif)$/i.test(att.name || '')).map(att => (
               <a
                 key={att.id}
-                href={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
+                href={`/api/v1/tasks/${rawId}/attachments/${att.id}`}
                 target="_blank"
                 rel="noreferrer"
                 className="group relative block rounded-lg overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 hover:ring-2 hover:ring-blue-500 transition-all"
               >
                 <img
-                  src={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
+                  src={`/api/v1/tasks/${rawId}/attachments/${att.id}`}
                   alt={att.name}
                   className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-200"
                   loading="lazy"
@@ -734,7 +769,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           {attachmentsList.map(att => (
             <a
               key={att.id}
-              href={`/admin/api/tasks/${rawId}/attachments/${att.id}`}
+              href={`/api/v1/tasks/${rawId}/attachments/${att.id}`}
               target="_blank"
               rel="noreferrer"
               className="flex items-center justify-between p-2 rounded-lg bg-neutral-50 dark:bg-neutral-800/60 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors text-[12px]"

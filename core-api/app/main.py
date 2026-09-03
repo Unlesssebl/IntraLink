@@ -21,6 +21,7 @@ from app.routers import (
     rules_admin,
     self_service,
     service_tasks,
+    skills_admin,
     tasks,
     triage,
     users,
@@ -150,6 +151,7 @@ app.include_router(events.router)
 app.include_router(admin.router)
 app.include_router(admin_settings.router)
 app.include_router(kb_admin.router)
+app.include_router(skills_admin.router)
 app.include_router(self_service.router)
 
 # Статические файлы интерактивной презентации (при наличии)

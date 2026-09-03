@@ -1,15 +1,18 @@
 from typing import Any
-
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.db import User, get_db
-from app.routers.deps import get_user_by_tg_id, verify_api_key
+from app.routers.deps import (
+    get_service_auth_b64,
+    get_user_by_tg_id,
+    verify_admin_or_api_key,
+)
 from app.services import intraservice
 
-router = APIRouter(tags=["Tasks"], dependencies=[Depends(verify_api_key)])
+router = APIRouter(tags=["Tasks"], dependencies=[Depends(verify_admin_or_api_key)])
 
 
 class TaskCommentRequest(BaseModel):
@@ -179,3 +182,31 @@ async def add_task_expenses(
             detail=f"Не удалось добавить трудозатраты к задаче {task_id}.",
         )
     return {"status": "success"}
+
+
+@router.get("/tasks/{task_id}/attachments/{file_id}")
+async def download_task_attachment(
+    task_id: int,
+    file_id: int,
+    service_auth_b64: str = Depends(get_service_auth_b64),
+):
+    """
+    Скачивает бинарный файл вложения задачи из IntraService.
+    Доступно для Web UI, CLI и Telegram-бота.
+    """
+    content = await intraservice.download_attachment_file(
+        service_auth_b64, task_id, file_id
+    )
+    if content is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Вложение #{file_id} не найдено или недоступно",
+        )
+
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'inline; filename="attachment_{file_id}"'
+        },
+    )

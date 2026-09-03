@@ -112,5 +112,44 @@ class CoreAPIClient:
             endpoint=endpoint, method="POST", json_data=payload
         )
 
+    async def submit_command(
+        self,
+        command_type: str,
+        target: Dict[str, Any],
+        params: Optional[Dict[str, Any]] = None,
+        mode: str = "auto",
+        initiator: Optional[str] = None,
+        source: str = "bot",
+    ) -> Optional[Dict[str, Any]]:
+        """Отправляет команду на исполнение через Command Bus Core API."""
+        payload = {
+            "type": command_type,
+            "target": target,
+            "params": params or {},
+            "mode": mode,
+            "initiator": initiator,
+            "source": source,
+        }
+        return await self._make_request(
+            endpoint="api/v1/commands/submit", method="POST", json_data=payload
+        )
+
+    async def confirm_command(
+        self,
+        job_id: str,
+        decision: str,
+        reason: str = "",
+        operator: str = "telegram_bot",
+    ) -> Optional[Dict[str, Any]]:
+        """Отправляет решение оператора (HitL) для ожидающей команды."""
+        payload = {
+            "decision": decision,
+            "reason": reason,
+            "operator": operator,
+        }
+        return await self._make_request(
+            endpoint=f"api/v1/commands/{job_id}/confirm", method="POST", json_data=payload
+        )
+
 
 api_client = CoreAPIClient()

@@ -1,6 +1,6 @@
 """
 Модульный пакет роутеров панели администратора и Web SPA.
-Агрегирует специализированные подмодули: auth, spa, diag, queue, system, users.
+Агрегирует специализированные подмодули: auth, spa, diag, system, users.
 """
 
 from fastapi import APIRouter
@@ -29,23 +29,6 @@ from .diag import (
     _resolve_host_ip,
     get_host_diagnostics,
     router as diag_router,
-)
-from .queue import (
-    ApplyActionRequest,
-    BulkApplyItem,
-    BulkApplyRequest,
-    _classify_queue_task,
-    _format_comment,
-    _get_service_catalog_map,
-    _parse_task_custom_fields,
-    _resolve_service_hierarchy,
-    apply_task_action,
-    bulk_apply_tasks,
-    download_task_attachment,
-    get_task_details,
-    get_triage_queue,
-    open_task_in_intraservice,
-    router as queue_router,
 )
 from .spa import (
     HTML_PATH,
@@ -77,15 +60,11 @@ router = APIRouter(tags=["Admin UI"])
 router.include_router(auth_router)
 router.include_router(spa_router)
 router.include_router(diag_router)
-router.include_router(queue_router)
 router.include_router(system_router)
 router.include_router(users_router)
 
 __all__ = [
     "AddUserRequest",
-    "ApplyActionRequest",
-    "BulkApplyItem",
-    "BulkApplyRequest",
     "DOMAIN_SUFFIX",
     "DomainAuthRequest",
     "HTML_PATH",
@@ -96,31 +75,20 @@ __all__ = [
     "_check_host_ping_and_ports",
     "_check_single_host",
     "_check_tcp_port",
-    "_classify_queue_task",
-    "_format_comment",
-    "_get_service_catalog_map",
-    "_parse_task_custom_fields",
     "_resolve_host_ip",
-    "_resolve_service_hierarchy",
     "add_telegram_user",
     "admin_login",
     "admin_logout",
     "admin_me",
-    "apply_task_action",
-    "bulk_apply_tasks",
     "delete_service_user",
     "delete_telegram_user",
-    "download_task_attachment",
     "get_admin_ui",
     "get_domain_auth_status",
     "get_host_diagnostics",
     "get_redis_client",
     "get_system_status",
-    "get_task_details",
     "get_telegram_users",
-    "get_triage_queue",
     "get_worker_logs",
-    "open_task_in_intraservice",
     "restart_worker_endpoint",
     "router",
     "set_domain_auth",

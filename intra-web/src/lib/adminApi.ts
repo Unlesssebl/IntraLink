@@ -359,3 +359,68 @@ export async function testVaultWinrm(
   }
   return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Skills Hub & Action Registry API
+// ---------------------------------------------------------------------------
+
+export interface SkillActionItem {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  default_mode: 'auto' | 'confirm' | 'disabled';
+  effective_mode: 'auto' | 'confirm' | 'disabled';
+  target_type: string;
+  parameters_schema: Record<string, any>;
+}
+
+export async function fetchSkills(token: string): Promise<SkillActionItem[]> {
+  const res = await fetch('/api/v1/skills', {
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Ошибка загрузки навыков' }));
+    throw new Error(err.detail || 'Не удалось загрузить каталог навыков');
+  }
+  return res.json();
+}
+
+export async function updateSkillPolicy(
+  token: string,
+  actionId: string,
+  mode: 'auto' | 'confirm' | 'disabled'
+): Promise<any> {
+  const res = await fetch(`/api/v1/skills/${actionId}/policy`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ mode }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Ошибка обновления политики' }));
+    throw new Error(err.detail || 'Не удалось обновить политику навыка');
+  }
+  return res.json();
+}
+
+export async function resetSkillPolicy(token: string, actionId: string): Promise<any> {
+  const res = await fetch(`/api/v1/skills/${actionId}/policy`, {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Ошибка сброса политики' }));
+    throw new Error(err.detail || 'Не удалось сбросить политику навыка');
+  }
+  return res.json();
+}
+

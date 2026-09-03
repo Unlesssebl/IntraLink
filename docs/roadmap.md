@@ -67,7 +67,7 @@ timeline
 
 ---
 
-## 🚀 Этап 1. Платформа автоматизации (Action Platform) & MCP Hub (Q3–Q4 2026 — В разработке)
+## 🚀 Этап 1. Платформа автоматизации (Action Platform) & MCP Hub (Q3–Q4 2026 — ✅ Завершено)
 
 **Цель:** Ликвидация накопленного техдолга, централизация секретов в едином SSOT Vault, стандартизация воркеров и запуск официального протокола MCP для симметричного управления через AI-агента AGY и Web UI Command Center.
 
@@ -80,23 +80,28 @@ timeline
    - Миграция всех паролей (IntraService API, Domain WinRM/LDAPS, Local Admin) в таблицу PostgreSQL `system_settings` с шифрованием Fernet (`vault.py`).
    - Автоматический прогрев и синхронизация кэша в Redis (`worker:domain_auth`, `worker:service_auth_b64`) при старте в `lifespan` и после сохранения.
    - Единая карточка управления доступами в Web UI (`/admin`) с 1-клик тестированием связности (LDAPS / WinRM).
-3. **Конвергенция очередей и триажа (Queue Convergence — Следующий шаг):**
-   - Ликвидация устаревшего роутера `admin/queue.py` с захардкоженными ID исполнителей.
-   - Перевод Web UI (`intra-web`) на современное ядро `triage.py` (фоновый pre-fetch телеметрии 0ms, DLP PII Vault, защита Dead Man's Switch).
-4. **Стандартизация воркера и реанимация принтеров:**
-   - Реализация метода `install_printer` в `PrinterExecutor` и перенос `printers_knowledge_base.json` в `shared/` (SSOT).
-   - Перевод Telegram-бота (`printer_approvals.py`) на персистентную шину задач Redis Streams (`stream:execution_queue`).
-   - Внедрение стандарта `BaseActionExecutor`: обязательные фазы `Preflight ➔ Execute ➔ Verify`.
-5. **Декларативный реестр навыков (Action & Skill Registry):**
-   - Декларация манифестов действий (Pydantic / JSON Schema): `install_printer`, `grant_wlan`, `create_ad_user`, `install_software`, `diagnose_host`.
-   - Policy Engine: гибкая настройка политик исполнения (`full_auto`, `requires_hitl`, `disabled`).
-6. **Шлюз инструментов MCP для AI-агента (`intralink-mcp`):**
-   - FastMCP микросервис поверх Core API с авто-генерацией инструментов `@mcp.tool`.
-   - Двусторонний протокол Human-in-the-Loop при выполнении привилегированных действий агентом.
-7. **Automation Command Center в Web UI (`intra-web`):**
-   - Раздел **Skills Hub** в панели администратора: интерактивный каталог навыков с тумблерами политик и Killswitch.
-   - **Live SSE Terminal:** консольный вывод логов PowerShell/WMI в реальном времени при исполнении на удаленном ПК.
-   - **1-Click Actions:** контекстные виджеты быстрых действий в карточке заявки с AI-рекомендациями.
+3. **✅ Конвергенция очередей и триажа (Queue Convergence) (Внедрено):**
+   - Ликвидирован устаревший роутер `admin/queue.py` с захардкоженными ID исполнителей.
+   - Логика разделена без создания god-модуля: тонкий контроллер `triage.py`, сервисы `TriageService` и `TriageSessionManager`.
+   - Web UI (`intra-web`) полностью переведен на современный эндпоинт `/api/v1/triage/batch` (фоновый pre-fetch телеметрии 0ms, DLP PII Vault, детекция дубликатов, защита Dead Man's Switch).
+4. **✅ Стандартизация воркера и реанимация принтеров (Внедрено):**
+   - Восстановлена база знаний принтеров `shared/printers_knowledge_base.json` и типизированный модуль `shared/printers.py` (SSOT).
+   - Внедрен стандарт `BaseActionExecutor`: цикл `Preflight ➔ Execute ➔ Verify`, распределенная блокировка хоста `lock:host:<pc_name>` (TTL 30s) и динамический WMI Bootstrap WinRM.
+   - `PrinterExecutor` унаследован от `BaseActionExecutor` с установкой принтеров через PowerShell и контролем через `Get-Printer`.
+   - Telegram-бот (`printer_approvals.py`) и клиент API переведены на вызовы Command Bus (`/api/v1/commands/submit` и `/api/v1/commands/{job_id}/confirm`).
+5. **✅ Декларативный реестр навыков и Dynamic Policy Engine (Внедрено):**
+   - Реестр `ActionRegistry` с декларацией схем параметров и типов целей: `install_printer`, `grant_wlan`, `diagnose_host`, `create_user`, `reset_password`, `apply_triage`, `rag_sync`.
+   - Движок `PolicyEngine` с поддержкой режимов `auto`, `confirm` (HitL) и мгновенного Killswitch (`disabled`) с хранением оверрайдов в Redis.
+   - REST API управления политиками в роутере `skills_admin.py` (`GET /api/v1/skills`, `PATCH /api/v1/skills/{id}/policy`).
+   - Защита Killswitch и проверка политик встроена в шлюз команд `POST /api/v1/commands/submit`.
+6. **✅ Шлюз инструментов FastMCP для AI-агента (`intralink-mcp`) (Внедрено):**
+   - Реализован MCP-сервер инструментов по спецификации Model Context Protocol (JSON-RPC 2.0 stdio): `triage_batch`, `get_ticket_details`, `apply_triage_decision`, `diagnose_host`, `search_kb`, `submit_action_command`, `list_skills`.
+   - Сервер покрыт тестами `test_mcp_server.py` и документирован в `intralink-mcp/README.md`.
+7. **✅ Automation Command Center в Web UI (`intra-web`) (Внедрено):**
+   - Вкладка **Skills Hub** в панели администратора (`/admin`): интерактивное управление навыками, переключатели режимов Auto / HitL / Killswitch и тестовый запуск.
+   - **Live SSE Terminal:** консольный мониторинг шины событий и прогресса выполнения команд в реальном времени (`/api/v1/events/stream`).
+   - **1-Click Actions:** контекстные виджеты быстрых действий в карточке заявки `TicketInspector.tsx` (установка принтера, выдача Wi-Fi, экспресс-диагностика).
+
 
 ### 🛡️ 5 критических инженерных нюансов исполнения:
 1. **WMI Bootstrap Lifecycle (Динамическое управление WinRM):**

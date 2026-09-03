@@ -254,22 +254,61 @@ export function mapTaskToTicket(task: TaskItem): Ticket {
   };
 }
 
-export async function fetchQueue(filterId = 984, limit = 200): Promise<{
+export async function fetchQueue(filterId = 984, limit = 50): Promise<{
   tickets: Ticket[];
   rawTasks: TaskItem[];
   total: number;
   rootServices: Array<{ id: number; name: string }>;
   subservicesByRoot: Record<number, Array<{ id: number; name: string; parent_id?: number }>>;
 }> {
-  const data = await apiFetch<QueueResponse>(`/admin/api/queue?filter_id=${filterId}&limit=${limit}`);
+  const data = await apiFetch<any>(`/api/v1/triage/batch?filter_id=${filterId}&limit=${limit}`);
   const tasks = data.tasks || [];
-  const tickets = tasks.map(mapTaskToTicket);
+  const normalizedTasks: TaskItem[] = tasks.map((item: any) => {
+    if (item.task_id && item.suggested_action) {
+      const t = item.task || {};
+      const action = item.suggested_action || {};
+      return {
+        id: item.task_id,
+        name: item.name || t.Name || '',
+        description: t.Description || '',
+        created: item.created || t.Created || '',
+        creator: item.creator || t.Creator || '',
+        creator_login: t.CreatorLogin || '',
+        phone: item.creator_phone || '',
+        pc_name: item.pc_name || '',
+        room: item.room || '',
+        department: t.Department || '',
+        status_id: item.status_id || t.StatusId || 26,
+        status_name: item.status_name || t.StatusName || 'Новая',
+        service_id: item.service_id || t.ServiceId || 0,
+        service_name: item.service_name || t.ServiceName || '',
+        target_status_id: action.target_status_id || 27,
+        target_status_name: action.target_status_name || 'В работе',
+        suggested_comment: action.comment || '',
+        rule_type: action.rule_type || '',
+        template_key: action.template_key || '',
+        target_service_name: action.target_service_name || '',
+        is_redirect: action.is_redirect || false,
+        has_attachments: item.has_attachments || false,
+        attachments: t._attachments_list || [],
+        expenses: action.expenses || 10,
+        score: action.score || 8,
+        is_duplicate: item.is_duplicate || false,
+        duplicate_info: item.duplicate_info || null,
+        telemetry: item.telemetry || null,
+        circuit: item.circuit || 'green',
+      } as any;
+    }
+    return item;
+  });
+
+  const tickets = normalizedTasks.map(mapTaskToTicket);
   return {
     tickets,
-    rawTasks: tasks,
-    total: data.total || tickets.length,
-    rootServices: data.root_services || [],
-    subservicesByRoot: data.subservices_by_root || {},
+    rawTasks: normalizedTasks,
+    total: data.total_open || tickets.length,
+    rootServices: [],
+    subservicesByRoot: {},
   };
 }
 
@@ -279,21 +318,82 @@ export async function fetchDiagnostics(host: string): Promise<HostDiagnostics> {
 }
 
 export async function fetchTaskDetails(taskId: number): Promise<TaskDetails> {
-  return apiFetch<TaskDetails>(`/admin/api/tasks/${taskId}/details`);
+  const data = await apiFetch<any>(`/api/v1/triage/tasks/${taskId}`);
+  const task = data.task || {};
+  const history = data.history || [];
+  return {
+    task,
+    comments: history,
+    attachments: task._attachments_list || [],
+    ai_suggested_resolution: data.ai_suggested_resolution,
+    kb_matches: data.kb_matches,
+    telemetry: data.telemetry,
+    ...data,
+  } as TaskDetails;
 }
 
 export async function applyTask(taskId: number, payload: SingleApplyPayload): Promise<any> {
-  return apiFetch(`/admin/api/tasks/${taskId}/apply`, {
+  return apiFetch('/api/v1/triage/apply', {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      task_ids: [taskId],
+      status_id: payload.status_id,
+      comment: payload.comment || '',
+      expenses: payload.minutes || 10,
+      executor_ids: payload.executor_ids,
+    }),
   });
 }
 
 export async function bulkApplyTasks(tasks: BulkApplyItemPayload[]): Promise<BulkApplyResponse> {
-  return apiFetch<BulkApplyResponse>('/admin/api/tasks/bulk-apply', {
-    method: 'POST',
-    body: JSON.stringify({ tasks }),
-  });
+  const taskIds = tasks.map(t => t.task_id);
+  if (tasks.length > 0 && tasks.every(t => t.status_id === tasks[0].status_id && t.comment === tasks[0].comment)) {
+    const res = await apiFetch<any>('/api/v1/triage/apply', {
+      method: 'POST',
+      body: JSON.stringify({
+        task_ids: taskIds,
+        status_id: tasks[0].status_id,
+        comment: tasks[0].comment || '',
+        expenses: tasks[0].minutes || 10,
+        executor_ids: tasks[0].executor_ids,
+      }),
+    });
+    const results = res.results || [];
+    return {
+      total: tasks.length,
+      success_count: results.filter((r: any) => r.status === 'success').length,
+      failed_count: results.filter((r: any) => r.status !== 'success').length,
+      applied: results.filter((r: any) => r.status === 'success'),
+      failed: results.filter((r: any) => r.status !== 'success'),
+    };
+  }
+
+  const applied: any[] = [];
+  const failed: any[] = [];
+  for (const item of tasks) {
+    try {
+      const res = await apiFetch<any>('/api/v1/triage/apply', {
+        method: 'POST',
+        body: JSON.stringify({
+          task_ids: [item.task_id],
+          status_id: item.status_id,
+          comment: item.comment || '',
+          expenses: item.minutes || 10,
+          executor_ids: item.executor_ids,
+        }),
+      });
+      applied.push({ task_id: item.task_id, res });
+    } catch (err: any) {
+      failed.push({ task_id: item.task_id, error: err.message });
+    }
+  }
+  return {
+    total: tasks.length,
+    success_count: applied.length,
+    failed_count: failed.length,
+    applied,
+    failed,
+  };
 }
 
 export async function fetchTemplatesCatalog(): Promise<{ templates: any[]; map: Record<string, any> }> {

@@ -71,6 +71,7 @@ class WindowsExecutionWorker:
         self.redis = aioredis.from_url(
             self.redis_url, decode_responses=True, socket_timeout=10.0
         )
+        self.printer_exec.set_redis_client(self.redis)
         self._running = True
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
