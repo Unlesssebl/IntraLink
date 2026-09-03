@@ -1144,7 +1144,20 @@ async def get_kb_sync_progress() -> dict[str, Any]:
     try:
         raw = await redis.get("kb:sync_progress")
         if raw:
-            return json_loads(raw)
+            state = json_loads(raw)
+            # Edge Case: Защита от зависшего статуса при аварийном прерывании или перезапуске контейнера
+            if state.get("is_running") and state.get("updated_at"):
+                try:
+                    upd = datetime.fromisoformat(state["updated_at"])
+                    if datetime.now(timezone.utc) - upd > timedelta(seconds=90):
+                        state["is_running"] = False
+                        state["error"] = "Процесс синхронизации был прерван (перезапуск контейнера или сбой воркера)"
+                        state["finished_at"] = datetime.now(timezone.utc).isoformat()
+                        await _save_sync_progress(redis, state)
+                        await redis.delete("lock:kb_sync")
+                except Exception:
+                    pass
+            return state
     except Exception as e:
         logger.debug("Ошибка чтения kb:sync_progress: %s", e)
     return {

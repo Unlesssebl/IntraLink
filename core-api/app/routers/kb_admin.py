@@ -276,14 +276,16 @@ async def purge_knowledge_base(
         deleted_count = result.rowcount
         await db.commit()
 
-        # Очистка кэша RAG в Redis
+        # Очистка кэша RAG и сброс состояния синхронизации в Redis
         try:
             redis = get_redis_client()
             keys = await redis.keys("rag:emb:*")
             if keys:
                 await redis.delete(*keys)
+            await redis.delete("lock:kb_sync")
+            await redis.delete("kb:sync_progress")
         except Exception as re:
-            logger.warning("Не удалось сбросить кэш эмбеддингов в Redis: %s", re)
+            logger.warning("Не удалось сбросить кэш эмбеддингов/прогресс в Redis: %s", re)
 
         logger.info("База знаний RAG успешно очищена. Удалено записей: %d", deleted_count)
         return {
