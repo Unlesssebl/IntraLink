@@ -3,7 +3,7 @@ import logging
 import secrets
 from typing import Any
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Header, status
+from fastapi import APIRouter, Depends, HTTPException, Header, status, Cookie
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +32,8 @@ JWT_ALGORITHM = "HS256"
 
 
 class AdminLoginRequest(BaseModel):
-    password: str = Field(..., description="Мастер-пароль администратора")
+    username: str | None = Field(None, description="Логин учетной записи IntraService")
+    password: str | None = Field(None, description="Пароль учетной записи IntraService или мастер-пароль")
 
 
 class AdminLoginResponse(BaseModel):
@@ -107,40 +108,65 @@ class VaultWinrmTestRequest(BaseModel):
 async def require_admin_auth(
     authorization: str | None = Header(None, alias="Authorization"),
     x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+    admin_session: str | None = Cookie(None),
 ) -> dict[str, Any]:
     """
     Проверяет валидность сессионного JWT-токена администратора.
     Защищает административные маршруты /admin/settings.
+    Поддерживает:
+    - Заголовок Authorization: Bearer <token>
+    - Заголовок X-Admin-Token: <token>
+    - HttpOnly Cookie 'admin_session' (Single Sign-On из операторской панели)
     """
-    token = None
+    candidate_tokens: list[str] = []
     if authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-    elif x_admin_token:
-        token = x_admin_token.strip()
+        bearer_val = authorization[7:].strip()
+        if bearer_val and bearer_val != "sso_session":
+            candidate_tokens.append(bearer_val)
+    if x_admin_token and x_admin_token.strip():
+        candidate_tokens.append(x_admin_token.strip())
+    if admin_session and admin_session.strip():
+        candidate_tokens.append(admin_session.strip())
 
-    if not token:
+    if not candidate_tokens:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Требуется авторизация администратора",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    try:
-        secret = settings.ADMIN_JWT_SECRET or settings.JWT_SECRET or "intralink-admin-secret"
-        payload = jwt.decode(token, secret, algorithms=[JWT_ALGORITHM])
-        if payload.get("role") != "admin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Недостаточно прав: требуется роль администратора",
-            )
-        return payload
-    except jwt.PyJWTError as e:
-        logger.warning("Invalid admin JWT token: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Недействительный или просроченный токен сессии",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    admin_logins = [
+        u.strip().lower() for u in (settings.ADMIN_LOGINS or "").split(",") if u.strip()
+    ]
+
+    last_error = None
+    for token in candidate_tokens:
+        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
+            if not sec:
+                continue
+            try:
+                payload = jwt.decode(token, sec, algorithms=[JWT_ALGORITHM])
+                if payload and payload.get("sub"):
+                    username = str(payload.get("sub", "")).strip()
+                    is_admin = (payload.get("role") == "admin") or (username.lower() in admin_logins)
+                    if not is_admin:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail=f"Недостаточно прав: учетная запись '{username}' не входит в список администраторов.",
+                        )
+                    return payload
+            except HTTPException:
+                raise
+            except jwt.PyJWTError as e:
+                last_error = e
+                continue
+
+    logger.warning("Invalid admin JWT token candidates: %s", last_error)
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Недействительный или просроченный токен сессии",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 # ==========================================
@@ -189,29 +215,101 @@ async def save_system_setting(
 
 
 @router.post("/auth/login", response_model=AdminLoginResponse)
-async def admin_login(body: AdminLoginRequest):
+async def admin_login(
+    body: AdminLoginRequest | None = None,
+    admin_session: str | None = Cookie(None),
+    authorization: str | None = Header(None),
+):
     """
-    Вход в панель администратора по мастер-паролю (ADMIN_PASSWORD).
-    Использует secrets.compare_digest для защиты от Timing Attacks.
+    Вход в панель администратора по корпоративным учетным данным IntraService (RBAC).
+    Поддерживает:
+    1. Передачу username и password (IntraService).
+    2. Fallback по сессионному cookie 'admin_session' или Bearer токену, если пользователь уже авторизован.
+    3. Fallback по устаревшему ADMIN_PASSWORD (если задан в конфигурации).
     """
-    expected_password = settings.ADMIN_PASSWORD
-    if not secrets.compare_digest(body.password.encode("utf-8"), expected_password.encode("utf-8")):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверный мастер-пароль администратора",
-        )
-
-    expires_in = 8 * 3600  # 8 часов
     secret = settings.ADMIN_JWT_SECRET or settings.JWT_SECRET or "intralink-admin-secret"
-    payload = {
-        "sub": "admin",
-        "role": "admin",
-        "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=expires_in),
-        "iat": datetime.datetime.now(datetime.timezone.utc),
-    }
-    token = jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
+    expires_in = 8 * 3600  # 8 часов
+    admin_logins = [
+        u.strip().lower() for u in (settings.ADMIN_LOGINS or "").split(",") if u.strip()
+    ]
 
-    return AdminLoginResponse(access_token=token, expires_in=expires_in)
+    # 1. Если переданы логин и пароль:
+    if body and body.username and body.password:
+        auth_b64, user_id = await verify_credentials(body.username.strip(), body.password.strip())
+        if not auth_b64:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Неверный логин или пароль IntraService",
+            )
+
+        if body.username.strip().lower() not in admin_logins:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Доступ запрещен: учетная запись '{body.username}' не имеет прав администратора системы.",
+            )
+
+        payload = {
+            "sub": body.username.strip(),
+            "user_id": user_id,
+            "role": "admin",
+            "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=expires_in),
+            "iat": datetime.datetime.now(datetime.timezone.utc),
+        }
+        token = jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
+        return AdminLoginResponse(access_token=token, expires_in=expires_in)
+
+    # 2. Fallback: проверка существующей сессии администратора из Cookie или Header
+    token_to_verify = None
+    if authorization and authorization.lower().startswith("bearer "):
+        bearer_candidate = authorization[7:].strip()
+        if bearer_candidate and bearer_candidate != "sso_session":
+            token_to_verify = bearer_candidate
+    if not token_to_verify and admin_session:
+        token_to_verify = admin_session.strip()
+
+    if token_to_verify:
+        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
+            if not sec:
+                continue
+            try:
+                payload = jwt.decode(token_to_verify, sec, algorithms=[JWT_ALGORITHM])
+                if payload and payload.get("sub"):
+                    username = str(payload.get("sub", "")).strip()
+                    is_admin = (payload.get("role") == "admin") or (username.lower() in admin_logins)
+                    if is_admin:
+                        return AdminLoginResponse(access_token=token_to_verify, expires_in=expires_in)
+                    else:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail=f"Доступ запрещен: учетная запись '{username}' не имеет прав администратора системы.",
+                        )
+            except HTTPException:
+                raise
+            except jwt.PyJWTError:
+                continue
+
+    # 3. Fallback: устаревший мастер-пароль ADMIN_PASSWORD (для обратной совместимости)
+    if body and body.password and not body.username:
+        if settings.ADMIN_PASSWORD and secrets.compare_digest(body.password, settings.ADMIN_PASSWORD):
+            admin_user = admin_logins[0] if admin_logins else "admin"
+            payload = {
+                "sub": admin_user,
+                "role": "admin",
+                "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=expires_in),
+                "iat": datetime.datetime.now(datetime.timezone.utc),
+            }
+            token = jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
+            return AdminLoginResponse(access_token=token, expires_in=expires_in)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Неверный логин или пароль",
+            )
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Требуется авторизация (логин и пароль IntraService или активная сессия администратора).",
+    )
 
 
 @router.get("/settings", response_model=AllSettingsResponse)

@@ -74,7 +74,7 @@ async def test_policy_engine_default_and_override():
 
 @pytest.mark.asyncio
 async def test_skills_admin_api():
-    with patch("app.services.worker.get_redis_client") as mock_redis_func:
+    with patch("app.services.actions.policy.get_redis_client") as mock_redis_func:
         mock_r = AsyncMock()
         mock_r.get = AsyncMock(return_value=None)
         mock_r.set = AsyncMock(return_value=True)

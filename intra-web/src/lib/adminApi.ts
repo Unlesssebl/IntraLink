@@ -36,17 +36,27 @@ export interface ConnectionTestResult {
   details?: Record<string, any>;
 }
 
-export async function loginAdmin(password: string): Promise<{ access_token: string; expires_in: number }> {
+export async function loginAdmin(username: string, password: string): Promise<{ access_token: string; expires_in: number }> {
   const res = await fetch('/api/v1/admin/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ username, password }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Ошибка аутентификации' }));
-    throw new Error(err.detail || 'Неверный мастер-пароль администратора');
+    throw new Error(err.detail || 'Ошибка авторизации администратора');
   }
   return res.json();
+}
+
+export async function checkCurrentAdminSession(): Promise<{ username: string; is_admin: boolean; role: string } | null> {
+  try {
+    const res = await fetch('/admin/api/me');
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchAdminSettings(token: string): Promise<AllSettingsResponse> {

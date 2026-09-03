@@ -37,27 +37,56 @@ async def test_db_session():
 
 @pytest.mark.asyncio
 async def test_admin_auth_success_and_failure():
-    """Проверка входа по мастер-паролю администратора."""
+    """Проверка корпоративной RBAC-аутентификации администратора IntraService."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # 1. Неверный пароль -> 401
-        res_fail = await client.post(
-            "/api/v1/admin/auth/login",
-            json={"password": "wrong-password-123"},
-        )
-        assert res_fail.status_code == 401
-        assert "Неверный мастер-пароль" in res_fail.json()["detail"]
+        # 1. Неверный логин/пароль в IntraService -> 401
+        with patch("app.routers.admin_settings.verify_credentials", return_value=(None, None)):
+            res_fail = await client.post(
+                "/api/v1/admin/auth/login",
+                json={"username": "belikov.a", "password": "wrong-password-123"},
+            )
+            assert res_fail.status_code == 401
+            assert "Неверный логин или пароль" in res_fail.json()["detail"]
 
-        # 2. Верный пароль -> 200 + токен
-        res_ok = await client.post(
+        # 2. Верные учетные данные, но логин НЕ в ADMIN_LOGINS -> 403 Forbidden
+        with patch("app.routers.admin_settings.verify_credentials", return_value=("auth_b64", 1000)):
+            res_forbidden = await client.post(
+                "/api/v1/admin/auth/login",
+                json={"username": "unauthorized_user", "password": "valid_password"},
+            )
+            assert res_forbidden.status_code == 403
+            assert "не имеет прав администратора" in res_forbidden.json()["detail"]
+
+        # 3. Верный логин из ADMIN_LOGINS (belikov.a) -> 200 + токен
+        with patch("app.routers.admin_settings.verify_credentials", return_value=("auth_b64", 8664)):
+            res_ok = await client.post(
+                "/api/v1/admin/auth/login",
+                json={"username": "belikov.a", "password": "valid_password"},
+            )
+            assert res_ok.status_code == 200
+            data = res_ok.json()
+            assert "access_token" in data
+            assert data["token_type"] == "bearer"
+            assert data["expires_in"] > 0
+            admin_token = data["access_token"]
+
+        # 4. SSO: вход без передачи логина/пароля при наличии валидной сессии в Cookie
+        res_sso = await client.post(
             "/api/v1/admin/auth/login",
-            json={"password": settings.ADMIN_PASSWORD},
+            cookies={"admin_session": admin_token},
         )
-        assert res_ok.status_code == 200
-        data = res_ok.json()
-        assert "access_token" in data
-        assert data["token_type"] == "bearer"
-        assert data["expires_in"] > 0
+        assert res_sso.status_code == 200
+        assert res_sso.json()["access_token"] == admin_token
+
+        # 5. Fallback: вход по устаревшему ADMIN_PASSWORD (если задан)
+        with patch.object(settings, "ADMIN_PASSWORD", "legacy-master-pass"):
+            res_fallback = await client.post(
+                "/api/v1/admin/auth/login",
+                json={"password": "legacy-master-pass"},
+            )
+            assert res_fallback.status_code == 200
+            assert "access_token" in res_fallback.json()
 
 
 @pytest.mark.asyncio
@@ -87,12 +116,13 @@ async def test_crud_ldaps_and_helpdesk_settings(test_db_session: AsyncSession):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Получаем токен
-        login_res = await client.post(
-            "/api/v1/admin/auth/login",
-            json={"password": settings.ADMIN_PASSWORD},
-        )
-        token = login_res.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        with patch("app.routers.admin_settings.verify_credentials", return_value=("auth_b64", 8664)):
+            login_res = await client.post(
+                "/api/v1/admin/auth/login",
+                json={"username": "belikov.a", "password": "valid_password"},
+            )
+            token = login_res.json()["access_token"]
+            headers = {"Authorization": f"Bearer {token}"}
 
         # 1. Сохраняем настройки LDAPS
         ldaps_payload = {
@@ -168,12 +198,13 @@ async def test_ldaps_test_connection_endpoint(test_db_session: AsyncSession):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        login_res = await client.post(
-            "/api/v1/admin/auth/login",
-            json={"password": settings.ADMIN_PASSWORD},
-        )
-        token = login_res.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        with patch("app.routers.admin_settings.verify_credentials", return_value=("auth_b64", 8664)):
+            login_res = await client.post(
+                "/api/v1/admin/auth/login",
+                json={"username": "belikov.a", "password": "valid_password"},
+            )
+            token = login_res.json()["access_token"]
+            headers = {"Authorization": f"Bearer {token}"}
 
         mock_test_result = ConnectionTestResult(
             success=True,

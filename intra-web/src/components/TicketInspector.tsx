@@ -84,7 +84,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   // Load Templates catalog
   useEffect(() => {
     fetchTemplatesCatalog().then(res => {
-      if (res && res.templates) setTemplates(res.templates);
+      if (res && Array.isArray(res.templates)) setTemplates(res.templates);
     }).catch(() => {});
   }, []);
 
@@ -477,8 +477,25 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     ? 'fixed inset-0 z-40 flex flex-col bg-neutral-100 dark:bg-neutral-950 animate-in fade-in duration-150 overflow-hidden'
     : 'fixed top-0 bottom-0 right-0 z-30 w-[540px] max-w-[94vw] flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-2xl animate-in slide-in-from-right duration-200';
 
-  const commentsList = details?.comments || [];
-  const attachmentsList = details?.attachments || ticket.attachments || [];
+  const rawComments = details?.comments;
+  const commentsList: any[] = Array.isArray(rawComments)
+    ? rawComments
+    : (rawComments && typeof rawComments === 'object' && Array.isArray((rawComments as any).TaskLifetimes))
+    ? (rawComments as any).TaskLifetimes
+    : Array.isArray((details as any)?.history)
+    ? (details as any).history
+    : (details as any)?.history && typeof (details as any).history === 'object' && Array.isArray((details as any).history.TaskLifetimes)
+    ? (details as any).history.TaskLifetimes
+    : [];
+
+  const rawAttachments = details?.attachments ?? ticket.attachments;
+  const attachmentsList: any[] = Array.isArray(rawAttachments)
+    ? rawAttachments
+    : (rawAttachments && typeof rawAttachments === 'object' && Array.isArray((rawAttachments as any).Attachment))
+    ? (rawAttachments as any).Attachment
+    : (rawAttachments && typeof rawAttachments === 'object' && Array.isArray((rawAttachments as any).Attachments))
+    ? (rawAttachments as any).Attachments
+    : [];
   const mainAction = getMainActionConfig();
 
   // Adaptive Requester & Equipment Card Component
@@ -805,29 +822,37 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       </span>
 
       <div className={`space-y-2 overflow-y-auto pr-1 ${expandedMode ? 'flex-1 min-h-0' : 'max-h-[350px]'}`}>
-        {commentsList.map(c => (
-          <div
-            key={c.id}
-            className={`p-2.5 rounded-lg border text-[12px] ${
-              c.is_private
-                ? 'border-amber-200 dark:border-amber-800/60 bg-amber-50/50 dark:bg-amber-950/20'
-                : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-neutral-950/40'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-1">
-              <div className="flex items-center gap-1.5">
-                <span className="font-semibold text-neutral-900 dark:text-neutral-100">{c.author}</span>
-                {c.is_private && (
-                  <span className="text-[10px] bg-amber-100 text-amber-900 dark:bg-amber-900/80 dark:text-amber-200 px-1 py-0.2 rounded font-bold">
-                    Скрытый
-                  </span>
-                )}
+        {commentsList.map((c: any, idx: number) => {
+          const author = c.author || c.Editor || c.UserName || c.Creator || 'Сотрудник';
+          const text = c.text || c.Comments || c.Comment || c.Description || '';
+          const isPrivate = Boolean(c.is_private || c.IsPrivate);
+          const created = c.created || c.Date || c.Created || '';
+          const commentId = c.id || c.Id || idx;
+          if (!text) return null;
+          return (
+            <div
+              key={commentId}
+              className={`p-2.5 rounded-lg border text-[12px] ${
+                isPrivate
+                  ? 'border-amber-200 dark:border-amber-800/60 bg-amber-50/50 dark:bg-amber-950/20'
+                  : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-neutral-950/40'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-semibold text-neutral-900 dark:text-neutral-100">{author}</span>
+                  {isPrivate && (
+                    <span className="text-[10px] bg-amber-100 text-amber-900 dark:bg-amber-900/80 dark:text-amber-200 px-1 py-0.2 rounded font-bold">
+                      Скрытый
+                    </span>
+                  )}
+                </div>
+                <span className="text-[10.5px] text-neutral-400 font-mono">{formatTime(created)}</span>
               </div>
-              <span className="text-[10.5px] text-neutral-400 font-mono">{formatTime(c.created)}</span>
+              <p className="text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap">{text}</p>
             </div>
-            <p className="text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap">{c.text}</p>
-          </div>
-        ))}
+          );
+        })}
 
         {commentsList.length === 0 && !loadingDetails && (
           <div className="text-[12px] text-neutral-400 italic py-2 text-center">

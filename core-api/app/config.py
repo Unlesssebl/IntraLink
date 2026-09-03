@@ -171,9 +171,13 @@ class Settings(BaseSettings):
         description="Окно rate limiter для применения решений в триаже (в секундах)",
     )
 
-    # Административная панель и мастер-пароль
-    ADMIN_PASSWORD: str = Field(
-        "admin", description="Мастер-пароль администратора для доступа к /admin"
+    # Административная панель и ролевой доступ (RBAC)
+    ADMIN_LOGINS: str = Field(
+        "belikov.a,IntraService_dev",
+        description="Список логинов IntraService через запятую с правами администратора /admin",
+    )
+    ADMIN_PASSWORD: str | None = Field(
+        None, description="[DEPRECATED] Устаревший мастер-пароль администратора"
     )
     ADMIN_JWT_SECRET: str = Field(
         "intralink-admin-jwt-secret-key-32chars!",

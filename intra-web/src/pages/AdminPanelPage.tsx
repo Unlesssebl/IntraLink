@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   loginAdmin,
+  checkCurrentAdminSession,
   fetchAdminSettings,
   saveLdapsSettings,
   testLdapsSettings,
@@ -31,9 +32,12 @@ interface AdminPanelPageProps {
 
 export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('intralink_admin_token'));
+  const [usernameInput, setUsernameInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
+  const [adminUser, setAdminUser] = useState<{ username: string; is_admin: boolean; role?: string } | null>(null);
 
   // Settings State
   const [activeTab, setActiveTab] = useState<'vault' | 'skills' | 'ldaps' | 'helpdesk' | 'kb' | 'security'>('vault');
@@ -105,16 +109,40 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     is_password_set: false,
   });
 
+  // Автоматическая проверка текущей сессии оператора (SSO)
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        const session = await checkCurrentAdminSession();
+        if (isMounted && session) {
+          setAdminUser(session);
+          if (session.is_admin) {
+            // Если сессия уже валидна как админ, используем её
+            const existingToken = localStorage.getItem('intralink_admin_token') || 'sso_session';
+            setToken(existingToken);
+          }
+        }
+      } catch (e) {
+        console.warn('Ошибка проверки SSO сессии:', e);
+      } finally {
+        if (isMounted) setCheckingSession(false);
+      }
+    })();
+    return () => { isMounted = false; };
+  }, []);
+
   // Login handler
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!passwordInput.trim()) return;
+    if (!usernameInput.trim() || !passwordInput.trim()) return;
     setLoginLoading(true);
     setLoginError(null);
     try {
-      const res = await loginAdmin(passwordInput.trim());
+      const res = await loginAdmin(usernameInput.trim(), passwordInput.trim());
       localStorage.setItem('intralink_admin_token', res.access_token);
       setToken(res.access_token);
+      setAdminUser({ username: usernameInput.trim(), is_admin: true, role: 'admin' });
       setPasswordInput('');
     } catch (err: any) {
       setLoginError(err.message || 'Ошибка входа');
@@ -123,9 +151,13 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     localStorage.removeItem('intralink_admin_token');
     setToken(null);
+    setAdminUser(null);
+    try {
+      await fetch('/admin/api/logout', { method: 'POST' });
+    } catch {}
   };
 
   // Load settings once token is set
@@ -415,6 +447,66 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     window.location.href = '/operator-panel';
   };
 
+  // State: Проверка активной сессии
+  if (checkingSession) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-neutral-950 text-neutral-100 font-sans">
+        <div className="flex items-center gap-3 text-sm text-neutral-400">
+          <svg className="animate-spin h-5 w-5 text-blue-500" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+          <span>Проверка прав доступа администратора...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // State: Пользователь авторизован в IntraService, но не входит в список ADMIN_LOGINS
+  if (!token && adminUser && !adminUser.is_admin) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-neutral-900 text-neutral-100 p-4 font-sans">
+        <div className="w-full max-w-md bg-neutral-950 border border-neutral-800 rounded-2xl p-8 shadow-2xl">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 rounded-xl bg-amber-600/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+            </div>
+            <div>
+              <h1 className="text-lg font-semibold tracking-tight">Доступ ограничен</h1>
+              <p className="text-xs text-neutral-400">Ролевая модель безопасности IntraLink</p>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-neutral-900 border border-neutral-800 text-sm text-neutral-300 mb-6 space-y-2">
+            <p>Вы вошли как <strong className="text-white font-mono">{adminUser.username}</strong>.</p>
+            <p className="text-xs text-neutral-400 leading-relaxed">
+              Данная учетная запись не входит в список администраторов системы (<code className="text-amber-400">ADMIN_LOGINS</code>). Раздел предназначен только для системных администраторов.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <button
+              onClick={goToOperatorPanel}
+              className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-blue-600/20"
+            >
+              <span>← В операторскую панель заявок</span>
+            </button>
+            <button
+              onClick={handleLogout}
+              className="w-full py-2.5 px-4 bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200 border border-neutral-800 rounded-xl text-sm font-medium transition-colors cursor-pointer"
+            >
+              Сменить пользователя
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Render Login View if unauthenticated
   if (!token) {
     return (
@@ -434,7 +526,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
           </div>
 
           <p className="text-sm text-neutral-300 mb-6 leading-relaxed">
-            Вход в раздел системных интеграций (Active Directory, LDAPS, учетные данные и профили Helpdesk) защищен мастер-паролем администратора.
+            Вход осуществляется по вашей <strong>корпоративной учетной записи IntraService</strong>. Доступ имеют сотрудники из утвержденного списка администраторов.
           </p>
 
           {loginError && (
@@ -450,12 +542,25 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-xs font-medium text-neutral-400 mb-1.5">Мастер-пароль администратора</label>
+              <label className="block text-xs font-medium text-neutral-400 mb-1.5">Логин IntraService</label>
+              <input
+                type="text"
+                value={usernameInput}
+                onChange={e => setUsernameInput(e.target.value)}
+                placeholder="например, belikov.a"
+                required
+                autoFocus
+                className="w-full px-3.5 py-2.5 bg-neutral-900 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 transition-colors"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-neutral-400 mb-1.5">Пароль</label>
               <input
                 type="password"
                 value={passwordInput}
                 onChange={e => setPasswordInput(e.target.value)}
-                placeholder="Введите ADMIN_PASSWORD"
+                placeholder="Пароль учетной записи"
                 required
                 className="w-full px-3.5 py-2.5 bg-neutral-900 border border-neutral-700 rounded-xl text-sm focus:outline-none focus:border-blue-500 transition-colors"
               />
@@ -472,10 +577,10 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                     <circle cx="12" cy="12" r="10" strokeOpacity="0.25"></circle>
                     <path d="M4 12a8 8 0 0 1 8-8"></path>
                   </svg>
-                  <span>Проверка...</span>
+                  <span>Проверка прав...</span>
                 </>
               ) : (
-                <span>Войти в консоль /admin</span>
+                <span>Войти с правами администратора</span>
               )}
             </button>
           </form>
@@ -509,7 +614,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               <h1 className="text-sm font-semibold tracking-tight">IntraLink Administration</h1>
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                Admin Session
+                {adminUser?.username ? `Admin: ${adminUser.username}` : 'Admin Session'}
               </span>
             </div>
             <p className="text-[11px] text-neutral-400">Централизованная конфигурация и доменные шлюзы</p>

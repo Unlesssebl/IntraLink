@@ -262,7 +262,7 @@ export async function fetchQueue(filterId = 984, limit = 50): Promise<{
   subservicesByRoot: Record<number, Array<{ id: number; name: string; parent_id?: number }>>;
 }> {
   const data = await apiFetch<any>(`/api/v1/triage/batch?filter_id=${filterId}&limit=${limit}`);
-  const tasks = data.tasks || [];
+  const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
   const normalizedTasks: TaskItem[] = tasks.map((item: any) => {
     if (item.task_id && item.suggested_action) {
       const t = item.task || {};
@@ -319,16 +319,30 @@ export async function fetchDiagnostics(host: string): Promise<HostDiagnostics> {
 
 export async function fetchTaskDetails(taskId: number): Promise<TaskDetails> {
   const data = await apiFetch<any>(`/api/v1/triage/tasks/${taskId}`);
-  const task = data.task || {};
-  const history = data.history || [];
+  const task = data?.task || {};
+
+  // Извлекаем и нормализуем историю/комментарии
+  let rawHistory: any = data?.history ?? data?.comments ?? task?.Comments ?? task?.comments ?? [];
+  if (rawHistory && typeof rawHistory === 'object' && !Array.isArray(rawHistory)) {
+    rawHistory = rawHistory.TaskLifetimes || rawHistory.tasklifetimes || rawHistory.items || [];
+  }
+  const comments = Array.isArray(rawHistory) ? rawHistory : [];
+
+  // Извлекаем и нормализуем вложения
+  let rawAttachments: any = task?._attachments_list ?? task?.Attachments ?? task?.attachments ?? data?.attachments ?? [];
+  if (rawAttachments && typeof rawAttachments === 'object' && !Array.isArray(rawAttachments)) {
+    rawAttachments = rawAttachments.Attachment || rawAttachments.Attachments || rawAttachments.items || [];
+  }
+  const attachments = Array.isArray(rawAttachments) ? rawAttachments : [];
+
   return {
-    task,
-    comments: history,
-    attachments: task._attachments_list || [],
-    ai_suggested_resolution: data.ai_suggested_resolution,
-    kb_matches: data.kb_matches,
-    telemetry: data.telemetry,
     ...data,
+    task,
+    comments,
+    attachments,
+    ai_suggested_resolution: data?.ai_suggested_resolution,
+    kb_matches: Array.isArray(data?.kb_matches) ? data.kb_matches : [],
+    telemetry: data?.telemetry,
   } as TaskDetails;
 }
 

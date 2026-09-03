@@ -333,13 +333,20 @@ async def get_tasks(auth_b64: str, filters: dict[str, Any] | None = None) -> Any
 async def get_task_lifetime(auth_b64: str, task_id: int) -> list[dict[str, Any]] | None:
     """
     Получает историю изменений (lifetime) задачи.
+    Нормализует ответ: если API возвращает словарь вида {"TaskLifetimes": [...]},
+    извлекает и возвращает список событий.
     """
-    return await _make_request(
+    res = await _make_request(
         endpoint="tasklifetime",
         method="GET",
         auth_b64=auth_b64,
         params={"taskid": task_id},
     )
+    if isinstance(res, dict) and "TaskLifetimes" in res:
+        return res["TaskLifetimes"]
+    if isinstance(res, list):
+        return res
+    return [] if res is not None else None
 
 
 async def get_statuses(auth_b64: str) -> list[dict[str, Any]] | None:

@@ -78,12 +78,13 @@ async def test_kb_admin_examples_and_blacklisting(test_db_session: AsyncSession)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Логинимся для получения токена
-        login_res = await client.post(
-            "/api/v1/admin/auth/login",
-            json={"password": settings.ADMIN_PASSWORD},
-        )
-        token = login_res.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        with patch("app.routers.admin_settings.verify_credentials", return_value=("auth_b64", 8664)):
+            login_res = await client.post(
+                "/api/v1/admin/auth/login",
+                json={"username": "belikov.a", "password": "valid_password"},
+            )
+            token = login_res.json()["access_token"]
+            headers = {"Authorization": f"Bearer {token}"}
 
         # 1. Получаем список примеров
         res_list = await client.get("/api/v1/admin/kb/examples", headers=headers)
@@ -132,12 +133,13 @@ async def test_kb_admin_services_tree():
     with patch("app.routers.kb_admin.get_redis_client", return_value=mock_redis):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            login_res = await client.post(
-                "/api/v1/admin/auth/login",
-                json={"password": settings.ADMIN_PASSWORD},
-            )
-            token = login_res.json()["access_token"]
-            headers = {"Authorization": f"Bearer {token}"}
+            with patch("app.routers.admin_settings.verify_credentials", return_value=("auth_b64", 8664)):
+                login_res = await client.post(
+                    "/api/v1/admin/auth/login",
+                    json={"username": "belikov.a", "password": "valid_password"},
+                )
+                token = login_res.json()["access_token"]
+                headers = {"Authorization": f"Bearer {token}"}
 
             res = await client.get("/api/v1/admin/kb/services-tree", headers=headers)
             assert res.status_code == 200

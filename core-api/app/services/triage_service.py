@@ -189,7 +189,13 @@ class TriageService:
         if not task:
             return None
 
-        history = await intraservice.get_task_lifetime(service_auth_b64, task_id) or []
+        raw_history = await intraservice.get_task_lifetime(service_auth_b64, task_id) or []
+        if isinstance(raw_history, dict):
+            history = raw_history.get("TaskLifetimes") or []
+        elif isinstance(raw_history, list):
+            history = raw_history
+        else:
+            history = []
 
         telemetry = await tr.get_task_telemetry(task_id)
         if telemetry is None:
