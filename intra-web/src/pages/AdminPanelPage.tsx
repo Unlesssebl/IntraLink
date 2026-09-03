@@ -490,33 +490,73 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     }
   }, [token, activeTab]);
 
-  // Фоновый опрос прогресса умной синхронизации (Redis polling)
+  // Фоновый опрос прогресса умной синхронизации и ночного аудита в реальном времени (1 раз в секунду при активности)
+  const wasRunningRef = useRef<{ sync: boolean; audit: boolean }>({ sync: false, audit: false });
+
   useEffect(() => {
+    if (!token || activeTab !== "kb") return;
+
     let timer: any = null;
     let isMounted = true;
-    if (token && activeTab === 'kb') {
-      const checkProgress = async () => {
-        try {
-          const prog = await fetchKbSyncStatus(token);
-          if (!isMounted) return;
+
+    const pollProgress = async () => {
+      try {
+        const [prog, nProg] = await Promise.all([
+          fetchKbSyncStatus(token).catch(() => null),
+          fetchNightlyAuditStatus(token).catch(() => null),
+        ]);
+
+        if (!isMounted) return;
+
+        let anyRunning = false;
+
+        if (prog) {
           setKbSyncProgress(prog);
-          if (prog.is_running) {
-            setKbSyncLoading(true);
-            timer = setTimeout(checkProgress, 2000);
-          } else {
-            setKbSyncLoading(false);
+          const isSyncRunning = !!prog.is_running;
+          setKbSyncLoading(isSyncRunning);
+
+          // Если синхронизация завершилась — автоматически обновляем таблицу прецедентов
+          if (wasRunningRef.current.sync && !isSyncRunning) {
+            loadKbData(token, kbPage, kbSearch, kbSelectedRootFilter, kbLimit);
           }
-        } catch {
-          // мягкий fallback
+          wasRunningRef.current.sync = isSyncRunning;
+          if (isSyncRunning) anyRunning = true;
         }
-      };
-      checkProgress();
-    }
+
+        if (nProg) {
+          setNightlyAuditProgress(nProg);
+          const isAuditRunning = !!nProg.is_running;
+          setNightlyAuditLoading(isAuditRunning);
+
+          // Если глубокий аудит завершился — автоматически обновляем таблицу прецедентов
+          if (wasRunningRef.current.audit && !isAuditRunning) {
+            loadKbData(token, kbPage, kbSearch, kbSelectedRootFilter, kbLimit);
+          }
+          wasRunningRef.current.audit = isAuditRunning;
+          if (isAuditRunning) anyRunning = true;
+        }
+
+        // При активной работе опрашиваем каждую секунду (1000мс) для живой плавной анимации прогресс-бара и логов;
+        // В режиме ожидания — каждые 2.5 секунды для мгновенного подхвата ручного или ночного (19:00) запуска
+        const interval = anyRunning ? 1000 : 2500;
+        if (isMounted) {
+          timer = setTimeout(pollProgress, interval);
+        }
+      } catch (err) {
+        console.debug("Polling kb sync/audit error:", err);
+        if (isMounted) {
+          timer = setTimeout(pollProgress, 2500);
+        }
+      }
+    };
+
+    pollProgress();
+
     return () => {
       isMounted = false;
       if (timer) clearTimeout(timer);
     };
-  }, [token, activeTab]);
+  }, [token, activeTab, kbPage, kbSearch, kbSelectedRootFilter, kbLimit, loadKbData]);
 
   // Auto-scroll sync console to bottom when new logs arrive
   useEffect(() => {
