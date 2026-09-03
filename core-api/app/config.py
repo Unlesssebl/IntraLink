@@ -87,6 +87,18 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str | None = Field(
         None, description="API-ключ Google Gemini API для прямого доступа без прокси"
     )
+    GEMINI_API_KEY_2: str | None = Field(
+        None, description="Резервный API-ключ Google Gemini API #2"
+    )
+    GEMINI_API_KEY_3: str | None = Field(
+        None, description="Резервный API-ключ Google Gemini API #3"
+    )
+    GROQ_API_KEY: str | None = Field(
+        None, description="API-ключ Groq для быстрого облачного инференса Llama-3.3"
+    )
+    OPENROUTER_API_KEY: str | None = Field(
+        None, description="API-ключ OpenRouter"
+    )
     LITELLM_API_KEY: str = Field(
         "sk-intraservice-master-key",
         description="API-ключ для авторизации в LiteLLM Proxy",
@@ -98,10 +110,10 @@ class Settings(BaseSettings):
         "gemini-3.5-flash", description="Имя LLM модели для классификации и извлечения"
     )
     EMBEDDING_MODEL: str = Field(
-        "gemini-embedding-001", description="Имя модели эмбеддингов"
+        "bge-m3", description="Имя модели эмбеддингов"
     )
     EMBEDDING_DIMENSION: int = Field(
-        3072, description="Размерность векторов модели эмбеддингов"
+        1024, description="Размерность векторов модели эмбеддингов (BGE-M3)"
     )
 
     # Параметры Ollama (локальный AI инференс)
@@ -121,7 +133,7 @@ class Settings(BaseSettings):
         2, description="Лимит параллельных сессий инференса Ollama"
     )
     FASTEMBED_MODEL: str = Field(
-        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        "BAAI/bge-m3",
         description="Имя локальной модели FastEmbed для векторных эмбеддингов",
     )
     RERANKER_MODEL: str = Field(

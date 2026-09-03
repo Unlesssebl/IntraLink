@@ -117,6 +117,10 @@ export interface KBExampleItem {
   status_name: string;
   root_cause?: string | null;
   root_id?: string | null;
+  resolution_type?: string | null;
+  resolution_label?: string | null;
+  resolution_badge_color?: string | null;
+  quality_score?: number;
 }
 
 export interface KBExamplesResponse {
@@ -297,10 +301,44 @@ export interface KBSyncProgressResponse {
   finished_at?: string | null;
 }
 
+export interface KBStatusItem {
+  id: number;
+  name: string;
+  is_recommended: boolean;
+}
+
 export interface KBStratifiedSyncRequest {
   quota_per_service: number;
   days: number;
   root_id?: string | null;
+  status_ids?: number[];
+  ai_eval?: boolean;
+}
+
+export async function fetchAvailableStatuses(token: string): Promise<KBStatusItem[]> {
+  try {
+    const res = await fetch('/api/v1/admin/kb/available-statuses', {
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (e) {
+    console.warn('Не удалось загрузить доступные статусы:', e);
+  }
+  return [
+    { id: 28, name: 'Закрыта', is_recommended: true },
+    { id: 29, name: 'Выполнена', is_recommended: true },
+    { id: 43, name: 'Обработано 1-й линией', is_recommended: true },
+    { id: 30, name: 'Отменена', is_recommended: true },
+    { id: 31, name: 'Открыта', is_recommended: false },
+    { id: 27, name: 'В работе', is_recommended: false },
+    { id: 35, name: 'Требует уточнения', is_recommended: false },
+  ];
 }
 
 export async function triggerStratifiedKbSync(
@@ -536,3 +574,46 @@ export async function resetSkillPolicy(token: string, actionId: string): Promise
   return res.json();
 }
 
+
+export interface KBNightlyAuditProgress {
+  is_running: boolean;
+  started_at?: string | null;
+  finished_at?: string | null;
+  percent: number;
+  total_records: number;
+  total_audited: number;
+  blacklisted_count: number;
+  high_quality_count: number;
+  logs: KBLogEntry[];
+  error?: string | null;
+}
+
+export async function triggerNightlyAudit(token: string): Promise<{ status: string; message: string }> {
+  const res = await fetch('/api/v1/admin/kb/nightly-audit', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Ошибка запуска ночного аудита' }));
+    throw new Error(err.detail || 'Не удалось запустить ночной аудит');
+  }
+  return await res.json();
+}
+
+export async function fetchNightlyAuditStatus(token: string): Promise<KBNightlyAuditProgress> {
+  const res = await fetch('/api/v1/admin/kb/nightly-audit-status', {
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    throw new Error('Не удалось получить статус ночного аудита');
+  }
+  return await res.json();
+}

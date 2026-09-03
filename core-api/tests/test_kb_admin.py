@@ -248,3 +248,122 @@ async def test_kb_admin_preflight_check_blocks_when_embedder_fails():
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_kb_admin_available_statuses_endpoint():
+    """Тест эндпоинта получения доступных статусов IntraService."""
+    cookie_val = jwt.encode(
+        {"sub": "admin_user", "role": "admin"},
+        "test-secret-key-12345678901234567890",
+        algorithm="HS256",
+    )
+
+    mock_statuses = [
+        {"Id": 28, "Name": "Закрыта"},
+        {"Id": 29, "Name": "Выполнена"},
+        {"Id": 43, "Name": "Обработано 1-й линией"},
+        {"Id": 30, "Name": "Отменена"},
+        {"Id": 31, "Name": "Открыта"},
+    ]
+
+    with patch.object(settings, "JWT_SECRET", "test-secret-key-12345678901234567890"), \
+         patch("app.routers.kb_admin.get_service_auth_b64", return_value="test_auth_b64"), \
+         patch("app.services.intraservice.get_statuses", new_callable=AsyncMock) as mock_get_statuses:
+        mock_get_statuses.return_value = mock_statuses
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"admin_session": cookie_val},
+        ) as client:
+            res = await client.get("/api/v1/admin/kb/available-statuses")
+            assert res.status_code == 200
+            data = res.json()
+            assert len(data) == 5
+            rec_ids = [s["id"] for s in data if s["is_recommended"]]
+            assert 28 in rec_ids
+            assert 29 in rec_ids
+            assert 43 in rec_ids
+            assert 30 in rec_ids
+
+
+@pytest.mark.asyncio
+async def test_kb_admin_sync_with_custom_statuses_and_ai_eval():
+    """Тест передачи кастомных статусов и флага AI-валидации в запуск умной синхронизации."""
+    cookie_val = jwt.encode(
+        {"sub": "admin_user", "role": "admin"},
+        "test-secret-key-12345678901234567890",
+        algorithm="HS256",
+    )
+
+    mock_redis = AsyncMock()
+    mock_redis.get.return_value = None
+
+    with patch.object(settings, "JWT_SECRET", "test-secret-key-12345678901234567890"), \
+         patch("app.routers.kb_admin.get_service_auth_b64", return_value="test_auth_b64"), \
+         patch("app.routers.kb_admin.get_redis_client", return_value=mock_redis), \
+         patch("app.services.rag.check_embedding_health", new_callable=AsyncMock) as mock_health, \
+         patch("app.services.rag.sync_stratified_kb", new_callable=AsyncMock) as mock_sync:
+        mock_health.return_value = (True, "OK (bge-m3, 1024 dim)")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"admin_session": cookie_val},
+        ) as client:
+            res = await client.post(
+                "/api/v1/admin/kb/sync-stratified",
+                json={
+                    "quota_per_service": 25,
+                    "days": 45,
+                    "root_id": "01",
+                    "status_ids": [28, 29, 43],
+                    "ai_eval": True
+                },
+                headers={"Authorization": "Bearer sso_session"},
+            )
+            assert res.status_code == 202
+            data = res.json()
+            assert data["status_ids"] == [28, 29, 43]
+            assert data["ai_eval"] is True
+
+@pytest.mark.asyncio
+async def test_kb_admin_nightly_audit_endpoints():
+    """Тест эндпоинтов ручного запуска и статуса глубокого ночного аудита RAG."""
+    cookie_val = jwt.encode(
+        {"sub": "admin_user", "role": "admin"},
+        "test-secret-key-12345678901234567890",
+        algorithm="HS256",
+    )
+
+    mock_redis = AsyncMock()
+    mock_redis.get.return_value = None
+
+    with patch.object(settings, "JWT_SECRET", "test-secret-key-12345678901234567890"), \
+         patch("app.routers.kb_admin.get_service_auth_b64", return_value="test_auth_b64"), \
+         patch("app.routers.kb_admin.get_redis_client", return_value=mock_redis), \
+         patch("app.services.rag.run_nightly_deep_audit_kb", new_callable=AsyncMock), \
+         patch("app.services.rag.get_nightly_audit_progress", new_callable=AsyncMock) as mock_prog:
+        mock_prog.return_value = {
+            "is_running": False,
+            "total_records": 100,
+            "total_audited": 100,
+            "high_quality_count": 85,
+            "blacklisted_count": 15,
+            "percent": 100,
+        }
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"admin_session": cookie_val},
+        ) as client:
+            res = await client.post("/api/v1/admin/kb/nightly-audit")
+            assert res.status_code == 202
+            assert res.json()["status"] == "started"
+
+            s_res = await client.get("/api/v1/admin/kb/nightly-audit-status")
+            assert s_res.status_code == 200
+            assert s_res.json()["total_records"] == 100
+            assert s_res.json()["high_quality_count"] == 85

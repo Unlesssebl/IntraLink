@@ -77,6 +77,11 @@ class TaskKnowledgeBase(Base):
     # Черный список (удаленные задачи)
     is_blacklisted: Mapped[bool] = mapped_column(default=False, server_default="false")
 
+    # Скоринг ценности решения (0.0 - 1.0), по умолчанию 1.0
+    quality_score: Mapped[float] = mapped_column(
+        Float, default=1.0, server_default="1.0", nullable=False, index=True
+    )
+
 
 # Модель журнала исполнения задач (Command Bus / Execution Hub)
 class JobLog(Base):
@@ -276,12 +281,37 @@ async def init_db() -> None:
                     "ALTER TABLE task_knowledge_base ADD COLUMN IF NOT EXISTS is_blacklisted BOOLEAN NOT NULL DEFAULT false;"
                 )
             )
+            # Гарантируем наличие колонки quality_score и индекса
+            await conn.execute(
+                text(
+                    "ALTER TABLE task_knowledge_base ADD COLUMN IF NOT EXISTS quality_score FLOAT NOT NULL DEFAULT 1.0;"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_task_kb_quality_score ON task_knowledge_base (quality_score);"
+                )
+            )
             # Гарантируем, что колонка embedding может принимать NULL значения
             await conn.execute(
                 text(
                     "ALTER TABLE task_knowledge_base ALTER COLUMN embedding DROP NOT NULL;"
                 )
             )
+            # Автоматическая миграция размерности вектора под settings.EMBEDDING_DIMENSION
+            dim_res = await conn.execute(
+                text("SELECT atttypmod FROM pg_attribute WHERE attrelid = 'task_knowledge_base'::regclass AND attname = 'embedding';")
+            )
+            dim_row = dim_res.fetchone()
+            if dim_row and dim_row[0] is not None and dim_row[0] != settings.EMBEDDING_DIMENSION:
+                import logging
+                logging.getLogger(__name__).info(
+                    "Миграция размерности embedding: %s -> %s dim. Сброс несовместимых векторов...",
+                    dim_row[0], settings.EMBEDDING_DIMENSION
+                )
+                await conn.execute(text("DROP INDEX IF EXISTS idx_task_kb_hnsw;"))
+                await conn.execute(text("UPDATE task_knowledge_base SET embedding = NULL;"))
+                await conn.execute(text(f"ALTER TABLE task_knowledge_base ALTER COLUMN embedding TYPE vector({settings.EMBEDDING_DIMENSION});"))
 
     # Создание индекса HNSW в отдельной транзакции (pgvector HNSW строго ограничен 2000 измерениями)
     if not settings.DATABASE_URL.startswith("sqlite") and settings.EMBEDDING_DIMENSION <= 2000:

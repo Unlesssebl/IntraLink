@@ -22,7 +22,12 @@ import {
   type KBExampleItem,
   type KBStatsResponse,
   type KBSyncProgressResponse,
+  fetchAvailableStatuses,
+  type KBStatusItem,
   type VaultStatusResponse,
+  triggerNightlyAudit,
+  fetchNightlyAuditStatus,
+  type KBNightlyAuditProgress,
 } from '../lib/adminApi';
 import SkillsHub from '../components/SkillsHub';
 import { IconShield } from '../components/Icons';
@@ -130,6 +135,11 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [kbSyncDays, setKbSyncDays] = useState<number>(60);
   const [kbSyncQuota, setKbSyncQuota] = useState<number>(30);
   const [kbSyncRootId, setKbSyncRootId] = useState<string>('');
+  const [availableStatuses, setAvailableStatuses] = useState<KBStatusItem[]>([]);
+  const [selectedStatusIds, setSelectedStatusIds] = useState<number[]>([28, 29, 43, 30]);
+  const [aiQualityEval, setAiQualityEval] = useState<boolean>(true);
+  const [nightlyAuditLoading, setNightlyAuditLoading] = useState<boolean>(false);
+  const [nightlyAuditProgress, setNightlyAuditProgress] = useState<KBNightlyAuditProgress | null>(null);
   const [kbSyncProgress, setKbSyncProgress] = useState<KBSyncProgressResponse | null>(null);
   const [showSyncConsole, setShowSyncConsole] = useState<boolean>(true);
   const syncConsoleEndRef = useRef<HTMLDivElement | null>(null);
@@ -442,6 +452,8 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
         quota_per_service: kbSyncQuota,
         days: kbSyncDays,
         root_id: kbSyncRootId || null,
+        status_ids: selectedStatusIds,
+        ai_eval: aiQualityEval,
       });
       setStatusMessage({ type: 'success', text: res.message || 'Умная синхронизация запущена в фоне' });
       const statusData = await fetchKbSyncStatus(token);
@@ -451,6 +463,32 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
       setKbSyncLoading(false);
     }
   };
+
+  const handleTriggerNightlyAudit = async () => {
+    if (!token) return;
+    setNightlyAuditLoading(true);
+    setStatusMessage(null);
+    try {
+      const res = await triggerNightlyAudit(token);
+      setStatusMessage({ type: 'success', text: res.message || 'Глубокий ночной аудит запущен' });
+      const statusData = await fetchNightlyAuditStatus(token);
+      setNightlyAuditProgress(statusData);
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Ошибка запуска ночного аудита' });
+      setNightlyAuditLoading(false);
+    }
+  };
+
+  // Загрузка доступных статусов IntraService при открытии вкладки базы знаний
+  useEffect(() => {
+    if (token && activeTab === 'kb') {
+      fetchAvailableStatuses(token).then(st => {
+        if (st && st.length > 0) {
+          setAvailableStatuses(st);
+        }
+      });
+    }
+  }, [token, activeTab]);
 
   // Фоновый опрос прогресса умной синхронизации (Redis polling)
   useEffect(() => {
@@ -1817,6 +1855,67 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                   </p>
                 </div>
 
+                {/* Мультистатусный отбор и AI-валидация качества */}
+                <div className="p-3 bg-neutral-900/60 border border-neutral-800 rounded-xl space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-neutral-300 flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+                      Статусы для выборки прецедентов:
+                    </span>
+                    <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none hover:text-white transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={aiQualityEval}
+                        onChange={e => setAiQualityEval(e.target.checked)}
+                        className="rounded border-neutral-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-0 bg-neutral-950 w-3.5 h-3.5 cursor-pointer"
+                      />
+                      <span className="flex items-center gap-1">
+                        <span>🤖 AI-валидация качества решений</span>
+                        <span className="text-[10px] px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-mono">Qwen 2.5</span>
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {(availableStatuses.length > 0 ? availableStatuses : [
+                      { id: 28, name: 'Закрыта', is_recommended: true },
+                      { id: 29, name: 'Выполнена', is_recommended: true },
+                      { id: 43, name: 'Обработано 1-й линией', is_recommended: true },
+                      { id: 30, name: 'Отменена', is_recommended: true },
+                      { id: 31, name: 'Открыта', is_recommended: false },
+                      { id: 27, name: 'В работе', is_recommended: false },
+                      { id: 35, name: 'Требует уточнения', is_recommended: false },
+                    ]).map(s => {
+                      const isSelected = selectedStatusIds.includes(s.id);
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedStatusIds(prev =>
+                              isSelected
+                                ? (prev.length > 1 ? prev.filter(id => id !== s.id) : prev)
+                                : [...prev, s.id]
+                            );
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all flex items-center gap-1.5 cursor-pointer ${
+                            isSelected
+                              ? 'bg-blue-600/20 text-blue-300 border-blue-500/60 shadow-sm'
+                              : 'bg-neutral-950 text-neutral-400 border-neutral-800 hover:border-neutral-700 hover:text-neutral-300'
+                          }`}
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-blue-400' : 'bg-neutral-600'}`}></span>
+                          <span>{s.name}</span>
+                          <span className="text-[10px] opacity-60 font-mono">#{s.id}</span>
+                          {s.is_recommended && (
+                            <span className="text-[9px] px-1 py-0.2 bg-blue-500/10 text-blue-400 rounded">rec</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-neutral-400">Раздел:</span>
@@ -1892,8 +1991,83 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                       </>
                     )}
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={handleTriggerNightlyAudit}
+                    disabled={
+                      nightlyAuditLoading ||
+                      nightlyAuditProgress?.is_running ||
+                      (kbStats?.sync_readiness ? !kbStats.sync_readiness.ready : false)
+                    }
+                    title="Запустить глубокий аудит базы знаний через локальную модель Qwen 2.5 без эвристических срезок (расписание: 19:00)"
+                    className="px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 hover:border-neutral-600 disabled:opacity-40 disabled:cursor-not-allowed text-neutral-200 hover:text-white rounded-lg text-xs font-medium shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {nightlyAuditLoading || nightlyAuditProgress?.is_running ? (
+                      <>
+                        <span className="w-3.5 h-3.5 border-2 border-indigo-400/30 border-t-indigo-400 rounded-full animate-spin"></span>
+                        <span>Аудит...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>🌙</span>
+                        <span>Глубокий аудит (19:00)</span>
+                      </>
+                    )}
+                  </button>
                 </div>
               </div>
+
+              {/* Live Nightly Deep Audit Progress Card */}
+              {nightlyAuditProgress && (nightlyAuditProgress.is_running || (nightlyAuditProgress.total_audited > 0 && nightlyAuditProgress.percent < 100) || (nightlyAuditProgress.logs && nightlyAuditProgress.logs.length > 0)) && (
+                <div className={`p-4 rounded-xl bg-neutral-950 border space-y-2.5 shadow-inner ${
+                  nightlyAuditProgress.error ? 'border-rose-800/60' : 'border-indigo-900/50'
+                }`}>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${nightlyAuditProgress.is_running ? 'bg-indigo-500 animate-ping' : 'bg-emerald-500'}`}></span>
+                      <span className="font-semibold text-indigo-300 flex items-center gap-1.5">
+                        <span>🌙</span>
+                        <span>{nightlyAuditProgress.is_running ? 'Выполняется глубокий ночной аудит (Qwen 2.5)...' : 'Глубокий ночной аудит завершен'}</span>
+                      </span>
+                      <span className="text-[10px] px-1.5 py-0.2 bg-neutral-900 text-neutral-400 rounded border border-neutral-800">
+                        Ежедневно в 19:00
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 text-neutral-400 font-mono text-[11px]">
+                      <span>Проверено: <b className="text-neutral-200">{nightlyAuditProgress.total_audited}/{nightlyAuditProgress.total_records}</b></span>
+                      <span>Подтверждено: <b className="text-emerald-400">+{nightlyAuditProgress.high_quality_count}</b></span>
+                      <span>В Blacklist: <b className="text-rose-400">+{nightlyAuditProgress.blacklisted_count}</b></span>
+                      <span className="font-bold text-indigo-400">{nightlyAuditProgress.percent}%</span>
+                    </div>
+                  </div>
+
+                  <div className="w-full bg-neutral-900 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className="h-1.5 bg-gradient-to-r from-indigo-600 via-purple-500 to-indigo-400 transition-all duration-300 rounded-full"
+                      style={{ width: `${Math.max(2, nightlyAuditProgress.percent)}%` }}
+                    ></div>
+                  </div>
+
+                  {nightlyAuditProgress.logs && nightlyAuditProgress.logs.length > 0 && (
+                    <div className="max-h-24 overflow-y-auto font-mono text-[11px] p-2 bg-black/50 border border-neutral-900 rounded-lg space-y-1">
+                      {nightlyAuditProgress.logs.slice(-6).map((l, i) => (
+                        <div key={i} className="flex items-start gap-2">
+                          <span className="text-neutral-500 shrink-0">{l.time}</span>
+                          <span className={
+                            l.level === 'warn' ? 'text-amber-400' :
+                            l.level === 'error' ? 'text-rose-400' :
+                            l.level === 'success' ? 'text-emerald-400' :
+                            'text-neutral-300'
+                          }>
+                            {l.message}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Live Background Sync Progress Card */}
               {kbSyncProgress && (kbSyncProgress.is_running || (kbSyncProgress.percent > 0 && kbSyncProgress.percent < 100) || kbSyncProgress.error || (kbSyncProgress.logs && kbSyncProgress.logs.length > 0)) && (
@@ -2215,9 +2389,35 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                             <span className="px-2 py-0.5 rounded text-[10px] bg-neutral-800 text-neutral-400">
                               {item.service_name}
                             </span>
+                            {/* Resolution Outcome Badge */}
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-semibold border flex items-center gap-1 ${
+                              item.resolution_type === 'rejected' ? 'bg-rose-500/10 border-rose-500/30 text-rose-300' :
+                              item.resolution_type === 'cancelled' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' :
+                              item.resolution_type === 'redirected' ? 'bg-sky-500/10 border-sky-500/30 text-sky-300' :
+                              item.resolution_type === 'consultation' ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300' :
+                              item.resolution_type === 'duplicate' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' :
+                              'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                            }`}>
+                              <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80"></span>
+                              <span>{item.status_name ? `${item.status_name}: ` : ''}{item.resolution_label || 'Выполнено'}</span>
+                            </span>
                             {item.root_cause && (
-                              <span className="px-2 py-0.5 rounded text-[10px] bg-amber-500/10 border border-amber-500/20 text-amber-300 font-medium">
+                              <span className="px-2 py-0.5 rounded text-[10px] bg-neutral-800/80 text-neutral-400 border border-neutral-700/50">
                                 Причина: {item.root_cause}
+                              </span>
+                            )}
+                            {typeof item.quality_score === 'number' && (
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border flex items-center gap-1 ${
+                                  item.quality_score >= 0.8
+                                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                                    : item.quality_score >= 0.5
+                                    ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'
+                                    : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                                }`}
+                                title={`Скоринг ценности решения для Helpdesk: ${(item.quality_score * 100).toFixed(0)}%`}
+                              >
+                                <span>{item.quality_score >= 0.8 ? '⭐ ' : ''}Ценность: {(item.quality_score * 100).toFixed(0)}%</span>
                               </span>
                             )}
                           </div>
@@ -2285,10 +2485,31 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                             </p>
                           </div>
 
-                          <div className="p-3 bg-emerald-950/10 rounded-xl border border-emerald-900/20">
-                            <p className="text-[10px] uppercase font-semibold text-emerald-500 tracking-wider mb-1">
-                              Решение / Ответ
-                            </p>
+                          <div className={`p-3 rounded-xl border ${
+                            item.resolution_type === 'rejected' ? 'bg-rose-950/20 border-rose-900/30' :
+                            item.resolution_type === 'cancelled' ? 'bg-amber-950/20 border-amber-900/30' :
+                            item.resolution_type === 'redirected' ? 'bg-sky-950/20 border-sky-900/30' :
+                            item.resolution_type === 'consultation' ? 'bg-indigo-950/20 border-indigo-900/30' :
+                            'bg-emerald-950/20 border-emerald-900/30'
+                          }`}>
+                            <div className="flex items-center justify-between mb-1">
+                              <p className={`text-[10px] uppercase font-semibold tracking-wider ${
+                                item.resolution_type === 'rejected' ? 'text-rose-400' :
+                                item.resolution_type === 'cancelled' ? 'text-amber-400' :
+                                item.resolution_type === 'redirected' ? 'text-sky-400' :
+                                item.resolution_type === 'consultation' ? 'text-indigo-400' :
+                                'text-emerald-400'
+                              }`}>
+                                {item.resolution_type === 'rejected' ? 'Причина отказа / Резолюция' :
+                                 item.resolution_type === 'cancelled' ? 'Причина отмены' :
+                                 item.resolution_type === 'redirected' ? 'Маршрут перенаправления' :
+                                 item.resolution_type === 'duplicate' ? 'Дубликат заявки' :
+                                 'Решение / Ответ инженера'}
+                              </p>
+                              <span className="text-[9.5px] font-mono text-neutral-400">
+                                {item.status_name}
+                              </span>
+                            </div>
                             <p className={`text-neutral-300 leading-relaxed whitespace-pre-wrap ${!isExpanded ? 'line-clamp-3' : ''}`}>
                               {item.solution || '—'}
                             </p>

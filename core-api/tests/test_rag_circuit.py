@@ -16,7 +16,7 @@ async def test_get_embedding_vector_red_local_isolation():
     """Проверка, что для RED контура облачные LiteLLM / Gemini API никогда не вызываются."""
     rag._EMBED_MEMORY_CACHE.clear()
     raw_text = f"Пароль от рабочей станции NTEMW0144: SuperSecret123-{uuid.uuid4().hex}"
-    dummy_vec = [0.1] * 3072
+    dummy_vec = [0.1] * 1024
 
     # Мокируем локальную Ollama
     mock_resp = MagicMock()
@@ -53,7 +53,7 @@ def test_security_service_metadata_forces_red_circuit():
 async def test_get_embedding_vector_yellow_sanitization():
     """Проверка, что для YELLOW контура текст перед отправкой в облако маскируется."""
     raw_text = "Сотрудник Иванов Иван Иванович на хосте 10.244.12.55 не может войти"
-    dummy_vec = [0.2] * 3072
+    dummy_vec = [0.2] * 1024
 
     mock_resp = MagicMock()
     mock_resp.status = 200
@@ -83,7 +83,7 @@ async def test_get_embedding_vector_yellow_sanitization():
 async def test_get_embedding_vector_green_direct():
     """Проверка, что для GREEN контура запрос отправляется в LiteLLM без изменений."""
     raw_text = "Как переустановить службу диспетчера очереди печати Spooler в Windows?"
-    dummy_vec = [0.3] * 3072
+    dummy_vec = [0.3] * 1024
 
     mock_resp = MagicMock()
     mock_resp.status = 200
@@ -109,7 +109,7 @@ async def test_get_embedding_vector_green_direct():
 async def test_search_knowledge_base_auto_circuit():
     """Проверка автоматической оценки контура при семантическом поиске."""
     mock_db = AsyncMock(spec=AsyncSession)
-    dummy_vec = [0.4] * 3072
+    dummy_vec = [0.4] * 1024
 
     with patch("app.services.rag.get_embedding_vector", new=AsyncMock(return_value=dummy_vec)) as mock_get_vec:
         mock_result = MagicMock()
@@ -133,7 +133,7 @@ async def test_search_knowledge_base_auto_circuit():
 async def test_get_embedding_vector_gemini_fallback_when_litellm_fails():
     """Проверка fallback на прямой вызов Gemini API при недоступности LiteLLM."""
     raw_text = "Инструкция по настройке сканирования в сетевую папку SMB"
-    dummy_vec = [0.5] * 3072
+    dummy_vec = [0.5] * 1024
 
     litellm_resp = MagicMock()
     litellm_resp.status = 503
@@ -169,7 +169,7 @@ async def test_get_embedding_vector_gemini_fallback_when_litellm_fails():
 async def test_get_embedding_vector_caching_prevents_duplicate_http_calls():
     """Проверка, что повторные вызовы с одинаковым текстом обслуживаются из кэша без HTTP-запросов."""
     raw_text = "Тестовый текст для проверки многоуровневого кэширования эмбеддингов 12345"
-    dummy_vec = [0.42] * 3072
+    dummy_vec = [0.42] * 1024
 
     mock_resp = MagicMock()
     mock_resp.status = 200

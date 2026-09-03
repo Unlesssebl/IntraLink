@@ -204,13 +204,13 @@ async def get_service_auth_b64(
     redis = get_redis_client()
 
     token = None
-    if authorization and authorization.lower().startswith("bearer "):
+    if isinstance(authorization, str) and authorization.lower().startswith("bearer "):
         bearer_val = authorization[7:].strip()
         if bearer_val and bearer_val != "sso_session":
             token = bearer_val
-    if not token and admin_session:
+    if not token and isinstance(admin_session, str):
         token = admin_session.strip()
-    if not token and token_query:
+    if not token and isinstance(token_query, str):
         token = token_query.strip()
 
     # Проверяем, есть ли активная сессия оператора

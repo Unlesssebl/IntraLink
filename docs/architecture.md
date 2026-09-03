@@ -2,7 +2,7 @@
 
 Данный документ описывает целевую архитектуру системы, её ключевые компоненты, потоки данных и принципы взаимодействия между сервисами.
 
-> **Главная цель проекта** — создание единой, надежной платформы автоматизации обработки и выполнения заявок в IntraService. Система сочетает детерминированный движок правил (Rule Engine), централизованный семантический RAG-поиск (FastEmbed/Gemini + pgvector) и модули прямого исполнения задач в инфраструктуре Windows (Active Directory, WinRM, SMB).
+> **Главная цель проекта** — создание единой, надежной платформы автоматизации обработки и выполнения заявок в IntraService. Система сочетает детерминированный движок правил (Rule Engine), централизованный семантический RAG-поиск (BGE-M3/FastEmbed + pgvector) и модули прямого исполнения задач в инфраструктуре Windows (Active Directory, WinRM, SMB).
 
 ---
 
@@ -195,24 +195,71 @@ flowchart LR
 
 ---
 
-## 🧠 6. Двухэтапный Advanced Hybrid RAG и Канонизация базы знаний
+## 🧠 6. Двухэтапный Advanced Hybrid RAG, Скоринг ценности и Ночной аудит
 
 ```mermaid
-flowchart LR
-    Q["Запрос заявителя"] --> QD["Query Distillation (<10ms)"]
-    QD --> Dense["Dense pgvector (3072-dim)"]
-    QD --> Sparse["Sparse tsvector (Коды ошибок, Модели, Службы)"]
-    Dense --> RRF["Reciprocal Rank Fusion (k=60)"]
-    Sparse --> RRF
-    RRF --> CE["Cross-Encoder Reranker (BAAI/bge-reranker)"]
-    CE --> Synth["Response Synthesis (Инженер Беликов Ален)"]
+flowchart TD
+    subgraph Daytime ["Дневной экспресс-пайплайн (Быстрая индексация)"]
+        Raw["Заявки IntraService (28, 29, 43, 30)"] --> L1["Level 1: Heuristics & Stop-Regex"]
+        L1 --> L2{"Длина 20-150 симв?"}
+        L2 -- "Да (пограничное)" --> QwenFast["Qwen 2.5 (RED GPU, экспресс)"]
+        L2 -- "Нет (>150 симв)" --> AutoPass["Прямой пропуск (подробно)"]
+        QwenFast --> DBInsert["Сохранение в pgvector (default quality=1.0)"]
+        AutoPass --> DBInsert
+    end
+
+    subgraph Nightly ["Ночной глубокий аудит (Ежедневно в 19:00 MSK)"]
+        Schedule["Cron 19:00 MSK / Ручной запуск"] --> Lock["Redis Lock: lock:nightly_rag_audit"]
+        Lock --> ScanAll["100% активных записей базы знаний"]
+        ScanAll --> QwenDeep["Qwen 2.5 (Обогащенный контекст, RED GPU)"]
+        QwenDeep --> ScoreCalc["Расчет quality_score (0.0 - 1.0) + key_steps"]
+        ScoreCalc --> QualitySplit{"quality_score < 0.4?"}
+        QualitySplit -- "Да (< 0.4)" --> Blacklist["is_blacklisted = true"]
+        QualitySplit -- "Нет (>= 0.4)" --> UpdScore["Обновление quality_score в БД"]
+    end
+
+    subgraph Search ["Гибридное ранжирование (Retrieval)"]
+        Q["Запрос заявителя"] --> QD["Query Distillation (<10ms)"]
+        QD --> Dense["Dense pgvector (1024-dim, BGE-M3)"]
+        QD --> Sparse["Sparse tsvector (Коды ошибок, Службы)"]
+        Dense --> RRF["RRF + Quality-Score Weighting"]
+        Sparse --> RRF
+        RRF --> Filter["Фильтр: quality_score >= 0.4"]
+        Filter --> CE["Cross-Encoder Reranker (bge-reranker-base)"]
+        CE --> Synth["Response Synthesis"]
+    end
 ```
 
+### 6.1. Двухконтурный жизненный цикл базы знаний
+1. **Дневной экспресс-пайплайн (`sync_stratified_kb`):**
+   * Предназначен для быстрой индексации без блокировки ресурсов.
+   * **Уровень 1 (Quality Gate):** Мгновенная проверка по стоп-паттернам неинформативных отписок («не дозвонился», «дубликат», «ошиблись номером») и минимальной длине.
+   * **Уровень 2 (AI Gate):** Локальная модель Qwen 2.5 (контур RED) привлекается только для пограничных решений (от 20 до 150 символов). Длинные развернутые инструкции пропускаются без задержек инференса.
+   * **Мультистатусный охват:** Индексация заявок со статусами `28` («Закрыта»), `29` («Выполнена»), `43` («Обработано 1-й линией») и `30` («Отменена: решено обходным путем»).
+2. **Тяжелый ночной аудит (`run_nightly_deep_audit_kb`):**
+   * Запуск **ежедневно в 19:00 МСК** (окончание рабочего дня ИТ-подразделения) через автономный фоновый процесс `poller` и планировщик `worker` под защитой распределенного Redis-замка `lock:nightly_rag_audit` (TTL 7200с).
+   * **Бескомпромиссная оценка:** 100% записей базы знаний оцениваются локальной моделью **Qwen 2.5 на GPU** без каких-либо эвристических ограничений длины.
+   * **Обогащенный контекст оценки:**
+     * Категория услуги (`service_name`) — для проверки предметной релевантности решения.
+     * Тема заявки (`task_name`) vs Симптомы проблемы (`problem`).
+     * Статус закрытия и тип резолюции (`status_name` + `resolution_label`).
+     * Извлеченные из `lifetime` предшествующие технические комментарии (`diagnostic_steps`).
+   * **Действия:** Вычисление `quality_score` (0.0–1.0), извлечение структурированных `key_steps`, автоматический блэклист неинформативных записей (`quality_score < 0.4`), онлайн-трансляция логов и прогресса в Redis (`kb:nightly_audit_progress`).
+
+### 6.2. Скоринг ценности и гибридное ранжирование
+* **PostgreSQL Schema:** Таблица `task_knowledge_base` оснащена выделенной колонкой `quality_score FLOAT NOT NULL DEFAULT 1.0` с B-tree индексом `ix_task_kb_quality_score`.
+* **Взвешенная формула выдачи:**
+  1. Жесткое отсечение неинформативных записей: `WHERE is_blacklisted = false AND quality_score >= 0.4`.
+  2. Модуляция сходства весом полезности решения:
+     $$\text{FinalScore} = \text{CosineSimilarity} \times (0.7 + 0.3 \times \text{QualityScore})$$
+     Эталонные пошаговые инструкции (score 0.85–1.0) получают преимущество в выдаче перед краткими типовыми записями (score 0.4–0.5).
+
+### 6.3. Конвейер извлечения и синтеза ответа
 1. **Query Distillation:** отсечение эмоционального шума и выделение кодов ошибок (`0x80070005`, `0x0000011b`), моделей оборудования и служб.
-2. **Hybrid Retrieval (Dense + Sparse RRF):** параллельный векторный поиск в `pgvector` и полнотекстовый поиск по техническим термам с объединением по формуле $RRF\_Score = \sum \frac{1}{60 + rank_i}$.
+2. **Hybrid Retrieval (Dense + Sparse RRF):** параллельный векторный поиск в `pgvector` (BGE-M3 1024-dim) и полнотекстовый поиск по техническим термам.
 3. **Cross-Encoder Reranking:** локальная переоценка пар `(query, document)` через `BAAI/bge-reranker-base` в неблокирующем потоке (`asyncio.to_thread`) с порогом $\ge 0.85$.
-4. **Auto-KB Canonization (`canonize_task_solution`):** автоматическое извлечение триады `[Проблема] ➔ [Первопричина] ➔ [Решение]` из переписки закрытых заявок. Первопричина (`root_cause`) определяется детерминированными эвристиками (от специфичных кодов ошибок к общим терминам). Подписи инженера очищаются через SSOT-паттерн `_SIGNATURE_CLEANUP_RE` (ограничен концом строки, не жадный).
-5. **Strict Grounding Synthesis (`synthesize_triage_resolution`):** ответ синтезируется строго на основе фактов RAG и телеметрии хоста. При отсутствии фактов — принятие заявки в работу без выдумывания действий. Синглтон `ai_hub` переиспользуется всеми компонентами (один HTTP-пул и семафор параллелизма на процесс).
+4. **Auto-KB Canonization (`canonize_task_solution`):** автоматическое извлечение триады `[Проблема] ➔ [Первопричина] ➔ [Решение]`, очистка подписей по `_SIGNATURE_CLEANUP_RE` и сбор диагностических шагов из `lifetime`.
+5. **Strict Grounding Synthesis (`synthesize_triage_resolution`):** синтез ответа строго на основе фактов RAG и телеметрии хоста в закрытом контуре.
 
 ---
 

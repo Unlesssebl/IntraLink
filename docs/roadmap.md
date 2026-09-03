@@ -62,7 +62,7 @@ timeline
 * **Безопасность (Zero Trust DLP):** Трехконтурная маршрутизация инференса (🔴 RED On-Prem / 🟡 YELLOW PII Vault / 🟢 GREEN Cloud).
 * **Фоновая телеметрия (0ms latency):** Fail-Fast сетевой опрос (Ping 400ms, SMB:445, WinRM:5985, CIM Spooler/1C) с защитой подсетей и кэшем в Redis.
 * **Защитные контуры:** Distributed Host Concurrency Lock (`lock:host:<pc>`, TTL 30s) и аварийный тормоз Dead Man's Switch (Rate-Limiter).
-* **База знаний (Hybrid RAG):** Dense pgvector (3072-dim) + Sparse tsvector + Reciprocal Rank Fusion (RRF $k=60$) + локальный Cross-Encoder Reranker (`bge-reranker-base`).
+* **База знаний (Hybrid RAG):** Dense pgvector (1024-dim, BGE-M3) + Sparse tsvector + Reciprocal Rank Fusion (RRF $k=60$) + локальный Cross-Encoder Reranker (`bge-reranker-base`).
 * **Клиенты:** React SPA (`/operator-panel`), Telegram-бот (aiogram 3.x) и Tooling SDK `helpdesk-cli` для AI-агента Antigravity.
 
 ---

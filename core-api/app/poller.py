@@ -140,6 +140,9 @@ class IntraServicePoller:
                     # 2. Выполняем опрос заявок
                     await check_updates()
                     sleep_interval = get_effective_polling_interval()
+
+                    # 3. Проверяем расписание ночного аудита RAG (ежедневно в 19:00 MSK)
+                    await self._check_nightly_audit(redis)
                 else:
                     logger.debug(
                         "Реплика в режиме ожидания (Standby). Лидер активен."
@@ -162,6 +165,24 @@ class IntraServicePoller:
         await close_session()
         await close_redis()
         logger.info("IntraService Poller Daemon остановлен.")
+
+    async def _check_nightly_audit(self, redis) -> None:
+        """
+        Проверяет расписание тяжелого ночного аудита RAG (ежедневно в 19:00 MSK / UTC+3).
+        """
+        try:
+            from datetime import datetime, timezone, timedelta
+            msk_now = datetime.now(timezone(timedelta(hours=3)))
+            if msk_now.hour == 19 and msk_now.minute < 10:
+                today_key = msk_now.strftime("%Y-%m-%d")
+                already_run = await redis.get(f"kb:nightly_audit_done:{today_key}")
+                if not already_run:
+                    await redis.set(f"kb:nightly_audit_done:{today_key}", "1", ex=72000)
+                    logger.info("Наступило 19:00 MSK: запуск планового тяжелого аудита базы знаний RAG...")
+                    from app.services.rag import run_nightly_deep_audit_kb
+                    asyncio.create_task(run_nightly_deep_audit_kb())
+        except Exception as e:
+            logger.debug("Ошибка проверки расписания ночного аудита в poller: %s", e)
 
     def stop(self) -> None:
         """Останавливает цикл опроса."""

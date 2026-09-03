@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
 from app.config import settings
@@ -986,6 +987,18 @@ async def start_worker():
         "interval",
         days=1,
         id="sync_service_catalog_job",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Ежедневный ночной аудит базы знаний RAG в 19:00
+    from app.services.rag import run_nightly_deep_audit_kb
+
+    scheduler.add_job(
+        run_nightly_deep_audit_kb,
+        CronTrigger(hour=19, minute=0, timezone="Europe/Moscow"),
+        id="nightly_rag_deep_audit_job",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

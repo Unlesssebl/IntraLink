@@ -58,6 +58,10 @@ class KBExampleItem(BaseModel):
     status_name: str
     root_cause: str | None = None
     root_id: str | None = None
+    resolution_type: str | None = None
+    resolution_label: str | None = None
+    resolution_badge_color: str | None = None
+    quality_score: float = 1.0
 
 
 class KBExamplesResponse(BaseModel):
@@ -198,6 +202,10 @@ async def get_kb_examples(
                     status_name=r.status_name or "",
                     root_cause=c_data.get("root_cause"),
                     root_id=c_data.get("root_id"),
+                    resolution_type=c_data.get("resolution_type"),
+                    resolution_label=c_data.get("resolution_label"),
+                    resolution_badge_color=c_data.get("resolution_badge_color"),
+                    quality_score=float(getattr(r, "quality_score", 1.0) or 1.0),
                 )
             )
 
@@ -412,8 +420,8 @@ async def get_kb_statistics(
             "embedding_readiness": {
                 "ready": embed_ok,
                 "message": embed_msg,
-                "model": getattr(settings, "EMBEDDING_MODEL", "gemini-embedding-001"),
-                "dimension": getattr(settings, "EMBEDDING_DIMENSION", 3072),
+                "model": getattr(settings, "EMBEDDING_MODEL", "bge-m3"),
+                "dimension": getattr(settings, "EMBEDDING_DIMENSION", 1024),
             },
             "root_services": roots,
             "root_counts": root_counts,
@@ -474,6 +482,45 @@ class KBStratifiedSyncRequest(BaseModel):
     quota_per_service: int = Field(30, ge=5, le=100, description="Квота качественных прецедентов на раздел")
     days: int = Field(60, ge=7, le=365, description="Глубина выборки в днях")
     root_id: str | None = Field(None, description="ID конкретного корневого раздела (например '03') или None для всех")
+    status_ids: list[int] = Field(default=[28, 29, 43, 30], description="Список ID статусов для выборки заявок")
+    ai_eval: bool = Field(default=True, description="Включить AI-валидацию качества решений (Qwen 2.5)")
+
+
+@router.get("/available-statuses", status_code=status.HTTP_200_OK)
+async def get_available_statuses_endpoint(
+    service_auth_b64: str = Depends(get_service_auth_b64),
+) -> list[dict[str, Any]]:
+    """
+    Возвращает список доступных статусов заявок из IntraService с маркером рекомендованных.
+    """
+    from app.services import intraservice
+    try:
+        statuses = await intraservice.get_statuses(auth_b64=service_auth_b64)
+    except Exception as e:
+        logger.warning("Не удалось получить статусы из IntraService: %s", e)
+        statuses = None
+
+    recommended_ids = {28, 29, 43, 30}
+    result = []
+    for s in (statuses or []):
+        sid = s.get("Id")
+        if sid is not None:
+            result.append({
+                "id": sid,
+                "name": s.get("Name") or f"Статус #{sid}",
+                "is_recommended": sid in recommended_ids,
+            })
+    if not result:
+        result = [
+            {"id": 28, "name": "Закрыта", "is_recommended": True},
+            {"id": 29, "name": "Выполнена", "is_recommended": True},
+            {"id": 43, "name": "Обработано 1-й линией", "is_recommended": True},
+            {"id": 30, "name": "Отменена", "is_recommended": True},
+            {"id": 31, "name": "Открыта", "is_recommended": False},
+            {"id": 27, "name": "В работе", "is_recommended": False},
+            {"id": 35, "name": "Требует уточнения", "is_recommended": False},
+        ]
+    return result
 
 
 @router.post("/sync-stratified", status_code=status.HTTP_202_ACCEPTED)
@@ -509,6 +556,8 @@ async def trigger_stratified_kb_sync(
             quota_per_service=payload.quota_per_service,
             days=payload.days,
             target_root_id=payload.root_id,
+            status_ids=payload.status_ids,
+            ai_eval=payload.ai_eval,
         )
     )
 
@@ -518,6 +567,8 @@ async def trigger_stratified_kb_sync(
         "quota_per_service": payload.quota_per_service,
         "days": payload.days,
         "root_id": payload.root_id,
+        "status_ids": payload.status_ids,
+        "ai_eval": payload.ai_eval,
     }
 
 
@@ -529,5 +580,41 @@ async def get_kb_sync_status_endpoint() -> dict[str, Any]:
     from app.services.rag import get_kb_sync_progress
 
     progress = await get_kb_sync_progress()
+    return progress
+
+
+@router.post("/nightly-audit", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_nightly_audit_endpoint(
+    service_auth_b64: str = Depends(get_service_auth_b64),
+) -> dict[str, Any]:
+    """
+    Ручной запуск тяжелого ночного аудита базы знаний RAG.
+    Проводит 100% глубокую проверку через локальный Qwen 2.5 без эвристик.
+    """
+    redis = get_redis_client()
+    lock = await redis.get("lock:nightly_rag_audit")
+    if lock:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ночной глубокий аудит базы знаний уже выполняется. Дождитесь завершения.",
+        )
+
+    from app.services.rag import run_nightly_deep_audit_kb
+
+    asyncio.create_task(run_nightly_deep_audit_kb(service_auth_b64=service_auth_b64))
+    return {
+        "status": "started",
+        "message": "Глубокий ночной аудит базы знаний успешно запущен в фоновом режиме.",
+    }
+
+
+@router.get("/nightly-audit-status", status_code=status.HTTP_200_OK)
+async def get_nightly_audit_status_endpoint() -> dict[str, Any]:
+    """
+    Возвращает актуальный статус и прогресс ночного глубокого аудита базы знаний из Redis.
+    """
+    from app.services.rag import get_nightly_audit_progress
+
+    progress = await get_nightly_audit_progress()
     return progress
 
