@@ -325,6 +325,8 @@ async def get_embedding_vector(
                             _last_embedding_error = f"Gemini API вернул {len(vec)} dim (ожидалось {settings.EMBEDDING_DIMENSION})"
                         else:
                             err_txt = await resp.text()
+                            if resp.status == 401:
+                                continue
                             _last_embedding_error = f"Gemini API HTTP {resp.status} ({embed_model}): {err_txt[:140]}"
                             logger.debug("Сбой прямого Gemini API: %s", _last_embedding_error)
                 except Exception as e:
@@ -1357,8 +1359,8 @@ async def sync_stratified_kb(
                             progress_state["total_skipped"] += 1
                             continue
 
-                        # Edge Case 1: Throttling / микро-пауза между запросами
-                        await asyncio.sleep(0.05)
+                        # Edge Case 1: Throttling / соблюдение Rate Limit (15-20 RPM)
+                        await asyncio.sleep(1.5)
 
                         try:
                             lifetime = await intraservice.get_task_lifetime(auth_b64, tid) or []
@@ -1389,6 +1391,14 @@ async def sync_stratified_kb(
                         embed_input = f"Тема: {t_name}\nПроблема: {problem_text}\nРешение: {solution_text}"
 
                         vec = await get_embedding_vector(embed_input)
+                        if not vec:
+                            err_reason = _last_embedding_error or "сервис генерации векторов вернул None"
+                            # Если это Rate Limit (429), делаем вежливую паузу и 1 повторную попытку
+                            if "429" in err_reason or "quota" in err_reason.lower() or "limit" in err_reason.lower():
+                                add_log(f"#{tid}: лимит запросов AI (429), пауза 4.5с...", "warn")
+                                await asyncio.sleep(4.5)
+                                vec = await get_embedding_vector(embed_input)
+
                         if not vec:
                             consecutive_ai_errors += 1
                             progress_state["total_ai_errors"] = progress_state.get("total_ai_errors", 0) + 1

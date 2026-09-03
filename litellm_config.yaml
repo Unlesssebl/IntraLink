@@ -54,9 +54,9 @@ router_settings:
   routing_strategy: "simple-shuffle"     # Ротация и балансировка по пулу доступных ключей
   num_retries: 3                         # Автоповтор до 3 раз при ошибках 429/5xx
   timeout: 30                            # Таймаут запроса в секундах
-  retry_after: 2                         # Интервал между ретраями
-  allowed_fails: 1                       # При 1 сбое ключ временно отправляется в кулдаун
-  cooldown_time: 60                      # Изоляция сбойного ключа на 60 секунд
+  retry_after: 2                         # Пауза между повторами (секунды)
+  allowed_fails: 3                       # До 3 сбоев перед временным кулдауном
+  cooldown_time: 15                      # Изоляция сбойного ключа на 15 секунд (вместо 60с)
   fallbacks:
     - gemini-3.5-flash: ["gemini-3.5-flash-lite", "gemini-2.5-flash"]
     - gemini-3.5-flash-lite: ["gemini-2.5-flash"]
