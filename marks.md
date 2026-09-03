@@ -7,3 +7,15 @@
     - **Эмоциональный шум:** проверка Query Distillation (отсечение паники и приветствий).
     - **Кластер массовой аварии:** пакет связанных тикетов по сбою 1С для Outage Detection.
   - Написан быстрый сьют интеграционных тестов [`core-api/tests/test_ai_circuit_mocks.py`](core-api/tests/test_ai_circuit_mocks.py) (6/6 PASSED за 0.64s).
+
+- [x] **2. Адаптивный запуск нейросетей для NVIDIA RTX 3050 и AMD GPU (Vulkan / DirectML без ROCm).**
+  - **Исключен тяжеловесный ROCm:** аппаратное ускорение AMD реализовано через стандартный графический стек **Vulkan** и **DirectML** (ONNX Runtime).
+  - **NVIDIA GeForce RTX 3050 (8GB VRAM):** автоматическое выделение карты `CUDA_VISIBLE_DEVICES=1` (без конкуренции с интерфейсной GTX 1650), скорость инференса **~93-115 токенов/сек** при времени отклика 1.4 с.
+  - **Модульные Docker Compose оверлеи:**
+    - [`docker-compose.nvidia.yml`](docker-compose.nvidia.yml) — проброс NVIDIA Container Toolkit (CUDA, Flash Attention, 8GB VRAM).
+    - [`docker-compose.vulkan.yml`](docker-compose.vulkan.yml) — проброс `/dev/dri` для ускорения AMD Radeon / Vulkan.
+    - [`docker-compose.yml`](docker-compose.yml) — сетевой мост `extra_hosts: ["host.docker.internal:host-gateway"]` для прямого подключения к нативной хостовой Ollama без накладных расходов виртуализации.
+  - **Адаптивный AI Hub & FastEmbed:**
+    - [`core-api/app/services/ai/hub.py`](core-api/app/services/ai/hub.py) — умный поиск живого Ollama эндпоинта по цепочке (`host.docker.internal` -> `127.0.0.1` -> docker network) и телеметрия GPU (`AIHealthResponse` с полями `gpu_detected`, `gpu_name`, `gpu_backend`, `vram_allocated_bytes`).
+    - [`core-api/app/services/rag.py`](core-api/app/services/rag.py) — приоритетный выбор провайдеров ONNX Runtime (`CUDAExecutionProvider` -> `DmlExecutionProvider` -> `CPUExecutionProvider`).
+  - Пройден полный сьют интеграционных тестов (225/225 PASSED).

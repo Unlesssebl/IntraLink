@@ -39,16 +39,18 @@ async def main():
     print(f"• OLLAMA_BASE_URL: {settings.OLLAMA_BASE_URL}")
     print(f"• OLLAMA_MODEL: {settings.OLLAMA_MODEL}")
 
-    # 2. Проверка статуса здоровья (Healthcheck)
-    print(f"\n[Проверка доступности]")
-    # Пробуем определить доступный порт Ollama (11435 в Docker или 11434 на хосте)
-    for candidate_url in [settings.OLLAMA_BASE_URL, "http://localhost:11435", "http://localhost:11434"]:
-        ai_hub.ollama_url = candidate_url.rstrip("/")
-        if await ai_hub.is_ollama_available():
-            break
-
+    # 2. Проверка статуса здоровья (Healthcheck и GPU детектор)
+    print(f"\n[Проверка доступности и аппаратного ускорения]")
     health = await ai_hub.get_health()
-    print(f"• Ollama ({ai_hub.ollama_url}) доступна: {'✅ ДА' if health.ollama_available else '⚠️ НЕТ (сервис не запущен)'}")
+    print(f"• Ollama ({health.ollama_url}) доступна: {'✅ ДА' if health.ollama_available else '⚠️ НЕТ (сервис не запущен)'}")
+    if health.gpu_detected:
+        gpu_info = f"{health.gpu_name} [{health.gpu_backend}]"
+        if health.vram_allocated_bytes:
+            vram_mb = round(health.vram_allocated_bytes / (1024 * 1024), 1)
+            gpu_info += f" — VRAM: {vram_mb} MB"
+        print(f"• Аппаратное GPU-ускорение: ⚡ {gpu_info}")
+    else:
+        print(f"• Аппаратное ускорение: ℹ️ CPU Fallback (Vulkan / DirectML / CUDA не обнаружены)")
     print(f"• Cloud/Gemini доступен: {'✅ ДА' if health.litellm_available else '❌ НЕТ'}")
 
     # 3. Тест живого вызова Cloud Gemini
@@ -130,7 +132,11 @@ async def main():
         )
         dt = round((time.perf_counter() - t0) * 1000, 2)
         if ollama_resp:
-            print(f"✅ ОТВЕТ ОТ OLLAMA НА GPU ({dt} мс):")
+            words = len(ollama_resp.split())
+            approx_tokens = int(words * 1.3)
+            tps = round(approx_tokens / (dt / 1000.0), 1) if dt > 0 else 0
+            gpu_label = health.gpu_name or "GPU"
+            print(f"✅ ОТВЕТ ОТ OLLAMA [{gpu_label}] (время: {dt} мс, ~{tps} токенов/сек):")
             print("-" * 40)
             print(ollama_resp)
             print("-" * 40)

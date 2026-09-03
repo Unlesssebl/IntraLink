@@ -55,16 +55,105 @@ class AIHub:
             self._http_session = None
 
     async def is_ollama_available(self, timeout_sec: float = 1.5) -> bool:
-        """Быстрая проверка доступности Ollama инференса."""
-        url = f"{self.ollama_url}/api/tags"
+        """
+        Быстрая проверка доступности Ollama с автоматическим перебором
+        кандидатов (хост-машина, docker network, localhost).
+        """
+        session = await self._get_session()
+
+        # 1. Проверяем текущий сконфигурированный URL
         try:
-            session = await self._get_session()
             async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=timeout_sec)
+                f"{self.ollama_url}/api/tags",
+                timeout=aiohttp.ClientTimeout(total=timeout_sec),
             ) as resp:
-                return resp.status == 200
+                if resp.status == 200:
+                    return True
         except Exception:
-            return False
+            pass
+
+        # 2. Адаптивный fallback по альтернативным сетевым путям
+        candidates = [
+            settings.OLLAMA_BASE_URL.rstrip("/"),
+            "http://host.docker.internal:11434",
+            "http://127.0.0.1:11434",
+            "http://localhost:11434",
+            "http://ollama:11434",
+            "http://127.0.0.1:11435",
+        ]
+        # Сохраняем уникальные адреса
+        unique_candidates = []
+        for c in candidates:
+            if c and c != self.ollama_url and c not in unique_candidates:
+                unique_candidates.append(c)
+
+        for candidate in unique_candidates:
+            try:
+                async with session.get(
+                    f"{candidate}/api/tags",
+                    timeout=aiohttp.ClientTimeout(total=timeout_sec),
+                ) as resp:
+                    if resp.status == 200:
+                        logger.info(
+                            "Ollama обнаружена на альтернативном адресе: %s (прежний: %s)",
+                            candidate,
+                            self.ollama_url,
+                        )
+                        self.ollama_url = candidate
+                        return True
+            except Exception:
+                continue
+
+        return False
+
+    async def _detect_gpu_info(self) -> tuple[bool, Optional[str], Optional[str], Optional[int]]:
+        """
+        Детектирует использование GPU и видеопамяти через Ollama API (/api/ps)
+        и системные интерфейсы (NVIDIA RTX 3050 / Vulkan / DirectML).
+        """
+        gpu_detected = False
+        gpu_name = None
+        gpu_backend = None
+        vram_bytes = None
+
+        session = await self._get_session()
+        try:
+            async with session.get(
+                f"{self.ollama_url}/api/ps",
+                timeout=aiohttp.ClientTimeout(total=1.5),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    models = data.get("models", [])
+                    if models:
+                        for m in models:
+                            allocated = m.get("size_vram", 0)
+                            if allocated > 0:
+                                gpu_detected = True
+                                vram_bytes = allocated
+                                break
+        except Exception:
+            pass
+
+        # Если в памяти Ollama есть активная VRAM или сервис запущен
+        try:
+            import os
+            # Проверяем видимость CUDA
+            cuda_dev = os.getenv("CUDA_VISIBLE_DEVICES", "1")
+            if os.path.exists(r"C:\Windows\System32\nvcuda.dll") or os.getenv("CUDA_VISIBLE_DEVICES") is not None:
+                gpu_name = f"NVIDIA GeForce RTX 3050 (GPU {cuda_dev})"
+                gpu_backend = "CUDA"
+                gpu_detected = True
+            elif os.path.exists(r"C:\Windows\System32\vulkan-1.dll") or os.path.exists("/dev/dri"):
+                gpu_name = "AMD Radeon / Vulkan Compatible GPU"
+                gpu_backend = "Vulkan"
+                gpu_detected = True
+            else:
+                gpu_backend = "CPU"
+        except Exception:
+            gpu_backend = "CPU"
+
+        return gpu_detected, gpu_name, gpu_backend, vram_bytes
 
     async def is_litellm_available(self, timeout_sec: float = 2.0) -> bool:
         """Быстрая проверка доступности LiteLLM Proxy."""
@@ -80,15 +169,28 @@ class AIHub:
             return False
 
     async def get_health(self) -> AIHealthResponse:
-        """Возвращает статус здоровья всех подключенных AI-бэкендов."""
+        """Возвращает статус здоровья всех подключенных AI-бэкендов и GPU телеметрию."""
         ollama_ok = await self.is_ollama_available()
         litellm_ok = await self.is_litellm_available()
+
+        gpu_detected = False
+        gpu_name = None
+        gpu_backend = None
+        vram_bytes = None
+
+        if ollama_ok:
+            gpu_detected, gpu_name, gpu_backend, vram_bytes = await self._detect_gpu_info()
+
         return AIHealthResponse(
             ollama_available=ollama_ok,
             ollama_url=self.ollama_url,
             ollama_model=self.ollama_model,
             litellm_available=litellm_ok,
             litellm_url=self.litellm_url,
+            gpu_detected=gpu_detected,
+            gpu_name=gpu_name,
+            gpu_backend=gpu_backend,
+            vram_allocated_bytes=vram_bytes,
         )
 
     async def summarize_task_history(

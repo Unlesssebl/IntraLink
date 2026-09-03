@@ -17,35 +17,48 @@ _fastembed_model = None
 _fastembed_reranker = None
 
 
+def _get_onnx_hardware_providers() -> list[str]:
+    """Возвращает приоритетный список аппаратных провайдеров (CUDA, DirectML, CPU)."""
+    return ["CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider"]
+
+
 def get_local_embed_model():
-    """Ленивая загрузка локальной модели fastembed."""
+    """Ленивая загрузка локальной модели fastembed с адаптивным GPU-ускорением."""
     global _fastembed_model
     if _fastembed_model is None:
+        model_name = getattr(
+            settings,
+            "FASTEMBED_MODEL",
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        )
         try:
             from fastembed import TextEmbedding
 
-            model_name = getattr(
-                settings,
-                "FASTEMBED_MODEL",
-                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-            )
-            _fastembed_model = TextEmbedding(model_name=model_name)
+            try:
+                providers = _get_onnx_hardware_providers()
+                _fastembed_model = TextEmbedding(model_name=model_name, providers=providers)
+            except Exception:
+                _fastembed_model = TextEmbedding(model_name=model_name)
         except Exception as e:
             logger.debug("Ошибка инициализации fastembed: %s", e)
     return _fastembed_model
 
 
 def get_local_reranker_model():
-    """Ленивая загрузка локальной модели cross-encoder fastembed."""
+    """Ленивая загрузка локальной модели cross-encoder fastembed с адаптивным GPU-ускорением."""
     global _fastembed_reranker
     if _fastembed_reranker is None:
+        model_name = getattr(
+            settings, "RERANKER_MODEL", "BAAI/bge-reranker-base"
+        )
         try:
             from fastembed import TextCrossEncoder
 
-            model_name = getattr(
-                settings, "RERANKER_MODEL", "BAAI/bge-reranker-base"
-            )
-            _fastembed_reranker = TextCrossEncoder(model_name=model_name)
+            try:
+                providers = _get_onnx_hardware_providers()
+                _fastembed_reranker = TextCrossEncoder(model_name=model_name, providers=providers)
+            except Exception:
+                _fastembed_reranker = TextCrossEncoder(model_name=model_name)
         except Exception as e:
             logger.debug(
                 "Ошибка инициализации FastEmbed TextCrossEncoder: %s", e

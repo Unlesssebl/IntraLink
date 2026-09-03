@@ -25,7 +25,7 @@ services:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
 
   ollama:
-    image: ollama/ollama:latest
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
     container_name: intralink_ollama
     restart: always
     ports:
@@ -34,15 +34,8 @@ services:
       - ollama_data:/root/.ollama
     environment:
       - OLLAMA_KEEP_ALIVE=24h
-      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-2}
       - OLLAMA_FLASH_ATTENTION=1
-#    deploy:
-#      resources:
-#        reservations:
-#          devices:
-#            - driver: nvidia
-#              count: 1
-#              capabilities: [gpu]
 
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
@@ -81,12 +74,15 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
       - REDIS_URL=redis://redis:6379/0
       - LITELLM_BASE_URL=http://litellm:4000/v1
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
       - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
       - INTRASERVICE_SERVICE_LOGIN=intratest
       - INTRASERVICE_SERVICE_USER_ID=9891
       - INTRASERVICE_SERVICE_PASSWORD_FILE=/run/secrets/service_password
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     secrets:
       - encryption_key
       - service_password
@@ -118,12 +114,15 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
       - REDIS_URL=redis://redis:6379/0
       - LITELLM_BASE_URL=http://litellm:4000/v1
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
       - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
       - INTRASERVICE_SERVICE_LOGIN=intratest
       - INTRASERVICE_SERVICE_USER_ID=9891
       - INTRASERVICE_SERVICE_PASSWORD_FILE=/run/secrets/service_password
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     secrets:
       - encryption_key
       - service_password
