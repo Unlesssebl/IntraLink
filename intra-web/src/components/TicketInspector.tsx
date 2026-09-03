@@ -25,6 +25,8 @@ import {
   IconExternalLink,
   IconChevronDown,
   IconClose,
+  IconBookOpen,
+  IconBolt,
 } from './Icons';
 
 interface Props {
@@ -895,8 +897,9 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           className="w-full px-3 py-2 flex items-center justify-between text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/60 transition-colors cursor-pointer"
         >
           <div className="flex items-center gap-2">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400">
-              📚 База знаний RAG
+            <span className="text-[11px] font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400 inline-flex items-center gap-1.5">
+              <IconBookOpen size={12} className="shrink-0" />
+              <span>База знаний RAG</span>
             </span>
             <span className="text-[10.5px] px-1.5 py-0.2 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 font-semibold font-mono">
               {kbMatches.length} {kbMatches.length === 1 ? 'прецедент' : 'прецедента'}
@@ -1316,7 +1319,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             {/* Rule Engine & AI Solution Badges */}
             {ticket.hasRuleEngine && (
               <span className="px-2 py-0.5 rounded text-[10.5px] font-semibold border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 inline-flex items-center gap-1">
-                <span>⚡</span>
+                <IconBolt size={10} className="shrink-0" />
                 <span>Rule Engine</span>
                 {ticket.aiPlan?.actionBadge && <span className="opacity-75 font-normal">({ticket.aiPlan.actionBadge})</span>}
               </span>
@@ -1330,7 +1333,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
             {/* Zero Trust DLP Circuit */}
             <span
-              className={`text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded border ${
+              className={`text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
                 details?.circuit === 'red'
                   ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30'
                   : details?.circuit === 'yellow'
@@ -1339,7 +1342,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
               }`}
               title={details?.circuit_reason ? `Контур безопасности: ${details.circuit_reason}` : `Контур данных: ${details?.circuit || 'green'}`}
             >
-              {details?.circuit === 'red' ? '🔴 RED' : details?.circuit === 'yellow' ? '🟡 YELLOW' : '🟢 GREEN'}
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${details?.circuit === 'red' ? 'bg-rose-500' : details?.circuit === 'yellow' ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+              <span>{details?.circuit ? details.circuit.toUpperCase() : 'GREEN'}</span>
             </span>
 
             {/* Target Status Pill */}
@@ -1350,10 +1354,10 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                 <button
                   type="button"
                   onClick={() => setSelectedStatusOverride(null)}
-                  className="hover:text-rose-600 font-bold ml-1 cursor-pointer p-0.5"
+                  className="hover:text-rose-600 font-bold ml-1 cursor-pointer p-0.5 inline-flex items-center"
                   title="Сбросить статус к стандартному"
                 >
-                  ✕
+                  <IconClose size={10} className="shrink-0" />
                 </button>
               )}
             </div>

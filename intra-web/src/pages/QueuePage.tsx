@@ -19,6 +19,9 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconRocket,
+  IconBolt,
+  IconBookOpen,
+  IconArrowRight,
 } from '../components/Icons';
 
 interface Props {
@@ -539,7 +542,7 @@ export default function QueuePage({
               }`}
               title={showRuleEngineOnly ? 'Показать все доступные заявки' : 'Показать только заявки с регламентом Rule Engine'}
             >
-              <span className={showRuleEngineOnly ? 'text-white' : 'text-blue-600 dark:text-blue-400'}>⚡</span>
+              <IconBolt size={13} className={showRuleEngineOnly ? 'text-white' : 'text-blue-600 dark:text-blue-400'} />
               <span>Rule Engine</span>
               <span
                 className={`text-[11px] font-bold px-1.5 py-0.2 rounded-full tabular-nums ${
@@ -621,7 +624,7 @@ export default function QueuePage({
               <button
                 onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.isDuplicate || t.ruleType === 'duplicate_task'))}
                 disabled={processingBulk}
-                className="flex items-center gap-1.5 px-3 py-1 bg-neutral-800 hover:bg-neutral-900 text-white dark:bg-neutral-200 dark:text-neutral-900 rounded-md text-[12.5px] font-bold shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
+                className="flex items-center gap-1.5 px-3 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 border border-neutral-800 dark:border-neutral-200 rounded-lg text-[12.5px] font-medium shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
               >
                 <IconDuplicate size={13} />
                 <span>Отменить все дубликаты ({countDuplicates})</span>
@@ -632,7 +635,7 @@ export default function QueuePage({
               <button
                 onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.isRedirect || t.ruleType?.startsWith('redirect')))}
                 disabled={processingBulk}
-                className="flex items-center gap-1.5 px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-md text-[12.5px] font-bold shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
+                className="flex items-center gap-1.5 px-3 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 border border-neutral-800 dark:border-neutral-200 rounded-lg text-[12.5px] font-medium shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
               >
                 <IconRedirect size={13} />
                 <span>Перенаправить все ({countRedirects})</span>
@@ -643,7 +646,7 @@ export default function QueuePage({
               <button
                 onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.ruleType === 'hardware_repair'))}
                 disabled={processingBulk}
-                className="flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md text-[12.5px] font-bold shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
+                className="flex items-center gap-1.5 px-3 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 border border-neutral-800 dark:border-neutral-200 rounded-lg text-[12.5px] font-medium shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
               >
                 <IconWrench size={13} />
                 <span>В ремонт все ({countRepair})</span>
@@ -669,7 +672,7 @@ export default function QueuePage({
                   <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     СТАТУС
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     РЕШЕНИЕ AI
                   </th>
                   <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
@@ -808,6 +811,7 @@ export default function QueuePage({
                               )}`}
                             />
                             <span>{ticket.aiPlan?.targetStatusName || (ticket.ruleType === 'hardware_repair' ? 'Ожидание устройства' : 'В работе')}</span>
+                            <IconArrowRight size={10} className="text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-colors ml-0.5" />
                           </button>
                         )}
                       </td>
@@ -825,7 +829,7 @@ export default function QueuePage({
                               className="px-1.5 py-0.2 rounded text-[10px] font-semibold border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 inline-flex items-center gap-1 shrink-0"
                               title="Сработало регламентное правило Rule Engine"
                             >
-                              <span className="text-[10px]">⚡</span>
+                              <IconBolt size={10} className="text-blue-600 dark:text-blue-400 shrink-0" />
                               <span>Rule Engine</span>
                             </span>
                           )}
@@ -901,7 +905,8 @@ export default function QueuePage({
                           )}
                           {ticket.hasKbMatches && (
                             <span className="px-1.5 py-0.2 rounded text-[10px] font-medium border border-purple-200 dark:border-purple-800/80 bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 inline-flex items-center gap-1" title="Есть похожие решения в базе знаний RAG">
-                              <span>📚 RAG</span>
+                              <IconBookOpen size={10} className="shrink-0 text-purple-600 dark:text-purple-400" />
+                              <span>RAG</span>
                             </span>
                           )}
                           {ticket.circuit === 'red' && (

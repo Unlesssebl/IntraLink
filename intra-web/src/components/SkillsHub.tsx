@@ -6,6 +6,7 @@ import {
   type SkillActionItem,
 } from '../lib/adminApi';
 import { submitCommand } from '../lib/tasks';
+import { IconBolt, IconClose } from './Icons';
 
 interface SkillsHubProps {
   token: string;
@@ -384,14 +385,15 @@ export default function SkillsHub({ token }: SkillsHubProps) {
           <div className="w-full max-w-lg bg-neutral-950 border border-neutral-800 rounded-2xl p-6 shadow-2xl space-y-4">
             <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
               <h3 className="text-sm font-semibold text-neutral-100 flex items-center gap-2">
-                <span>⚡ Тестовый запуск:</span>
+                <IconBolt size={14} className="text-amber-400 shrink-0" />
+                <span>Тестовый запуск:</span>
                 <span className="text-blue-400 font-mono">{testAction.id}</span>
               </h3>
               <button
                 onClick={() => setTestAction(null)}
-                className="text-neutral-500 hover:text-neutral-300 cursor-pointer"
+                className="text-neutral-500 hover:text-neutral-300 cursor-pointer p-1"
               >
-                ✕
+                <IconClose size={14} />
               </button>
             </div>
 
