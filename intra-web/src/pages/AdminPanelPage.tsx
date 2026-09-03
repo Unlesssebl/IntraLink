@@ -1640,11 +1640,45 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               </div>
             </div>
 
+            {/* Warning banner if IntraService credentials are not ready */}
+            {kbStats?.sync_readiness && !kbStats.sync_readiness.ready && (
+              <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-800/40 text-xs text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                <div className="flex items-start gap-3">
+                  <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold uppercase tracking-wider shrink-0 mt-0.5 border border-amber-500/30">
+                    ТРЕБУЕТСЯ АВТОРИЗАЦИЯ
+                  </span>
+                  <div>
+                    <p className="font-semibold text-amber-100">
+                      Синхронизация с IntraService недоступна
+                    </p>
+                    <p className="text-amber-300/80 text-[11.5px] mt-0.5 leading-relaxed">
+                      {kbStats.sync_readiness.message}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('vault')}
+                  className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 rounded-xl text-xs font-medium cursor-pointer transition-colors shrink-0 text-center"
+                >
+                  Настроить в Хранилище &rarr;
+                </button>
+              </div>
+            )}
+
             {/* Sync & Search Control Panel */}
             <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
-                  <h2 className="text-base font-semibold">Синхронизация и Модерация</h2>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-semibold">Синхронизация и Модерация</h2>
+                    {kbStats?.sync_readiness?.ready && (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-mono">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                        <span>{kbStats.sync_readiness.auth_source === 'operator_session' ? `Сессия: ${kbStats.sync_readiness.account_name}` : 'Сервисный аккаунт'}</span>
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-neutral-400 mt-0.5">
                     Управление векторными знаниями pgvector: обучение по закрытым заявкам и удаление ошибок.
                   </p>
@@ -1668,8 +1702,13 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
                   <button
                     onClick={handleTriggerSync}
-                    disabled={kbSyncLoading}
-                    className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-xs font-medium shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
+                    disabled={kbSyncLoading || (kbStats?.sync_readiness ? !kbStats.sync_readiness.ready : false)}
+                    title={
+                      kbStats?.sync_readiness && !kbStats.sync_readiness.ready
+                        ? kbStats.sync_readiness.message
+                        : 'Запустить прямую выгрузку и векторизацию закрытых заявок'
+                    }
+                    className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-medium shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
                   >
                     {kbSyncLoading ? (
                       <>

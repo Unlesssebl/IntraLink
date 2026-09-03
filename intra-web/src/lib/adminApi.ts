@@ -124,11 +124,19 @@ export interface KBExamplesResponse {
   examples: KBExampleItem[];
 }
 
+export interface KBSyncReadiness {
+  ready: boolean;
+  auth_source: 'operator_session' | 'service_account' | 'none';
+  account_name?: string | null;
+  message: string;
+}
+
 export interface KBStatsResponse {
   total_active_examples: number;
   total_blacklisted_examples: number;
   services_count: number;
   services: Record<string, { total: number; by_status: Record<string, number> }>;
+  sync_readiness?: KBSyncReadiness;
 }
 
 export interface KBSyncResponse {
@@ -139,6 +147,7 @@ export interface KBSyncResponse {
 
 export async function fetchKbStats(token: string): Promise<KBStatsResponse> {
   const res = await fetch('/api/v1/admin/kb/stats', {
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -166,6 +175,7 @@ export async function fetchKbExamples(
   if (search && search.trim()) params.set('search', search.trim());
 
   const res = await fetch(`/api/v1/admin/kb/examples?${params.toString()}`, {
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -184,6 +194,7 @@ export async function blacklistKbExample(
 ): Promise<{ status: string; task_id: number; message: string }> {
   const res = await fetch(`/api/v1/admin/kb/examples/${taskId}`, {
     method: 'DELETE',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -201,6 +212,7 @@ export async function purgeKnowledgeBase(
 ): Promise<{ status: string; deleted: number; message: string }> {
   const res = await fetch('/api/v1/admin/kb/purge', {
     method: 'DELETE',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,

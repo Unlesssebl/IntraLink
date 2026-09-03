@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database.db import AsyncSessionLocal, TaskKnowledgeBase, get_db
 from app.routers.admin_settings import require_admin_auth
 from app.routers.deps import get_service_auth_b64
@@ -287,10 +288,14 @@ async def purge_knowledge_base(
 
 
 @router.get("/stats", status_code=status.HTTP_200_OK)
-async def get_kb_statistics(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def get_kb_statistics(
+    db: AsyncSession = Depends(get_db),
+    admin_payload: dict = Depends(require_admin_auth),
+) -> dict[str, Any]:
     """
     Возвращает матрицу покрытия базы знаний: количество прецедентов
-    в разрезе услуг и статусов закрытия (исключая черный список).
+    в разрезе услуг и статусов закрытия (исключая черный список),
+    а также статус готовности учетных данных для синхронизации.
     """
     try:
         query = (
@@ -323,11 +328,56 @@ async def get_kb_statistics(db: AsyncSession = Depends(get_db)) -> dict[str, Any
         )
         blacklisted_count = await db.scalar(blacklisted_query) or 0
 
+        # Превентивная проверка доступности учетных данных для синхронизации
+        readiness = {
+            "ready": False,
+            "auth_source": "none",
+            "account_name": None,
+            "message": "Учетные данные IntraService не настроены. Для синхронизации войдите под учетной записью IntraService или настройте сервисный аккаунт в Хранилище.",
+        }
+
+        username = admin_payload.get("sub") if isinstance(admin_payload, dict) else None
+        redis = get_redis_client()
+        if username:
+            try:
+                op_auth = await redis.get(f"admin_auth:{username}")
+                if op_auth:
+                    readiness = {
+                        "ready": True,
+                        "auth_source": "operator_session",
+                        "account_name": str(username),
+                        "message": f"Синхронизация готова: используется активная сессия оператора '{username}'",
+                    }
+            except Exception:
+                pass
+
+        if not readiness["ready"]:
+            if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
+                readiness = {
+                    "ready": True,
+                    "auth_source": "service_account",
+                    "account_name": str(settings.INTRASERVICE_SERVICE_LOGIN),
+                    "message": f"Синхронизация готова: используется системный аккаунт '{settings.INTRASERVICE_SERVICE_LOGIN}'",
+                }
+            else:
+                try:
+                    svc_auth = await redis.get("worker:service_auth_b64")
+                    if svc_auth:
+                        readiness = {
+                            "ready": True,
+                            "auth_source": "service_account",
+                            "account_name": "Vault Service Account",
+                            "message": "Синхронизация готова: настроен сервисный аккаунт в Хранилище (Vault)",
+                        }
+                except Exception:
+                    pass
+
         return {
             "total_active_examples": total_examples,
             "total_blacklisted_examples": blacklisted_count,
             "services_count": len(services_stats),
             "services": services_stats,
+            "sync_readiness": readiness,
         }
     except Exception as e:
         logger.exception("Ошибка при сборе статистики базы знаний: %s", e)
