@@ -224,7 +224,7 @@ async def get_service_auth_b64(
                 if username:
                     try:
                         op_auth = await redis.get(f"admin_auth:{username}")
-                        if op_auth:
+                        if op_auth and not op_auth.startswith("mock_"):
                             return op_auth
                     except Exception:
                         pass

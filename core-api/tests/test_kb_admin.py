@@ -155,10 +155,11 @@ async def test_kb_admin_sync_with_sso_and_cookie():
     """Проверка работы /api/v1/admin/kb/sync при авторизации через sso_session и cookie admin_session."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        with patch("app.routers.admin.auth.verify_credentials", return_value=("mock_auth_b64", 8664)):
+        with patch.object(settings, "ADMIN_LOGINS", "test_mock_admin"), \
+             patch("app.routers.admin.auth.verify_credentials", return_value=("mock_auth_b64", 8664)):
             login_res = await client.post(
                 "/admin/api/login",
-                json={"username": "belikov", "password": "valid_password"},
+                json={"username": "test_mock_admin", "password": "valid_password"},
             )
             assert login_res.status_code == 200
             cookie_val = login_res.cookies.get("admin_session")
@@ -181,10 +182,11 @@ async def test_kb_admin_stratified_sync_endpoints():
     """Проверка работы эндпоинтов /sync-stratified и /sync-status."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        with patch("app.routers.admin.auth.verify_credentials", return_value=("mock_auth_b64", 8664)):
+        with patch.object(settings, "ADMIN_LOGINS", "test_mock_admin"), \
+             patch("app.routers.admin.auth.verify_credentials", return_value=("mock_auth_b64", 8664)):
             login_res = await client.post(
                 "/admin/api/login",
-                json={"username": "belikov", "password": "valid_password"},
+                json={"username": "test_mock_admin", "password": "valid_password"},
             )
             assert login_res.status_code == 200
             cookie_val = login_res.cookies.get("admin_session")
