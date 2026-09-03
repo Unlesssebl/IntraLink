@@ -1,9 +1,31 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { Ticket, Status } from '../data/mock';
-import { statusConfig, priorityConfig } from '../data/mock';
-import { applyTask, bulkApplyTasks, mapStatusToStatusId } from '../lib/tasks';
+import { statusConfig, priorityConfig, getStatusDotClass } from '../data/mock';
+import { applyTask, bulkApplyTasks, smartBulkApplyTasks, mapStatusToStatusId } from '../lib/tasks';
+import type { SmartBulkApplyItemPayload } from '../lib/types';
 import type { ServiceSelection } from '../components/Sidebar';
 import TicketInspector from '../components/TicketInspector';
+import {
+  IconWifi,
+  IconDuplicate,
+  IconRedirect,
+  IconWrench,
+  IconUser,
+  IconPlay,
+  IconPaperclip,
+  IconSparkles,
+  IconPencil,
+  IconAlertTriangle,
+  IconChevronDown,
+  IconChevronRight,
+  IconRocket,
+  IconBolt,
+  IconBookOpen,
+  IconArrowRight,
+} from '../components/Icons';
+
+import SmartBatchModal, { type SmartBatchItem } from '../components/queue/SmartBatchModal';
+import BulkConfirmModal, { type BulkConfirmModalState } from '../components/queue/BulkConfirmModal';
 
 interface Props {
   tickets: Ticket[];
@@ -18,16 +40,11 @@ interface Props {
 }
 
 type ViewMode = 'table' | 'kanban';
-type FilterTab = 'all' | 'new' | 'duplicates' | 'redirects' | 'repair' | 'wifi';
+type FilterTab = 'all' | 'duplicates' | 'redirects' | 'repair' | 'wifi';
 
-interface BulkConfirmModalState {
+interface SmartBatchModalState {
   open: boolean;
-  actionType: 'take' | 'cancel' | 'resolve';
-  targetStatusId: number;
-  statusLabelName: string;
-  count: number;
-  hasRepair: boolean;
-  ticketIds: number[];
+  items: SmartBatchItem[];
 }
 
 function getSlaClass(deadline: Date) {
@@ -69,6 +86,8 @@ export default function QueuePage({
 }: Props) {
   const [view, setView] = useState<ViewMode>('table');
   const [filterTab, setFilterTab] = useState<FilterTab>('all');
+  const [showRuleEngineOnly, setShowRuleEngineOnly] = useState(false);
+  const [showAiOnly, setShowAiOnly] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [inlineStatusTicketId, setInlineStatusTicketId] = useState<string | null>(null);
   const [openHostTicketId, setOpenHostTicketId] = useState<string | null>(null);
@@ -77,6 +96,7 @@ export default function QueuePage({
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [processingBulk, setProcessingBulk] = useState(false);
   const [bulkModal, setBulkModal] = useState<BulkConfirmModalState | null>(null);
+  const [smartBatchModal, setSmartBatchModal] = useState<SmartBatchModalState | null>(null);
 
   const selectedTicket = tickets.find(t => t.id === selectedTicketId) ?? null;
 
@@ -93,16 +113,22 @@ export default function QueuePage({
 
   // Counts for KPI within current scope
   const countTotal = scopedTickets.length;
-  const countNew = scopedTickets.filter(t => t.status === 'new').length;
+  const countRuleEngine = scopedTickets.filter(t => t.hasRuleEngine).length;
+  const countAiReady = scopedTickets.filter(t => t.hasAiSolution).length;
   const countDuplicates = scopedTickets.filter(t => t.isDuplicate || t.ruleType === 'duplicate_task').length;
   const countRedirects = scopedTickets.filter(t => t.isRedirect || t.ruleType?.startsWith('redirect')).length;
-  const countRepair = scopedTickets.filter(t => t.ruleType === 'hardware_repair').length;
+  const countRepair = scopedTickets.filter(
+    t =>
+      t.ruleType === 'hardware_repair' ||
+      t.templateKey === 'hardware_repair' ||
+      t.templateKey === 'bring_device_112' ||
+      t.templateKey === 'bring_pc_112'
+  ).length;
   const countWifi = scopedTickets.filter(t => t.ruleType === 'wlan_access' || t.templateKey === 'wifi_access').length;
 
   // Adaptive smart tabs: hide tabs that have 0 items in selected service scope (Marks #3)
   const availableTabs: { key: FilterTab; label: string; count: number }[] = [
     { key: 'all', label: 'Все заявки', count: countTotal },
-    { key: 'new', label: 'Новые', count: countNew },
   ];
 
   if (countDuplicates > 0) {
@@ -126,10 +152,18 @@ export default function QueuePage({
   }, [availableTabs, filterTab]);
 
   const filtered = scopedTickets.filter(t => {
-    if (filterTab === 'new' && t.status !== 'new') return false;
+    if (showRuleEngineOnly && !t.hasRuleEngine) return false;
+    if (showAiOnly && !t.hasAiSolution) return false;
     if (filterTab === 'duplicates' && !t.isDuplicate && t.ruleType !== 'duplicate_task') return false;
     if (filterTab === 'redirects' && !t.isRedirect && !t.ruleType?.startsWith('redirect')) return false;
-    if (filterTab === 'repair' && t.ruleType !== 'hardware_repair') return false;
+    if (
+      filterTab === 'repair' &&
+      t.ruleType !== 'hardware_repair' &&
+      t.templateKey !== 'hardware_repair' &&
+      t.templateKey !== 'bring_device_112' &&
+      t.templateKey !== 'bring_pc_112'
+    )
+      return false;
     if (filterTab === 'wifi' && t.ruleType !== 'wlan_access' && t.templateKey !== 'wifi_access') return false;
 
     // Search with null-guards (Audit E-5)
@@ -175,6 +209,103 @@ export default function QueuePage({
     });
   };
 
+  // Smart Plan Direct Action for Single Ticket
+  const handleApplyTicketPlan = async (t: Ticket) => {
+    const plan = t.aiPlan;
+    if (!plan) {
+      await handleInlineTake(t);
+      return;
+    }
+
+    try {
+      onToast({ type: 'info', message: `Выполняется: ${plan.actionTitle} (#${t.rawId})...` });
+      const payload: SmartBulkApplyItemPayload = {
+        task_id: t.rawId,
+        status_id: plan.targetStatusId,
+        comment: plan.comment,
+        minutes: plan.expensesMinutes,
+        requires_domain_job: plan.requiresDomainJob,
+        domain_job: plan.domainJob,
+      };
+
+      const res = await smartBulkApplyTasks([payload]);
+      if (res.success_count > 0) {
+        const newStatus = plan.targetStatusId === 29 || plan.targetStatusId === 30 ? 'resolved' : (plan.targetStatusId === 35 || plan.targetStatusId === 48 ? 'waiting' : 'in_progress');
+        onUpdateTicket(t.id, {
+          status: newStatus,
+          statusId: plan.targetStatusId,
+          statusName: plan.targetStatusName,
+        });
+        onToast({ type: 'success', message: `Заявка #${t.rawId}: ${plan.actionTitle} успешно выполнено` });
+      } else {
+        const err = res.errors[0]?.error || 'Ошибка исполнения';
+        onToast({ type: 'error', message: `Ошибка #${t.rawId}: ${err}` });
+      }
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Ошибка: ${err.message || err}` });
+    }
+  };
+
+  const openSmartBatchModal = (ticketsToProcess: Ticket[]) => {
+    if (ticketsToProcess.length === 0) return;
+    const items: SmartBatchItem[] = ticketsToProcess.map(t => ({
+      ticket: t,
+      selected: true,
+      comment: t.aiPlan?.comment || t.aiSuggestion || 'Принято в работу специалистом 1-й линии техподдержки.',
+      minutes: t.aiPlan?.expensesMinutes || t.expenses || 10,
+      isEditing: false,
+    }));
+    setSmartBatchModal({ open: true, items });
+  };
+
+  const executeSmartBatch = async () => {
+    if (!smartBatchModal) return;
+    const activeItems = smartBatchModal.items.filter(x => x.selected);
+    if (activeItems.length === 0) return;
+
+    setProcessingBulk(true);
+    try {
+      const payload: SmartBulkApplyItemPayload[] = activeItems.map(item => {
+        const plan = item.ticket.aiPlan;
+        return {
+          task_id: item.ticket.rawId,
+          status_id: plan?.targetStatusId || 27,
+          comment: item.comment,
+          minutes: item.minutes,
+          requires_domain_job: plan?.requiresDomainJob,
+          domain_job: plan?.domainJob,
+        };
+      });
+
+      const res = await smartBulkApplyTasks(payload);
+
+      const failedIds = new Set(res.errors.map(e => String(e.task_id)));
+      activeItems.forEach(item => {
+        if (failedIds.has(String(item.ticket.rawId))) return;
+        const plan = item.ticket.aiPlan;
+        const targetStatusId = plan?.targetStatusId || 27;
+        const newStatus = targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : (targetStatusId === 35 || targetStatusId === 48 ? 'waiting' : 'in_progress');
+        onUpdateTicket(item.ticket.id, {
+          status: newStatus,
+          statusId: targetStatusId,
+          statusName: plan?.targetStatusName || 'В работе',
+        });
+      });
+
+      onToast({
+        type: res.failed_count === 0 ? 'success' : 'warning',
+        message: `Пакетное выполнение: ${res.success_count} успешно${res.failed_count > 0 ? `, ${res.failed_count} ошибок` : ''}`,
+      });
+
+      setSelected(new Set());
+      setSmartBatchModal(null);
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Ошибка пакетного выполнения: ${err.message || err}` });
+    } finally {
+      setProcessingBulk(false);
+    }
+  };
+
   // Real Single Inline Actions
   const handleInlineTake = async (t: Ticket) => {
     try {
@@ -189,7 +320,6 @@ export default function QueuePage({
       onToast({ type: 'error', message: `Ошибка: ${err.message || err}` });
     }
   };
-
 
   const handleInlineStatusChange = async (t: Ticket, s: Status) => {
     // Guard: Do not allow blind closing without comment (Audit E-2)
@@ -386,6 +516,56 @@ export default function QueuePage({
 
             <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-800" />
 
+            {/* Rule Engine Fast Toggle Button */}
+            <button
+              type="button"
+              onClick={() => setShowRuleEngineOnly(prev => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer border ${
+                showRuleEngineOnly
+                  ? 'bg-blue-600 text-white border-blue-500 shadow-2xs'
+                  : 'bg-white dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 border-neutral-250 dark:border-neutral-750 hover:bg-neutral-50 dark:hover:bg-neutral-800'
+              }`}
+              title={showRuleEngineOnly ? 'Показать все доступные заявки' : 'Показать только заявки с регламентом Rule Engine'}
+            >
+              <IconBolt size={13} className={showRuleEngineOnly ? 'text-white' : 'text-blue-600 dark:text-blue-400'} />
+              <span>Rule Engine</span>
+              <span
+                className={`text-[11px] font-bold px-1.5 py-0.2 rounded-full tabular-nums ${
+                  showRuleEngineOnly
+                    ? 'bg-white/20 text-white'
+                    : 'bg-blue-100 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300'
+                }`}
+              >
+                {countRuleEngine}
+              </span>
+            </button>
+
+            {/* AI-Ready Fast Toggle Button */}
+            <button
+              type="button"
+              onClick={() => setShowAiOnly(prev => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer border ${
+                showAiOnly
+                  ? 'bg-purple-600 text-white border-purple-500 shadow-2xs'
+                  : 'bg-white dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 border-neutral-250 dark:border-neutral-750 hover:bg-neutral-50 dark:hover:bg-neutral-800'
+              }`}
+              title={showAiOnly ? 'Показать все доступные заявки' : 'Показать только заявки с готовым решением AI'}
+            >
+              <IconSparkles size={13} className={showAiOnly ? 'text-white' : 'text-purple-600 dark:text-purple-400'} />
+              <span>AI Решение</span>
+              <span
+                className={`text-[11px] font-bold px-1.5 py-0.2 rounded-full tabular-nums ${
+                  showAiOnly
+                    ? 'bg-white/20 text-white'
+                    : 'bg-purple-100 dark:bg-purple-950/80 text-purple-700 dark:text-purple-300'
+                }`}
+              >
+                {countAiReady}
+              </span>
+            </button>
+
+            <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-800" />
+
             {/* Adaptive Smart Filter Tabs (Marks #3) */}
             <div className="flex items-center gap-1 flex-wrap">
               {availableTabs.map(tab => {
@@ -412,43 +592,88 @@ export default function QueuePage({
                 );
               })}
             </div>
+
+            {/* Smart Tab Context Action Buttons (100% HITL Batch Trigger) */}
+            {filterTab === 'wifi' && countWifi > 0 && (
+              <button
+                onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.ruleType === 'wlan_access' || t.templateKey === 'wifi_access'))}
+                disabled={processingBulk}
+                className="flex items-center gap-1.5 px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-md text-[12.5px] font-bold shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
+              >
+                <IconWifi size={13} />
+                <span>Выдать Wi-Fi всем ({countWifi})</span>
+              </button>
+            )}
+
+            {filterTab === 'duplicates' && countDuplicates > 0 && (
+              <button
+                onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.isDuplicate || t.ruleType === 'duplicate_task'))}
+                disabled={processingBulk}
+                className="flex items-center gap-1.5 px-3 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 border border-neutral-800 dark:border-neutral-200 rounded-lg text-[12.5px] font-medium shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
+              >
+                <IconDuplicate size={13} />
+                <span>Отменить все дубликаты ({countDuplicates})</span>
+              </button>
+            )}
+
+            {filterTab === 'redirects' && countRedirects > 0 && (
+              <button
+                onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.isRedirect || t.ruleType?.startsWith('redirect')))}
+                disabled={processingBulk}
+                className="flex items-center gap-1.5 px-3 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 border border-neutral-800 dark:border-neutral-200 rounded-lg text-[12.5px] font-medium shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
+              >
+                <IconRedirect size={13} />
+                <span>Перенаправить все ({countRedirects})</span>
+              </button>
+            )}
+
+            {filterTab === 'repair' && countRepair > 0 && (
+              <button
+                onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.ruleType === 'hardware_repair'))}
+                disabled={processingBulk}
+                className="flex items-center gap-1.5 px-3 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 border border-neutral-800 dark:border-neutral-200 rounded-lg text-[12.5px] font-medium shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
+              >
+                <IconWrench size={13} />
+                <span>В ремонт все ({countRepair})</span>
+              </button>
+            )}
           </div>
         </div>
 
         {/* Table View (Matching style and layout from image-2.png) */}
         {view === 'table' && (
           <div className="flex-1 overflow-auto bg-white dark:bg-neutral-950">
-            <table className="w-full min-w-[1020px] text-[14px] border-collapse table-auto">
+            <table className="w-full min-w-[1040px] text-[14px] border-collapse table-fixed">
               <thead className="sticky top-0 z-10 bg-white dark:bg-neutral-950 border-b border-neutral-200 dark:border-neutral-800">
                 <tr>
-                  <th className="w-11 px-3.5 py-3 text-center">
+                  <th className="w-12 px-3.5 py-3 text-center">
                     <input
                       type="checkbox"
                       checked={selected.size === sorted.length && sorted.length > 0}
                       onChange={e => setSelected(e.target.checked ? new Set(sorted.map(t => t.id)) : new Set())}
-                      className="w-4 h-4 accent-blue-600 cursor-pointer rounded"
+                      className="w-4 h-4 accent-neutral-900 dark:accent-neutral-100 cursor-pointer rounded"
                     />
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-40 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     СТАТУС
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-44 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                    РЕШЕНИЕ AI
+                  </th>
+                  <th className="w-auto px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     ЗАЯВКА
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-48 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     СЕРВИС
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-36 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     ХОСТ
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-40 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     ИСПОЛНИТЕЛЬ
                   </th>
-                  <th className="px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
-                    ДЕЙСТВИЕ
-                  </th>
                   <th
-                    className="w-24 px-3.5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 cursor-pointer select-none group whitespace-nowrap"
+                    className="w-28 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 cursor-pointer select-none group whitespace-nowrap"
                     onClick={() => toggleSort('sla')}
                   >
                     SLA<SortIcon col="sla" />
@@ -472,105 +697,222 @@ export default function QueuePage({
                   const hostList = parseHostList(ticket.host);
                   const primaryHost = hostList[0];
                   const otherHosts = hostList.slice(1);
-                  const smartTagClass = "px-1.5 py-0.2 border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 rounded text-[11px] font-medium";
+                  const smartTagClass = "px-2 py-0.5 border border-neutral-200/80 dark:border-neutral-700/80 bg-neutral-100/80 dark:bg-neutral-800/80 text-neutral-600 dark:text-neutral-400 rounded text-[11.5px] font-medium";
 
                   return (
                     <tr
                       key={ticket.id}
                       onClick={() => onSelectTicket(isActive ? null : ticket.id)}
-                      className={`cursor-pointer transition-colors outline-none hover:!bg-blue-50/70 dark:hover:!bg-neutral-800/80 h-[58px] border-b border-neutral-100 dark:border-neutral-850 ${rowBg}`}
+                      className={`cursor-pointer transition-colors outline-none hover:!bg-blue-50/70 dark:hover:!bg-neutral-800/80 h-[66px] border-b border-neutral-100 dark:border-neutral-850 ${rowBg}`}
                     >
                       {/* Checkbox */}
-                      <td className="w-11 px-3.5 py-2.5 text-center" onClick={e => e.stopPropagation()}>
+                      <td className="w-12 px-3.5 py-3 text-center" onClick={e => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           checked={isSelected}
                           onChange={() => toggleSelect(ticket.id)}
-                          className="w-4 h-4 accent-blue-600 cursor-pointer rounded"
+                          className="w-4 h-4 accent-neutral-900 dark:accent-neutral-100 cursor-pointer rounded"
                         />
                       </td>
 
-                      {/* Status Button (Moved first after checkbox) */}
+                      {/* Status Indicator (Card/Button style, h-7.5 rounded-lg) */}
                       <td
-                        className="px-3.5 py-2.5 whitespace-nowrap"
+                        className="w-40 px-3.5 py-3 whitespace-nowrap"
                         onClick={e => {
                           e.stopPropagation();
                           setInlineStatusTicketId(inlineStatusTicketId === ticket.id ? null : ticket.id);
                         }}
                       >
                         <div className="relative inline-block">
-                          <span className="text-[12px] px-2.5 py-0.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 font-normal cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors shadow-2xs inline-block">
-                            {ticket.statusName || statusConfig[ticket.status].label}
-                          </span>
+                          <button
+                            type="button"
+                            className="group h-7.5 inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
+                            title="Нажмите для изменения статуса"
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${statusConfig[ticket.status].dotClass}`} />
+                            <span>{ticket.statusName || statusConfig[ticket.status].label}</span>
+                            <IconChevronDown size={10} className="opacity-40 group-hover:opacity-100 transition-opacity ml-0.5" />
+                          </button>
+
                           {inlineStatusTicketId === ticket.id && (
-                            <div className="absolute left-0 top-8 z-20 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-xl py-1 min-w-[150px]">
-                              {(['new', 'in_progress', 'waiting'] as Status[]).map(s => (
-                                <button
-                                  key={s}
-                                  onClick={e => {
-                                    e.stopPropagation();
-                                    handleInlineStatusChange(ticket, s);
-                                  }}
-                                  className="w-full px-3 py-1.5 text-left text-[12px] font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
-                                >
-                                  {statusConfig[s].label}
-                                </button>
-                              ))}
-                              <div className="border-t border-neutral-200 dark:border-neutral-800 my-1" />
+                            <div className="absolute left-0 top-8 z-30 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-xl shadow-xl py-1.5 min-w-[170px] animate-in fade-in zoom-in-95 duration-100">
+                              <div className="px-2.5 py-1 text-[10px] uppercase font-bold text-neutral-400 dark:text-neutral-500 tracking-wider">
+                                Сменить статус
+                              </div>
+                              {(['new', 'in_progress', 'waiting'] as Status[]).map(s => {
+                                const sc = statusConfig[s];
+                                return (
+                                  <button
+                                    key={s}
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      handleInlineStatusChange(ticket, s);
+                                    }}
+                                    className="w-full px-2.5 py-1.5 text-left text-[12px] font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer flex items-center gap-2 text-neutral-800 dark:text-neutral-200"
+                                  >
+                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${sc.dotClass}`} />
+                                    <span>{sc.label}</span>
+                                  </button>
+                                );
+                              })}
+                              <div className="border-t border-neutral-100 dark:border-neutral-800 my-1" />
                               <button
                                 onClick={e => {
                                   e.stopPropagation();
                                   handleInlineStatusChange(ticket, 'resolved');
                                 }}
-                                className="w-full px-3 py-1.5 text-left text-[12px] font-medium text-blue-600 dark:text-blue-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
+                                className="w-full px-2.5 py-1.5 text-left text-[12px] font-semibold text-blue-600 dark:text-blue-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer flex items-center justify-between"
                               >
-                                Выполнить / Отменить →
+                                <div className="flex items-center gap-2">
+                                  <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse bg-emerald-500" />
+                                  <span>Выполнить / Отменить</span>
+                                </div>
+                                <IconChevronRight size={12} />
                               </button>
                             </div>
                           )}
                         </div>
                       </td>
 
+                      {/* Unified Smart AI Solution & Action Button */}
+                      <td className="w-44 px-3.5 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                        {ticket.statusId === 27 ? (
+                          <div
+                            className="h-7.5 inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 shadow-2xs"
+                            title="Заявка уже переведена в статус «В работе»"
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse shrink-0" />
+                            <span>В работе</span>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => handleApplyTicketPlan(ticket)}
+                            className="group h-7.5 inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
+                            title={ticket.aiPlan ? `${ticket.aiPlan.actionTitle}\nОтвет: «${ticket.aiPlan.comment}»\nСписание: ${ticket.aiPlan.expensesMinutes} мин` : 'Принять заявку в работу'}
+                          >
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${getStatusDotClass(
+                                ticket.aiPlan?.targetStatusId ?? (ticket.ruleType === 'hardware_repair' ? 48 : 27)
+                              )}`}
+                            />
+                            <span>{ticket.aiPlan?.targetStatusName || (ticket.ruleType === 'hardware_repair' ? 'Ожидание устройства' : 'В работе')}</span>
+                            <IconArrowRight size={10} className="text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-colors ml-0.5" />
+                          </button>
+                        )}
+                      </td>
+
                       {/* Ticket Title (Top) & Requester Info (Bottom), Tags next to Description */}
-                      <td className="px-3.5 py-2.5 min-w-[280px]">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-neutral-900 dark:text-neutral-100 font-bold text-[13.5px] truncate max-w-md">
+                      <td className="w-auto px-3.5 py-3 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-neutral-900 dark:text-neutral-100 font-bold text-[15px] truncate max-w-lg">
                             {ticket.title}
                           </span>
 
+                          {/* Rule Engine Badge */}
+                          {ticket.hasRuleEngine && (
+                            <span
+                              className="px-2 py-0.5 rounded text-[11px] font-semibold border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 inline-flex items-center gap-1 shrink-0"
+                              title="Сработало регламентное правило Rule Engine"
+                            >
+                              <IconBolt size={10} className="text-blue-600 dark:text-blue-400 shrink-0" />
+                              <span>Rule Engine</span>
+                            </span>
+                          )}
+
+                          {/* AI Ready Solution Badge */}
+                          {ticket.hasAiSolution && (
+                            <span
+                              className="px-2 py-0.5 rounded text-[11px] font-semibold border border-purple-300 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/70 text-purple-700 dark:text-purple-300 inline-flex items-center gap-1 shrink-0"
+                              title="Для этой заявки готово проверенное решение AI"
+                            >
+                              <IconSparkles size={10} className="text-purple-600 dark:text-purple-400 shrink-0" />
+                              <span>AI Решение</span>
+                            </span>
+                          )}
+
                           {/* Smart tag badges placed right beside title/description */}
                           {ticket.isDuplicate && (
-                            <span className={smartTagClass}>
-                              дубликат
+                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
+                              <IconDuplicate size={11} className="text-neutral-500 shrink-0" />
+                              <span>дубликат</span>
                             </span>
                           )}
                           {ticket.isRedirect && (
-                            <span className={smartTagClass}>
-                              редирект
+                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
+                              <IconRedirect size={11} className="text-neutral-500 shrink-0" />
+                              <span>редирект</span>
                             </span>
                           )}
-                          {ticket.ruleType === 'hardware_repair' && (
-                            <span className={smartTagClass}>
-                              в ремонт
+                          {(ticket.ruleType === 'hardware_repair' ||
+                            ticket.templateKey === 'hardware_repair' ||
+                            ticket.templateKey === 'bring_device_112' ||
+                            ticket.templateKey === 'bring_pc_112') && (
+                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
+                              <IconWrench size={11} className="text-neutral-500 shrink-0" />
+                              <span>в ремонт</span>
                             </span>
                           )}
                           {(ticket.ruleType === 'wlan_access' || ticket.templateKey === 'wifi_access') && (
-                            <span className={smartTagClass}>
-                              wi-fi
+                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
+                              <IconWifi size={11} className="text-neutral-500 shrink-0" />
+                              <span>wi-fi</span>
+                            </span>
+                          )}
+                          {(ticket.ruleType === '1c_cache' || ticket.templateKey === '1c_cache') && (
+                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
+                              <span>1с</span>
+                            </span>
+                          )}
+                          {(ticket.ruleType === 'printer_spooler' ||
+                            ticket.templateKey === 'printer_install' ||
+                            ticket.templateKey === 'printer_offline' ||
+                            ticket.templateKey === 'printer_ip_clarify') && (
+                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
+                              <span>печать</span>
+                            </span>
+                          )}
+                          {(ticket.ruleType === 'credentials_reset' ||
+                            ticket.templateKey === 'ad_password_reset' ||
+                            ticket.templateKey === 'password_reset_call') && (
+                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
+                              <span>пароль</span>
+                            </span>
+                          )}
+                          {(ticket.ruleType === 'user_creation' ||
+                            ticket.templateKey === 'user_created' ||
+                            ticket.templateKey === 'account_details_clarify' ||
+                            ticket.templateKey === 'account_pc_occupied' ||
+                            ticket.serviceId === 53) && (
+                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
+                              <IconUser size={11} className="text-neutral-500 shrink-0" />
+                              <span>создание уз</span>
+                            </span>
+                          )}
+                          {ticket.hasKbMatches && (
+                            <span className="px-1.5 py-0.2 rounded text-[10px] font-medium border border-purple-200 dark:border-purple-800/80 bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 inline-flex items-center gap-1" title="Есть похожие решения в базе знаний RAG">
+                              <IconBookOpen size={10} className="shrink-0 text-purple-600 dark:text-purple-400" />
+                              <span>RAG</span>
+                            </span>
+                          )}
+                          {ticket.circuit === 'red' && (
+                            <span className="px-1 py-0.2 rounded text-[9.5px] font-mono font-bold border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400" title="Контур RED: пароли/AD, закрытый On-Prem">
+                              RED
                             </span>
                           )}
                           {ticket.hasAttachments && (
-                            <span className="text-neutral-400 text-[12px]" title="Есть вложения">📎</span>
+                            <span className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors shrink-0" title="Есть вложения">
+                              <IconPaperclip size={13} />
+                            </span>
                           )}
                         </div>
 
-                        <div className="text-[12px] text-neutral-500 dark:text-neutral-400 mt-0.5 flex items-center gap-1.5 font-normal">
+                        <div className="text-[13px] text-neutral-500 dark:text-neutral-400 mt-1 flex items-center gap-1.5 font-normal">
                           <a
                             href={`/admin/api/tasks/${ticket.rawId}/open`}
                             target="_blank"
                             rel="noreferrer"
                             onClick={e => e.stopPropagation()}
-                            className="font-mono tabular-nums text-neutral-500 hover:text-blue-600 dark:hover:text-blue-400 hover:underline shrink-0 font-medium"
+                            className="font-mono tabular-nums text-neutral-400 dark:text-neutral-500 hover:text-blue-600 dark:hover:text-blue-400 hover:underline shrink-0 font-semibold"
                             title="Открыть заявку в IntraService"
                           >
                             #{ticket.rawId}
@@ -583,22 +925,23 @@ export default function QueuePage({
                       </td>
 
                       {/* Service / Category */}
-                      <td className="px-3.5 py-2.5 whitespace-nowrap">
-                        <span className="text-[13px] text-neutral-800 dark:text-neutral-200 font-normal truncate block max-w-[220px]" title={ticket.servicePath || ticket.serviceName}>
+                      <td className="w-48 px-3.5 py-3 whitespace-nowrap">
+                        <span className="text-[13.5px] text-neutral-800 dark:text-neutral-200 font-normal truncate block max-w-[200px]" title={ticket.servicePath || ticket.serviceName}>
                           {ticket.serviceName}
                         </span>
                       </td>
 
-                      {/* Host (Clean Badge style from image-2.png) */}
-                      <td className="px-3.5 py-2.5 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                      {/* Host (Clean Badge style) */}
+                      <td className="w-36 px-3.5 py-3 whitespace-nowrap">
                         {primaryHost ? (
                           <div className="relative inline-flex items-center gap-1.5">
                             <span
-                              onClick={() => {
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 navigator.clipboard.writeText(primaryHost);
                                 onToast({ type: 'info', message: `Хост ${primaryHost} скопирован в буфер` });
                               }}
-                              className="font-sans font-bold text-[12px] bg-neutral-200/80 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 px-2 py-0.5 rounded cursor-pointer hover:bg-neutral-300 dark:hover:bg-neutral-700 transition-colors tracking-wide"
+                              className="font-mono font-semibold text-[12px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200/80 dark:border-neutral-700/80 px-2 py-0.5 rounded cursor-pointer hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors"
                               title="Нажмите, чтобы скопировать хост"
                             >
                               {primaryHost}
@@ -607,29 +950,36 @@ export default function QueuePage({
                             {otherHosts.length > 0 && (
                               <div className="relative">
                                 <button
-                                  onClick={() => setOpenHostTicketId(openHostTicketId === ticket.id ? null : ticket.id)}
-                                  className="px-1.5 py-0.5 bg-blue-100 hover:bg-blue-200 dark:bg-blue-950/80 dark:hover:bg-blue-900 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700 rounded text-[11px] font-bold cursor-pointer transition-colors"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setOpenHostTicketId(openHostTicketId === ticket.id ? null : ticket.id);
+                                  }}
+                                  className="px-1.5 py-0.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 rounded text-[11px] font-mono font-bold cursor-pointer transition-colors"
                                   title="Показать все хосты"
                                 >
-                                  +{otherHosts.length} ▾
+                                  +{otherHosts.length}
                                 </button>
 
                                 {openHostTicketId === ticket.id && (
-                                  <div className="absolute left-0 top-7 z-30 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-2xl p-2 min-w-[160px] space-y-1 animate-in fade-in zoom-in-95 duration-100">
+                                  <div
+                                    onClick={e => e.stopPropagation()}
+                                    className="absolute left-0 top-7 z-30 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-2xl p-2 min-w-[160px] space-y-1 animate-in fade-in zoom-in-95 duration-100"
+                                  >
                                     <span className="text-[10px] uppercase font-bold text-neutral-400 block px-1">
                                       Хосты ({hostList.length})
                                     </span>
                                     {hostList.map((h, i) => (
                                       <div
                                         key={i}
-                                        onClick={() => {
+                                        onClick={(e) => {
+                                          e.stopPropagation();
                                           navigator.clipboard.writeText(h);
                                           onToast({ type: 'info', message: `Хост ${h} скопирован` });
                                           setOpenHostTicketId(null);
                                         }}
                                         className="flex items-center justify-between px-2 py-1 bg-neutral-50 dark:bg-neutral-800 hover:bg-blue-50 dark:hover:bg-blue-950/50 rounded cursor-pointer transition-colors"
                                       >
-                                        <span className="font-sans font-bold text-[12px] text-neutral-800 dark:text-neutral-200">{h}</span>
+                                        <span className="font-mono font-bold text-[12px] text-neutral-800 dark:text-neutral-200">{h}</span>
                                         <span className="text-[10px] text-neutral-400">копировать</span>
                                       </div>
                                     ))}
@@ -639,42 +989,32 @@ export default function QueuePage({
                             )}
                           </div>
                         ) : (
-                          <span className="text-neutral-300 dark:text-neutral-700 text-[12px]">—</span>
+                          <span className="text-neutral-300 dark:text-neutral-700 font-mono text-[12px]">—</span>
                         )}
                       </td>
 
                       {/* Executors Column */}
-                      <td className="px-3.5 py-2.5 whitespace-nowrap">
+                      <td className="w-40 px-3.5 py-3 whitespace-nowrap">
                         {ticket.executors ? (
-                          <span className="text-[12.5px] text-neutral-800 dark:text-neutral-200 font-medium truncate block max-w-[150px]" title={ticket.executors}>
+                          <span className="text-[13px] text-neutral-800 dark:text-neutral-200 font-medium truncate block max-w-[150px]" title={ticket.executors}>
                             {ticket.executors}
                           </span>
                         ) : (
-                          <span className="text-neutral-400 dark:text-neutral-500 text-[12px] font-normal">Не назначен</span>
-                        )}
-                      </td>
-
-                      {/* Action (В работу) */}
-                      <td className="px-3.5 py-2.5 whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                        {ticket.statusId === 27 ? (
-                          <span className="text-[12px] text-emerald-600 dark:text-emerald-400 font-medium">
-                            В работе
-                          </span>
-                        ) : (
-                          <button
-                            onClick={() => handleInlineTake(ticket)}
-                            className="px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 border border-neutral-300/90 dark:border-neutral-700 rounded text-[12px] font-medium transition-colors cursor-pointer"
-                          >
-                            В работу
-                          </button>
+                          <span className="text-neutral-300 dark:text-neutral-700 font-mono text-[12px]">—</span>
                         )}
                       </td>
 
                       {/* SLA */}
-                      <td className="w-24 px-3.5 py-2.5 whitespace-nowrap">
-                        <span className={`text-[12px] ${ticket.slaDeadline.getTime() < Date.now() ? 'text-rose-600 dark:text-rose-400 font-normal' : 'text-neutral-600 dark:text-neutral-400 font-normal'}`}>
-                          {formatSla(ticket.slaDeadline)}
-                        </span>
+                      <td className="w-28 px-3.5 py-3 whitespace-nowrap">
+                        {ticket.slaDeadline.getTime() < Date.now() ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200/80 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-900/60">
+                            Просрочена
+                          </span>
+                        ) : (
+                          <span className="text-neutral-500 dark:text-neutral-400 font-mono text-[12.5px] tabular-nums font-medium">
+                            {formatSla(ticket.slaDeadline)}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   );
@@ -727,10 +1067,7 @@ export default function QueuePage({
                     }}
                   >
                     <div className="flex items-center gap-2 px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 shrink-0">
-                      <span className={`w-2.5 h-2.5 rounded-full ${col.status === 'new' ? 'bg-blue-500' :
-                        col.status === 'in_progress' ? 'bg-amber-500' :
-                          col.status === 'waiting' ? 'bg-purple-500' : 'bg-emerald-500'
-                        }`} />
+                      <span className={`w-2 h-2 rounded-full shrink-0 animate-pulse ${statusConfig[col.status].dotClass}`} />
                       <span className="text-[13.5px] font-bold text-neutral-800 dark:text-neutral-200">{col.label}</span>
                       <span className="ml-auto text-[12px] bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 px-2 py-0.5 rounded-full font-bold">
                         {colTickets.length}
@@ -744,13 +1081,13 @@ export default function QueuePage({
                           draggable
                           onDragStart={e => e.dataTransfer.setData('ticketId', t.id)}
                           onClick={() => onSelectTicket(selectedTicketId === t.id ? null : t.id)}
-                          className={`bg-white dark:bg-neutral-800 rounded-lg border p-3.5 cursor-pointer transition-all shadow-xs ${selectedTicketId === t.id
+                          className={`bg-white dark:bg-neutral-800 rounded-lg border p-3.5 cursor-pointer transition-all shadow-2xs hover:shadow-sm hover:scale-[1.01] active:scale-[0.99] ${selectedTicketId === t.id
                             ? 'border-blue-500 dark:border-blue-400 ring-2 ring-blue-500/30'
-                            : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-600'
+                            : 'border-neutral-200/80 dark:border-neutral-700/80 hover:border-neutral-300 dark:hover:border-neutral-600'
                             }`}
                         >
                           <div className="flex items-start justify-between gap-2 mb-1.5">
-                            <span className="font-mono font-bold text-[12px] text-neutral-500">#{t.rawId}</span>
+                            <span className="font-mono font-bold text-[12px] text-neutral-400 dark:text-neutral-500">#{t.rawId}</span>
                             <span className={`text-[11px] font-bold flex items-center gap-1 ${priorityConfig[t.priority].textClass}`}>
                               <span className={`w-1.5 h-1.5 rounded-full ${priorityConfig[t.priority].dotClass}`} />
                               {priorityConfig[t.priority].label}
@@ -769,8 +1106,10 @@ export default function QueuePage({
                       ))}
 
                       {colTickets.length === 0 && (
-                        <div className="flex items-center justify-center h-20 text-[13px] text-neutral-400 italic">
-                          Пусто
+                        <div className="flex flex-col items-center justify-center h-28 border border-dashed border-neutral-200 dark:border-neutral-800 rounded-xl p-4 text-center">
+                          <span className="text-[12px] text-neutral-400 dark:text-neutral-500 font-medium">
+                            Нет заявок
+                          </span>
                         </div>
                       )}
                     </div>
@@ -792,38 +1131,42 @@ export default function QueuePage({
         />
       )}
 
-      {/* Real Bulk Action Bar (Marks #6, #7: Terminology Helpdesk & Statuses in words) */}
+      {/* Real Bulk Action Bar (100% HITL Smart Automation) */}
       {selected.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-5 py-3 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded-xl shadow-2xl border border-neutral-700 dark:border-neutral-300">
-          <span className="text-[13px] font-bold mr-1">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2.5 px-4 py-2.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded-2xl shadow-2xl border border-neutral-700 dark:border-neutral-300 animate-in fade-in slide-in-from-bottom-3 duration-150 flex-wrap justify-center">
+          <span className="text-[13px] font-bold mr-1 shrink-0">
             Выбрано: {selected.size}
           </span>
-          <div className="w-px h-5 bg-neutral-700 dark:bg-neutral-300" />
+          <div className="w-px h-5 bg-neutral-700 dark:bg-neutral-300 shrink-0" />
+          
+          {/* Main 100% HITL Smart Button */}
+          <button
+            onClick={() => openSmartBatchModal(tickets.filter(t => selected.has(t.id)))}
+            disabled={processingBulk}
+            className="text-[13px] font-bold bg-blue-600 hover:bg-blue-500 text-white px-3.5 py-1.5 rounded-lg transition-all shadow-md cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+          >
+            <IconSparkles size={14} className="text-blue-200" />
+            <span>Применить решения ({selected.size})</span>
+          </button>
+
           <button
             onClick={() => initiateBulkAction('take')}
             disabled={processingBulk}
-            className="text-[13px] font-semibold hover:text-blue-300 dark:hover:text-blue-700 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50"
+            className="text-[12.5px] font-semibold text-neutral-300 hover:text-white dark:text-neutral-700 dark:hover:text-neutral-900 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50 shrink-0"
           >
-            Взять в работу
+            В работу
           </button>
           <button
             onClick={() => initiateBulkAction('cancel')}
             disabled={processingBulk}
-            className="text-[13px] font-semibold hover:text-amber-300 dark:hover:text-amber-700 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50"
+            className="text-[12.5px] font-semibold text-neutral-300 hover:text-white dark:text-neutral-700 dark:hover:text-neutral-900 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50 shrink-0"
           >
-            Отменить заявки
+            Отменить
           </button>
-          <button
-            onClick={() => initiateBulkAction('resolve')}
-            disabled={processingBulk}
-            className="text-[13px] font-semibold hover:text-emerald-300 dark:hover:text-emerald-700 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50"
-          >
-            Выполнить заявки
-          </button>
-          <div className="w-px h-5 bg-neutral-700 dark:bg-neutral-300" />
+          <div className="w-px h-5 bg-neutral-700 dark:bg-neutral-300 shrink-0" />
           <button
             onClick={() => setSelected(new Set())}
-            className="text-neutral-400 hover:text-white dark:hover:text-neutral-900 transition-colors cursor-pointer p-1"
+            className="text-neutral-400 hover:text-white dark:hover:text-neutral-900 transition-colors cursor-pointer p-1 shrink-0"
             title="Снять выделение"
           >
             <svg width="14" height="14" viewBox="0 0 13 13" fill="none">
@@ -833,59 +1176,25 @@ export default function QueuePage({
         </div>
       )}
 
+      {/* Smart Batch Plan Modal (100% HITL Confirmation with In-line Edit) */}
+      {smartBatchModal && (
+        <SmartBatchModal
+          items={smartBatchModal.items}
+          processingBulk={processingBulk}
+          onClose={() => setSmartBatchModal(null)}
+          onUpdateItems={setSmartBatchModal}
+          onExecute={executeSmartBatch}
+        />
+      )}
+
       {/* Bulk Confirm Modal (Audit C-3: Verified Execution Safeguard) */}
       {bulkModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-2xs p-4">
-          <div className="w-full max-w-md bg-white dark:bg-neutral-900 rounded-xl shadow-2xl border border-neutral-200 dark:border-neutral-800 p-5 space-y-4 animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100">
-                Подтверждение массового действия
-              </h3>
-              <button
-                onClick={() => setBulkModal(null)}
-                className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer"
-              >
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              </button>
-            </div>
-
-            <p className="text-[13.5px] text-neutral-700 dark:text-neutral-300 leading-relaxed">
-              Вы уверены, что хотите перевести <strong>{bulkModal.count}</strong> {bulkModal.count === 1 ? 'заявку' : 'заявок'} в статус{' '}
-              <span className="font-bold underline">«{bulkModal.statusLabelName}»</span>?
-            </p>
-
-            {/* List of ticket IDs */}
-            <div className="bg-neutral-100 dark:bg-neutral-800/80 p-2.5 rounded-lg text-[12px] font-mono text-neutral-700 dark:text-neutral-300 max-h-24 overflow-y-auto">
-              {bulkModal.ticketIds.map(id => `#${id}`).join(', ')}
-            </div>
-
-            {/* Warning if hardware repair is selected for bulk resolve */}
-            {bulkModal.hasRepair && bulkModal.actionType === 'resolve' && (
-              <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-lg text-[12.5px] text-amber-900 dark:text-amber-200 leading-snug">
-                ⚠️ <strong>Внимание (Verified Execution):</strong> в выборке присутствуют заявки на аппаратный ремонт (Каб. 112). Завершайте их только после физической выдачи устройства заявителю!
-              </div>
-            )}
-
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                onClick={() => setBulkModal(null)}
-                disabled={processingBulk}
-                className="px-4 py-2 text-[13px] font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors cursor-pointer"
-              >
-                Отмена
-              </button>
-              <button
-                onClick={executeBulkAction}
-                disabled={processingBulk}
-                className="px-4 py-2 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 text-[13px] font-bold rounded-lg hover:bg-neutral-800 dark:hover:bg-neutral-200 transition-colors cursor-pointer disabled:opacity-50"
-              >
-                {processingBulk ? 'Выполнение...' : 'Подтвердить'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <BulkConfirmModal
+          modal={bulkModal}
+          processingBulk={processingBulk}
+          onClose={() => setBulkModal(null)}
+          onConfirm={executeBulkAction}
+        />
       )}
     </div>
   );

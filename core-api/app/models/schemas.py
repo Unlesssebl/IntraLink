@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 # Схемы для авторизации
@@ -23,11 +23,11 @@ class UserResponse(BaseModel):
     last_comment_id: int
     last_check_time: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserStateUpdate(BaseModel):
     last_task_id: int | None = None
     last_comment_id: int | None = None
     last_check_time: str | None = None
+

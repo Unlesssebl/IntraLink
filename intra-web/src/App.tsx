@@ -6,6 +6,7 @@ import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
 import QueuePage from './pages/QueuePage';
 import SettingsPage from './pages/SettingsPage';
+import AdminPanelPage from './pages/AdminPanelPage';
 import CommandPalette from './components/CommandPalette';
 import ToastContainer from './components/Toast';
 import { AuthProvider, useAuth } from './lib/auth';
@@ -261,6 +262,18 @@ function MainApp() {
 }
 
 export default function App() {
+  const [pathname, setPathname] = useState(() => window.location.pathname);
+
+  useEffect(() => {
+    const handlePopState = () => setPathname(window.location.pathname);
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  if (pathname.startsWith('/admin')) {
+    return <AdminPanelPage />;
+  }
+
   return (
     <AuthProvider>
       <MainApp />

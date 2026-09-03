@@ -90,14 +90,15 @@ def extract_user_creation_details_from_task(
     meta = task.get("_field_meta") or {}
     raw_fields = meta.get("raw") or {}
 
-    surname = raw_fields.get("1069", "").strip()
-    name = raw_fields.get("1070", "").strip()
-    patronymic = raw_fields.get("1071", "").strip()
-    title = raw_fields.get("1073", "").strip()
-    phone = raw_fields.get("1075", "").strip()
-    department = raw_fields.get("1078", "").strip()
-    pc_name = raw_fields.get("1120", "").strip()
+    surname = (raw_fields.get("1057") or raw_fields.get("1069") or "").strip()
+    name = (raw_fields.get("1058") or raw_fields.get("1070") or "").strip()
+    patronymic = (raw_fields.get("1059") or raw_fields.get("1071") or "").strip()
+    title = (raw_fields.get("1065") or raw_fields.get("1073") or "").strip()
+    phone = (raw_fields.get("1066") or raw_fields.get("1075") or "").strip()
+    department = (raw_fields.get("1064") or raw_fields.get("1078") or "").strip()
+    pc_name = (raw_fields.get("1068") or raw_fields.get("1120") or "").strip()
     company = raw_fields.get("1074", "").strip()
+    email = (raw_fields.get("1523") or raw_fields.get("1494") or "").strip()
 
     # Fallback из текста описания
     if not surname or not name:

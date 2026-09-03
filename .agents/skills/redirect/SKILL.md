@@ -25,11 +25,11 @@ description: >-
 ## 🛠 Шаги выполнения агента:
 
 1. **Проверка статуса БД:**
-   Выполнить `uv run python helpdesk_tool.py check-db` в каталоге `helpdesk_agent/`. При необходимости запустить через `start-db`.
+   Выполнить `uv run python helpdesk-cli/helpdesk.py check-db`. При необходимости запустить через `start-db`.
 
 2. **Запуск поиска редиректов в CLI:**
-   - Для конкретного раздела: `uv run python helpdesk_tool.py redirect --service <НОМЕР> --limit <N>` (или `batch --service <НОМЕР> --limit <N> --redirect`).
-   - Для всей очереди: `uv run python helpdesk_tool.py redirect --limit <N>` (или `batch --limit <N> --redirect`).
+   - Для конкретного раздела: `uv run python helpdesk-cli/helpdesk.py redirect --service <НОМЕР> --limit <N>` (или `batch --service <НОМЕР> --limit <N> --redirect`).
+   - Для всей очереди: `uv run python helpdesk-cli/helpdesk.py redirect --limit <N>` (или `batch --limit <N> --redirect`).
 
 3. **Компактная презентация карточек (Human-in-the-Loop):**
    Вывести лаконичные 4-строчные карточки по найденным инцидентам:
@@ -45,4 +45,4 @@ description: >-
 
 5. **Применение изменений (`apply`):**
    После текстового подтверждения оператором применить статус `30`, комментарий с маршрутом и списать 5 минут трудозатрат:
-   `uv run python helpdesk_tool.py apply <ID> --status 30 --comment "<ТЕКСТ_ОТВЕТА>" --expenses 5`
+   `uv run python helpdesk-cli/helpdesk.py apply <ID> --status 30 --comment "<ТЕКСТ_ОТВЕТА>" --expenses 5`

@@ -35,17 +35,23 @@ docs/
 ## 1. Архитектура монорепозитория
 
 Проект — **модульный монорепозиторий**:
-- `core-api/` — FastAPI (шлюз, хранилище состояния, фоновый воркер, встроенный SPA `/admin`).
-- `telegram-bot/` — aiogram 3.x (интерфейсный слой, делегирует логику в Core API).
-- `helpdesk_agent/` — автономный CLI-агент и Execution Hub в среде Antigravity (AGY).
+- `core-api/` — FastAPI (шлюз состояния, AI Hub, правила SSOT, шина событий, хостинг React SPA `/admin`).
+- `poller` (`core-api/app/poller.py`) — автономный фоновый демон опроса IntraService с распределенным Leader Lock.
+- `execution-worker/` — фоновый headless-демон исполнения в среде Windows (Active Directory, WinRM, WMI, принтеры).
+- `helpdesk-cli/` — **машинный инструментарий и SDK исключительно для AI-агента Antigravity (AGY)**.
+- `shared/` — **единый пакет общих утилит (SSOT)** нормализации оборудования (`normalizer.py`), сетевой экспресс-диагностики (`diagnostics.py`) и сериализации (`json_utils.py`).
+- `telegram-bot/` — aiogram 3.x (мобильный пейджер + HitL кнопки одобрения).
 
 Каналы связи:
-1. **HTTP REST** (`telegram-bot` → `core-api`) — управляющие команды и запросы данных.
-2. **Redis Streams & Pub/Sub** (`core-api` → `telegram-bot`) — гарантированная доставка push-уведомлений (`stream:intraservice_events` с Consumer Group, `XACK` и автоперехватом `XAUTOCLAIM`).
+1. **HTTP REST** (`telegram-bot`, `helpdesk-cli`, `intra-web` → `core-api`) — управляющие команды, запросы данных, AI-инференс.
+2. **Redis Streams & Pub/Sub** (`core-api`, `poller` → `telegram-bot`, `execution-worker`) — гарантированная доставка событий и очередь исполнения.
 
 ---
 
 ## 2. Ключевые архитектурные принципы (ПОЧЕМУ)
+
+### `helpdesk-cli` — исключительно инструментарий для AI-агента AGY
+Директория `helpdesk-cli/` не разрабатывается как интерактивный терминальный UI для человека. Она спроектирована и развивается **строго как машинный SDK/Tooling для AI-агента Antigravity (AGY)** при вызове слэш-команд (`/triage`, `/diag`, `/task`, `/sync`, `/kb`, `/redirect`) и исполнении специализированных навыков (`.agents/skills/`). Человек взаимодействует с системой через диалог с AI-агентом, Web SPA `/admin` или Telegram-бот.
 
 ### Бот не хранит учётные данные
 Вся ответственность за хранение и использование паролей IntraService лежит **исключительно на Core API**. Бот получает только отфильтрованные шлюзом данные.
@@ -68,32 +74,19 @@ docs/
 ### Жадная загрузка (Eager Loading) кастомных полей
 `check_updates` использует жадную загрузку кастомных полей (`include=customfields`) при массовом опросе задач для исключения узких мест при диспетчеризации.
 
+### Единый пакет shared (Single Source of Truth)
+Все общие алгоритмы нормализации сетевых устройств (`normalizer.py`), экспресс-диагностики (`diagnostics.py`) и сериализации (`json_utils.py`) живут строго в пакете `shared/`. Создание изолированных копий этих модулей в `helpdesk-cli` или `execution-worker` запрещено.
+
+### Изоляция Poller Lifecycle
+Встроенный APScheduler в `core-api` управляется параметром `ENABLE_INTERNAL_SCHEDULER` (по умолчанию `False`). Опрос очереди IntraService в Docker выполняет исключительно демон `poller` (`app.poller`) с распределенным Leader Lock, предотвращая дублирование запросов.
+
 ### Специализированные навыки (Skills)
 - **Установка принтеров и WinRM/WMI:** [`.agents/skills/printer-orchestration/SKILL.md`](.agents/skills/printer-orchestration/SKILL.md)
-- **Триаж очереди и Helpdesk-оператор:** [`.agents/skills/intraservice-helpdesk/SKILL.md`](.agents/skills/intraservice-helpdesk/SKILL.md) и [`helpdesk_agent/GEMINI.md`](helpdesk_agent/GEMINI.md)
+- **Триаж очереди и Helpdesk-оператор:** [`.agents/skills/intraservice-helpdesk/SKILL.md`](.agents/skills/intraservice-helpdesk/SKILL.md)
 
 ---
 
-## 3. Правила написания кода
-
-### Асинхронность
-Все I/O операции — **строго асинхронные** (`async`/`await`):
-- База данных: `SQLAlchemy AsyncSession`
-- HTTP: `aiohttp.ClientSession`
-- Redis: `aioredis` async API
-
-### Управление HTTP-сессиями aiohttp
-Используйте **долгоживущие** `aiohttp.ClientSession`, привязанные к `lifespan` приложения с обязательным закрытием в `finally`.
-
-### Управление соединениями Redis Pub/Sub
-Используйте контекстный менеджер `async with redis.pubsub() as pubsub:` и явный `await redis.close()` в `finally`.
-
-### Формат дат
-При передаче временных фильтров в API (`CreatedMoreThan`, `ChangedMoreThan`) используйте формат `YYYY-MM-DD HH:MM` в локальном TZ IntraService (`parse_api_date(date_str)`).
-
----
-
-## 4. Правила безопасности (запреты)
+## 3. Правила безопасности (запреты)
 
 | Запрет | Причина |
 |---|---|
@@ -106,20 +99,54 @@ docs/
 
 ---
 
-## 5. Аутентификация между сервисами
+## 4. Аутентификация между сервисами
 
-- **Бот → Core API:** Pre-shared ключ в заголовке `X-Bot-Api-Key: <key>`. Проверка в `core-api/app/routers/deps.py`.
+- **Бот / CLI → Core API:** Pre-shared ключ в заголовке `X-Bot-Api-Key: <key>`. Проверка в `core-api/app/routers/deps.py`.
 - **Core API → IntraService:** Basic Auth (`Authorization: Basic <base64(login:password)>`).
 
 ---
 
-## 6. Тесты
+## 5. Инженерные инварианты кодогенерации (для AI-кодера)
 
-Тесты находятся в `core-api/tests/`. Запуск:
-```bash
-python -m pytest tests/ -v
+1. **Асинхронность и неблокирующий I/O:**
+   - Все контроллеры FastAPI и сервисы пишутся строго асинхронно (`async def`).
+   - Любые блокирующие операции (запуск subprocess/PowerShell, WMI-запросы, тяжелые расчеты) **обязательно** выносить в поток через `await asyncio.to_thread(...)`.
+2. **SQLAlchemy 2.0 (Async):**
+   - Использовать исключительно современный синтаксис 2.0: `await session.execute(select(...))` и `scalars()`.
+   - Запрещено использовать устаревший синтаксис `session.query(...)`.
+   - Сессии создавать через `AsyncSessionLocal()` с `expire_on_commit=False`.
+3. **Pydantic v2:**
+   - Использовать `model_validate(...)`, `model_dump(mode="json")`.
+   - Не использовать устаревшие методы Pydantic v1 (`.dict()`, `.parse_obj()`).
+4. **Единый пакет сериализации и утилит (SSOT):**
+   - Для сериализации JSON использовать `shared.json_utils` (`json_dumps`, `json_loads` на базе `orjson`).
+   - Для парсинга хостов и сетевых проверок импортировать `shared.normalizer` и `shared.diagnostics`.
+5. **Современная типизация Python 3.11+:**
+   - Использовать встроенные объединения типов (`str | None` вместо `Optional[str]`) и стандартные коллекции (`list[dict]`, `dict[str, Any]` вместо `typing.List`, `typing.Dict`).
+6. **Правила обработки ошибок:**
+   - В API-роутерах выбрасывать `HTTPException(status_code=..., detail=...)`.
+   - В фоновых демонах (`poller`, `execution-worker`) непредвиденные исключения перехватывать через `try...except Exception as e: logger.exception(...)`, предотвращая аварийное падение процесса.
+
+---
+
+## 6. Верификация и запуск тестов
+
+> [!IMPORTANT]
+> При запуске тестов `core-api` **обязательно** задавать `PYTHONPATH`, включающий корень монорепозитория и `core-api` (для разрешения импортов `shared` и `app`):
+
+```powershell
+# Запуск тестов Core API (PowerShell / Windows)
+$env:PYTHONPATH=".;core-api"; uv run pytest core-api/tests/ -v
+
+# Запуск тестов Shared пакета
+uv run pytest shared/ -v
 ```
 
-### Учетные данные исполнителя Helpdesk (intraservice)
-Логин: `IntraService_dev`
-Пароль: `85_wW8EuOyYaw+xv6`
+---
+
+## 7. Документация и правила подсистем
+
+- **Специализированные правила кодинга:** [`.agents/rules/backend.md`](.agents/rules/backend.md)
+- **Правила и рецепты тестирования:** [`.agents/rules/testing.md`](.agents/rules/testing.md)
+- **Архитектура системы:** [`docs/architecture.md`](docs/architecture.md)
+- **Руководство разработчика:** [`docs/developer_guide.md`](docs/developer_guide.md)

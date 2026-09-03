@@ -11,7 +11,7 @@ description: >-
 
 Этот навык обучает AI-агента Antigravity (AGY) автономно, безопасно и с максимальной скоростью вести очередь заявок технической поддержки в IntraService от лица инженера **Беликова Алена** (ООО «АйТи ТЭМПО», тел. `49-87`, АБК-3, каб. 112).
 
-Подробное руководство по сценариям: [`docs/services/helpdesk_agent/WORKFLOWS.md`](docs/services/helpdesk_agent/WORKFLOWS.md).
+Подробное руководство по сценариям: [`docs/services/helpdesk-cli/WORKFLOWS.md`](../../../docs/services/helpdesk-cli/WORKFLOWS.md).
 
 ---
 
@@ -38,52 +38,52 @@ AI-агент мгновенно распознает как слэш-коман
 
 ---
 
-## 🛠 Доступные CLI-команды (`helpdesk_agent/helpdesk_tool.py`)
+## 🛠 Доступные CLI-команды (`helpdesk-cli/helpdesk.py`)
 
 ```bash
 # 0. Проверка и автоматический запуск PostgreSQL + pgvector
-uv run python helpdesk_tool.py check-db
-uv run python helpdesk_tool.py start-db
+uv run python helpdesk-cli/helpdesk.py check-db
+uv run python helpdesk-cli/helpdesk.py start-db
 
 # 1. ПАКЕТНЫЙ РАЗБОР СТОПКИ ЗАЯВОК (Основной рабочий режим)
 # Все разделы очереди:
-uv run python helpdesk_tool.py batch --limit 5
+uv run python helpdesk-cli/helpdesk.py batch --limit 5
 
 # Фильтрация по конкретному номеру раздела каталога (например 2 - ПО, 3 - Оргтехника, 6 - 1С):
-uv run python helpdesk_tool.py batch --service 2 --limit 5
-uv run python helpdesk_tool.py batch --service 03 --limit 5
-uv run python helpdesk_tool.py batch --service 6 --limit 5
+uv run python helpdesk-cli/helpdesk.py batch --service 2 --limit 5
+uv run python helpdesk-cli/helpdesk.py batch --service 03 --limit 5
+uv run python helpdesk-cli/helpdesk.py batch --service 6 --limit 5
 
 # 1.1. ПОИСК И ОТМЕНА ЗАЯВОК НА РЕДИРЕКТ (/redirect)
-uv run python helpdesk_tool.py redirect --limit 5
-uv run python helpdesk_tool.py redirect --service 01 --limit 5
-uv run python helpdesk_tool.py batch --service 04 --limit 5 --redirect
+uv run python helpdesk-cli/helpdesk.py redirect --limit 5
+uv run python helpdesk-cli/helpdesk.py redirect --service 01 --limit 5
+uv run python helpdesk-cli/helpdesk.py batch --service 04 --limit 5 --redirect
 
 # 1.2. АВТОМАТИЧЕСКОЕ СОЗДАНИЕ ПОЛЬЗОВАТЕЛЕЙ В AD
-uv run python helpdesk_tool.py create-user <ID_ЗАЯВКИ>
-uv run python helpdesk_tool.py create-user <ID_ЗАЯВКИ> --dry-run
-uv run python helpdesk_tool.py wlan <ID_ЗАЯВКИ>
+uv run python helpdesk-cli/helpdesk.py create-user <ID_ЗАЯВКИ>
+uv run python helpdesk-cli/helpdesk.py create-user <ID_ЗАЯВКИ> --dry-run
+uv run python helpdesk-cli/helpdesk.py wlan <ID_ЗАЯВКИ>
 
 # Список доступных номеров разделов каталога:
-uv run python helpdesk_tool.py services
+uv run python helpdesk-cli/helpdesk.py services
 
 # 2. Детальная карточка конкретной заявки
-uv run python helpdesk_tool.py task <ID_ЗАЯВКИ>
+uv run python helpdesk-cli/helpdesk.py task <ID_ЗАЯВКИ>
 
 # 3. Сетевая диагностика ПК / IP
-uv run python helpdesk_tool.py diagnose <ИМЯ_ПК_ИЛИ_IP>
+uv run python helpdesk-cli/helpdesk.py diagnose <ИМЯ_ПК_ИЛИ_IP>
 
 # 4. Просмотр и скачивание вложений (скриншоты ошибок)
-uv run python helpdesk_tool.py attachment <ID_ЗАЯВКИ>
+uv run python helpdesk-cli/helpdesk.py attachment <ID_ЗАЯВКИ>
 
 # 5. Поиск по RAG-базе исторических решений
-uv run python helpdesk_tool.py search-kb "<ТЕКСТ_ПРОБЛЕМЫ>"
+uv run python helpdesk-cli/helpdesk.py search-kb "<ТЕКСТ_ПРОБЛЕМЫ>"
 
 # 6. Умная синхронизация выполненных заявок в базу знаний
-uv run python helpdesk_tool.py sync-kb --limit 50
+uv run python helpdesk-cli/helpdesk.py sync-kb --limit 50
 
 # 7. Применение решения (после подтверждения оператора!)
-uv run python helpdesk_tool.py apply <ID> --status <STATUS_ID> --comment "<ТЕКСТ>" [--expenses <МИН>]
+uv run python helpdesk-cli/helpdesk.py apply <ID> --status <STATUS_ID> --comment "<ТЕКСТ>" [--expenses <МИН>]
 ```
 
 ---
@@ -106,7 +106,11 @@ uv run python helpdesk_tool.py apply <ID> --status <STATUS_ID> --comment "<ТЕ�
 3. **Запрос очереди:** При вводе `/triage` (или `/triage 2`, `/triage 03`, `«Разбери 6 сервис»`), агент запускает `batch` с флагом `--service <НОМЕР>` (если указан) и `--limit <N>`.
 4. **Компактная и логичная презентация карточек (Чистая карточка с выделенной цитатой — Вариант 1):**
    Агент выводит лаконичные карточки по каждой заявке с четким визуальным разделением:
-   - **Заголовок:** `### [№] [#ID](https://servicedesk.corporate.loc/Task/View/<ID>) ➔ 🎯 **<Статус>** `[<Имя ПК>: 🟢 <RTT> / 🔴 Офлайн]` ⭐ <Оценка>/10`
+   - **Заголовок:** `### [№] [#ID](https://servicedesk.corporate.loc/Task/View/<ID>) ➔ 🎯 **<Статус>** `[<Имя ПК>: 🟢 <RTT> / 🔴 Офлайн]` <КОНТУР_ДАННЫХ>`
+     - Маркер контура данных:
+       - 🔴 `[RED/On-Prem]` — Пароли, учетные записи, СБ (строго локальная Ollama)
+       - 🟡 `[YELLOW/Sanitized]` — ПДн/IP/Хосты (обезличены перед вызовом Gemini)
+       - 🟢 `[GREEN/Cloud]` — Открытые/типовые технические регламенты
    - **Заявитель:** `ФИО (📍 <Кабинет/Подразделение> | 📞 <Телефон> | 📸 <Скриншот>)`
    - **Проблема:** Краткая суть проблемы (без лишней воды)
    - **Ответ заявителю:**

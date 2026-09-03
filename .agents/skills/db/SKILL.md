@@ -12,6 +12,6 @@ description: >-
 ## Шаги выполнения:
 
 1. **Проверка подключения:**
-   Выполнить `uv run python helpdesk_tool.py check-db` в каталоге `helpdesk_agent/`.
+   Выполнить `uv run python helpdesk-cli/helpdesk.py check-db`.
 2. **Автозапуск контейнера:**
-   При недоступности базы выполнить `uv run python helpdesk_tool.py start-db` и дождаться готовности сервиса к работе.
+   При недоступности базы выполнить `uv run python helpdesk-cli/helpdesk.py start-db` и дождаться готовности сервиса к работе.

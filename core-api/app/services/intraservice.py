@@ -333,13 +333,20 @@ async def get_tasks(auth_b64: str, filters: dict[str, Any] | None = None) -> Any
 async def get_task_lifetime(auth_b64: str, task_id: int) -> list[dict[str, Any]] | None:
     """
     Получает историю изменений (lifetime) задачи.
+    Нормализует ответ: если API возвращает словарь вида {"TaskLifetimes": [...]},
+    извлекает и возвращает список событий.
     """
-    return await _make_request(
+    res = await _make_request(
         endpoint="tasklifetime",
         method="GET",
         auth_b64=auth_b64,
         params={"taskid": task_id},
     )
+    if isinstance(res, dict) and "TaskLifetimes" in res:
+        return res["TaskLifetimes"]
+    if isinstance(res, list):
+        return res
+    return [] if res is not None else None
 
 
 async def get_statuses(auth_b64: str) -> list[dict[str, Any]] | None:
@@ -353,12 +360,17 @@ async def get_services(auth_b64: str) -> list[dict[str, Any]] | None:
     """
     Получает каталог услуг из IntraService.
     """
-    return await _make_request(
+    res = await _make_request(
         endpoint="service",
         method="GET",
         auth_b64=auth_b64,
         params={"include": "parentid", "for": "createtask", "pagesize": "1000"},
     )
+    if isinstance(res, dict):
+        return res.get("Services") or []
+    if isinstance(res, list):
+        return res
+    return []
 
 
 async def get_single_task(
@@ -427,17 +439,26 @@ async def download_attachment_file(
 
     decrypted_auth = decrypt_token(auth_b64)
     headers = {"Authorization": f"Basic {decrypted_auth}"}
-    url = f"{settings.INTRASERVICE_URL.rstrip('/')}/api/task/{task_id}/attachment/{file_id}"
+    base_url = settings.INTRASERVICE_URL.rstrip("/")
+    if not base_url.endswith("/api"):
+        base_url = f"{base_url}/api"
+    url = f"{base_url}/taskfile/{file_id}"
 
     try:
-        async with _session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30.0)) as response:
+        async with _session.get(
+            url,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=30.0),
+            ssl=settings.SSL_VERIFY,
+        ) as response:
             if response.status == 200:
                 return await response.read()
             logger.warning(
-                "Ошибка скачивания вложения #%d для задачи #%d: HTTP %d",
+                "Ошибка скачивания вложения #%d для задачи #%d: HTTP %d (URL: %s)",
                 file_id,
                 task_id,
                 response.status,
+                url,
             )
             return None
     except Exception as e:
@@ -546,6 +567,8 @@ async def update_task_full(
 ) -> bool:
     """
     Атомарно обновляет задачу (статус, комментарий, исполнители) в одном PUT запросе.
+    Если передача исполнителей блокируется правами роли (400), безопасно выполняет
+    обновление статуса и комментария без ExecutorIds.
     """
     payload: dict[str, Any] = {"Id": task_id}
     if status_id is not None:
@@ -561,5 +584,30 @@ async def update_task_full(
         auth_b64=auth_b64,
         json_data=payload,
     )
-    return res is not None
+    if res is not None:
+        return True
+
+    # Если запрос с ExecutorIds отклонен (например, ограничение роли IntraService),
+    # пробуем применить статус и комментарий без ExecutorIds, чтобы не потерять решение инженера
+    if executor_ids and (status_id is not None or comment is not None):
+        fallback_payload: dict[str, Any] = {"Id": task_id}
+        if status_id is not None:
+            fallback_payload["StatusId"] = status_id
+        if comment:
+            fallback_payload["Comment"] = comment
+            fallback_payload["IsPrivateComment"] = is_private
+        fallback_res = await _make_request(
+            endpoint=f"task/{task_id}",
+            method="PUT",
+            auth_b64=auth_b64,
+            json_data=fallback_payload,
+        )
+        if fallback_res is not None:
+            logger.warning(
+                "Задача #%d обновлена без назначения исполнителя (ограничение прав IntraService)",
+                task_id,
+            )
+            return True
+
+    return False
 

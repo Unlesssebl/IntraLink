@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov/
+node_modules/
+core-api/.env
+.secrets/

@@ -1,15 +1,38 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.database.db import init_db
-from app.routers import admin, auth, service_tasks, tasks, users, ai_worker, triage, execution
+from app.config import settings
+from app.database.db import AsyncSessionLocal, init_db
+from app.routers import (
+    admin,
+    admin_settings,
+    ai,
+    auth,
+    commands,
+    events,
+    kb_admin,
+    rules_admin,
+    self_service,
+    service_tasks,
+    skills_admin,
+    tasks,
+    triage,
+    users,
+)
+from app.services.ai import ai_hub
 from app.services.intraservice import close_session, init_session
+from app.services.template_engine import (
+    get_templates_from_db,
+    seed_templates_if_empty,
+    start_rules_invalidation_listener,
+)
 from app.services.worker import start_worker, stop_worker
 
 # Настройка логирования
@@ -29,37 +52,79 @@ async def lifespan(_app: FastAPI):
     except Exception as e:
         logger.exception("Ошибка при инициализации базы данных: %s", e)
 
+    # Database Seeding и прогрев L1 кэша шаблонов
+    try:
+        async with AsyncSessionLocal() as session:
+            await seed_templates_if_empty(session)
+            await get_templates_from_db(session)
+        logger.info("L1 кэш шаблонов триажа инициализирован из PostgreSQL.")
+    except Exception as e:
+        logger.warning("Ошибка инициализации шаблонов триажа: %s", e)
+
+    # Авто-прогрев и синхронизация кэша секретов Vault в Redis
+    try:
+        from app.services.vault import sync_vault_to_redis
+        async with AsyncSessionLocal() as session:
+            await sync_vault_to_redis(session)
+        logger.info("Vault: кэш учетных данных успешно прогрет в Redis из PostgreSQL.")
+    except Exception as e:
+        logger.warning("Vault: ошибка авто-прогрева кэша в Redis: %s", e)
+
+    # Запуск Pub/Sub слушателя инвалидации кэша правил
+    invalidation_task = asyncio.create_task(
+        start_rules_invalidation_listener(settings.REDIS_URL)
+    )
+
     logger.info("Инициализация HTTP-сессии IntraService...")
     try:
         await init_session()
     except Exception as e:
         logger.exception("Ошибка при инициализации HTTP-сессии: %s", e)
 
-    try:
-        await start_worker()
-    except Exception as e:
-        logger.exception("Ошибка при запуске фонового воркера: %s", e)
+    if settings.ENABLE_INTERNAL_SCHEDULER:
+        logger.info("Запуск встроенного планировщика APScheduler в Core API...")
+        try:
+            await start_worker()
+        except Exception as e:
+            logger.exception("Ошибка при запуске встроенного воркера: %s", e)
+    else:
+        logger.info(
+            "Встроенный планировщик APScheduler отключен (опрос выполняет внешний сервис poller)."
+        )
 
     yield
     # Действия при остановке приложения
     logger.info("Остановка приложения Core API...")
-    try:
-        await stop_worker()
-    except Exception as e:
-        logger.exception("Ошибка при остановке фонового воркера: %s", e)
+    invalidation_task.cancel()
+    if settings.ENABLE_INTERNAL_SCHEDULER:
+        try:
+            await stop_worker()
+        except Exception as e:
+            logger.exception("Ошибка при остановке фонового воркера: %s", e)
 
-    logger.info("Закрытие HTTP-сессии IntraService...")
+    logger.info("Закрытие HTTP-сессий IntraService, RAG и AI Hub...")
     try:
         await close_session()
     except Exception as e:
         logger.exception("Ошибка при закрытии HTTP-сессии: %s", e)
+
+    try:
+        await ai_hub.close()
+    except Exception as e:
+        logger.exception("Ошибка при закрытии сессии AI Hub: %s", e)
+
+    try:
+        from app.services.rag import close_rag_session
+
+        await close_rag_session()
+    except Exception as e:
+        logger.exception("Ошибка при закрытии HTTP-сессии RAG: %s", e)
 
 
 app = FastAPI(
     title="IntraService Core API Gateway",
     description="Микросервис-шлюз для интеграции с API IntraService",
     version="1.0.0",
-    default_response_class=ORJSONResponse,
     lifespan=lifespan,
 )
 
@@ -78,9 +143,15 @@ app.include_router(tasks.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(service_tasks.router, prefix="/api/v1")
 app.include_router(triage.router)
-app.include_router(execution.router)
+app.include_router(rules_admin.router)
+app.include_router(ai.router)
+app.include_router(commands.router)
+app.include_router(events.router)
 app.include_router(admin.router)
-app.include_router(ai_worker.router)
+app.include_router(admin_settings.router)
+app.include_router(kb_admin.router)
+app.include_router(skills_admin.router)
+app.include_router(self_service.router)
 
 # Статические файлы интерактивной презентации (при наличии)
 PRESENTATIONS_DIR = Path("/app/docs/presentations")
@@ -95,9 +166,9 @@ if PRESENTATIONS_DIR.exists():
 @app.get("/", include_in_schema=False)
 async def root_redirect():
     """
-    Перенаправление с корня на панель администратора.
+    Перенаправление с корня на панель оператора.
     """
-    return RedirectResponse(url="/admin")
+    return RedirectResponse(url="/operator-panel")
 
 
 @app.get("/favicon.ico", include_in_schema=False)

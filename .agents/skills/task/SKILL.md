@@ -12,11 +12,11 @@ description: >-
 ## Шаги выполнения:
 
 1. **Запрос данных:**
-   Выполнить команду `uv run python helpdesk_tool.py task <ID>` в каталоге `helpdesk_agent/`.
+   Выполнить команду `uv run python helpdesk-cli/helpdesk.py task <ID>`.
 2. **Углубленный анализ:**
    - Извлечь контактные данные заявителя, рабочую станцию, кабинет, телефон;
    - Проверить сетевое состояние ПК заявителя;
-   - Изучить историю переписки и комментариев инженеров (`uv run python helpdesk_tool.py history <ID>`);
-   - Найти похожие кейсы в RAG (`uv run python helpdesk_tool.py search-kb "<проблема>"`).
+   - Изучить историю переписки и комментариев инженеров (`uv run python helpdesk-cli/helpdesk.py history <ID>`);
+   - Найти похожие кейсы в RAG (`uv run python helpdesk-cli/helpdesk.py search-kb "<проблема>"`).
 3. **Презентация:**
    Вывести детальную карточку с обоснованной рекомендацией статуса и готовым проектом ответа по шаблону инженера Беликова Алена.

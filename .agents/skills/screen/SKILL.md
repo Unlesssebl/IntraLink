@@ -12,7 +12,7 @@ description: >-
 ## Шаги выполнения:
 
 1. **Скачивание вложений:**
-   Выполнить команду `uv run python helpdesk_tool.py attachment <ID>` в каталоге `helpdesk_agent/`.
+   Выполнить команду `uv run python helpdesk-cli/helpdesk.py attachment <ID>`.
 2. **Визуальный осмотр:**
    Открыть полученный файл изображения через системный инструмент `view_file`.
 3. **Анализ инцидента:**

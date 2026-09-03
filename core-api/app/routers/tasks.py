@@ -1,15 +1,18 @@
 from typing import Any
-
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.db import User, get_db
-from app.routers.deps import get_user_by_tg_id, verify_api_key
+from app.routers.deps import (
+    get_service_auth_b64,
+    get_user_by_tg_id,
+    verify_admin_or_api_key,
+)
 from app.services import intraservice
 
-router = APIRouter(tags=["Tasks"], dependencies=[Depends(verify_api_key)])
+router = APIRouter(tags=["Tasks"], dependencies=[Depends(verify_admin_or_api_key)])
 
 
 class TaskCommentRequest(BaseModel):
@@ -179,3 +182,50 @@ async def add_task_expenses(
             detail=f"Не удалось добавить трудозатраты к задаче {task_id}.",
         )
     return {"status": "success"}
+
+
+@router.get("/tasks/{task_id}/attachments/{file_id}")
+async def download_task_attachment(
+    task_id: int,
+    file_id: int,
+    name: str | None = Query(None, description="Имя файла для Content-Type и Content-Disposition"),
+    service_auth_b64: str = Depends(get_service_auth_b64),
+):
+    """
+    Скачивает бинарный файл вложения задачи из IntraService.
+    Доступно для Web UI, CLI и Telegram-бота.
+    """
+    import mimetypes
+    from urllib.parse import quote
+
+    content = await intraservice.download_attachment_file(
+        service_auth_b64, task_id, file_id
+    )
+    if content is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Вложение #{file_id} не найдено или недоступно",
+        )
+
+    clean_name = name.strip() if name else f"attachment_{file_id}"
+    media_type, _ = mimetypes.guess_type(clean_name)
+    if not media_type:
+        if content.startswith(b"\xff\xd8\xff"):
+            media_type = "image/jpeg"
+        elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+            media_type = "image/png"
+        elif content.startswith(b"%PDF"):
+            media_type = "application/pdf"
+        elif content.startswith(b"GIF8"):
+            media_type = "image/gif"
+        else:
+            media_type = "application/octet-stream"
+
+    encoded_name = quote(clean_name)
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{encoded_name}"
+        },
+    )

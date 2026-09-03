@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     POLLING_INTERVAL: int = Field(
         30, description="Интервал периодического опроса в секундах"
     )
+    ENABLE_INTERNAL_SCHEDULER: bool = Field(
+        False,
+        description=(
+            "Запуск встроенного планировщика APScheduler в процессе Core API "
+            "(по умолчанию False, так как опрос выполняет отдельный контейнер poller)"
+        ),
+    )
     ENCRYPTION_KEY: str | None = Field(
         None,
         description=(
@@ -77,6 +84,9 @@ class Settings(BaseSettings):
     )
 
     # Параметры LiteLLM и эмбеддингов
+    GEMINI_API_KEY: str | None = Field(
+        None, description="API-ключ Google Gemini API для прямого доступа без прокси"
+    )
     LITELLM_API_KEY: str = Field(
         "sk-intraservice-master-key",
         description="API-ключ для авторизации в LiteLLM Proxy",
@@ -85,13 +95,38 @@ class Settings(BaseSettings):
         "http://localhost:4000/v1", description="Базовый URL для LiteLLM Proxy"
     )
     GEMINI_MODEL: str = Field(
-        "gemini-2.5-flash", description="Имя LLM модели для классификации и извлечения"
+        "gemini-3.5-flash", description="Имя LLM модели для классификации и извлечения"
     )
     EMBEDDING_MODEL: str = Field(
         "gemini-embedding-2", description="Имя модели эмбеддингов"
     )
     EMBEDDING_DIMENSION: int = Field(
         3072, description="Размерность векторов модели эмбеддингов"
+    )
+
+    # Параметры Ollama (локальный AI инференс)
+    OLLAMA_BASE_URL: str = Field(
+        "http://ollama:11434", description="URL-адрес для подключения к сервису Ollama"
+    )
+    OLLAMA_MODEL: str = Field(
+        "qwen2.5:1.5b", description="Имя локальной языковой модели для суммаризации"
+    )
+    OLLAMA_EMBEDDING_MODEL: str = Field(
+        "bge-m3", description="Имя локальной модели Ollama для генерации эмбеддингов"
+    )
+    OLLAMA_TIMEOUT: float = Field(
+        30.0, description="Таймаут в секундах для запросов инференса Ollama"
+    )
+    OLLAMA_NUM_PARALLEL: int = Field(
+        2, description="Лимит параллельных сессий инференса Ollama"
+    )
+    FASTEMBED_MODEL: str = Field(
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        description="Имя локальной модели FastEmbed для векторных эмбеддингов",
+    )
+    RERANKER_MODEL: str = Field(
+        "BAAI/bge-reranker-base",
+        description="Имя локальной Cross-Encoder модели для реранкинга кандидатов RAG",
     )
 
     AUTO_REPLY_SERVICE_IDS: list[int] = Field(
@@ -123,9 +158,43 @@ class Settings(BaseSettings):
         86400,
         description="TTL в секундах (24 часа) для кэша пропущенных заявок в Redis",
     )
+    HOST_LOCK_DEFAULT_TTL: int = Field(
+        30,
+        description="TTL в секундах для распределенной блокировки хоста (WinRM/WMI)",
+    )
+    TRIAGE_APPLY_MAX_PER_MINUTE: int = Field(
+        10,
+        description="Порог аварийного тормоза Dead Man's Switch для применения решений (заявок/мин)",
+    )
+    TRIAGE_APPLY_RATE_LIMIT_WINDOW: int = Field(
+        60,
+        description="Окно rate limiter для применения решений в триаже (в секундах)",
+    )
+
+    # Административная панель и ролевой доступ (RBAC)
+    ADMIN_LOGINS: str = Field(
+        "belikov,belikov.a,IntraService_dev",
+        description="Список логинов IntraService через запятую с правами администратора /admin",
+    )
+    ADMIN_PASSWORD: str | None = Field(
+        None, description="[DEPRECATED] Устаревший мастер-пароль администратора"
+    )
+    ADMIN_JWT_SECRET: str = Field(
+        "intralink-admin-jwt-secret-key-32chars!",
+        description="Секретный ключ для подписи сессионных JWT токенов администратора",
+    )
+    PRIMARY_TRIAGE_FILTER_ID: int = Field(
+        984, description="ID основного фильтра первой линии в IntraService"
+    )
+    AD_DOMAIN_NAME: str = Field(
+        "corporate.loc", description="Имя домена Active Directory по умолчанию"
+    )
+    AD_WLAN_GROUP_NAME: str = Field(
+        "WLAN-WORKNET", description="Имя доменной группы для Wi-Fi доступа"
+    )
 
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=(".env", "../.env"), env_file_encoding="utf-8", extra="ignore"
     )
 
     def __init__(self, **values):

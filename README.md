@@ -1,125 +1,114 @@
 # IntraLink
 
-Современный асинхронный Телеграм-бот, API-шлюз, панель администратора и автономные инструменты автоматизации для мониторинга, уведомлений и выполнения заявок в Helpdesk-системе **IntraService**.
+Современная платформа комплексной автоматизации обработки и выполнения заявок в Helpdesk-системе **IntraService**.
 
-Проект построен на базе модульного монорепозитория с единым ядром исполнения: интерфейсные слои (Telegram-бот, встроенный SPA `intra-web`), шлюз интеграции (`core-api`), автономный инженерный кокпит (`helpdesk_agent`) и локальный AI-инференс (`ollama`).
+Система сочетает детерминированный движок правил (Rule Engine), централизованный семантический RAG-поиск (pgvector + FastEmbed), многоконтурную безопасность данных (Dual-Circuit Zero Trust DLP), интеграционный API-шлюз и модули прямого исполнения в инфраструктуре Windows (Active Directory, WinRM, сетевая печать).
 
 ---
 
-## 🏗 Архитектура системы
+## 🏗 Архитектура монорепозитория
 
-Система построена на событийно-ориентированном подходе и состоит из следующих компонентов:
+Проект построен по модульной сервисной архитектуре с единым источником правды (**Single Source of Truth**) в `core-api`:
 
-1. **PostgreSQL 16 (с pgvector)** — база данных для хранения учетных данных пользователей, состояния мониторинга и семантической базы знаний RAG.
-2. **Redis 7** — шина сообщений (Pub/Sub) для оперативной доставки push-уведомлений в Telegram.
-3. **Core API (FastAPI)** — защищенный шлюз к REST API IntraService, управление базой данных, фоновый воркер опроса (`APScheduler`) и хостинг встроенной веб-панели управления `/admin`.
-4. **Intra Web (`intra-web`)** — современная веб-панель управления (Single-File SPA на React 19, Vite, Tailwind CSS v4), компилируемая на этапе Multi-stage Docker build и раздаваемая прямо из Core API (`/admin`).
-5. **Telegram Bot (aiogram 3.x)** — мобильный интерфейс инженера и заявителей для просмотра заявок и мгновенного получения уведомлений.
-6. **Ollama (Qwen2.5:1.5B)** — локальный легковесный AI-инференс в Docker для мгновенной суммаризации переписок и помощи инженеру.
-7. **Helpdesk Agent & Execution Hub** — автономный инженерный кокпит в среде Antigravity (AGY): детерминированный Rule Engine, экспресс-диагностика сети (ICMP/DNS/SMB), автоматизация Active Directory (`WLAN-WORKNET`) и удаленная установка принтеров (WinRM/WMI).
+```text
+IntraLink/
+├── core-api/          # Единый шлюз состояния: FastAPI, PostgreSQL+pgvector, AI Hub, хостинг /admin
+│   └── app/poller.py  # Автономный демон опроса IntraService с Leader Lock в Redis
+├── execution-worker/  # Фоновый Windows Headless Daemon исполнения задач (AD WLAN, WinRM, SMB, принтеры)
+├── intralink-mcp/     # FastMCP Hub для AI-агента Antigravity (JSON-RPC 2.0 stdio инструменты)
+├── helpdesk-cli/      # Машинный инструментарий и SDK исключительно для AI-агента Antigravity (AGY)
+├── shared/            # Единый пакет общих алгоритмов (SSOT): normalizer, diagnostics, json_utils, printers
+├── telegram-bot/      # Мобильный пейджер инженера и HITL-согласования (aiogram 3.x, Redis Streams)
+├── intra-web/         # Фронтенд веб-панели администратора (React 19, Vite, Tailwind CSS v4)
+├── tools/             # Скрипты индексации драйверов печати
+└── docs/              # Системная документация проекта
+```
 
 > [!NOTE]
-> Схемы последовательности выполнения запросов (Data Flow) и подробная архитектурная диаграмма доступны в документе [`docs/architecture.md`](docs/architecture.md).
+> Полные архитектурные схемы, контуры безопасности DLP и Data Flow описаны в **[`docs/architecture.md`](docs/architecture.md)**.  
+> Архитектурные инварианты («ПОЧЕМУ») и стандарты разработки зафиксированы в **[`docs/developer_guide.md`](docs/developer_guide.md)**.
 
 ---
 
-## 🚀 Основные возможности
+## 🚀 Ключевые возможности
 
-*   **Персональная авторизация**: Безопасный вход под учетными данными IntraService.
-*   **Безопасность данных**: Данные авторизации (логин/пароль) шифруются с помощью Fernet (`cryptography`) и сохраняются в PostgreSQL. Бот не хранит пароли локально.
-*   **Событийный фоновый мониторинг (Redis Pub/Sub)**:
-    *   Мгновенные уведомления обо всех **новых заявках** в системе IntraService.
-    *   Персональные уведомления о **новых комментариях** и **сменах статусов** для заявок, где пользователь является назначенным исполнителем.
-*   **📋 Мои заявки в Telegram**: Просмотр списка активных задач пользователя с поддержкой пагинации.
-*   **⚡ Автоматизация Active Directory**: Автоматическая выдача Wi-Fi доступа (`WLAN-WORKNET`) с Single-DC Affinity, нормализацией инициалов и двухэтапным закрытием тикета (`31 ➔ 27 ➔ 29`).
-*   **🧠 Локальная нейросеть (Qwen2.5:1.5B)**: Мгновенная AI-суммаризация цепочки комментариев инцидента за 1.2–1.5 сек (`helpdesk_tool.py summary <ID>`).
-*   **🤖 Автономный Helpdesk-кокпит с RAG**: Прямой пакетный триаж очереди 1-й линии (`/triage`), поиск дубликатов (`/duplicates`), отмена ошибочных сервисов (`/redirect`), сетевая диагностика хостов (ICMP/DNS/SMB/WinRM) и семантический RAG-поиск по базе решений (`search-kb`).
+* **Защищенный API Gateway (Core API)**: Единая точка доступа к REST API IntraService, Fernet-шифрование учетных записей, централизованный Rule Engine, декомпозированный `TriageService` и двухэтапный Hybrid RAG.
+* **Декларативный реестр навыков (Action Registry) & Policy Engine**: Каталог инфраструктурных действий с JSON-схемами, мгновенным аппаратным Killswitch (`HTTP 403 Forbidden`) и режимами автономного исполнения (`auto`) или ручного подтверждения (`confirm` / HitL).
+* **Шлюз инструментов FastMCP Hub (`intralink-mcp`)**: Автономный MCP-сервер инструментов для AI-агента Antigravity (пакетный триаж, карточки тикетов, телеметрия хостов, векторный RAG и постановка задач в Command Bus).
+* **Изолированный Poller с Leader Lock**: Независимый демон фонового опроса очереди от сервисного аккаунта под защитой распределенного замка (`lock:poller_leader`, TTL 15s) для предотвращения Split-Brain при масштабировании.
+* **Гарантированная доставка событий (Redis Streams)**: Поток `stream:intraservice_events` с Consumer Groups, подтверждением `XACK` и периодическим перехватом зависших сообщений `XAUTOCLAIM` (At-Least-Once).
+* **Исполнение в Windows-домене (Execution Worker)**: Фоновая обработка очереди `stream:execution_queue` на базе стандарта `BaseActionExecutor` (`Preflight ➔ Execute ➔ Verify`) — выдача сетевого доступа в AD (`WLAN-WORKNET`), создание учетных записей, удаленная установка принтеров через WinRM с WMI Bootstrap и защитой от коллизий сессий (`lock:host:<pc>`, TTL 30s).
+* **Многоконтурная безопасность данных (Zero Trust DLP)**:
+  * 🔴 **RED Zone (On-Prem)**: пароли и заявки СБ обрабатываются локально (Ollama Qwen2.5 / bge-m3).
+  * 🟡 **YELLOW Zone (Sanitized Cloud)**: ПДн, IP и имена хостов маскируются токенами через Redis PII Vault перед вызовом облачных моделей.
+  * 🟢 **GREEN Zone (Cloud Direct)**: открытые регламенты и технические вопросы.
+* **Прямой LDAPS-клиент Active Directory (порт 636)**: Управление доменными объектами и выдача доступа к корпоративному Wi-Fi (`WLAN-WORKNET`) без необходимости обращения к клиентскому ПК и без участия Windows-воркера.
+* **Многоуровневый каскад исполнения (Tiered Execution)**: Автоматическая установка принтеров через WinRM $\rightarrow$ LiteManager (порт 5650) $\rightarrow$ DameWare (порт 6129) $\rightarrow$ One-Liner ассистент оператора.
+* **Инструментарий AI-агента (AGY Toolset)**: Управление очередью прямо из диалога с AI-ассистентом через слэш-команды (`/triage`, `/task`, `/diag`, `/screen`, `/kb`, `/sync`, `/redirect`) и нативные MCP-инструменты.
+* **Мобильный пейджер (Telegram Bot)**: Моментальные уведомления, просмотр активных заявок инженера и кнопки подтверждения операций (Human-in-the-Loop) через единую шину Command Bus.
+* **Двухконтурный Web SPA (`/operator-panel` и `/admin`)**: React 19 интерфейс с центрами обработки заявок, вкладкой **Skills Hub** с тумблерами Killswitch, Live SSE Terminal мониторинга исполнения и 1-Click Action виджетами в карточке заявки.
 
 ---
 
 ## 🛠 Технологический стек
 
-### Core API & База данных
-*   **FastAPI** — веб-фреймворк для создания REST API.
-*   **SQLAlchemy 2.0 (Async)** + **asyncpg** + **pgvector** — асинхронная работа с базой данных PostgreSQL и векторным поиском.
-*   **APScheduler** — встроенный планировщик для периодического опроса IntraService.
-*   **redis.asyncio** — асинхронная публикация событий в Redis.
-*   **cryptography** — симметричное Fernet-шифрование учетных данных.
-*   **aiohttp** — асинхронные запросы к REST API IntraService.
-
-### Telegram Bot (aiogram)
-*   **aiogram 3.x** — асинхронный фреймворк для Telegram Bot API.
-*   **redis.asyncio** — асинхронное прослушивание событий Redis Pub/Sub.
-*   **aiohttp** — взаимодействие с Core API.
-
-### Helpdesk Agent & Execution Hub
-*   **FastEmbed** — локальная ONNX-векторизация текста для мгновенного семантического поиска решений.
-*   **Active Directory PowerShell** — автоматизация управления доменными группами и учетными записями.
-*   **pywinrm / SMB** — удаленная установка и диагностика оргтехники.
-*   **Ollama Client** — асинхронный клиент к локальной модели Qwen2.5:1.5B с Pydantic JSON-схемами.
+* **Бэкенд**: Python 3.11+, FastAPI, SQLAlchemy 2.0 (Async), asyncpg, ldap3, aiohttp, orjson, pyjwt, cryptography (Fernet).
+* **База данных и поиск**: PostgreSQL 16, pgvector (HNSW), FastEmbed (ONNX MiniLM-L12 + bge-reranker).
+* **Шина сообщений и кэш**: Redis 7 (Streams, Consumer Groups, Distributed Locks, PII Vault).
+* **ИИ и инференс**: Ollama (Qwen2.5:1.5B, bge-m3), LiteLLM Proxy / Gemini Cloud.
+* **Фронтенд**: React 19, TypeScript, Tailwind CSS v4, Vite 6 (`vite-plugin-singlefile`).
+* **Бот**: aiogram 3.x, aiohttp.
+* **Инфраструктура исполнения**: PowerShell, pywinrm, WMI / CIM over WinRM:5985, LiteManager / DameWare integration.
 
 ---
 
-## 📂 Структура проекта
+## ⚡ Быстрый запуск
 
-```text
-├── intra-web/                 # Фронтенд панели администратора (React 19, Tailwind CSS v4, Vite)
-│   ├── src/                   # Исходный код React SPA
-│   ├── package.json
-│   └── vite.config.ts
-│
-├── core-api/                  # Сервис API-шлюза (FastAPI)
-│   ├── app/
-│   │   ├── database/          # Слой базы данных (SQLAlchemy модели, pgvector)
-│   │   ├── routers/           # Контроллеры FastAPI (auth, tasks, admin, users)
-│   │   ├── services/          # Интеграция с IntraService, фоновый worker, шифрование
-│   │   └── static/admin/      # Скомпилированный SPA Admin UI (index.html)
-│   ├── knowledge_base/        # Справочники драйверов принтеров (JSON)
-│   ├── tests/                 # Автоматические тесты (pytest)
-│   └── Dockerfile             # Multi-stage сборка (Node.js -> Python)
-│
-├── telegram-bot/              # Сервис Telegram-бота (aiogram 3.x)
-│   ├── handlers/              # Обработчики сообщений и коллбеков
-│   ├── services/              # HTTP-клиент Core API и подписчик Redis Pub/Sub
-│   ├── main.py                # Точка входа в бота
-│   └── Dockerfile
-│
-├── helpdesk_agent/            # Автономный Helpdesk-кокпит инженера в AGY
-│   ├── executors/             # Исполнители в инфраструктуре (AD WLAN, WinRM Printers)
-│   ├── llm/                   # Клиент локальной нейросети Ollama (Qwen2.5:1.5B)
-│   ├── rules/                 # Детерминированный Rule Engine триажа (Wi-Fi, 1C, Пароли, Дубликаты)
-│   ├── helpdesk_tool.py       # Главный CLI-инструмент (batch, wlan, summary, apply, diag, kb)
-│   ├── kb.py                  # Семантический RAG-поиск (FastEmbed + pgvector)
-│   ├── diagnostics.py         # Сетевая экспресс-диагностика хостов (ICMP, DNS, SMB:445, WinRM)
-│   ├── intraservice_api.py    # Асинхронный клиент IntraService API
-│   └── templates.json         # Утвержденные корпоративные шаблоны ответов
-│
-├── docs/                      # Документация проекта
-│   ├── architecture.md        # Системная архитектура и Data Flow
-│   └── services/              # Документация по сервисам (core-api, telegram-bot, helpdesk_agent)
-│
-├── docker-compose.yml         # Оркестрация контейнеров (postgres, redis, ollama, core-api, telegram-bot)
-├── pyproject.toml             # Конфигурация для пакетного менеджера uv
-└── uv.lock                    # Блокировка зависимостей uv
-```
-
----
-
-## 🚀 Быстрый запуск
-
-### 1. Запуск инфраструктуры в Docker:
+### 1. Запуск основной инфраструктуры в Docker:
 ```bash
 docker compose up -d
 ```
+Поднимает контейнеры: `postgres` (pgvector), `redis`, `core-api` (Gateway + Admin/Operator SPA) и `poller` (фоновый опрос с Leader Lock).
 
-### 2. Использование Helpdesk CLI:
+#### Выбор режима Ollama и аппаратного ускорения AI:
+Инфраструктура поддерживает гибкое переключение режимов через переменную `COMPOSE_FILE` в файле `.env`:
+
+| Режим работы | Настройка в `.env` | Описание |
+|---|---|---|
+| **Хостовая Ollama (Рекомендуется)** | `COMPOSE_FILE=docker-compose.yml`<br>`OLLAMA_BASE_URL=http://localhost:11434` | Максимальная скорость (**~115 токенов/сек** на RTX 3050). Контейнер Ollama **не создается**, прямое подключение через `host.docker.internal:11434` без оверхеда. |
+| **CPU в Docker** | `COMPOSE_FILE=docker-compose.yml:docker-compose.ollama-cpu.yml` | Автономный запуск Ollama в контейнере на CPU без привязки к хосту. |
+| **NVIDIA в Docker (CUDA)** | `COMPOSE_FILE=docker-compose.yml:docker-compose.ollama-nvidia.yml`<br>`CUDA_VISIBLE_DEVICES=1` | Проброс GPU в контейнер через NVIDIA Container Toolkit с фиксацией на 8 ГБ RTX 3050. |
+| **AMD в Docker (Vulkan)** | `COMPOSE_FILE=docker-compose.yml:docker-compose.ollama-vulkan.yml` | Аппаратное ускорение графического процессора AMD через Vulkan (`/dev/dri`) без ROCm. |
+
+
+* **Операторский центр обработки заявок:** `http://localhost:8000/operator-panel`
+* **Консоль системного администратора:** `http://localhost:8000/admin`
+* **Интерактивная документация API:** `http://localhost:8000/docs`
+
+### 2. Запуск Telegram-бота (опционально):
 ```bash
-# Пакетный триаж открытых заявок 1-й линии:
-uv run python helpdesk_agent/helpdesk_tool.py batch --limit 5
+docker compose --profile with-bot up -d telegram-bot
+```
 
-# Автоматическая выдача Wi-Fi доступа в AD и закрытие заявки:
-uv run python helpdesk_agent/helpdesk_tool.py wlan 135713
+### 3. Запуск воркера исполнения в Windows:
+```powershell
+$env:REDIS_URL = "redis://localhost:6379/0"
+$env:CORE_API_URL = "http://localhost:8000/api/v1"
+$env:BOT_API_KEY = "<bot-api-key>"
 
-# AI-суммаризация переписки инцидента через локальную нейросеть:
-uv run python helpdesk_agent/helpdesk_tool.py summary 138512
+uv run python execution-worker/worker.py
+```
+
+### 4. Взаимодействие с AI-агентом Antigravity (AGY):
+Инженеры работают с очередью через диалог с AI-ассистентом:
+* `/triage` — пакетный разбор стопки заявок со сводной матрицей;
+* `/task <ID>` — детальная карточка инцидента с RAG-поиском решений;
+* `/diag <ХОСТ>` — сетевая экспресс-диагностика доступности ПК;
+* `/screen <ID>` — визуальный анализ скриншотов из вложений;
+* `/kb <запрос>` — семантический поиск по базе исторических решений;
+* `/sync` — синхронизация закрытых заявок в векторную базу знаний.
+
+CLI-справка по всем командам инструментария:
+```bash
+uv run python helpdesk-cli/helpdesk.py --help
 ```

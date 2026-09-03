@@ -45,15 +45,15 @@ description: >-
 
 ---
 
-## 🛠 Доступные CLI-команды (`helpdesk_tool.py`)
+## 🛠 Доступные CLI-команды (`helpdesk.py`)
 
 ```bash
 # Поиск и вывод карточек дубликатов в очереди:
-uv run python helpdesk_tool.py duplicates --limit 10
+uv run python helpdesk-cli/helpdesk.py duplicates --limit 10
 
 # Вывод в формате JSON:
-uv run python helpdesk_tool.py duplicates --limit 10 --json
+uv run python helpdesk-cli/helpdesk.py duplicates --limit 10 --json
 
 # Применение отмены к дубликату:
-uv run python helpdesk_tool.py apply <DUP_ID> --status 30 --comment "Заявка отменена, т. к. является дубликатом заявки #<MASTER_ID>. Работы ведутся в рамках основной заявки. Если у вас есть дополнения по проблеме, пожалуйста, оставьте комментарий в заявке #<MASTER_ID>." --expenses 5
+uv run python helpdesk-cli/helpdesk.py apply <DUP_ID> --status 30 --comment "Заявка отменена, т. к. является дубликатом заявки #<MASTER_ID>. Работы ведутся в рамках основной заявки. Если у вас есть дополнения по проблеме, пожалуйста, оставьте комментарий в заявке #<MASTER_ID>." --expenses 5
 ```

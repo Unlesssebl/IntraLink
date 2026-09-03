@@ -23,18 +23,20 @@ dependencies = [
     "pgvector>=0.2.0",
     "openai",
     "orjson>=3.10.0",
+    "ldap3>=2.9.1",
+    "pyjwt>=2.13.0",
 ]
 
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
-extraPaths = ["core-api", "telegram-bot", "helpdesk_agent", "helpdesk-agent"]
+extraPaths = ["core-api", "telegram-bot", "execution-worker", "helpdesk-cli", "shared"]
 exclude = ["**/__pyrefly_virtual__"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["core-api/tests"]
-pythonpath = ["core-api"]
+pythonpath = ["core-api", "shared"]
 
 [dependency-groups]
 dev = [
@@ -47,7 +49,7 @@ dev = [
 project-excludes = [
     "**/__pyrefly_virtual__/**",
 ]
-search_path = ["core-api", "telegram-bot", "helpdesk_agent", "helpdesk-agent"]
+search_path = ["core-api", "telegram-bot", "execution-worker", "helpdesk-cli", "shared"]
 
 
 
