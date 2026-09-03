@@ -1,10 +1,11 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { Ticket, Status } from '../data/mock';
 import { statusConfig, priorityConfig, getStatusDotClass } from '../data/mock';
-import { applyTask, bulkApplyTasks, smartBulkApplyTasks, mapStatusToStatusId } from '../lib/tasks';
-import type { SmartBulkApplyItemPayload } from '../lib/types';
+import { applyTask, bulkApplyTasks, smartBulkApplyTasks, mapStatusToStatusId, fetchActiveOutages } from '../lib/tasks';
+import type { SmartBulkApplyItemPayload, OutageIncident } from '../lib/types';
 import type { ServiceSelection } from '../components/Sidebar';
 import TicketInspector from '../components/TicketInspector';
+import OutageAlertBanner from '../components/queue/OutageAlertBanner';
 import {
   IconWifi,
   IconDuplicate,
@@ -97,6 +98,12 @@ export default function QueuePage({
   const [processingBulk, setProcessingBulk] = useState(false);
   const [bulkModal, setBulkModal] = useState<BulkConfirmModalState | null>(null);
   const [smartBatchModal, setSmartBatchModal] = useState<SmartBatchModalState | null>(null);
+  const [outages, setOutages] = useState<OutageIncident[]>([]);
+  const [activeOutageFilterIds, setActiveOutageFilterIds] = useState<number[] | null>(null);
+
+  useEffect(() => {
+    fetchActiveOutages().then(setOutages);
+  }, []);
 
   const selectedTicket = tickets.find(t => t.id === selectedTicketId) ?? null;
 
@@ -152,6 +159,7 @@ export default function QueuePage({
   }, [availableTabs, filterTab]);
 
   const filtered = scopedTickets.filter(t => {
+    if (activeOutageFilterIds && !activeOutageFilterIds.includes(t.rawId)) return false;
     if (showRuleEngineOnly && !t.hasRuleEngine) return false;
     if (showAiOnly && !t.hasAiSolution) return false;
     if (filterTab === 'duplicates' && !t.isDuplicate && t.ruleType !== 'duplicate_task') return false;
@@ -637,8 +645,38 @@ export default function QueuePage({
                 <span>В ремонт все ({countRepair})</span>
               </button>
             )}
+
+            {activeOutageFilterIds && (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-lg text-xs ml-2 animate-in fade-in">
+                <span>Фильтр инцидента ({activeOutageFilterIds.length} заявок)</span>
+                <button
+                  type="button"
+                  onClick={() => setActiveOutageFilterIds(null)}
+                  className="text-rose-400 hover:text-rose-100 cursor-pointer ml-1 font-bold"
+                  title="Сбросить фильтр инцидента"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
           </div>
         </div>
+
+        {/* Outage Alert Banner */}
+        {outages.length > 0 && (
+          <div className="px-4 pt-3">
+            <OutageAlertBanner
+              outages={outages}
+              onSelectTicket={(id) => onSelectTicket(id)}
+              onFilterTicketIds={(ids) => setActiveOutageFilterIds(ids)}
+              onToast={onToast}
+              onOutageResolved={(outageId) => {
+                setOutages(prev => prev.filter(o => o.id !== outageId));
+                setActiveOutageFilterIds(null);
+              }}
+            />
+          </div>
+        )}
 
         {/* Table View (Matching style and layout from image-2.png) */}
         {view === 'table' && (

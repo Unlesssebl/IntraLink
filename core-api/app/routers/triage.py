@@ -138,7 +138,7 @@ async def get_triage_batch(
     db: AsyncSession = Depends(get_db),
 ):
     """Возвращает подготовленную пачку заявок с авто-рекомендациями и телеметрией 0ms."""
-    return await TriageService.prepare_triage_batch(
+    batch_data = await TriageService.prepare_triage_batch(
         service_auth_b64=service_auth_b64,
         db=db,
         filter_id=filter_id,
@@ -150,6 +150,16 @@ async def get_triage_batch(
         include_rag=include_rag,
         operator_id=username,
     )
+    if isinstance(batch_data, dict):
+        try:
+            from app.services.outage_detector import OutageDetector
+            tasks_list = batch_data.get("tasks", [])
+            outages = await OutageDetector.detect_outages(tasks_list)
+            batch_data["outages"] = outages
+        except Exception as e:
+            logger.debug("Ошибка детекции аварий в пачке триажа: %s", e)
+            batch_data["outages"] = []
+    return batch_data
 
 
 @router.get("/tasks/{task_id}", status_code=status.HTTP_200_OK)

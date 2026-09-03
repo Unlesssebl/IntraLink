@@ -17,6 +17,7 @@ interface UseLiveEventsOptions {
   onQueueRefreshNeeded?: (reason: string) => void;
   onTaskStatusUpdated?: (taskIds: number[], newStatusId: number) => void;
   onConfirmRequired?: (jobId: string, prompt: string, details: any) => void;
+  onOutageEvent?: (event: LiveEventPayload) => void;
 }
 
 export function useLiveEvents({
@@ -25,6 +26,7 @@ export function useLiveEvents({
   onQueueRefreshNeeded,
   onTaskStatusUpdated,
   onConfirmRequired,
+  onOutageEvent,
 }: UseLiveEventsOptions = {}) {
   const [isConnected, setIsConnected] = useState(false);
   const [lastEvent, setLastEvent] = useState<LiveEventPayload | null>(null);
@@ -86,6 +88,11 @@ export function useLiveEvents({
             const prompt = payload.data.prompt || 'Требуется подтверждение действия';
             onConfirmRequired?.(jobId, prompt, payload.data.details);
           }
+
+          // 4. Обработка событий массовых инцидентов (AIOps Outages)
+          if (eventType === 'outage_detected' || eventType === 'outage_updated' || eventType === 'outage_resolved') {
+            onOutageEvent?.(payload);
+          }
         } catch (e) {
           console.debug('[LiveEvents] Ошибка парсинга события:', e);
         }
@@ -107,6 +114,9 @@ export function useLiveEvents({
         'status_change',
         'new_task',
         'new_comment',
+        'outage_detected',
+        'outage_updated',
+        'outage_resolved',
       ];
       eventNames.forEach((evName) => {
         es.addEventListener(evName, (e: any) => {

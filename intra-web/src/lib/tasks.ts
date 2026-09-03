@@ -13,6 +13,7 @@ import type {
   TicketSummaryResult,
   AIHealthData,
   SanitizePreviewResult,
+  OutageIncident,
 } from './types';
 
 export function mapStatusIdToStatus(statusId: number, statusName?: string): Status {
@@ -756,6 +757,45 @@ export async function smartBulkApplyTasks(
 
   if (onProgress) onProgress(items.length, items.length, 0);
   return { success_count, failed_count, errors };
+}
+
+// ---------------------------------------------------------------------------
+// AIOps: Управление авариями и массовыми инцидентами (Outage Hub)
+// ---------------------------------------------------------------------------
+
+export async function fetchActiveOutages(): Promise<OutageIncident[]> {
+  try {
+    const res = await apiFetch('/api/v1/outages/active');
+    return res.outages || [];
+  } catch (err) {
+    console.debug('[Tasks] Не удалось загрузить активные аварии:', err);
+    return [];
+  }
+}
+
+export async function resolveOutage(outageId: string, comment?: string): Promise<boolean> {
+  try {
+    await apiFetch(`/api/v1/outages/${encodeURIComponent(outageId)}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ comment }),
+    });
+    return true;
+  } catch (err) {
+    console.error('[Tasks] Ошибка снятия инцидента:', err);
+    return false;
+  }
+}
+
+export async function broadcastOutageComment(
+  outageId: string,
+  comment: string,
+  statusId?: number
+): Promise<{ success: boolean; affected_count: number }> {
+  const res = await apiFetch(`/api/v1/outages/${encodeURIComponent(outageId)}/broadcast`, {
+    method: 'POST',
+    body: JSON.stringify({ comment, status_id: statusId }),
+  });
+  return { success: true, affected_count: res.affected_count || 0 };
 }
 
 

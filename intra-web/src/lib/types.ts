@@ -247,3 +247,18 @@ export interface RAGMatchItem {
   storage_tier: string;
 }
 
+export interface OutageIncident {
+  id: string;
+  title: string;
+  service_id?: number | null;
+  service_name: string;
+  severity: 'critical' | 'warning';
+  status: 'active' | 'resolved';
+  master_ticket_id: number;
+  ticket_ids: number[];
+  detected_at: number;
+  updated_at: number;
+  root_cause_hypothesis?: string;
+  sample_titles?: string[];
+}
+
