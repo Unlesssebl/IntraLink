@@ -948,8 +948,9 @@ async def sync_historical_closed_tasks(
     cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M")
 
     params = {
+        "StatusIds": "29,30",
         "ChangedMoreThan": cutoff_str,
-        "pagesize": str(min(limit * 2, 100)),
+        "pagesize": str(min(max(limit, 20), 100)),
         "page": "1",
         "include": "status,service",
     }

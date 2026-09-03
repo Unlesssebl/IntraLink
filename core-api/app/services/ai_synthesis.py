@@ -243,9 +243,17 @@ def canonize_task_solution(
     root_cause = "Эксплуатационный сбой"
 
     if lifetime:
-        # Идем от последних комментариев к первым
-        for item in reversed(lifetime):
-            comm = clean_html(item.get("Comment") or item.get("Text") or "").strip()
+        # Сортируем события от самых новых к старым.
+        # В API IntraService поле комментария называется 'Comments' (также проверяем 'Comment' и 'Text').
+        sorted_events = sorted(
+            lifetime,
+            key=lambda x: str(x.get("Date") or ""),
+            reverse=True,
+        )
+        for item in sorted_events:
+            comm = clean_html(
+                item.get("Comments") or item.get("Comment") or item.get("Text") or ""
+            ).strip()
             # Пропускаем пустые, системные статусные сообщения и авто-логи
             if not comm or len(comm) < 10:
                 continue
@@ -255,6 +263,14 @@ def canonize_task_solution(
             # Нашли содержательный комментарий решения
             solution_text = comm
             break
+
+    if not solution_text:
+        # Проверяем, есть ли поле решения в самой задаче
+        for field in ("Solution", "CloseReason", "Resolution"):
+            val = clean_html(task.get(field) or "").strip()
+            if val and len(val) >= 10:
+                solution_text = val
+                break
 
     if not solution_text:
         solution_text = "Заявка выполнена в штатном режиме."
