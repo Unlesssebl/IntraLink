@@ -1,16 +1,24 @@
 # ==============================================================================
 # IntraLink — Docker Compose Оверлей для NVIDIA GPU (CUDA / RTX 3050)
 # Использование:
-#   docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.ollama-nvidia.yml up -d
 # Или через .env:
-#   COMPOSE_FILE=docker-compose.yml:docker-compose.nvidia.yml
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.ollama-nvidia.yml
 # ==============================================================================
 services:
   ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    container_name: intralink_ollama
+    restart: always
+    ports:
+      - "127.0.0.1:${OLLAMA_PORT:-11435}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
     environment:
       # По умолчанию 1 для RTX 3050 (если GPU 0 — интерфейсная GTX 1650)
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}
       - NVIDIA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}
+      - OLLAMA_KEEP_ALIVE=24h
       - OLLAMA_FLASH_ATTENTION=1
       - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-2}
     deploy:
@@ -30,3 +38,8 @@ services:
   poller:
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
+    depends_on:
+      - ollama
+
+volumes:
+  ollama_data:

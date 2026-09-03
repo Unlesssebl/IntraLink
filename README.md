@@ -70,14 +70,16 @@ docker compose up -d
 ```
 Поднимает контейнеры: `postgres` (pgvector), `redis`, `core-api` (Gateway + Admin/Operator SPA) и `poller` (фоновый опрос с Leader Lock).
 
-#### Выбор аппаратного ускорения AI (NVIDIA RTX 3050 / AMD Vulkan / Host):
-Инфраструктура поддерживает три адаптивных режима через переменную `COMPOSE_FILE` в файле `.env`:
+#### Выбор режима Ollama и аппаратного ускорения AI:
+Инфраструктура поддерживает гибкое переключение режимов через переменную `COMPOSE_FILE` в файле `.env`:
 
-| Режим ускорения | Настройка в `.env` | Описание |
+| Режим работы | Настройка в `.env` | Описание |
 |---|---|---|
-| **Хостовая Ollama (Рекомендуется)** | `COMPOSE_FILE=docker-compose.yml`<br>`OLLAMA_BASE_URL=http://localhost:11434` | Максимальная скорость (**~115 токенов/сек** на RTX 3050), прямое подключение через `host.docker.internal` без оверхеда контейнера. |
-| **NVIDIA в Docker (CUDA)** | `COMPOSE_FILE=docker-compose.yml:docker-compose.nvidia.yml`<br>`CUDA_VISIBLE_DEVICES=1` | Проброс GPU через NVIDIA Container Toolkit с фиксацией на свободной 8 ГБ RTX 3050. |
-| **AMD в Docker (Vulkan)** | `COMPOSE_FILE=docker-compose.yml:docker-compose.vulkan.yml` | Аппаратное ускорение графического процессора AMD через Vulkan (`/dev/dri`) без ROCm. |
+| **Хостовая Ollama (Рекомендуется)** | `COMPOSE_FILE=docker-compose.yml`<br>`OLLAMA_BASE_URL=http://localhost:11434` | Максимальная скорость (**~115 токенов/сек** на RTX 3050). Контейнер Ollama **не создается**, прямое подключение через `host.docker.internal:11434` без оверхеда. |
+| **CPU в Docker** | `COMPOSE_FILE=docker-compose.yml:docker-compose.ollama-cpu.yml` | Автономный запуск Ollama в контейнере на CPU без привязки к хосту. |
+| **NVIDIA в Docker (CUDA)** | `COMPOSE_FILE=docker-compose.yml:docker-compose.ollama-nvidia.yml`<br>`CUDA_VISIBLE_DEVICES=1` | Проброс GPU в контейнер через NVIDIA Container Toolkit с фиксацией на 8 ГБ RTX 3050. |
+| **AMD в Docker (Vulkan)** | `COMPOSE_FILE=docker-compose.yml:docker-compose.ollama-vulkan.yml` | Аппаратное ускорение графического процессора AMD через Vulkan (`/dev/dri`) без ROCm. |
+
 
 * **Операторский центр обработки заявок:** `http://localhost:8000/operator-panel`
 * **Консоль системного администратора:** `http://localhost:8000/admin`

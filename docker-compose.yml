@@ -24,19 +24,6 @@ services:
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
 
-  ollama:
-    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
-    container_name: intralink_ollama
-    restart: always
-    ports:
-      - "127.0.0.1:${OLLAMA_PORT:-11435}:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    environment:
-      - OLLAMA_KEEP_ALIVE=24h
-      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-2}
-      - OLLAMA_FLASH_ATTENTION=1
-
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
     container_name: intralink_litellm
@@ -74,7 +61,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
       - REDIS_URL=redis://redis:6379/0
       - LITELLM_BASE_URL=http://litellm:4000/v1
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_BASE_URL=${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
       - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
       - INTRASERVICE_SERVICE_LOGIN=intratest
@@ -114,7 +101,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
       - REDIS_URL=redis://redis:6379/0
       - LITELLM_BASE_URL=http://litellm:4000/v1
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_BASE_URL=${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - PRINTERS_KB_PATH=/app/knowledge_base/printers_knowledge_base.json
       - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
       - INTRASERVICE_SERVICE_LOGIN=intratest
@@ -169,7 +156,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  ollama_data:
 
 secrets:
   encryption_key:

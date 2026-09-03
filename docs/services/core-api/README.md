@@ -58,10 +58,11 @@
 
 ## 🚀 Запуск сервиса
 
-### Через Docker Compose (вместе с litellm, poller, postgres, redis, ollama):
+### Через Docker Compose (вместе с litellm, poller, postgres, redis):
 ```bash
 docker compose up -d
 ```
+> По умолчанию проект подключается к хостовой Ollama (`http://host.docker.internal:11434`). Если требуется запустить Ollama внутри Docker, используйте соответствующий оверлей (`docker-compose.ollama-cpu.yml`, `docker-compose.ollama-nvidia.yml` или `docker-compose.ollama-vulkan.yml`).
 
 ### Локально для разработки:
 ```bash
