@@ -74,6 +74,23 @@ class IntentAnalyzer:
         if ip_match or pc_match:
             extracted_ip = ip_match.group(1) if ip_match else None
             extracted_pc = pc_match.group(1).upper() if pc_match else None
+
+            # Валидация подсети: домашние (192.168.x.x) и петлевые адреса не допускаются к автоустановке
+            if extracted_ip and (extracted_ip.startswith("192.168.") or extracted_ip.startswith("127.")):
+                return IntentAnalysisResult(
+                    intent=UserReplyIntent.CLARIFICATION_QUESTION,
+                    extracted_ip=None,
+                    extracted_pc=extracted_pc,
+                    confidence=0.95,
+                    source="regex",
+                    summary=f"Заявитель указал домашний/локальный IP-адрес: {extracted_ip}",
+                    suggested_reply=(
+                        f"Указанный IP-адрес ({extracted_ip}) является домашним/локальным. "
+                        "Пожалуйста, укажите корпоративный IP-адрес сетевого принтера из диапазона 10.***.***.*** "
+                        "(указан на наклейке на корпусе принтера)."
+                    ),
+                )
+
             return IntentAnalysisResult(
                 intent=UserReplyIntent.PROVIDE_DATA,
                 extracted_ip=extracted_ip,

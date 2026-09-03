@@ -19,12 +19,20 @@ def test_intent_analyzer_fast_regex_provide_ip():
 
 
 def test_intent_analyzer_fast_regex_provide_pc_and_ip():
-    text = "ПК NTEMW0144, принтер 192.168.1.200"
+    text = "ПК NTEMW0144, принтер 10.128.4.120"
     res = IntentAnalyzer.analyze_fast_regex(text)
     assert res is not None
     assert res.intent == UserReplyIntent.PROVIDE_DATA
-    assert res.extracted_ip == "192.168.1.200"
+    assert res.extracted_ip == "10.128.4.120"
     assert res.extracted_pc == "NTEMW0144"
+
+
+def test_intent_analyzer_home_subnet_detected_and_clarified():
+    text = "ПК NTEMW0144, принтер 192.168.1.200"
+    res = IntentAnalyzer.analyze_fast_regex(text)
+    assert res is not None
+    assert res.intent == UserReplyIntent.CLARIFICATION_QUESTION
+    assert "домашним/локальным" in (res.suggested_reply or "")
 
 
 def test_intent_analyzer_fast_regex_cancel_keywords():

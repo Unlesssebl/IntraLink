@@ -33,6 +33,14 @@ def mock_redis():
         async def xadd(self, stream, fields, maxlen=None, approximate=True):
             return "1000-0"
 
+        async def incr(self, key):
+            val = int(self.store.get(key, 0)) + 1
+            self.store[key] = val
+            return val
+
+        async def expire(self, key, seconds):
+            return True
+
     return MockRedis()
 
 
@@ -203,3 +211,85 @@ async def test_orchestrator_processes_in_progress_task_job_success(mock_redis):
         mock_update_status.assert_called_once_with("test_auth", 140304, settings.STATUS_COMPLETED_ID)
         mock_add_expenses.assert_called_once_with("test_auth", 140304, 15, user_id=10001)
         assert mock_redis.store.get("task:140304:execution_job") is None
+
+
+import time
+
+@pytest.mark.asyncio
+async def test_orchestrator_max_clarification_attempts_exceeded(mock_redis):
+    orchestrator = AutonomousTicketOrchestrator()
+    task_35 = {
+        "Id": 140305,
+        "Name": "Установить принтер",
+        "StatusId": settings.STATUS_WAITING_ID,
+        "CreatorId": 501,
+    }
+    comments = [
+        {
+            "Id": 1001,
+            "Comment": "Я не понимаю что вы от меня хотите",
+            "EditorId": 501,
+            "Created": "2026-09-04T00:15:00",
+        }
+    ]
+    # Симулируем, что уже было 2 попытки
+    mock_redis.store["task:140305:clarification_attempts"] = 2
+
+    with patch("app.services.lifecycle.orchestrator.settings.AUTONOMOUS_LIFECYCLE_ENABLED", True), \
+         patch("app.services.lifecycle.orchestrator.settings.INTRASERVICE_SERVICE_USER_ID", 10001), \
+         patch("app.services.lifecycle.orchestrator.get_redis_client", return_value=mock_redis), \
+         patch("app.services.lifecycle.orchestrator.get_tasks", new_callable=AsyncMock) as mock_get_tasks, \
+         patch("app.services.lifecycle.orchestrator.get_task_comments", new_callable=AsyncMock) as mock_get_comments, \
+         patch("app.services.lifecycle.orchestrator.update_task_status", new_callable=AsyncMock) as mock_update_status, \
+         patch("app.services.lifecycle.orchestrator.add_task_comment", new_callable=AsyncMock) as mock_add_comment:
+
+        mock_get_tasks.return_value = {"Tasks": [task_35]}
+        mock_get_comments.return_value = comments
+        mock_update_status.return_value = True
+        mock_add_comment.return_value = True
+
+        results = await orchestrator.process_assigned_tasks("test_auth")
+
+        assert len(results) == 1
+        assert results[0].action_taken == "max_clarifications_exceeded"
+        assert results[0].target_status_id == settings.STATUS_OPEN_ID
+        assert results[0].escalated_to_human is True
+        mock_update_status.assert_called_once_with("test_auth", 140305, settings.STATUS_OPEN_ID)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_execution_worker_timeout_escalation(mock_redis):
+    orchestrator = AutonomousTicketOrchestrator()
+    task_27 = {
+        "Id": 140306,
+        "Name": "Установить принтер",
+        "StatusId": settings.STATUS_IN_PROGRESS_ID,
+    }
+    job_id = "job_stuck_123"
+    mock_redis.store["task:140306:execution_job"] = job_id
+    # Создана 700 секунд назад (> 10 минут)
+    mock_redis.store[f"execution_job:{job_id}"] = json.dumps({
+        "job_id": job_id,
+        "status": "running",
+        "created_at": time.time() - 700,
+    })
+
+    with patch("app.services.lifecycle.orchestrator.settings.AUTONOMOUS_LIFECYCLE_ENABLED", True), \
+         patch("app.services.lifecycle.orchestrator.settings.INTRASERVICE_SERVICE_USER_ID", 10001), \
+         patch("app.services.lifecycle.orchestrator.get_redis_client", return_value=mock_redis), \
+         patch("app.services.lifecycle.orchestrator.get_tasks", new_callable=AsyncMock) as mock_get_tasks, \
+         patch("app.services.lifecycle.orchestrator.update_task_status", new_callable=AsyncMock) as mock_update_status, \
+         patch("app.services.lifecycle.orchestrator.add_task_comment", new_callable=AsyncMock) as mock_add_comment:
+
+        mock_get_tasks.return_value = {"Tasks": [task_27]}
+        mock_update_status.return_value = True
+        mock_add_comment.return_value = True
+
+        results = await orchestrator.process_assigned_tasks("test_auth")
+
+        assert len(results) == 1
+        assert results[0].action_taken == "execution_timeout_escalated"
+        assert results[0].target_status_id == settings.STATUS_OPEN_ID
+        assert results[0].escalated_to_human is True
+        mock_update_status.assert_called_once_with("test_auth", 140306, settings.STATUS_OPEN_ID)
+        assert mock_redis.store.get("task:140306:execution_job") is None

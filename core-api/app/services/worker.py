@@ -934,17 +934,8 @@ async def check_updates():
             # Сохраняем измененные last_task_id пользователей в БД
             await db.commit()
 
-            # Проверяем зависшие принтерные задачи
-            try:
-                await check_waiting_printer_tasks(
-                    service_auth_b64, redis, semaphore, users_by_is_id
-                )
-            except Exception as e_waiting:
-                logger.exception(
-                    "Ошибка при обработке зависших принтерных задач: %s", e_waiting
-                )
-
             # Автономный оркестратор жизненного цикла заявок (FSM)
+            # Включает полный цикл: проверка реквизитов, возобновление из ожидания, запуск и финализация
             try:
                 await process_autonomous_lifecycle(service_auth_b64)
             except Exception as e_lifecycle:

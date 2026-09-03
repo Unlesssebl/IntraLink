@@ -175,6 +175,30 @@ class AutonomousTicketOrchestrator:
 
             comment_text = str(latest_applicant_comment.get("Comment") or "")
             intent_res = await IntentAnalyzer.analyze_with_llm(comment_text, task)
+
+            # Защита от бесконечного пинг-понга: счетчик попыток уточнения
+            attempt_key = f"task:{task_id}:clarification_attempts"
+            attempts = int(await redis.incr(attempt_key))
+            await redis.expire(attempt_key, 86400 * 7)
+
+            if attempts > 2 and intent_res.intent not in (UserReplyIntent.PROVIDE_DATA, UserReplyIntent.CANCEL_REQUEST):
+                await update_task_status(service_auth_b64, task_id, settings.STATUS_OPEN_ID)
+                await add_task_comment(
+                    service_auth_b64,
+                    task_id,
+                    "Заявитель не предоставил сетевые реквизиты после повторного запроса. "
+                    "Заявка передана на ручное сопровождение дежурному инженеру 1-й линии."
+                )
+                await redis.set(seen_key, "1", ex=86400 * 30)
+                logger.info("Задача #%d: превышен лимит попыток уточнения (%d). Эскалация человеку.", task_id, attempts)
+                return LifecycleStepResult(
+                    task_id=task_id,
+                    action_taken="max_clarifications_exceeded",
+                    previous_status_id=settings.STATUS_WAITING_ID,
+                    target_status_id=settings.STATUS_OPEN_ID,
+                    escalated_to_human=True,
+                )
+
             step = LifecycleStateMachine.evaluate_waiting_task(task, intent_res)
 
             # Возобновление в работу (31)
@@ -238,14 +262,41 @@ class AutonomousTicketOrchestrator:
             job_data = json.loads(raw_job_data.decode() if isinstance(raw_job_data, bytes) else raw_job_data)
             job_status = job_data.get("status")
 
-            # Если задача всё ещё в процессе выполнения воркером
+            # FSM Guard: защита от конфликта с оператором (ручной перехват)
+            current_status = int(task.get("StatusId") or 0)
+            if current_status != settings.STATUS_IN_PROGRESS_ID:
+                logger.info("Задача #%d: статус был изменен оператором на %d. Автономная финализация пропущена.", task_id, current_status)
+                await redis.delete(f"task:{task_id}:execution_job")
+                return None
+
+            # Проверка таймаута зависших заданий (Zombie Jobs)
+            created_at = float(job_data.get("created_at") or 0)
+            now_ts = time.time()
             if job_status in ("queued", "running"):
+                if created_at > 0 and (now_ts - created_at) > 600:
+                    logger.warning("Задача #%d: задание %s зависло в '%s' (> 10 мин). Таймаут и эскалация.", task_id, job_id, job_status)
+                    await update_task_status(service_auth_b64, task_id, settings.STATUS_OPEN_ID)
+                    await add_task_comment(
+                        service_auth_b64,
+                        task_id,
+                        "Автоматическая установка приостановлена: превышен таймаут отклика Execution Worker (10 минут). "
+                        "Заявка передана на ручное исполнение дежурному инженеру 2-й линии."
+                    )
+                    await redis.delete(f"task:{task_id}:execution_job")
+                    return LifecycleStepResult(
+                        task_id=task_id,
+                        action_taken="execution_timeout_escalated",
+                        previous_status_id=settings.STATUS_IN_PROGRESS_ID,
+                        target_status_id=settings.STATUS_OPEN_ID,
+                        escalated_to_human=True,
+                        error="Execution worker timeout (> 10 min)",
+                    )
                 return None
 
             # Если задача завершена успешно
             if job_status == "success":
-                # Если тикет уже закрыт воркером напрямую
-                if job_data.get("ticket_close_ok"):
+                # Защита от повторного списания трудозатрат: если задача уже закрыта
+                if current_status == settings.STATUS_COMPLETED_ID or job_data.get("ticket_close_ok"):
                     await redis.delete(f"task:{task_id}:execution_job")
                     return LifecycleStepResult(
                         task_id=task_id,
