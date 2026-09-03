@@ -131,21 +131,39 @@ async def verify_admin_or_api_key(
     )
 
 
-async def get_service_auth_b64() -> str:
+async def get_service_auth_b64(
+    admin_session: str | None = Cookie(None),
+) -> str:
     """
-    Получает зашифрованный токен авторизации сервисного аккаунта.
-    Сначала проверяет переменные окружения, затем Redis.
+    Получает зашифрованный токен авторизации:
+    1. Если запрос от авторизованного оператора (Cookie admin_session) — берем его актуальный зашифрованный токен из Redis.
+    2. Иначе используем глобальный сервисный аккаунт (из ENV или Redis).
     """
     import base64
     from app.services.crypto import encrypt_token
     from app.services.worker import get_redis_client
+
+    redis = get_redis_client()
+
+    # Проверяем, есть ли активная сессия оператора в Cookie
+    if admin_session:
+        try:
+            payload = jwt.decode(
+                admin_session, settings.JWT_SECRET or "", algorithms=["HS256"]
+            )
+            username = payload.get("sub")
+            if username:
+                op_auth = await redis.get(f"admin_auth:{username}")
+                if op_auth:
+                    return op_auth
+        except Exception:
+            pass
 
     if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
         auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
         plain_b64 = base64.b64encode(auth_str.encode()).decode()
         return encrypt_token(plain_b64)
 
-    redis = get_redis_client()
     service_auth_b64 = await redis.get("worker:service_auth_b64")
     if not service_auth_b64:
         raise HTTPException(

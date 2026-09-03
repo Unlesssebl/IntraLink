@@ -110,7 +110,7 @@ class RAGSyncRequest(BaseModel):
 @router.get("/batch", status_code=status.HTTP_200_OK)
 async def get_triage_batch(
     filter_id: int = Query(984, description="ID фильтра очереди 1-й линии"),
-    limit: int = Query(5, ge=1, le=50, description="Размер пачки заявок"),
+    limit: int = Query(5, ge=1, le=500, description="Размер пачки заявок"),
     page: int = Query(1, ge=1, description="Номер страницы/пачки"),
     service_prefix: str | None = Query(
         None,
@@ -123,6 +123,7 @@ async def get_triage_batch(
         False, description="Включить в выборку ранее пропущенные заявки"
     ),
     service_auth_b64: str = Depends(get_service_auth_b64),
+    username: str = Depends(verify_admin_or_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     """Возвращает подготовленную пачку заявок с авто-рекомендациями и телеметрией 0ms."""
@@ -135,6 +136,7 @@ async def get_triage_batch(
         service_prefix=service_prefix,
         redirect_only=redirect_only,
         include_skipped=include_skipped,
+        operator_id=username,
     )
 
 
