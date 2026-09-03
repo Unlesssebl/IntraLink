@@ -16,6 +16,7 @@ from app.routers import (
     ai,
     auth,
     commands,
+    desktop,
     events,
     kb_admin,
     rules_admin,
@@ -146,6 +147,7 @@ app.include_router(triage.router)
 app.include_router(rules_admin.router)
 app.include_router(ai.router)
 app.include_router(commands.router)
+app.include_router(desktop.router)
 app.include_router(events.router)
 app.include_router(admin.router)
 app.include_router(admin_settings.router)

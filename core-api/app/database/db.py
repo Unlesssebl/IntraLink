@@ -118,6 +118,26 @@ class JobLog(Base):
     )
 
 
+class DesktopLaunchLog(Base):
+    """Аудит безопасных локальных запусков из IntraLink Desktop Companion."""
+
+    __tablename__ = "desktop_launch_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    completion_hash: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    client: Mapped[str] = mapped_column(String(32), nullable=False)
+    initiator: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="issued", index=True)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    claimed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 # Модель шаблонов ответов триажа (SSOT)
 class TriageTemplate(Base):
     __tablename__ = "triage_templates"
