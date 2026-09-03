@@ -454,6 +454,21 @@ async def process_user(
                     )
 
 
+
+async def process_autonomous_lifecycle(service_auth_b64: str) -> None:
+    """
+    Запуск автономного конечного автомата (Lifecycle FSM) для тикетов,
+    назначенных на системный аккаунт бота.
+    """
+    if getattr(settings, "AUTONOMOUS_LIFECYCLE_ENABLED", True):
+        try:
+            from app.services.lifecycle.orchestrator import get_ticket_orchestrator
+            orchestrator = get_ticket_orchestrator()
+            await orchestrator.process_assigned_tasks(service_auth_b64)
+        except Exception as exc:
+            logger.exception("Ошибка в процессе выполнения автономного жизненного цикла: %s", exc)
+
+
 async def check_waiting_printer_tasks(
     service_auth_b64: str,
     redis,
@@ -927,6 +942,14 @@ async def check_updates():
             except Exception as e_waiting:
                 logger.exception(
                     "Ошибка при обработке зависших принтерных задач: %s", e_waiting
+                )
+
+            # Автономный оркестратор жизненного цикла заявок (FSM)
+            try:
+                await process_autonomous_lifecycle(service_auth_b64)
+            except Exception as e_lifecycle:
+                logger.exception(
+                    "Ошибка в автономном оркестраторе жизненного цикла: %s", e_lifecycle
                 )
 
             # Сохраняем last_task_id сервисного аккаунта в Redis

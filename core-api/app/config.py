@@ -68,6 +68,21 @@ class Settings(BaseSettings):
     )
     STATUS_OPEN_ID: int = Field(31, description="ID статуса 'Открыта'")
     STATUS_WAITING_ID: int = Field(35, description="ID статуса 'Требует уточнения'")
+    STATUS_IN_PROGRESS_ID: int = Field(27, description="ID статуса 'В работе'")
+    STATUS_COMPLETED_ID: int = Field(29, description="ID статуса 'Выполнена'")
+    STATUS_CANCELLED_ID: int = Field(30, description="ID статуса 'Отменена'")
+    STATUS_CLOSED_ID: int = Field(28, description="ID статуса 'Закрыта'")
+
+    # Автономный оркестратор жизненного цикла заявок
+    AUTONOMOUS_LIFECYCLE_ENABLED: bool = Field(
+        True, description="Включение автономного оркестратора жизненного цикла заявок"
+    )
+    AUTONOMOUS_AUTO_EXPENSES_MINUTES: int = Field(
+        15, description="Норматив списания трудозатрат при автозакрытии"
+    )
+    AUTONOMOUS_TASK_LEASE_TTL: int = Field(
+        120, description="TTL распределенной блокировки заявки в Redis"
+    )
 
     # Параметры сервисного аккаунта и JWT
     INTRASERVICE_SERVICE_LOGIN: str | None = Field(
