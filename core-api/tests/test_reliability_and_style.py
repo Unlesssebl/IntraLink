@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, patch
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -15,7 +16,7 @@ from app.services.ai_synthesis import (
 HEADERS = {"X-Bot-Api-Key": settings.BOT_API_KEY or "test-api-key"}
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def setup_test_db():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     session_factory = async_sessionmaker(
@@ -153,4 +154,3 @@ async def test_batch_triage_confidence_score_and_flags():
             assert "requires_human_review" in task_item
             assert isinstance(task_item["confidence_score"], float)
             assert isinstance(task_item["requires_human_review"], bool)
-

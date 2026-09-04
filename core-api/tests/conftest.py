@@ -9,6 +9,7 @@ pydantic-settings читает при инициализации.
 
 import os
 import pytest
+import pytest_asyncio
 from unittest.mock import AsyncMock
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -48,3 +49,16 @@ def mock_redis() -> AsyncMock:
 @pytest.fixture
 def base_web_url() -> str:
     return "http://intraservice.test"
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def close_shared_ai_hub_session():
+    """Закрывает общие HTTP-сессии AI-контура после каждого теста."""
+    yield
+    from app.services.ai import ai_hub
+    from app.services.intraservice import close_session
+    from app.services.rag import close_rag_session
+
+    await ai_hub.close()
+    await close_rag_session()
+    await close_session()

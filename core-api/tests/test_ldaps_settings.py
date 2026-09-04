@@ -1,6 +1,7 @@
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
@@ -16,7 +17,7 @@ def anyio_backend():
     return "asyncio"
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_db_session():
     """Тестовая in-memory база данных SQLite."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -72,10 +73,8 @@ async def test_admin_auth_success_and_failure():
             admin_token = data["access_token"]
 
         # 4. SSO: вход без передачи логина/пароля при наличии валидной сессии в Cookie
-        res_sso = await client.post(
-            "/api/v1/admin/auth/login",
-            cookies={"admin_session": admin_token},
-        )
+        client.cookies.set("admin_session", admin_token)
+        res_sso = await client.post("/api/v1/admin/auth/login")
         assert res_sso.status_code == 200
         assert res_sso.json()["access_token"] == admin_token
 

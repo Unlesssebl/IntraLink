@@ -5,6 +5,7 @@
 
 import json
 import pytest
+import pytest_asyncio
 from unittest.mock import AsyncMock, patch
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -13,7 +14,7 @@ from app.services import vault
 from app.services.crypto import decrypt_token
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_db():
     """Тестовая SQLite in-memory сессия базы данных с активным ключом Fernet."""
     from cryptography.fernet import Fernet

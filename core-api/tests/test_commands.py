@@ -1,6 +1,6 @@
 import json
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -18,7 +18,7 @@ def override_deps():
         session.execute = AsyncMock()
         session.commit = AsyncMock()
         session.rollback = AsyncMock()
-        session.add = AsyncMock()
+        session.add = MagicMock()
         yield session
 
     app.dependency_overrides[get_db] = mock_get_db

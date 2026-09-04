@@ -2,6 +2,7 @@
 Тесты для PostgreSQL SSOT моделей шаблонов, правил триажа и аудит-лога.
 """
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -23,7 +24,7 @@ from app.services.template_engine import (
 )
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_db_session():
     """Тестовая in-memory база данных SQLite."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)

@@ -2,12 +2,14 @@ import json
 import jwt
 from unittest.mock import AsyncMock, patch
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.database.db import Base, TaskKnowledgeBase, get_db
 from app.main import app
+from app.routers.deps import get_service_auth_b64
 
 
 @pytest.fixture
@@ -15,7 +17,18 @@ def anyio_backend():
     return "asyncio"
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
+def override_service_auth():
+    """Изолирует KB-роуты от Redis/Vault с внешними учётными данными."""
+    async def _service_auth() -> str:
+        return "test_auth_b64"
+
+    app.dependency_overrides[get_service_auth_b64] = _service_auth
+    yield
+    app.dependency_overrides.pop(get_service_auth_b64, None)
+
+
+@pytest_asyncio.fixture
 async def test_db_session():
     """Тестовая in-memory база данных SQLite."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -163,14 +176,17 @@ async def test_kb_admin_sync_with_sso_and_cookie():
             )
             assert login_res.status_code == 200
             cookie_val = login_res.cookies.get("admin_session")
+            if cookie_val:
+                client.cookies.set("admin_session", cookie_val)
 
-        with patch("app.routers.kb_admin.sync_historical_closed_tasks", new_callable=AsyncMock) as mock_sync:
+        with patch("app.routers.kb_admin.sync_historical_closed_tasks", new_callable=AsyncMock) as mock_sync, \
+             patch("app.services.rag.check_embedding_health", new_callable=AsyncMock) as mock_health:
             mock_sync.return_value = {"indexed": 5, "skipped": 2}
+            mock_health.return_value = (True, "OK")
             res = await client.post(
                 "/api/v1/admin/kb/sync",
                 json={"days": 30, "limit": 100},
                 headers={"Authorization": "Bearer sso_session"},
-                cookies={"admin_session": cookie_val} if cookie_val else {},
             )
             assert res.status_code == 200
             assert res.json()["status"] == "success"
@@ -190,17 +206,20 @@ async def test_kb_admin_stratified_sync_endpoints():
             )
             assert login_res.status_code == 200
             cookie_val = login_res.cookies.get("admin_session")
+            if cookie_val:
+                client.cookies.set("admin_session", cookie_val)
 
         mock_redis = AsyncMock()
         mock_redis.get.return_value = None  # no lock
 
         with patch("app.routers.kb_admin.get_redis_client", return_value=mock_redis), \
+             patch("app.services.rag.check_embedding_health", new_callable=AsyncMock) as mock_health, \
              patch("app.services.rag.sync_stratified_kb", new_callable=AsyncMock):
+            mock_health.return_value = (True, "OK")
             res = await client.post(
                 "/api/v1/admin/kb/sync-stratified",
                 json={"quota_per_service": 20, "days": 60, "root_id": "03"},
                 headers={"Authorization": "Bearer sso_session"},
-                cookies={"admin_session": cookie_val} if cookie_val else {},
             )
             assert res.status_code == 202
             data = res.json()
@@ -212,7 +231,6 @@ async def test_kb_admin_stratified_sync_endpoints():
             status_res = await client.get(
                 "/api/v1/admin/kb/sync-status",
                 headers={"Authorization": "Bearer sso_session"},
-                cookies={"admin_session": cookie_val} if cookie_val else {},
             )
             assert status_res.status_code == 200
 
@@ -227,7 +245,6 @@ async def test_kb_admin_preflight_check_blocks_when_embedder_fails():
     )
 
     with patch.object(settings, "JWT_SECRET", "test-secret-key-12345678901234567890"), \
-         patch("app.routers.kb_admin.get_service_auth_b64", return_value="test_auth_b64"), \
          patch("app.services.rag.check_embedding_health", new_callable=AsyncMock) as mock_health:
         mock_health.return_value = (False, "LiteLLM HTTP 400: Invalid model name")
 
@@ -268,7 +285,6 @@ async def test_kb_admin_available_statuses_endpoint():
     ]
 
     with patch.object(settings, "JWT_SECRET", "test-secret-key-12345678901234567890"), \
-         patch("app.routers.kb_admin.get_service_auth_b64", return_value="test_auth_b64"), \
          patch("app.services.intraservice.get_statuses", new_callable=AsyncMock) as mock_get_statuses:
         mock_get_statuses.return_value = mock_statuses
 
@@ -301,7 +317,6 @@ async def test_kb_admin_sync_with_custom_statuses_and_ai_eval():
     mock_redis.get.return_value = None
 
     with patch.object(settings, "JWT_SECRET", "test-secret-key-12345678901234567890"), \
-         patch("app.routers.kb_admin.get_service_auth_b64", return_value="test_auth_b64"), \
          patch("app.routers.kb_admin.get_redis_client", return_value=mock_redis), \
          patch("app.services.rag.check_embedding_health", new_callable=AsyncMock) as mock_health, \
          patch("app.services.rag.sync_stratified_kb", new_callable=AsyncMock) as mock_sync:
@@ -341,7 +356,6 @@ async def test_kb_admin_nightly_audit_endpoints():
     mock_redis.get.return_value = None
 
     with patch.object(settings, "JWT_SECRET", "test-secret-key-12345678901234567890"), \
-         patch("app.routers.kb_admin.get_service_auth_b64", return_value="test_auth_b64"), \
          patch("app.routers.kb_admin.get_redis_client", return_value=mock_redis), \
          patch("app.services.rag.run_nightly_deep_audit_kb", new_callable=AsyncMock), \
          patch("app.services.rag.get_nightly_audit_progress", new_callable=AsyncMock) as mock_prog:

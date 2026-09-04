@@ -1,6 +1,6 @@
 import pytest
 import json
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 from app.services.triage_service import TriageService
 from app.services.triage_session import TriageSessionManager
 from app.routers.triage import ApplyTriageRequest, apply_triage_action, get_triage_batch
@@ -65,15 +65,23 @@ async def test_apply_triage_resolution(mock_add_expenses, mock_update_task, mock
     mock_update_task.return_value = True
     mock_add_expenses.return_value = True
 
-    mock_db = AsyncMock()
-    results = await TriageService.apply_triage_resolution(
-        service_auth_b64="dXNlcjpwYXNz",
-        db=mock_db,
-        task_ids=[101],
-        status_id=29,
-        comment="Доступ к WLAN предоставлен",
-        expenses=10,
-    )
+    # SQLAlchemy AsyncSession имеет синхронный add() и асинхронные операции I/O.
+    mock_db = MagicMock()
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock()
+    mock_db.execute = AsyncMock()
+    with patch(
+        "app.routers.triage.index_task_knowledge",
+        new_callable=AsyncMock,
+    ):
+        results = await TriageService.apply_triage_resolution(
+            service_auth_b64="dXNlcjpwYXNz",
+            db=mock_db,
+            task_ids=[101],
+            status_id=29,
+            comment="Доступ к WLAN предоставлен",
+            expenses=10,
+        )
 
     assert len(results) == 1
     assert results[0]["task_id"] == 101

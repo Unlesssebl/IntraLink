@@ -112,3 +112,21 @@ CLI-справка по всем командам инструментария:
 ```bash
 uv run python helpdesk-cli/helpdesk.py --help
 ```
+
+### Проверка в Docker
+
+Production-образы не содержат dev-зависимостей. Для воспроизводимого прогона
+тестов используется отдельный Docker target с зависимостями из `uv.lock`:
+
+```bash
+docker compose --profile test run --rm tests
+```
+
+Для запуска отдельного набора тестов передайте путь вместо стандартной команды:
+
+```bash
+docker compose --profile test run --rm tests tests/test_ai_sanitizer.py -q
+```
+
+Профиль поднимает изолированный Redis без постоянного тома; после полного
+прогона его можно остановить командой `docker compose --profile test down`.

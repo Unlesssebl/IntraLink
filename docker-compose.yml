@@ -125,6 +125,36 @@ services:
       - postgres
       - redis
 
+  tests:
+    profiles:
+      - test
+    build:
+      context: .
+      dockerfile: ./core-api/Dockerfile
+      target: test
+    environment:
+      DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+      REDIS_URL: "redis://test-redis:6379/0"
+      INTRASERVICE_URL: "http://intraservice.test/api/"
+      ENCRYPTION_KEY: ""
+      BOT_API_KEY: "test-api-key"
+    entrypoint: ["/workspace/.venv/bin/python", "-m", "pytest"]
+    command: ["tests", "-q"]
+    depends_on:
+      test-redis:
+        condition: service_healthy
+
+  test-redis:
+    profiles:
+      - test
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
   telegram-bot:
     profiles:
       - with-bot

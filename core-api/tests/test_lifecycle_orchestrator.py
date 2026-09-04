@@ -4,7 +4,7 @@
 
 import json
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.config import settings
 from app.services.lifecycle.orchestrator import AutonomousTicketOrchestrator, get_ticket_orchestrator
@@ -119,6 +119,7 @@ async def test_orchestrator_processes_open_task_ready_for_execution(mock_redis):
          patch("app.services.lifecycle.orchestrator.AsyncSessionLocal") as mock_db_ctx:
 
         mock_db = AsyncMock()
+        mock_db.add = MagicMock()
         mock_db_ctx.return_value.__aenter__.return_value = mock_db
 
         mock_get_tasks.return_value = {"Tasks": [task_31_ready]}
