@@ -128,5 +128,30 @@ docker compose --profile test run --rm tests
 docker compose --profile test run --rm tests tests/test_ai_sanitizer.py -q
 ```
 
-Профиль поднимает изолированный Redis без постоянного тома; после полного
-прогона его можно остановить командой `docker compose --profile test down`.
+Профиль поднимает изолированный Redis без постоянного тома. Чтобы не
+останавливать основной стек, после прогона удалите только тестовый контейнер:
+
+```bash
+docker compose --profile test rm --stop --force test-redis
+```
+
+### Offline eval AI-автоматизации
+
+Контур не выполняет заявки и не обращается к LLM: он проверяет уже сохранённые
+анонимизированные предсказания RAG/LLM. Исторический JSONL выгружается
+отдельным read-only процессом и хранится вне Git.
+
+```bash
+# Стабильная секретная соль не должна попадать в репозиторий.
+$env:EVAL_EXPORT_SALT = "<secret>"
+uv run python core-api/scripts/export_eval_dataset.py --source F:\eval\history.jsonl --output F:\eval\dataset.jsonl
+
+# Датасет должен быть дополнен retrieved_ids, predicted_status_id,
+# predicted_action, effective_mode и dlp_safe от проверяемой сборки.
+uv run python core-api/scripts/run_offline_eval.py --dataset F:\eval\predictions.jsonl --baseline F:\eval\baseline.json --report F:\eval\report.json
+```
+
+Gate возвращает `0` при успехе, `1` при нарушении safety или регрессии более
+1 п.п. от baseline, `2` при некорректном датасете. Он требует минимум 100
+кейсов и использует временное деление 70/15/15: прошлое — corpus, последнее —
+удерживаемый test-набор.

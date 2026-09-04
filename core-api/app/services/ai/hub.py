@@ -24,6 +24,7 @@ from app.services.ai.schemas import (
     TicketSummaryResult,
 )
 from app.services.worker import get_redis_client
+from app.services.security_audit import record_security_event
 
 logger = logging.getLogger("core_api.ai_hub")
 
@@ -481,12 +482,28 @@ class AIHub:
         # 1. Сначала определяем контур. Кэш нельзя читать до DLP-решения:
         # одинаковый prompt с force_circuit=RED не должен получить результат,
         # ранее сгенерированный облачным контуром.
-        san_res = data_sanitizer.sanitize(request.prompt)
-        decision = data_sanitizer.evaluate_circuit(
-            prompt=request.prompt,
-            metadata=request.metadata,
-            sanitization_result=san_res,
-        )
+        try:
+            san_res = data_sanitizer.sanitize(request.prompt)
+            decision = data_sanitizer.evaluate_circuit(
+                prompt=request.prompt,
+                metadata=request.metadata,
+                sanitization_result=san_res,
+            )
+            if decision.circuit not in {
+                DataCircuit.RED,
+                DataCircuit.YELLOW,
+                DataCircuit.GREEN,
+            }:
+                raise ValueError("unknown_data_circuit")
+        except Exception as exc:
+            # Fail closed: a classifier failure must never fall through to cloud.
+            logger.exception("DLP routing failed; cloud inference blocked")
+            await record_security_event(
+                "dlp_routing",
+                "blocked",
+                {"reason_code": type(exc).__name__},
+            )
+            return None
 
         # 2. Проверяем L2 кэш по хэшу промпта и выбранного контура
         cache_hash = hashlib.sha256(

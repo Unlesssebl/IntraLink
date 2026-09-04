@@ -242,34 +242,19 @@ class DataSanitizer:
         """
         Принимает решение о контуре безопасности (Red, Yellow, Green) и целевой модели.
         """
-        # 1. Принудительный контур (если задан вызывающей стороной)
-        if metadata.force_circuit:
-            if metadata.force_circuit == DataCircuit.RED:
-                return RouteDecision(
-                    circuit=DataCircuit.RED,
-                    reason="Принудительный выбор: Закрытый локальный контур (force_circuit=RED)",
-                    target_backend="ollama",
-                    target_model="local_qwen",
-                    requires_sanitization=False,
-                )
-            elif metadata.force_circuit == DataCircuit.YELLOW:
-                return RouteDecision(
-                    circuit=DataCircuit.YELLOW,
-                    reason="Принудительный выбор: Трансформируемый контур с маскированием (force_circuit=YELLOW)",
-                    target_backend="litellm_gemini",
-                    target_model="gemini_cloud",
-                    requires_sanitization=True,
-                )
-            else:
-                return RouteDecision(
-                    circuit=DataCircuit.GREEN,
-                    reason="Принудительный выбор: Открытый облачный контур (force_circuit=GREEN)",
-                    target_backend="litellm_gemini",
-                    target_model="gemini_cloud",
-                    requires_sanitization=False,
-                )
+        # force_circuit допускается только для повышения изоляции. Он не должен
+        # обходить классификатор и отправлять чувствительные данные в облако.
+        forced = metadata.force_circuit
+        if forced == DataCircuit.RED:
+            return RouteDecision(
+                circuit=DataCircuit.RED,
+                reason="Принудительный выбор более строгого закрытого контура",
+                target_backend="ollama",
+                target_model="local_qwen",
+                requires_sanitization=False,
+            )
 
-        # 2. Проверка строгих критериев RED (пароли, учетные записи, конфиденциальность)
+        # 1. Проверка строгих критериев RED (пароли, учетные записи, конфиденциальность)
         if metadata.contains_credentials or metadata.is_confidential:
             return RouteDecision(
                 circuit=DataCircuit.RED,
@@ -299,7 +284,7 @@ class DataSanitizer:
                     metadata.service_id,
                 )
 
-        # 3. Анализ контента на наличие учетных данных
+        # 2. Анализ контента на наличие учетных данных
         san_res = sanitization_result or self.sanitize(prompt)
         if EntityType.CREDENTIAL.value in san_res.detected_types:
             return RouteDecision(
@@ -310,12 +295,23 @@ class DataSanitizer:
                 requires_sanitization=False,
             )
 
-        # 4. Если обнаружены PII (ФИО, IP, хосты, телефоны, email) -> YELLOW
+        # 3. Если обнаружены PII (ФИО, IP, хосты, телефоны, email) -> YELLOW
         if san_res.detected_types:
             detected_str = ", ".join(san_res.detected_types)
             return RouteDecision(
                 circuit=DataCircuit.YELLOW,
                 reason=f"Обнаружены чувствительные сущности ({detected_str}) -> Десенсибилизация перед вызовом Gemini",
+                target_backend="litellm_gemini",
+                target_model="gemini_cloud",
+                requires_sanitization=True,
+            )
+
+        # 4. GREEN разрешён только когда классификатор не нашёл чувствительных
+        # данных. force_circuit=YELLOW остаётся допустимым повышением защиты.
+        if forced == DataCircuit.YELLOW:
+            return RouteDecision(
+                circuit=DataCircuit.YELLOW,
+                reason="Принудительный выбор более строгого трансформируемого контура",
                 target_backend="litellm_gemini",
                 target_model="gemini_cloud",
                 requires_sanitization=True,

@@ -11,6 +11,11 @@ logger = logging.getLogger("core_api.services.actions.policy")
 
 POLICY_KEY_PREFIX = "policy:action:"
 
+# Автономность — исключение, а не удобная настройка вызывающего клиента.
+# Этот набор одновременно является технической границей между безопасными
+# read-only задачами и действиями, меняющими заявки/доступы/инфраструктуру.
+AUTO_ELIGIBLE_ACTIONS = frozenset({"diagnose_host", "rag_sync"})
+
 
 class PolicyEngine:
     """Движок управления политиками безопасности и режимами выполнения действий."""
@@ -31,7 +36,11 @@ class PolicyEngine:
             if val:
                 val_clean = str(val).lower().strip()
                 if val_clean in (m.value for m in PolicyMode):
-                    return PolicyMode(val_clean)
+                    mode = PolicyMode(val_clean)
+                    if mode == PolicyMode.AUTO and action_id not in AUTO_ELIGIBLE_ACTIONS:
+                        logger.warning("Ignoring unsafe AUTO override for action '%s'", action_id)
+                    else:
+                        return mode
         except Exception as e:
             logger.debug("Ошибка чтения политики из Redis для %s: %s", action_id, e)
 
@@ -49,6 +58,10 @@ class PolicyEngine:
         redis_client=None,
     ) -> None:
         """Устанавливает динамический оверрайд политики действия в Redis."""
+        if mode == PolicyMode.AUTO and action_id not in AUTO_ELIGIBLE_ACTIONS:
+            raise ValueError(
+                f"Действие '{action_id}' не входит в allowlist безопасной автономности."
+            )
         r = redis_client or get_redis_client()
         key = f"{POLICY_KEY_PREFIX}{action_id}"
         await r.set(key, mode.value)
@@ -104,19 +117,31 @@ class PolicyEngine:
                 "Политика безопасности требует подтверждения оператора (Human-in-the-Loop).",
             )
 
-        # 3. Если администратор разрешил AUTO
-        if admin_override == PolicyMode.AUTO:
-            final = requested_mode.lower().strip() if requested_mode else "auto"
-            return (final, True, "Автономное выполнение разрешено администратором.")
+        # 3. Нормализуем запрос. dry_run не меняет внешнее состояние и разрешён
+        # для любого зарегистрированного действия.
+        requested = (requested_mode or "").lower().strip()
+        if requested == "dry_run":
+            return ("dry_run", True, "Разрешена безопасная симуляция без изменений.")
 
-        # 4. Нет оверрайда администратора: используем запрос клиента или default_mode
+        # 4. Нет оверрайда администратора: используем статическую границу
+        # реестра. Запрос клиента не может повысить CONFIRM до AUTO.
         action_def = self.registry.get(action_id)
-        default_mode = action_def.default_mode.value if action_def else "confirm"
+        default_mode = action_def.default_mode if action_def else PolicyMode.CONFIRM
 
-        if requested_mode and requested_mode.lower().strip() in ("auto", "confirm", "dry_run"):
-            return (requested_mode.lower().strip(), True, "Выполнение разрешено.")
+        if requested == "confirm":
+            return ("confirm", True, "Запрошено подтверждение оператора.")
 
-        return (default_mode, True, "Использован режим по умолчанию.")
+        if admin_override == PolicyMode.AUTO and action_id in AUTO_ELIGIBLE_ACTIONS:
+            return ("auto", True, "Автономное выполнение разрешено администратором.")
+
+        if requested == "auto" and default_mode != PolicyMode.AUTO:
+            return (
+                "confirm",
+                True,
+                "Действие требует подтверждения оператора; запрос AUTO понижен до CONFIRM.",
+            )
+
+        return (default_mode.value, True, "Использован режим по умолчанию.")
 
 
 _policy_engine_instance: PolicyEngine | None = None

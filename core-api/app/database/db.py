@@ -123,6 +123,22 @@ class JobLog(Base):
     )
 
 
+class SecurityAuditLog(Base):
+    """Append-only audit events for safety gates; never stores source prompts or PII."""
+
+    __tablename__ = "security_audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, primary_key=True, default=uuid.uuid4
+    )
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    details_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
 class DesktopLaunchLog(Base):
     """Аудит безопасных локальных запусков из IntraLink Desktop Companion."""
 

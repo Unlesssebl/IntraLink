@@ -152,7 +152,8 @@ class ActionRegistry:
                 name="Применение решения триажа",
                 category="triage",
                 description="Атомарный перевод заявки в целевой статус со списанием трудозатрат.",
-                default_mode=PolicyMode.AUTO,
+                # Изменяет статус и комментарий в заявке: только через HITL.
+                default_mode=PolicyMode.CONFIRM,
                 target_type="ticket",
                 parameters_schema={
                     "type": "object",

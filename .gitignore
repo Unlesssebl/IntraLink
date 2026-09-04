@@ -167,6 +167,8 @@ helpdesk_agent/downloads/
 helpdesk-agent/downloads/
 *.log
 .secrets/
+eval/
+*.eval.jsonl
 
 # Node.js / Web
 node_modules/

@@ -46,6 +46,8 @@ def test_action_registry_defaults():
     assert diag_action is not None
     assert diag_action.default_mode == PolicyMode.AUTO
 
+    assert registry.get("apply_triage").default_mode == PolicyMode.CONFIRM
+
 
 @pytest.mark.asyncio
 async def test_policy_engine_default_and_override():
@@ -70,6 +72,26 @@ async def test_policy_engine_default_and_override():
     assert is_allowed is False
     assert eff_mode == "disabled"
     assert "Killswitch" in reason
+
+
+@pytest.mark.asyncio
+async def test_policy_cannot_escalate_confirmation_to_auto():
+    redis = AsyncMock()
+    redis.get = AsyncMock(return_value=None)
+    engine = PolicyEngine()
+
+    mode, allowed, _ = await engine.evaluate_execution_mode(
+        "install_printer", requested_mode="auto", redis_client=redis
+    )
+    assert allowed is True
+    assert mode == "confirm"
+
+    redis.get = AsyncMock(return_value="auto")
+    mode, allowed, _ = await engine.evaluate_execution_mode(
+        "install_printer", requested_mode="auto", redis_client=redis
+    )
+    assert allowed is True
+    assert mode == "confirm"
 
 
 @pytest.mark.asyncio
@@ -98,9 +120,17 @@ async def test_skills_admin_api():
             assert detail_resp.status_code == 200
             assert detail_resp.json()["id"] == "install_printer"
 
-            # 3. Обновление политики на auto
+            # 3. Небезопасное действие нельзя визуально перевести в AUTO.
             patch_resp = await client.patch(
                 "/api/v1/skills/install_printer/policy",
+                headers=HEADERS,
+                json={"mode": "auto"},
+            )
+            assert patch_resp.status_code == 409
+
+            # 4. Безопасная диагностика может быть автономной.
+            patch_resp = await client.patch(
+                "/api/v1/skills/diagnose_host/policy",
                 headers=HEADERS,
                 json={"mode": "auto"},
             )

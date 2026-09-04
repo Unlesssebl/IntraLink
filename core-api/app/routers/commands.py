@@ -202,7 +202,7 @@ async def submit_command(
                 "task_id": str(task_id or 0),
                 "payload": json.dumps(payload.params, ensure_ascii=False),
                 "target": json.dumps(payload.target, ensure_ascii=False),
-                "mode": payload.mode,
+                "mode": command_mode,
                 "auto_close": str(payload.auto_close_ticket).lower(),
                 "initiator": initiator_str,
             },
@@ -216,7 +216,7 @@ async def submit_command(
             "job_id": job_id,
             "command_type": payload.type,
             "target": payload.target,
-            "mode": payload.mode,
+            "mode": command_mode,
             "initiator": initiator_str,
             "timestamp": time.time(),
         }
@@ -229,14 +229,14 @@ async def submit_command(
             job_id,
             payload.type,
             initiator_str,
-            payload.mode,
+            command_mode,
         )
 
         return {
             "status": "accepted",
             "job_id": job_id,
             "command_type": payload.type,
-            "mode": payload.mode,
+            "mode": command_mode,
             "task_id": task_id,
             "initiator": initiator_str,
             "created_at": now_utc.isoformat(),

@@ -111,11 +111,14 @@ async def update_skill_policy(
             detail=f"Действие '{action_id}' не зарегистрировано.",
         )
 
-    await policy_engine.set_action_policy(
-        action_id=action_id,
-        mode=payload.mode,
-        actor=operator,
-    )
+    try:
+        await policy_engine.set_action_policy(
+            action_id=action_id,
+            mode=payload.mode,
+            actor=operator,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return {
         "status": "success",
         "action_id": action_id,
