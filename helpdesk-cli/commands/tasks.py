@@ -226,9 +226,9 @@ async def handle_history(args: Any) -> None:
 
         print(f"=== История заявки #{args.task_id} (Записей: {len(history)}) ===")
         for h in history:
-            date = h.get("Created") or h.get("EventDate", "")
-            user = h.get("UserName") or h.get("Creator", "Система")
-            desc = h.get("Description") or h.get("EventName", "")
+            date = h.get("Date") or h.get("Created") or h.get("EventDate", "")
+            user = h.get("Editor") or h.get("UserName") or h.get("Creator", "Система")
+            desc = h.get("Comments") or h.get("Comment") or h.get("Description") or h.get("EventName", "")
             print(f"[{date}] {user}: {desc}")
     finally:
         await client.close()
@@ -269,11 +269,11 @@ async def handle_summary(args: Any) -> None:
 
         comments = []
         for item in history:
-            txt = (item.get("Comment") or item.get("Description") or "").strip()
+            txt = (item.get("Comments") or item.get("Comment") or item.get("Description") or "").strip()
             if txt:
                 comments.append({
-                    "UserName": item.get("UserName") or item.get("Creator") or "Пользователь",
-                    "Created": item.get("Created") or "",
+                    "UserName": item.get("Editor") or item.get("UserName") or item.get("Creator") or "Пользователь",
+                    "Created": item.get("Date") or item.get("Created") or "",
                     "Text": txt,
                 })
 

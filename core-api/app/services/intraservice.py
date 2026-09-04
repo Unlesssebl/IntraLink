@@ -412,7 +412,9 @@ async def get_tasks_by_filter(
         "page": str(page),
     }
     if service_ids:
-        params["serviceids"] = ",".join(str(s) for s in service_ids)
+        s_ids_str = ",".join(str(s) for s in service_ids)
+        params["ServiceIds"] = s_ids_str
+        params["serviceids"] = s_ids_str
 
     res = await _make_request(
         endpoint="task", method="GET", auth_b64=auth_b64, params=params

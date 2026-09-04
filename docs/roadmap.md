@@ -129,6 +129,10 @@ timeline
 2. **Голосовой ввод (Faster-Whisper Voice-to-Ticket):**
    - Локальная транскрибация голосовых сообщений пользователей в Telegram-боте.
    - Извлечение именованных сущностей (ФИО, кабинет, имя ПК, суть проблемы) $\rightarrow$ структурированная карточка заявки.
+3. **Гибридная классификация намерений (Hybrid Intent Routing Cascade):**
+   - Полный отказ от хрупких регулярных выражений в пользу трехуровневого каскада: `Regex Guard (Tier 1) ➔ FastEmbed Semantic Anchors (Tier 2) ➔ SLM Qwen-2.5 Intent Verifier (Tier 3)`.
+   - Защита от ложных срабатываний на отрицаниях (*«пока не принес»*), нечувствительность к сленгу и опечаткам.
+   - Детальный план и архитектура: [**docs/roadmap_intent_classification.md**](roadmap_intent_classification.md).
 
 ---
 

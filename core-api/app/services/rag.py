@@ -1161,11 +1161,11 @@ async def get_kb_sync_progress() -> dict[str, Any]:
             if state.get("is_running") and state.get("updated_at"):
                 try:
                     upd = datetime.fromisoformat(state["updated_at"])
-                    if datetime.now(timezone.utc) - upd > timedelta(seconds=90):
+                    if datetime.now(timezone.utc) - upd > timedelta(seconds=300):
                         state["is_running"] = False
                         state["error"] = "Процесс синхронизации был прерван (перезапуск контейнера или сбой воркера)"
                         state["finished_at"] = datetime.now(timezone.utc).isoformat()
-                        await _save_sync_progress(redis, state)
+                        await redis.set("kb:sync_progress", json_dumps(state), ex=3600)
                         await redis.delete("lock:kb_sync")
                 except Exception:
                     pass
@@ -1186,7 +1186,11 @@ async def get_kb_sync_progress() -> dict[str, Any]:
 async def _save_sync_progress(redis, state: dict[str, Any]) -> None:
     if redis:
         try:
+            if state.get("is_running"):
+                state["updated_at"] = datetime.now(timezone.utc).isoformat()
             await redis.set("kb:sync_progress", json_dumps(state), ex=3600)
+            if state.get("is_running"):
+                await redis.expire("lock:kb_sync", 1800)
         except Exception as e:
             logger.debug("Ошибка сохранения kb:sync_progress в Redis: %s", e)
 
@@ -1389,7 +1393,7 @@ async def sync_stratified_kb(
 
     # Edge Case 4: Re-entrancy / Защита от параллельного запуска
     if redis:
-        acquired = await redis.set(lock_key, "1", nx=True, ex=900)
+        acquired = await redis.set(lock_key, "1", nx=True, ex=1800)
         if not acquired:
             raise RuntimeError(
                 "Синхронизация базы знаний уже выполняется другим процессом."
@@ -1501,7 +1505,7 @@ async def sync_stratified_kb(
                 while service_indexed < needed and page <= 10:
                     params = {
                         "StatusIds": status_ids_str,
-                        "serviceids": ",".join(str(s) for s in sub_ids),
+                        "ServiceIds": ",".join(str(s) for s in sub_ids),
                         "ChangedMoreThan": cutoff_str,
                         "pagesize": str(page_size),
                         "page": str(page),
@@ -1534,12 +1538,18 @@ async def sync_stratified_kb(
                         break
 
                     add_log(f"[{r_id}] Получено {len(batch)} заявок на стр. {page}", "info")
+                    await _save_sync_progress(redis, progress_state)
 
                     for t in batch:
                         if service_indexed >= needed:
                             break
                         tid = t.get("Id")
                         if not tid:
+                            continue
+
+                        # Защита от попадания задач из других сервисов при широком ответе API
+                        t_service_id = t.get("ServiceId")
+                        if sub_ids and t_service_id and t_service_id not in sub_ids:
                             continue
 
                         t_status_id = t.get("StatusId")
@@ -1555,6 +1565,8 @@ async def sync_stratified_kb(
                         if check_db.scalar_one_or_none():
                             s_stats["skipped"] += 1
                             progress_state["total_skipped"] += 1
+                            if s_stats["skipped"] % 5 == 0:
+                                await _save_sync_progress(redis, progress_state)
                             continue
 
                         # Edge Case 1: Throttling / соблюдение Rate Limit (15-20 RPM)
@@ -1664,6 +1676,7 @@ async def sync_stratified_kb(
                             s_stats["duplicates"] += 1
                             progress_state["total_duplicates"] += 1
                             add_log(f"#{tid}: отсеяна Cosine Gate (дубликат > 0.90)", "warn")
+                            await _save_sync_progress(redis, progress_state)
                             continue
 
                         # Сохранение качественного прецедента в pgvector

@@ -189,12 +189,13 @@ class AutonomousTicketOrchestrator:
             if not latest_applicant_comment:
                 return None
 
-            comment_id = str(latest_applicant_comment.get("Id") or hash(latest_applicant_comment.get("Comment", "")))
+            comm_val = latest_applicant_comment.get("Comments") or latest_applicant_comment.get("Comment", "")
+            comment_id = str(latest_applicant_comment.get("Id") or hash(comm_val))
             seen_key = f"task:{task_id}:processed_comment:{comment_id}"
             if await redis.get(seen_key):
                 return None  # Этот ответ уже был обработан
 
-            comment_text = str(latest_applicant_comment.get("Comment") or "")
+            comment_text = str(comm_val)
             intent_res = await IntentAnalyzer.analyze_with_llm(comment_text, task)
 
             # Защита от бесконечного пинг-понга: счетчик попыток уточнения
@@ -400,7 +401,7 @@ class AutonomousTicketOrchestrator:
         # Комментарии обычно идут по возрастанию или убыванию даты
         sorted_comments = sorted(
             comments,
-            key=lambda c: str(c.get("Created") or ""),
+            key=lambda c: str(c.get("Date") or c.get("Created") or ""),
             reverse=True,
         )
 
@@ -409,7 +410,7 @@ class AutonomousTicketOrchestrator:
             # Пропускаем комментарии бота и системные комментарии
             if editor_id == bot_user_id:
                 continue
-            text = str(comm.get("Comment") or "").strip()
+            text = str(comm.get("Comments") or comm.get("Comment") or "").strip()
             if not text or len(text) < 2:
                 continue
             return comm

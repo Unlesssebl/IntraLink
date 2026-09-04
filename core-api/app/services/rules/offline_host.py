@@ -28,12 +28,35 @@ class OfflineHostRule(BaseRule):
         desc = (task.get("Description") or "").lower()
         user_text = f"{name} {desc}".strip()
 
-        # Исключения: мероприятия, списание, физический монтаж
-        is_decommission_or_event = any(w in user_text for w in [
+        # Извлекаем текст из истории комментариев, если она передана в context
+        comments_history = (context or {}).get("comments_history") or []
+        comments_text = " ".join(
+            (c.get("Comments") or c.get("Comment") or c.get("Text") or "")
+            for c in comments_history
+        ).lower()
+        full_context_text = f"{user_text} {comments_text}".strip()
+
+        # Исключения: мероприятия, списание, физический монтаж, аппаратные поломки ПК и доставка в 112 каб.
+        is_app_issue = any(w in full_context_text for w in [
+            "приложение", "программ", "1с", "1c", "упп", "erp", "зуп", "directum", "директум",
+            "outlook", "браузер", "сайт", "почта", "база"
+        ])
+        is_hardware_pc_issue = any(w in full_context_text for w in [
+            "не включается", "не стартует", "черный экран", "сгорел", "задымился", "пищит",
+            "синий экран", "bsod", "аппаратный ремонт", "ремонт компов", "замена диска", "замена ssd",
+            "не запускается пк", "не запускается компьютер", "не запускается винда", "не запускается windows"
+        ]) or (
+            "не запускается" in full_context_text and not is_app_issue
+        )
+        is_delivery = any(w in full_context_text for w in [
+            "112 каб", "112 комн", "каб. 112", "кабинет 112", "кабинете 112", "в 112",
+            "принес", "принесла", "принесли", "принесу"
+        ])
+        is_decommission = any(w in full_context_text for w in [
             "списание", "списать", "дефектовк", "акт о неисправности", "конференц", "обучение",
             "подключить 6 компьютеров", "подключить компьютеры к сети", "акт экспертизы"
         ])
-        if is_decommission_or_event:
+        if is_decommission or is_hardware_pc_issue or is_delivery:
             return None
 
         # Проверка статуса хоста

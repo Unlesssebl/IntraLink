@@ -502,7 +502,13 @@ def extract_thread_context(comments_history: list[dict[str, Any]] | None) -> dic
 
     meaningful = []
     for item in comments_history:
-        raw_text = item.get("Comment") or item.get("Text") or item.get("Description") or ""
+        raw_text = (
+            item.get("Comments")
+            or item.get("Comment")
+            or item.get("Text")
+            or item.get("Description")
+            or ""
+        )
         text = clean_html(raw_text).strip()
         if not text or len(text) < 4:
             continue
@@ -510,11 +516,11 @@ def extract_thread_context(comments_history: list[dict[str, Any]] | None) -> dic
             "Статус изменен", "Назначен исполнитель", "Изменен приоритет", "Добавлен файл", "Создана заявка"
         ]):
             continue
-        author = item.get("UserName") or item.get("Creator") or "Пользователь"
+        author = item.get("Editor") or item.get("UserName") or item.get("Creator") or "Пользователь"
         meaningful.append({
             "author": author,
             "text": text,
-            "created": item.get("Created") or item.get("EventDate") or "",
+            "created": item.get("Date") or item.get("Created") or item.get("EventDate") or "",
         })
 
     if not meaningful:

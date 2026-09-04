@@ -451,6 +451,7 @@ class TriageService:
             task=task,
             diag=rule_diag,
             kb_matches=kb_matches,
+            comments_history=history,
         )
 
         # Ключ зависит от фактического содержимого, а не только от количества

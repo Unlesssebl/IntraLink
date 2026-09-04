@@ -216,6 +216,7 @@ def auto_detect_template(
     diag: dict[str, Any] | None = None,
     kb_matches: list[dict[str, Any]] | None = None,
     redirect_mode: bool = False,
+    comments_history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Интеллектуальный авто-подбор наиболее точного шаблона на основе контекста инцидента.
@@ -227,6 +228,7 @@ def auto_detect_template(
         "room": meta.get("room") or "",
         "phone": meta.get("phone") or "",
         "target_service": "Общий раздел",
+        "comments_history": comments_history or [],
     }
 
     decision: RuleDecision = _default_engine.evaluate(

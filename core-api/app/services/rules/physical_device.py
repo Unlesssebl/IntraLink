@@ -27,6 +27,37 @@ class PhysicalDeliveryRule(BaseRule):
         desc = (task.get("Description") or "").lower()
         user_text = f"{name} {desc}".strip()
 
+        # Извлекаем текст комментариев, если они переданы в context
+        comments_history = (context or {}).get("comments_history") or []
+        comments_text = " ".join(
+            (c.get("Comments") or c.get("Comment") or c.get("Text") or "")
+            for c in comments_history
+        ).lower()
+        full_text = f"{user_text} {comments_text}".strip()
+
+        # 0. Устройство уже фактически доставлено / находится в 112 кабинете
+        # Заявитель подтвердил сдачу ПК -> перевод в статус 27 ("В работе")
+        is_already_delivered = any(w in full_text for w in [
+            "находится в 112", "находится в каб. 112", "в 112 кабинете", "в 112 каб",
+            "принес в 112", "принесла в 112", "принесли в 112", "занес в 112", "занесла в 112",
+            "оставил в 112", "оставила в 112", "оставили в 112", "у вас в 112", "уже в 112",
+            "передал в 112", "передала в 112", "принес пк", "принесла пк", "принес системник",
+            "принесла системник", "принес компьютер", "принесла компьютер", "принес ноутбук",
+            "принесла ноутбук", "стоит в 112", "лежит в 112", "пк в 112", "компьютер в 112"
+        ])
+        if is_already_delivered:
+            is_notebook = any(w in full_text for w in ["ноутбук", "ноутах", "laptop"])
+            device_name = "ноутбук" if is_notebook else "системный блок"
+            return RuleDecision(
+                template_key="device_delivered_in_work",
+                rule_type="hardware_repair",
+                name="Ноутбук принят в 112 каб. (В работе)" if is_notebook else "ПК принят в 112 каб. (В работе)",
+                status_id=27,
+                status_name="В работе",
+                expenses=10,
+                comment=f"{device_name.capitalize()} принят в 112 кабинете на диагностику и обслуживание. Приступаю к работе.",
+            )
+
         # 1. Прямое обещание принести устройство
         is_direct_delivery = any(w in user_text for w in [
             "принесу к вам", "привезем", "принесем", "принесу компьютер", "принести компьютер",
@@ -89,8 +120,9 @@ class PhysicalDeliveryRule(BaseRule):
         # Исключение: если жалоба сугубо на прикладную программу / сетевой ресурс без деградации самого ПК
         is_pure_app_issue = any(w in user_text for w in [
             "1с", "1c", "упп", "erp", "зуп", "directum", "директум", "outlook",
-            "принтер", "мфу", "сканер", "интернет", "сайт", "браузер", "wifi", "вайфай"
-        ]) and not any(w in user_text for w in ["компьютер", "системн", "ноутбук", "сам пк", "весь компьютер"])
+            "принтер", "мфу", "сканер", "интернет", "сайт", "браузер", "wifi", "вайфай",
+            "приложение", "программа", "программ"
+        ]) and not any(w in user_text for w in ["не включается", "сгорел", "задымился", "пищит", "чистка", "пыл", "синий экран", "bsod", "сам компьютер", "весь пк"])
 
         if is_pure_app_issue and not is_pc_service:
             return None
