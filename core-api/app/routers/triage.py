@@ -42,6 +42,7 @@ from app.services.template_engine import (
 from app.services.triage_service import TriageService
 from app.services.triage_session import TriageSessionManager
 from app.services.worker import get_redis_client
+from app.services.ai_suggestions import build_suggestion_state, invalidate_suggestion
 
 logger = logging.getLogger("core_api.routers.triage")
 
@@ -176,6 +177,13 @@ async def get_task_details_card(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Заявка #{task_id} не найдена в IntraService.",
         )
+    card["ai_suggestion"] = await build_suggestion_state(
+        redis_client=get_redis_client(),
+        task_id=task_id,
+        task=card.get("task") or {},
+        history=card.get("history"),
+        decision=card.get("suggested_action"),
+    )
     return card
 
 
@@ -198,6 +206,14 @@ async def reanalyze_task_endpoint(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Заявка #{task_id} не найдена в IntraService.",
         )
+    card["ai_suggestion"] = await build_suggestion_state(
+        redis_client=get_redis_client(),
+        task_id=task_id,
+        task=card.get("task") or {},
+        history=card.get("history"),
+        decision=card.get("suggested_action"),
+        force_recalculate=True,
+    )
     return card
 
 
@@ -278,6 +294,11 @@ async def apply_triage_action(
             detail=first_err,
         )
 
+    if not payload.dry_run:
+        redis = get_redis_client()
+        for result in results:
+            if result.get("update_ok"):
+                await invalidate_suggestion(redis, int(result["task_id"]))
     return {"results": results}
 
 

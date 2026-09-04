@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.db import JobLog, get_db
 from app.routers.deps import verify_admin_or_api_key
 from app.services.actions import get_policy_engine
+from app.services.ai_suggestions import require_current_suggestion
 from app.services.worker import get_redis_client
 
 logger = logging.getLogger("core_api.routers.commands")
@@ -59,6 +60,12 @@ class SubmitCommandRequest(BaseModel):
     )
     auto_close_ticket: bool = Field(
         True, description="Автоматически финализировать заявку в IntraService при успехе"
+    )
+    suggestion_task_id: int | None = Field(
+        None, description="ID заявки, для которой используется AI-предложение"
+    )
+    suggestion_fingerprint: str | None = Field(
+        None, description="Версия актуального AI-предложения"
     )
 
 
@@ -114,6 +121,19 @@ async def submit_command(
             task_id = int(task_id)
         except (ValueError, TypeError):
             task_id = None
+
+    if payload.suggestion_task_id is not None:
+        if task_id != payload.suggestion_task_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="AI-предложение относится к другой заявке.",
+            )
+        try:
+            await require_current_suggestion(
+                get_redis_client(), payload.suggestion_task_id, payload.suggestion_fingerprint
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     job_uuid = uuid.uuid4()
     job_id = f"job_{job_uuid.hex[:12]}"
@@ -182,6 +202,8 @@ async def submit_command(
         "auto_close_ticket": payload.auto_close_ticket,
         "status": "queued",
         "created_at": time.time(),
+        "suggestion_task_id": payload.suggestion_task_id,
+        "suggestion_fingerprint": payload.suggestion_fingerprint,
     }
 
     try:
@@ -398,6 +420,11 @@ async def confirm_command(
         )
 
     job_data = json.loads(raw)
+    if job_data.get("mode") != "confirm":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Подтверждение доступно только для команд в режиме HITL (confirm).",
+        )
 
     # 1. Отправляем решение в блокирующую очередь воркера
     confirm_msg = {

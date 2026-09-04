@@ -8,6 +8,8 @@ import {
   fetchTemplatesCatalog,
   enqueueExecution,
   pollExecutionJob,
+  submitCommand,
+  confirmExecutionJob,
   fetchTicketSummary,
 } from '../lib/tasks';
 import type { TaskDetails, TicketSummaryResult } from '../lib/types';
@@ -64,6 +66,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   const [isRagExpanded, setIsRagExpanded] = useState(false);
   const [isCommentsExpanded, setIsCommentsExpanded] = useState(false);
   const [reanalyzing, setReanalyzing] = useState(false);
+  const [pendingConfirmation, setPendingConfirmation] = useState<{ jobId: string; plan: any } | null>(null);
 
   // Resizing state
   const [inspectorWidth, setInspectorWidth] = useState<number>(() => {
@@ -419,18 +422,35 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   const handleApplyAIPlan = async () => {
     if (!ticket.aiPlan) return;
     const plan = ticket.aiPlan;
+    const suggestion = details?.ai_suggestion;
+    if (suggestion?.state === 'stale') {
+      onToast({ type: 'warning', message: 'AI-предложение неактуально. Сначала выполните повторный расчёт.' });
+      return;
+    }
+    if (suggestion?.policy.blocked) {
+      onToast({ type: 'error', message: suggestion.policy.reason || 'Действие заблокировано policy.' });
+      return;
+    }
+    if (suggestion?.missing_data?.length) {
+      onToast({ type: 'warning', message: `Не хватает данных: ${suggestion.missing_data.join(', ')}` });
+      return;
+    }
     setSubmitting(true);
 
     try {
       if (plan.requiresDomainJob && plan.domainJob) {
-        onToast({ type: 'info', message: `Исполнение: ${plan.actionTitle}...` });
-        const job = await enqueueExecution({
-          action: plan.domainJob.action,
-          task_id: rawId,
+        const job = await submitCommand({
+          type: plan.domainJob.action,
+          target: { task_id: rawId },
           params: plan.domainJob.params || { username: plan.domainJob.identity },
+          mode: 'confirm',
           auto_close_ticket: false,
+          suggestion_task_id: suggestion?.task_id,
+          suggestion_fingerprint: suggestion?.fingerprint,
         });
-        await pollExecutionJob(job.job_id, 15000, 1000);
+        setPendingConfirmation({ jobId: job.job_id, plan });
+        onToast({ type: 'info', message: 'Команда подготовлена. Проверьте действие и подтвердите его отдельно.' });
+        return;
       }
 
       const res = await applyTask(rawId, {
@@ -462,6 +482,48 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       onClose();
     } catch (err: any) {
       onToast({ type: 'error', message: `Ошибка выполнения: ${err.message || err}` });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleConfirmSuggestedJob = async (decision: 'approve' | 'reject') => {
+    if (!pendingConfirmation) return;
+    const { jobId, plan } = pendingConfirmation;
+    if (decision === 'reject') {
+      try {
+        await confirmExecutionJob(jobId, 'reject', 'Оператор отклонил AI-предложение');
+        onToast({ type: 'info', message: 'Предложенное действие отклонено; выполнение не запускалось.' });
+      } catch (err: any) {
+        onToast({ type: 'error', message: `Не удалось отклонить команду: ${err.message || err}` });
+      } finally {
+        setPendingConfirmation(null);
+      }
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await confirmExecutionJob(jobId, 'approve');
+      const job = await pollExecutionJob(jobId, 30000, 1000);
+      const finalStatusId = selectedStatusOverride ?? plan.targetStatusId;
+      const res = await applyTask(rawId, {
+        status_id: finalStatusId,
+        comment: replyText.trim() || plan.comment,
+        minutes: expenses || plan.expensesMinutes,
+        is_private: replyMode === 'internal',
+        verified_execution_job_id: job.job_id,
+      });
+      if (res?.results?.[0]?.update_ok === false) throw new Error(res.results[0].error || 'IntraService отклонил изменение заявки');
+      onUpdateTicket(ticket.id, {
+        status: finalStatusId === 29 || finalStatusId === 30 ? 'resolved' : finalStatusId === 35 || finalStatusId === 48 ? 'waiting' : 'in_progress',
+        statusId: finalStatusId,
+        statusName: plan.targetStatusName,
+      });
+      onToast({ type: 'success', message: `Заявка #${rawId}: подтверждённое действие выполнено` });
+      setPendingConfirmation(null);
+      onClose();
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Ошибка после подтверждения: ${err.message || err}` });
     } finally {
       setSubmitting(false);
     }
@@ -762,6 +824,17 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
       {/* 3. Consolidated Action Footer */}
       <div className="border-t border-neutral-200 dark:border-neutral-800 p-3.5 shrink-0 bg-white dark:bg-neutral-900 shadow-md space-y-3">
+        {pendingConfirmation && (
+          <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-3 flex items-center justify-between gap-3">
+            <div className="text-[12px] text-amber-950 dark:text-amber-100">
+              <strong>Требуется подтверждение:</strong> {pendingConfirmation.plan.actionTitle}. До нажатия «Подтвердить» команда не выполняется.
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <button type="button" onClick={() => handleConfirmSuggestedJob('reject')} disabled={submitting} className="px-2.5 py-1.5 text-[11.5px] font-semibold rounded border border-neutral-300 dark:border-neutral-700 hover:bg-white dark:hover:bg-neutral-800">Отклонить</button>
+              <button type="button" onClick={() => handleConfirmSuggestedJob('approve')} disabled={submitting} className="px-2.5 py-1.5 text-[11.5px] font-semibold rounded bg-amber-600 hover:bg-amber-500 text-white">Подтвердить</button>
+            </div>
+          </div>
+        )}
         <AiTriageCard
           ticket={ticket}
           details={details}

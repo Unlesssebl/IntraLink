@@ -35,6 +35,7 @@ from app.services.template_engine import (
     start_rules_invalidation_listener,
 )
 from app.services.worker import start_worker, stop_worker
+from app.services.rollout import rollout_readiness
 
 # Настройка логирования
 logging.basicConfig(
@@ -188,3 +189,9 @@ async def health_check():
     Не требует авторизации по API Key.
     """
     return {"status": "healthy", "service": "intraservice-core-api"}
+
+
+@app.get("/health/rollout", status_code=status.HTTP_200_OK, tags=["System"])
+async def rollout_health_check(expected_sha: str | None = None):
+    """Fail-closed check for a new image before a proxy enables its traffic."""
+    return await rollout_readiness(expected_sha=expected_sha)

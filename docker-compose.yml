@@ -53,6 +53,9 @@ services:
     build:
       context: .
       dockerfile: ./core-api/Dockerfile
+      target: runtime
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     container_name: intralink_core_api
     restart: always
     ports:
@@ -93,6 +96,9 @@ services:
     build:
       context: .
       dockerfile: ./core-api/Dockerfile
+      target: runtime
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     container_name: intralink_poller
     command: python -m app.poller
     restart: always

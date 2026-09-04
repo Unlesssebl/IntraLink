@@ -2,6 +2,8 @@
 # Этап 1: Сборка фронтенда Web UI (Node.js)
 # ----------------------------------------------------
 FROM node:20-alpine AS frontend-builder
+ARG GIT_SHA=unknown
+ENV VITE_GIT_SHA=${GIT_SHA}
 WORKDIR /app/intra-web
 COPY intra-web/package*.json ./
 RUN npm ci
@@ -12,7 +14,9 @@ RUN npm run build
 # ----------------------------------------------------
 # Этап 2: Финальный контейнер Core API (Python 3.13)
 # ----------------------------------------------------
-FROM python:3.13-slim
+FROM python:3.13-slim AS runtime
+ARG GIT_SHA=unknown
+ENV APP_GIT_SHA=${GIT_SHA}
 WORKDIR /app
 
 # Настройка переменных окружения Python
@@ -37,6 +41,7 @@ COPY docs/presentations/ ./docs/presentations/
 
 # Копирование скомпилированного singlefile HTML из этапа сборки фронтенда
 COPY --from=frontend-builder /app/core-api/app/static/admin/index.html ./app/static/admin/index.html
+RUN printf '{"git_sha":"%s"}\n' "$APP_GIT_SHA" > ./app/static/admin/build-info.json
 
 # Открытие порта для приложения
 EXPOSE 8000

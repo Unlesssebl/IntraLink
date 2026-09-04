@@ -491,6 +491,7 @@ export async function applyTask(taskId: number, payload: SingleApplyPayload): Pr
       expenses: payload.minutes ?? 10,
       executor_ids: payload.executor_ids,
       confirmed_by_human: true,
+      verified_execution_job_id: payload.verified_execution_job_id,
     }),
   });
   const first = res?.results?.[0];
@@ -605,6 +606,8 @@ export async function submitCommand(payload: {
   priority?: number;
   idempotency_key?: string;
   auto_close_ticket?: boolean;
+  suggestion_task_id?: number;
+  suggestion_fingerprint?: string;
 }): Promise<{ status: string; job_id: string; command_type: string; task_id?: number }> {
   return apiFetch('/api/v1/commands', {
     method: 'POST',
@@ -616,8 +619,21 @@ export async function submitCommand(payload: {
       priority: payload.priority || 5,
       idempotency_key: payload.idempotency_key,
       auto_close_ticket: payload.auto_close_ticket ?? true,
+      suggestion_task_id: payload.suggestion_task_id,
+      suggestion_fingerprint: payload.suggestion_fingerprint,
       source: 'web',
     }),
+  });
+}
+
+export async function confirmExecutionJob(
+  jobId: string,
+  decision: 'approve' | 'reject',
+  reason?: string,
+): Promise<{ status: string; job_id: string; decision: string }> {
+  return apiFetch(`/api/v1/commands/${jobId}/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, reason }),
   });
 }
 

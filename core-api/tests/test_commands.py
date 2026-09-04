@@ -115,6 +115,7 @@ async def test_confirm_command_approve():
                     "job_id": "job_hitl1",
                     "status": "confirm_required",
                     "action": "grant_wlan",
+                    "mode": "confirm",
                 }
             )
         )

@@ -118,6 +118,17 @@ uv run python helpdesk-cli/helpdesk.py --help
 Production-образы не содержат dev-зависимостей. Для воспроизводимого прогона
 тестов используется отдельный Docker target с зависимостями из `uv.lock`:
 
+Перед переключением трафика на новый образ обязательно передайте SHA в build-arg
+`GIT_SHA`, поднимите кандидат на отдельном порту и выполните fail-closed проверку:
+
+```powershell
+python core-api/scripts/rollout_check.py --base-url http://127.0.0.1:8001 --sha <commit-sha>
+```
+
+Проверка разрешает rollout только когда SHA Core API и встроенного Web UI совпадают
+с указанным коммитом и миграция `security_audit_log` доступна. Она не перезапускает
+основной Docker-стек и не включает трафик самостоятельно.
+
 ```bash
 docker compose --profile test run --rm tests
 ```

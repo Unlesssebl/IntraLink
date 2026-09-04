@@ -150,6 +150,25 @@ export interface TaskDetails {
   circuit?: 'red' | 'yellow' | 'green';
   circuit_reason?: string;
   requires_sanitization?: boolean;
+  ai_suggestion?: AISuggestionState;
+}
+
+export interface AISuggestionState {
+  task_id: number;
+  state: 'current' | 'stale';
+  fingerprint: string;
+  source: string;
+  calculated_at: string;
+  stale_at?: string;
+  stale_reason?: string;
+  policy: {
+    action: string;
+    mode: 'auto' | 'confirm' | 'disabled' | 'dry_run';
+    allowed: boolean;
+    blocked: boolean;
+    reason: string;
+  };
+  missing_data: string[];
 }
 
 export interface TicketSummaryResult {
@@ -198,6 +217,7 @@ export interface SingleApplyPayload {
   minutes: number;
   executor_ids?: string;
   is_private?: boolean;
+  verified_execution_job_id?: string;
 }
 
 export interface BulkApplyItemPayload {
