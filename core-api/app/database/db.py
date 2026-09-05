@@ -2,7 +2,7 @@ import datetime
 import uuid
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, JSON, String, Text, Uuid, func, text
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, Uuid, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -32,6 +32,8 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
+CURRENT_SCHEMA_REVISION = "20260905_0002"
+
 
 
 # Базовый класс для моделей
@@ -57,6 +59,15 @@ class User(Base):
 # Модель базы знаний RAG (датасета заявок)
 class TaskKnowledgeBase(Base):
     __tablename__ = "task_knowledge_base"
+    __table_args__ = (
+        Index(
+            "idx_task_kb_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+            postgresql_with={"m": 16, "ef_construction": 64},
+        ),
+    )
 
     task_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     original_name: Mapped[str] = mapped_column(String, nullable=False)
@@ -121,6 +132,116 @@ class JobLog(Base):
     completed_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class CommandRecord(Base):
+    """Authoritative v2 command state. Redis only transports its outbox events."""
+
+    __tablename__ = "commands"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    executor: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    target_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    params_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
+    initiator: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    task_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    result_json: Mapped[dict | None] = mapped_column(JSON_TYPE, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CommandEvent(Base):
+    __tablename__ = "command_events"
+    __table_args__ = (UniqueConstraint("command_id", "sequence", name="uq_command_event_sequence"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    details_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class CommandOutbox(Base):
+    __tablename__ = "command_outbox"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True)
+    stream: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    available_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    published_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CommandInbox(Base):
+    """Durable record of a transport message accepted by a worker."""
+
+    __tablename__ = "command_inbox"
+    __table_args__ = (
+        UniqueConstraint("consumer", "message_id", name="uq_command_inbox_message"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    consumer: Mapped[str] = mapped_column(String(100), nullable=False)
+    message_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    outbox_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, nullable=True, index=True)
+    received_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class CommandAttempt(Base):
+    __tablename__ = "command_attempts"
+    __table_args__ = (UniqueConstraint("command_id", "attempt_no", name="uq_command_attempt_no"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_json: Mapped[dict | None] = mapped_column(JSON_TYPE, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CommandApproval(Base):
+    __tablename__ = "command_approvals"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True)
+    decision: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    operator: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ActionPolicyRecord(Base):
+    __tablename__ = "action_policies"
+
+    action: Mapped[str] = mapped_column(String(64), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class SecurityAuditLog(Base):
@@ -283,67 +404,23 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
             await session.close()
 
 
-# Функция инициализации БД (создание таблиц)
+# SQLite-only schema bootstrap for isolated tests. PostgreSQL uses Alembic.
 async def init_db() -> None:
+    if not settings.DATABASE_URL.startswith("sqlite"):
+        raise RuntimeError("init_db is disabled for PostgreSQL; run 'alembic upgrade head'")
     async with engine.begin() as conn:
-        if not settings.DATABASE_URL.startswith("sqlite"):
-            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
-            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";"))
         await conn.run_sync(Base.metadata.create_all)
-        if not settings.DATABASE_URL.startswith("sqlite"):
-            # Гарантируем наличие колонки is_blacklisted в случае обновления схемы существующей БД
-            await conn.execute(
-                text(
-                    "ALTER TABLE task_knowledge_base ADD COLUMN IF NOT EXISTS is_blacklisted BOOLEAN NOT NULL DEFAULT false;"
-                )
-            )
-            # Гарантируем наличие колонки quality_score и индекса
-            await conn.execute(
-                text(
-                    "ALTER TABLE task_knowledge_base ADD COLUMN IF NOT EXISTS quality_score FLOAT NOT NULL DEFAULT 1.0;"
-                )
-            )
-            await conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_task_kb_quality_score ON task_knowledge_base (quality_score);"
-                )
-            )
-            # Гарантируем, что колонка embedding может принимать NULL значения
-            await conn.execute(
-                text(
-                    "ALTER TABLE task_knowledge_base ALTER COLUMN embedding DROP NOT NULL;"
-                )
-            )
-            # Автоматическая миграция размерности вектора под settings.EMBEDDING_DIMENSION
-            dim_res = await conn.execute(
-                text("SELECT atttypmod FROM pg_attribute WHERE attrelid = 'task_knowledge_base'::regclass AND attname = 'embedding';")
-            )
-            dim_row = dim_res.fetchone()
-            if dim_row and dim_row[0] is not None and dim_row[0] != settings.EMBEDDING_DIMENSION:
-                import logging
-                logging.getLogger(__name__).info(
-                    "Миграция размерности embedding: %s -> %s dim. Сброс несовместимых векторов...",
-                    dim_row[0], settings.EMBEDDING_DIMENSION
-                )
-                await conn.execute(text("DROP INDEX IF EXISTS idx_task_kb_hnsw;"))
-                await conn.execute(text("UPDATE task_knowledge_base SET embedding = NULL;"))
-                await conn.execute(text(f"ALTER TABLE task_knowledge_base ALTER COLUMN embedding TYPE vector({settings.EMBEDDING_DIMENSION});"))
 
-    # Создание индекса HNSW в отдельной транзакции (pgvector HNSW строго ограничен 2000 измерениями)
-    if not settings.DATABASE_URL.startswith("sqlite") and settings.EMBEDDING_DIMENSION <= 2000:
-        try:
-            async with engine.begin() as conn:
-                await conn.execute(
-                    text(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_task_kb_hnsw
-                        ON task_knowledge_base
-                        USING hnsw (embedding vector_cosine_ops)
-                        WITH (m = 16, ef_construction = 64);
-                        """
-                    )
-                )
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("Не удалось создать HNSW индекс для pgvector: %s", e)
+
+async def verify_schema() -> None:
+    """Fail closed when production migrations have not reached this build."""
+    async with engine.connect() as conn:
+        revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+        if revision != CURRENT_SCHEMA_REVISION:
+            raise RuntimeError(
+                f"Database revision {revision!r} does not match {CURRENT_SCHEMA_REVISION!r}"
+            )
+        commands_table = await conn.scalar(text("SELECT to_regclass('public.commands')"))
+        if not commands_table:
+            raise RuntimeError("Required table 'commands' is missing")
 
