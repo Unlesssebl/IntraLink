@@ -52,6 +52,15 @@ def base_web_url() -> str:
 
 
 @pytest_asyncio.fixture(autouse=True)
+async def initialize_test_database():
+    """Каждый изолированный тест видит актуальную SQLite-схему приложения."""
+    from app.database.db import init_db
+
+    await init_db()
+    yield
+
+
+@pytest_asyncio.fixture(autouse=True)
 async def close_shared_ai_hub_session():
     """Закрывает общие HTTP-сессии AI-контура после каждого теста."""
     yield

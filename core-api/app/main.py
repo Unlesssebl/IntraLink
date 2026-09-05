@@ -5,17 +5,19 @@ from pathlib import Path
 
 from fastapi import FastAPI, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func, select
 
 from app.config import settings
-from app.database.db import AsyncSessionLocal, init_db
+from app.database.db import CommandOutbox, CommandRecord, AsyncSessionLocal, init_db, verify_schema
 from app.routers import (
     admin,
     admin_settings,
     ai,
     auth,
     commands,
+    commands_v2,
     desktop,
     events,
     kb_admin,
@@ -36,6 +38,7 @@ from app.services.template_engine import (
 )
 from app.services.worker import start_worker, stop_worker
 from app.services.rollout import rollout_readiness
+from app.services.worker import get_redis_client
 
 # Настройка логирования
 logging.basicConfig(
@@ -49,10 +52,14 @@ async def lifespan(_app: FastAPI):
     # Действия при запуске приложения
     logger.info("Инициализация базы данных...")
     try:
-        await init_db()
+        if settings.DATABASE_URL.startswith("sqlite"):
+            await init_db()
+        else:
+            await verify_schema()
         logger.info("База данных успешно инициализирована.")
     except Exception as e:
         logger.exception("Ошибка при инициализации базы данных: %s", e)
+        raise
 
     # Database Seeding и прогрев L1 кэша шаблонов
     try:
@@ -133,10 +140,10 @@ app = FastAPI(
 # Разрешение CORS для локальных веб-клиентов и интерфейсов
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https?://.*$",
+    allow_origins=[origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Bot-Api-Key"],
 )
 
 # Подключение роутеров с единым префиксом версии API v1
@@ -148,6 +155,8 @@ app.include_router(triage.router)
 app.include_router(rules_admin.router)
 app.include_router(ai.router)
 app.include_router(commands.router)
+app.include_router(commands_v2.router)
+app.include_router(commands_v2.policy_router)
 app.include_router(desktop.router)
 app.include_router(events.router)
 app.include_router(admin.router)
@@ -189,6 +198,51 @@ async def health_check():
     Не требует авторизации по API Key.
     """
     return {"status": "healthy", "service": "intraservice-core-api"}
+
+
+@app.get("/ready", tags=["System"])
+async def readiness_check():
+    checks: dict[str, str] = {}
+    try:
+        await verify_schema()
+        checks["database"] = "ready"
+    except Exception as exc:
+        checks["database"] = f"failed:{type(exc).__name__}"
+    try:
+        await get_redis_client().ping()
+        checks["redis"] = "ready"
+    except Exception as exc:
+        checks["redis"] = f"failed:{type(exc).__name__}"
+    ready = all(value == "ready" for value in checks.values())
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"status": "ready" if ready else "not_ready", "checks": checks},
+    )
+
+
+@app.get("/metrics", response_class=PlainTextResponse, tags=["System"])
+async def command_metrics():
+    async with AsyncSessionLocal() as db:
+        status_rows = (await db.execute(
+            select(CommandRecord.status, func.count(CommandRecord.id)).group_by(CommandRecord.status)
+        )).all()
+        pending_outbox = int(await db.scalar(
+            select(func.count(CommandOutbox.id)).where(CommandOutbox.published_at.is_(None))
+        ) or 0)
+    lines = [
+        "# HELP intralink_commands Commands by durable state",
+        "# TYPE intralink_commands gauge",
+    ]
+    lines.extend(
+        f'intralink_commands{{status="{command_status}"}} {count}'
+        for command_status, count in status_rows
+    )
+    lines.extend([
+        "# HELP intralink_command_outbox_pending Unpublished command messages",
+        "# TYPE intralink_command_outbox_pending gauge",
+        f"intralink_command_outbox_pending {pending_outbox}",
+    ])
+    return "\n".join(lines) + "\n"
 
 
 @app.get("/health/rollout", status_code=status.HTTP_200_OK, tags=["System"])

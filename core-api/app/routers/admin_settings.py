@@ -141,7 +141,7 @@ async def require_admin_auth(
 
     last_error = None
     for token in candidate_tokens:
-        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
+        for sec in [settings.JWT_SECRET]:
             if not sec:
                 continue
             try:
@@ -227,7 +227,7 @@ async def admin_login(
     2. Fallback по сессионному cookie 'admin_session' или Bearer токену, если пользователь уже авторизован.
     3. Fallback по устаревшему ADMIN_PASSWORD (если задан в конфигурации).
     """
-    secret = settings.ADMIN_JWT_SECRET or settings.JWT_SECRET or "intralink-admin-secret"
+    secret = settings.JWT_SECRET
     expires_in = 8 * 3600  # 8 часов
     admin_logins = [
         u.strip().lower() for u in (settings.ADMIN_LOGINS or "").split(",") if u.strip()
@@ -279,7 +279,7 @@ async def admin_login(
         token_to_verify = admin_session.strip()
 
     if token_to_verify:
-        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
+        for sec in [settings.JWT_SECRET]:
             if not sec:
                 continue
             try:

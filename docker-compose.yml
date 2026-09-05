@@ -13,6 +13,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d intraservice"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   redis:
     image: redis:7-alpine
@@ -23,6 +28,11 @@ services:
       - redis_data:/data
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
@@ -33,12 +43,8 @@ services:
     volumes:
       - ./litellm_config.yaml:/app/config.yaml:ro
     environment:
-      - LITELLM_API_KEY=${LITELLM_API_KEY:-sk-intraservice-master-key}
+      - LITELLM_API_KEY=${LITELLM_API_KEY:-dev-only-litellm-key}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_API_KEY_2=${GEMINI_API_KEY_2}
-      - GEMINI_API_KEY_3=${GEMINI_API_KEY_3}
-      - GROQ_API_KEY=${GROQ_API_KEY:-}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command:
@@ -48,6 +54,28 @@ services:
       - "4000"
       - "--host"
       - "0.0.0.0"
+
+  db-migrate:
+    build:
+      context: .
+      dockerfile: ./core-api/Dockerfile
+      target: runtime
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    command: alembic -c alembic.ini upgrade head
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
+      - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+    secrets:
+      - encryption_key
+      - jwt_secret
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   core-api:
     build:
@@ -60,6 +88,11 @@ services:
     restart: always
     ports:
       - "${CORE_API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
     volumes:
       - ./docs/presentations:/app/docs/presentations:ro
     env_file:
@@ -88,9 +121,12 @@ services:
     dns_search:
       - corporate.loc
     depends_on:
-      - postgres
-      - redis
-      - litellm
+      db-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      litellm:
+        condition: service_started
 
   poller:
     build:
@@ -128,8 +164,36 @@ services:
     dns_search:
       - corporate.loc
     depends_on:
-      - postgres
-      - redis
+      db-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  command-worker:
+    build:
+      context: .
+      dockerfile: ./core-api/Dockerfile
+      target: runtime
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    container_name: intralink_command_worker
+    command: python -m app.command_worker
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/intraservice
+      - REDIS_URL=redis://redis:6379/0
+      - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+    secrets:
+      - encryption_key
+      - jwt_secret
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
   tests:
     profiles:

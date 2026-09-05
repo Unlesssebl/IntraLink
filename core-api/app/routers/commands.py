@@ -185,6 +185,10 @@ async def submit_command(
     except Exception as e:
         logger.exception("Ошибка сохранения JobLog в PostgreSQL: %s", e)
         await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Команда не поставлена в очередь: PostgreSQL недоступен.",
+        ) from e
 
     # 3. Сохранение состояния в Redis
     job_data = {

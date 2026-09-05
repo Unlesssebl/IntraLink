@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.routers.deps import verify_admin_or_api_key
+from app.routers.deps import verify_admin_jwt, verify_admin_or_api_key, verify_trusted_origin
 from app.services.actions import (
     ActionDefinition,
     PolicyMode,
@@ -96,7 +96,8 @@ async def get_skill_details(
 async def update_skill_policy(
     action_id: str,
     payload: UpdatePolicyRequest,
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(verify_admin_jwt),
+    _origin: None = Depends(verify_trusted_origin),
     registry=Depends(get_action_registry),
     policy_engine=Depends(get_policy_engine),
 ):
@@ -130,6 +131,8 @@ async def update_skill_policy(
 @router.delete("/{action_id}/policy", status_code=status.HTTP_200_OK)
 async def reset_skill_policy(
     action_id: str,
+    _operator: str = Depends(verify_admin_jwt),
+    _origin: None = Depends(verify_trusted_origin),
     registry=Depends(get_action_registry),
     policy_engine=Depends(get_policy_engine),
 ):

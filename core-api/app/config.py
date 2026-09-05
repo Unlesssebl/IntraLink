@@ -22,6 +22,11 @@ def read_secret_file(file_path_env: str) -> str | None:
 
 
 class Settings(BaseSettings):
+    APP_ENV: str = Field("development", description="development | test | production")
+    CORS_ORIGINS: str = Field(
+        "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173",
+        description="Разделённый запятыми список доверенных web origins",
+    )
     INTRASERVICE_URL: str = Field(..., description="URL-адрес API IntraService")
     DATABASE_URL: str = Field(
         "postgresql+asyncpg://postgres:postgres@localhost:5432/intraservice",
@@ -29,6 +34,9 @@ class Settings(BaseSettings):
     )
     BOT_API_KEY: str | None = Field(
         None, description="Предоставленный API-ключ для авторизации бота"
+    )
+    WORKER_API_KEY: str | None = Field(
+        None, description="Отдельный ключ только для claim/finish команд исполнителями"
     )
     SSL_VERIFY: bool = Field(
         False, description="Проверка SSL-сертификатов при запросах к IntraService"
@@ -100,29 +108,17 @@ class Settings(BaseSettings):
 
     # Параметры LiteLLM и эмбеддингов
     GEMINI_API_KEY: str | None = Field(
-        None, description="API-ключ Google Gemini API для прямого доступа без прокси"
+        None, description="API-ключ Google Gemini, используемый шлюзом LiteLLM"
     )
-    GEMINI_API_KEY_2: str | None = Field(
-        None, description="Резервный API-ключ Google Gemini API #2"
-    )
-    GEMINI_API_KEY_3: str | None = Field(
-        None, description="Резервный API-ключ Google Gemini API #3"
-    )
-    GROQ_API_KEY: str | None = Field(
-        None, description="API-ключ Groq для быстрого облачного инференса Llama-3.3"
-    )
-    OPENROUTER_API_KEY: str | None = Field(
-        None, description="API-ключ OpenRouter"
-    )
-    LITELLM_API_KEY: str = Field(
-        "sk-intraservice-master-key",
+    LITELLM_API_KEY: str | None = Field(
+        None,
         description="API-ключ для авторизации в LiteLLM Proxy",
     )
     LITELLM_BASE_URL: str = Field(
         "http://localhost:4000/v1", description="Базовый URL для LiteLLM Proxy"
     )
     GEMINI_MODEL: str = Field(
-        "gemini-3.5-flash", description="Имя LLM модели для классификации и извлечения"
+        "intralink-chat", description="Стабильный alias текстовой модели в LiteLLM"
     )
     EMBEDDING_MODEL: str = Field(
         "bge-m3", description="Имя модели эмбеддингов"
@@ -206,9 +202,9 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str | None = Field(
         None, description="[DEPRECATED] Устаревший мастер-пароль администратора"
     )
-    ADMIN_JWT_SECRET: str = Field(
-        "intralink-admin-jwt-secret-key-32chars!",
-        description="Секретный ключ для подписи сессионных JWT токенов администратора",
+    ADMIN_JWT_SECRET: str | None = Field(
+        None,
+        description="[DEPRECATED] Используйте единый JWT_SECRET для подписи сессий",
     )
     PRIMARY_TRIAGE_FILTER_ID: int = Field(
         984, description="ID основного фильтра первой линии в IntraService"
@@ -239,6 +235,8 @@ class Settings(BaseSettings):
         if not self.JWT_SECRET:
             if secret := read_secret_file("JWT_SECRET_FILE"):
                 self.JWT_SECRET = secret
+            elif self.APP_ENV.lower() == "production":
+                raise ValueError("JWT_SECRET или JWT_SECRET_FILE обязателен в production")
             else:
                 generated_jwt_secret = secrets.token_hex(32)
                 logger.warning(
@@ -248,6 +246,8 @@ class Settings(BaseSettings):
                 self.JWT_SECRET = generated_jwt_secret
 
         if not self.BOT_API_KEY:
+            if self.APP_ENV.lower() == "production":
+                raise ValueError("BOT_API_KEY обязателен в production")
             # TODO(security): В продакшене обязательно настроить BOT_API_KEY
             # в переменных окружения.
             # Для разработки сгенерируем временный ключ, чтобы сервис запустился,
@@ -255,11 +255,20 @@ class Settings(BaseSettings):
             generated_key = secrets.token_hex(32)
             logger.warning(
                 "ВНИМАНИЕ: BOT_API_KEY не задан в окружении! "
-                "Сгенерирован временный случайный ключ: %s. "
+                "Сгенерирован временный случайный ключ. "
                 "Этот ключ будет сбрасываться при каждом перезапуске сервиса.",
-                generated_key,
             )
             self.BOT_API_KEY = generated_key
+
+        if not self.WORKER_API_KEY:
+            self.WORKER_API_KEY = read_secret_file("WORKER_API_KEY_FILE")
+        if not self.WORKER_API_KEY:
+            if self.APP_ENV.lower() == "production":
+                raise ValueError("WORKER_API_KEY или WORKER_API_KEY_FILE обязателен в production")
+            self.WORKER_API_KEY = self.BOT_API_KEY
+
+        if not self.LITELLM_API_KEY and self.APP_ENV.lower() == "production":
+            raise ValueError("LITELLM_API_KEY обязателен в production")
 
 
 settings = Settings()

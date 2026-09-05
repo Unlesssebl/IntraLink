@@ -83,7 +83,7 @@ async def verify_admin_jwt(
             detail="Сессия не найдена. Требуется авторизация.",
         )
 
-    secrets_to_try = [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]
+    secrets_to_try = [settings.JWT_SECRET]
     payload = None
     last_err = None
     for sec in secrets_to_try:
@@ -156,7 +156,7 @@ async def verify_admin_or_api_key(
         token = token_query.strip()
 
     if token:
-        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
+        for sec in [settings.JWT_SECRET]:
             if not sec:
                 continue
             try:
@@ -175,6 +175,39 @@ async def verify_admin_or_api_key(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Требуется авторизация (сессия администратора или API-ключ).",
     )
+
+
+async def verify_command_worker(
+    x_worker_api_key: str | None = Header(None, alias="X-Worker-Api-Key"),
+) -> str:
+    if (
+        not x_worker_api_key
+        or not settings.WORKER_API_KEY
+        or not secrets.compare_digest(x_worker_api_key, settings.WORKER_API_KEY)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Требуется отдельный ключ исполнителя команд.",
+        )
+    return "command_worker"
+
+
+async def verify_trusted_origin(
+    origin: str | None = Header(None, alias="Origin"),
+) -> None:
+    """Reject cross-site browser mutations while allowing non-browser service calls."""
+    if not origin:
+        return
+    allowed = {
+        value.strip().rstrip("/")
+        for value in settings.CORS_ORIGINS.split(",")
+        if value.strip()
+    }
+    if origin.rstrip("/") not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Недоверенный Origin для изменяющего запроса.",
+        )
 
 
 from pydantic import BaseModel
@@ -215,7 +248,7 @@ async def get_service_auth_b64(
 
     # Проверяем, есть ли активная сессия оператора
     if token:
-        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
+        for sec in [settings.JWT_SECRET]:
             if not sec:
                 continue
             try:
@@ -273,7 +306,7 @@ async def get_operator_context(
         token = admin_session.strip()
 
     if token:
-        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
+        for sec in [settings.JWT_SECRET]:
             if not sec:
                 continue
             try:

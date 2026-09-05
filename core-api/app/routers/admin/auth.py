@@ -135,9 +135,9 @@ async def admin_me(
         )
 
     try:
-        secret = settings.JWT_SECRET or settings.ADMIN_JWT_SECRET or "intralink-admin-secret"
+        secret = settings.JWT_SECRET
         payload = None
-        for sec in [secret, settings.ADMIN_JWT_SECRET, settings.JWT_SECRET]:
+        for sec in [secret]:
             if not sec:
                 continue
             try:

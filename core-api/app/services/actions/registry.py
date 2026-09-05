@@ -23,6 +23,14 @@ class ActionDefinition(BaseModel):
         PolicyMode.CONFIRM, description="Политика исполнения по умолчанию"
     )
     target_type: str = Field(..., description="Тип целевого объекта: host | user | ticket | system")
+    executor: str = Field(
+        ...,
+        description="Исполнитель действия: windows | backend",
+    )
+    implemented: bool = Field(
+        True,
+        description="Есть ли в выбранном исполнителе проверенная реализация действия",
+    )
     parameters_schema: dict[str, Any] = Field(
         default_factory=dict, description="JSON-схема валидации входных параметров"
     )
@@ -54,6 +62,7 @@ class ActionRegistry:
                 description="Удаленная установка сетевого или USB-принтера через WinRM/WMI.",
                 default_mode=PolicyMode.CONFIRM,
                 target_type="host",
+                executor="windows",
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -75,6 +84,7 @@ class ActionRegistry:
                 description="Добавление доменной учетной записи в группу безопасности WLAN-WORKNET.",
                 default_mode=PolicyMode.CONFIRM,
                 target_type="user",
+                executor="windows",
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -94,6 +104,7 @@ class ActionRegistry:
                 description="Проверка доступности ПК (Ping, DNS, порты SMB:445, WinRM:5985, WMI:135).",
                 default_mode=PolicyMode.AUTO,
                 target_type="host",
+                executor="windows",
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -113,6 +124,8 @@ class ActionRegistry:
                 description="Автоматизированное создание учетной записи сотрудника в домене.",
                 default_mode=PolicyMode.CONFIRM,
                 target_type="user",
+                executor="windows",
+                implemented=False,
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -135,6 +148,8 @@ class ActionRegistry:
                 description="Генерация временного пароля и установка флага обязательной смены.",
                 default_mode=PolicyMode.CONFIRM,
                 target_type="user",
+                executor="windows",
+                implemented=False,
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -155,6 +170,7 @@ class ActionRegistry:
                 # Изменяет статус и комментарий в заявке: только через HITL.
                 default_mode=PolicyMode.CONFIRM,
                 target_type="ticket",
+                executor="backend",
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -177,6 +193,7 @@ class ActionRegistry:
                 description="Выгрузка закрытых заявок из IntraService и индексация в pgvector.",
                 default_mode=PolicyMode.AUTO,
                 target_type="system",
+                executor="backend",
                 parameters_schema={
                     "type": "object",
                     "properties": {

@@ -1,10 +1,13 @@
 import pytest
+import pytest_asyncio
 from unittest.mock import AsyncMock, patch
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete
 
 from app.config import settings
-from app.database.db import get_db
+from app.database.db import ActionPolicyRecord, AsyncSessionLocal, get_db, init_db
 from app.main import app
+from app.routers.deps import verify_admin_jwt
 from app.services.actions import (
     ActionRegistry,
     PolicyEngine,
@@ -16,8 +19,13 @@ from app.services.actions import (
 HEADERS = {"X-Bot-Api-Key": settings.BOT_API_KEY or "test-api-key"}
 
 
-@pytest.fixture(autouse=True)
-def override_deps():
+@pytest_asyncio.fixture(autouse=True)
+async def override_deps():
+    await init_db()
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(ActionPolicyRecord))
+        await db.commit()
+
     async def mock_get_db():
         session = AsyncMock()
         session.execute = AsyncMock()
@@ -26,7 +34,11 @@ def override_deps():
         session.add = AsyncMock()
         yield session
 
+    async def mock_admin():
+        return "test-admin"
+
     app.dependency_overrides[get_db] = mock_get_db
+    app.dependency_overrides[verify_admin_jwt] = mock_admin
     yield
     app.dependency_overrides.clear()
 
@@ -51,23 +63,19 @@ def test_action_registry_defaults():
 
 @pytest.mark.asyncio
 async def test_policy_engine_default_and_override():
-    mock_redis = AsyncMock()
-    mock_redis.get = AsyncMock(return_value=None)
-    mock_redis.set = AsyncMock(return_value=True)
-
     engine = PolicyEngine()
 
     # 1. По умолчанию для install_printer -> CONFIRM
-    policy = await engine.get_action_policy("install_printer", redis_client=mock_redis)
+    policy = await engine.get_action_policy("install_printer")
     assert policy == PolicyMode.CONFIRM
 
     # 2. Оверрайд на DISABLED (Killswitch)
-    mock_redis.get = AsyncMock(return_value="disabled")
-    policy_disabled = await engine.get_action_policy("install_printer", redis_client=mock_redis)
+    await engine.set_action_policy("install_printer", PolicyMode.DISABLED, actor="test-admin")
+    policy_disabled = await engine.get_action_policy("install_printer")
     assert policy_disabled == PolicyMode.DISABLED
 
     eff_mode, is_allowed, reason = await engine.evaluate_execution_mode(
-        "install_printer", requested_mode="auto", redis_client=mock_redis
+        "install_printer", requested_mode="auto"
     )
     assert is_allowed is False
     assert eff_mode == "disabled"
@@ -76,35 +84,23 @@ async def test_policy_engine_default_and_override():
 
 @pytest.mark.asyncio
 async def test_policy_cannot_escalate_confirmation_to_auto():
-    redis = AsyncMock()
-    redis.get = AsyncMock(return_value=None)
     engine = PolicyEngine()
 
     mode, allowed, _ = await engine.evaluate_execution_mode(
-        "install_printer", requested_mode="auto", redis_client=redis
+        "install_printer", requested_mode="auto"
     )
     assert allowed is True
     assert mode == "confirm"
 
-    redis.get = AsyncMock(return_value="auto")
-    mode, allowed, _ = await engine.evaluate_execution_mode(
-        "install_printer", requested_mode="auto", redis_client=redis
-    )
-    assert allowed is True
-    assert mode == "confirm"
+    with pytest.raises(ValueError):
+        await engine.set_action_policy("install_printer", PolicyMode.AUTO)
 
 
 @pytest.mark.asyncio
 async def test_skills_admin_api():
-    with patch("app.services.actions.policy.get_redis_client") as mock_redis_func:
-        mock_r = AsyncMock()
-        mock_r.get = AsyncMock(return_value=None)
-        mock_r.set = AsyncMock(return_value=True)
-        mock_redis_func.return_value = mock_r
-
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
             # 1. Список действий
             resp = await client.get("/api/v1/skills", headers=HEADERS)
             assert resp.status_code == 200
@@ -140,13 +136,11 @@ async def test_skills_admin_api():
 
 @pytest.mark.asyncio
 async def test_command_submit_blocked_by_killswitch():
-    with patch("app.services.actions.policy.get_redis_client") as mock_policy_redis, patch(
-        "app.routers.commands.get_redis_client"
-    ) as mock_cmd_redis:
+    await PolicyEngine().set_action_policy(
+        "install_printer", PolicyMode.DISABLED, actor="test-admin"
+    )
+    with patch("app.routers.commands.get_redis_client") as mock_cmd_redis:
         mock_r = AsyncMock()
-        # Возвращаем disabled для install_printer
-        mock_r.get = AsyncMock(return_value="disabled")
-        mock_policy_redis.return_value = mock_r
         mock_cmd_redis.return_value = mock_r
 
         async with AsyncClient(
