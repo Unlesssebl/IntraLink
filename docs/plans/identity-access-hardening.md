@@ -1,6 +1,6 @@
 # План укрепления идентификации и полномочий IntraLink
 
-Статус: предлагается к реализации  
+Статус: реализовано в ветке `codex/transactional-command-platform`
 Контекст: одна организация, PostgreSQL + Redis, Command API v2
 
 ## 1. Цель

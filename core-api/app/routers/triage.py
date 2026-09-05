@@ -16,7 +16,8 @@ from app.routers.deps import (
     OperatorContext,
     get_operator_context,
     get_service_auth_b64,
-    verify_admin_or_api_key,
+    principal_subject,
+    require_permission,
 )
 from app.services import intraservice
 from app.services.ai_synthesis import synthesize_triage_resolution
@@ -49,7 +50,7 @@ logger = logging.getLogger("core_api.routers.triage")
 router = APIRouter(
     prefix="/api/v1/triage",
     tags=["Unified Triage Hub"],
-    dependencies=[Depends(verify_admin_or_api_key)],
+    dependencies=[Depends(require_permission("triage:read"))],
 )
 
 # Экспорт для обратной совместимости с тестами
@@ -144,7 +145,7 @@ async def get_triage_batch(
         False, description="Выполнять семантический RAG-поиск по прецедентам для всей пачки"
     ),
     service_auth_b64: str = Depends(get_service_auth_b64),
-    username: str = Depends(verify_admin_or_api_key),
+    username: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """Возвращает подготовленную пачку заявок с авто-рекомендациями и телеметрией 0ms."""
@@ -189,11 +190,11 @@ async def get_task_details_card(
     return card
 
 
-@router.post("/tasks/{task_id}/reanalyze", status_code=status.HTTP_200_OK)
+@router.post("/tasks/{task_id}/reanalyze", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def reanalyze_task_endpoint(
     task_id: int,
     service_auth_b64: str = Depends(get_service_auth_b64),
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """Принудительно сбрасывает кэш и перезапускает RuleEngine/RAG/LLM анализ по заявке."""
@@ -245,7 +246,7 @@ def extract_operator_user_id(
     return None
 
 
-@router.post("/apply", status_code=status.HTTP_200_OK)
+@router.post("/apply", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def apply_triage_action(
     payload: ApplyTriageRequest,
     service_auth_b64: str = Depends(get_service_auth_b64),
@@ -324,10 +325,10 @@ async def get_duplicates_in_queue(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/session/skip", status_code=status.HTTP_200_OK)
+@router.post("/session/skip", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def skip_session_tasks(
     payload: SkipSessionRequest,
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
 ):
     """Помечает заявки как пропущенные в текущей смене оператора."""
     op = payload.operator_id or operator
@@ -342,10 +343,10 @@ async def skip_session_tasks(
     }
 
 
-@router.post("/session/reset", status_code=status.HTTP_200_OK)
+@router.post("/session/reset", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def reset_session_tasks(
     operator_id: str | None = Query(None, description="Идентификатор оператора"),
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
 ):
     """Сбрасывает сессионный кэш пропущенных заявок."""
     op = operator_id or operator
@@ -391,7 +392,7 @@ async def get_triage_templates():
 # ---------------------------------------------------------------------------
 
 
-@router.post("/rag/search", status_code=status.HTTP_200_OK)
+@router.post("/rag/search", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("ai:use"))])
 async def rag_search_endpoint(
     payload: RAGSearchRequest,
     db: AsyncSession = Depends(get_db),
@@ -413,7 +414,7 @@ async def rag_search_endpoint(
     return {"total": len(matches), "matches": matches}
 
 
-@router.post("/rag/index", status_code=status.HTTP_200_OK)
+@router.post("/rag/index", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def rag_index_endpoint(
     payload: RAGIndexRequest,
     db: AsyncSession = Depends(get_db),
@@ -438,7 +439,7 @@ async def rag_index_endpoint(
     return {"status": "success", "task_id": payload.task_id}
 
 
-@router.post("/rag/sync", status_code=status.HTTP_200_OK)
+@router.post("/rag/sync", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def rag_sync_endpoint(
     payload: RAGSyncRequest,
     service_auth_b64: str = Depends(get_service_auth_b64),
@@ -453,9 +454,9 @@ async def rag_sync_endpoint(
     )
 
 
-@router.post("/cache/purge", status_code=status.HTTP_200_OK)
+@router.post("/cache/purge", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def purge_triage_cache_endpoint(
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
 ):
     """Глобальный сброс кэша вердиктов и резолюций AI/RuleEngine в Redis."""
     redis = get_redis_client()

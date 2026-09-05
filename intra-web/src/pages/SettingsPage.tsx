@@ -3,12 +3,12 @@ import {
   fetchSystemStatus,
   fetchDomainAuth,
   fetchTelegramUsers,
-  addTelegramUser,
   toggleTelegramUser,
   deleteTelegramUser,
   restartWorkerService,
 } from '../lib/tasks';
 import { IconSun, IconMoon } from '../components/Icons';
+import { apiFetch } from '../lib/api';
 
 interface Props {
   theme: 'light' | 'dark';
@@ -31,10 +31,8 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
   // Telegram users state
   const [tgUsers, setTgUsers] = useState<Array<{ tg_user_id: number; username?: string; full_name?: string; is_active: boolean }>>([]);
   const [loadingTgUsers, setLoadingTgUsers] = useState(false);
-  const [newTgId, setNewTgId] = useState('');
-  const [newTgName, setNewTgName] = useState('');
-  const [newTgUsername, setNewTgUsername] = useState('');
-  const [addingTgUser, setAddingTgUser] = useState(false);
+  const [telegramLinkCode, setTelegramLinkCode] = useState<string | null>(null);
+  const [creatingLinkCode, setCreatingLinkCode] = useState(false);
 
   // UI preferences state
   const [tableDensity, setTableDensity] = useState<'compact' | 'normal' | 'comfortable'>(() => {
@@ -74,35 +72,6 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
     loadAll();
   }, [loadAll]);
 
-  // Handle Telegram user add
-  const handleAddTgUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const tgId = parseInt(newTgId.trim(), 10);
-    if (isNaN(tgId) || tgId <= 0) {
-      onToast({ type: 'warning', message: 'Введите корректный числовой Telegram ID' });
-      return;
-    }
-
-    setAddingTgUser(true);
-    try {
-      await addTelegramUser({
-        tg_user_id: tgId,
-        username: newTgUsername.trim() || undefined,
-        full_name: newTgName.trim() || undefined,
-      });
-      onToast({ type: 'success', message: `Пользователь ID ${tgId} добавлен в список доступа бота` });
-      setNewTgId('');
-      setNewTgName('');
-      setNewTgUsername('');
-      const updated = await fetchTelegramUsers();
-      if (updated && updated.users) setTgUsers(updated.users);
-    } catch (err: any) {
-      onToast({ type: 'error', message: `Ошибка добавления пользователя: ${err.message || err}` });
-    } finally {
-      setAddingTgUser(false);
-    }
-  };
-
   // Handle Telegram user toggle
   const handleToggleTgUser = async (tgUserId: number) => {
     try {
@@ -128,6 +97,20 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
       onToast({ type: 'success', message: `Пользователь ${tgUserId} удален` });
     } catch (err: any) {
       onToast({ type: 'error', message: `Ошибка удаления: ${err.message || err}` });
+    }
+  };
+
+  const handleCreateTelegramLinkCode = async () => {
+    setCreatingLinkCode(true);
+    try {
+      const data = await apiFetch<{ code: string }>('/api/v2/identities/telegram/link-code', { method: 'POST' });
+      setTelegramLinkCode(data.code);
+      await navigator.clipboard?.writeText(data.code).catch(() => undefined);
+      onToast({ type: 'success', message: 'Код создан и скопирован. Он действует 10 минут.' });
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Не удалось создать код: ${err.message || err}` });
+    } finally {
+      setCreatingLinkCode(false);
     }
   };
 
@@ -294,37 +277,29 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
           <span className="text-xs font-mono text-neutral-500">{tgUsers.length} операторов</span>
         </div>
 
-        {/* Add User Form */}
-        <form onSubmit={handleAddTgUser} className="grid grid-cols-1 sm:grid-cols-4 gap-2 bg-neutral-50 dark:bg-neutral-850 p-3 rounded-md border border-neutral-200 dark:border-neutral-750">
-          <input
-            type="number"
-            value={newTgId}
-            onChange={e => setNewTgId(e.target.value)}
-            placeholder="Telegram ID *"
-            className="px-2.5 py-1.5 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded text-xs focus:outline-none focus:border-blue-500"
-          />
-          <input
-            type="text"
-            value={newTgName}
-            onChange={e => setNewTgName(e.target.value)}
-            placeholder="ФИО / Имя"
-            className="px-2.5 py-1.5 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded text-xs focus:outline-none focus:border-blue-500"
-          />
-          <input
-            type="text"
-            value={newTgUsername}
-            onChange={e => setNewTgUsername(e.target.value)}
-            placeholder="@username"
-            className="px-2.5 py-1.5 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded text-xs focus:outline-none focus:border-blue-500"
-          />
-          <button
-            type="submit"
-            disabled={addingTgUser}
-            className="py-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded text-xs transition-colors cursor-pointer"
-          >
-            {addingTgUser ? 'Добавление...' : 'Добавить доступ'}
-          </button>
-        </form>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-md border border-blue-200 dark:border-blue-900 bg-blue-50/70 dark:bg-blue-950/20 p-3">
+          <div>
+            <div className="text-xs font-medium text-neutral-900 dark:text-neutral-100">Привязать мой Telegram</div>
+            <div className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-0.5">
+              Создайте код и отправьте его боту после команды /login. Код одноразовый и действует 10 минут.
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {telegramLinkCode && (
+              <code className="px-3 py-1.5 rounded bg-white dark:bg-neutral-900 border border-blue-200 dark:border-blue-800 text-sm font-semibold tracking-wide text-blue-700 dark:text-blue-300">
+                {telegramLinkCode}
+              </code>
+            )}
+            <button
+              type="button"
+              onClick={handleCreateTelegramLinkCode}
+              disabled={creatingLinkCode}
+              className="py-1.5 px-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-medium rounded text-xs transition-colors cursor-pointer"
+            >
+              {creatingLinkCode ? 'Создание...' : 'Создать код'}
+            </button>
+          </div>
+        </div>
 
         {/* Users Table */}
         <div className="overflow-x-auto">

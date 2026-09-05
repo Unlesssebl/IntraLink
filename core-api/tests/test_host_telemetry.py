@@ -460,6 +460,10 @@ async def test_triage_task_card_endpoint_includes_telemetry():
         "app.routers.triage.get_task_telemetry",
         new_callable=AsyncMock,
         return_value=telemetry_mock,
+    ), patch(
+        "app.routers.triage.build_suggestion_state",
+        new_callable=AsyncMock,
+        return_value={"status": "idle"},
     ):
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"

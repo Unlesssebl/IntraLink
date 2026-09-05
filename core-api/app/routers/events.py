@@ -11,7 +11,7 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
-from app.routers.deps import verify_admin_or_api_key
+from app.routers.deps import require_permission
 from app.services.worker import get_redis_client
 
 logger = logging.getLogger("core_api.routers.events")
@@ -19,7 +19,7 @@ logger = logging.getLogger("core_api.routers.events")
 router = APIRouter(
     prefix="/api/v1/events",
     tags=["Event Hub (Real-time SSE Gateway)"],
-    dependencies=[Depends(verify_admin_or_api_key)],
+    dependencies=[Depends(require_permission("events:read"))],
 )
 
 
@@ -31,7 +31,7 @@ async def event_stream(
     channel: str = Query(
         "all", description="Канал событий: 'all' (все задачи) или 'progress'"
     ),
-    _auth: str = Depends(verify_admin_or_api_key),
+    _auth=Depends(require_permission("events:read")),
 ):
     """
     Server-Sent Events (SSE) эндпоинт.

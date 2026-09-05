@@ -8,6 +8,8 @@ import pytest
 
 
 WORKER_DIR = Path("/execution-worker")
+if not WORKER_DIR.exists():
+    WORKER_DIR = Path(__file__).resolve().parent.parent.parent / "execution-worker"
 if str(WORKER_DIR) not in sys.path:
     sys.path.insert(0, str(WORKER_DIR))
 spec = importlib.util.spec_from_file_location("windows_execution_worker", WORKER_DIR / "worker.py")

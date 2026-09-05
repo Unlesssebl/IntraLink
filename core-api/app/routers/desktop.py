@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.db import DesktopLaunchLog, get_db
-from app.routers.deps import get_operator_context, verify_admin_or_api_key
+from app.routers.deps import get_operator_context, require_permission
 from app.services import intraservice
 from app.services.host_telemetry import extract_pc_from_task
 from shared.normalizer import normalize_pc_name
@@ -67,7 +67,7 @@ def _clean_host(raw_host: str) -> str:
     return host
 
 
-@router.post("/launches", dependencies=[Depends(verify_admin_or_api_key)])
+@router.post("/launches", dependencies=[Depends(require_permission("diagnostic:run"))])
 async def create_launch(
     payload: CreateLaunchRequest,
     db: AsyncSession = Depends(get_db),

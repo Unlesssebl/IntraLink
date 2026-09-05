@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from app.database.db import AsyncSessionLocal
-from app.routers.deps import verify_admin_jwt
+from app.routers.deps import require_permission
 from app.services import intraservice
 from app.services.crypto import encrypt_token
 from app.services.worker import start_worker, stop_worker
@@ -23,7 +23,7 @@ class ServiceUserRequest(BaseModel):
     password: str
 
 
-@router.get("/admin/api/status", dependencies=[Depends(verify_admin_jwt)])
+@router.get("/admin/api/status", dependencies=[Depends(require_permission("audit:read"))])
 async def get_system_status():
     """
     Возвращает статус подключения всех систем: IntraService Circuit Breaker, Redis, PostgreSQL.
@@ -68,7 +68,7 @@ async def get_system_status():
     }
 
 
-@router.post("/admin/api/service-user", dependencies=[Depends(verify_admin_jwt)])
+@router.post("/admin/api/service-user", dependencies=[Depends(require_permission("credentials:manage"))])
 async def set_service_user(payload: ServiceUserRequest):
     """
     Проверяет и сохраняет учетные данные сервисного аккаунта IntraService.
@@ -103,7 +103,7 @@ async def set_service_user(payload: ServiceUserRequest):
 
 
 @router.delete(
-    "/admin/api/service-user", dependencies=[Depends(verify_admin_jwt)]
+    "/admin/api/service-user", dependencies=[Depends(require_permission("credentials:manage"))]
 )
 async def delete_service_user():
     """
@@ -125,7 +125,7 @@ async def delete_service_user():
 
 
 @router.post(
-    "/admin/api/worker/restart", dependencies=[Depends(verify_admin_jwt)]
+    "/admin/api/worker/restart", dependencies=[Depends(require_permission("policy:manage"))]
 )
 async def restart_worker_endpoint():
     """
@@ -140,7 +140,7 @@ async def restart_worker_endpoint():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/admin/api/worker-logs", dependencies=[Depends(verify_admin_jwt)])
+@router.get("/admin/api/worker-logs", dependencies=[Depends(require_permission("audit:read"))])
 async def get_worker_logs():
     """
     Возвращает последние системные логи воркера.

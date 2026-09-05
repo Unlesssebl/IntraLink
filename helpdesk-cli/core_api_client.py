@@ -13,6 +13,8 @@ logger = logging.getLogger("helpdesk_agent.core_client")
 
 CORE_API_URL = os.getenv("CORE_API_URL", "http://127.0.0.1:8000").rstrip("/")
 BOT_API_KEY = os.getenv("BOT_API_KEY", "")
+SERVICE_KEY_ID = os.getenv("CLI_SERVICE_KEY_ID") or os.getenv("SERVICE_KEY_ID", "")
+SERVICE_SECRET = os.getenv("CLI_SERVICE_SECRET") or os.getenv("SERVICE_SECRET", "")
 
 
 class CoreApiClient:
@@ -29,10 +31,11 @@ class CoreApiClient:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            headers = {
-                "X-Bot-Api-Key": self.api_key,
-                "Content-Type": "application/json",
-            }
+            headers = {"Content-Type": "application/json"}
+            if SERVICE_KEY_ID and SERVICE_SECRET:
+                headers.update({"X-Service-Key-Id": SERVICE_KEY_ID, "X-Service-Secret": SERVICE_SECRET})
+            elif self.api_key:
+                headers["X-Bot-Api-Key"] = self.api_key
             connector = aiohttp.TCPConnector(
                 limit=20, ttl_dns_cache=300, keepalive_timeout=30.0
             )

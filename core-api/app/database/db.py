@@ -32,7 +32,7 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
-CURRENT_SCHEMA_REVISION = "20260905_0002"
+CURRENT_SCHEMA_REVISION = "20260905_0003"
 
 
 
@@ -54,6 +54,180 @@ class User(Base):
     last_check_time: Mapped[str] = mapped_column(
         String, nullable=True
     )  # Храним в виде строки ISO, как было в боте
+
+
+class Principal(Base):
+    """A stable human or service identity used for authorization and audit."""
+
+    __tablename__ = "principals"
+    __table_args__ = (UniqueConstraint("type", "subject", name="uq_principal_type_subject"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    subject: Mapped[str] = mapped_column(String(160), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="active", server_default="active", index=True
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class Role(Base):
+    __tablename__ = "roles"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    description: Mapped[str] = mapped_column(String(300), nullable=False)
+
+
+class Permission(Base):
+    __tablename__ = "permissions"
+
+    name: Mapped[str] = mapped_column(String(100), primary_key=True)
+    description: Mapped[str] = mapped_column(String(300), nullable=False)
+
+
+class RolePermission(Base):
+    __tablename__ = "role_permissions"
+
+    role_name: Mapped[str] = mapped_column(
+        String(64), ForeignKey("roles.name", ondelete="CASCADE"), primary_key=True
+    )
+    permission_name: Mapped[str] = mapped_column(
+        String(100), ForeignKey("permissions.name", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class PrincipalRole(Base):
+    __tablename__ = "principal_roles"
+
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="CASCADE"), primary_key=True
+    )
+    role_name: Mapped[str] = mapped_column(
+        String(64), ForeignKey("roles.name", ondelete="CASCADE"), primary_key=True
+    )
+    assigned_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="SET NULL"), nullable=True
+    )
+    assigned_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ServiceCredential(Base):
+    __tablename__ = "service_credentials"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    key_id: Mapped[str] = mapped_column(String(80), unique=True, nullable=False, index=True)
+    secret_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    scopes_json: Mapped[list[str]] = mapped_column(JSON_TYPE, nullable=False, default=list)
+    expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    refresh_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    rotated_from_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("auth_sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TelegramLink(Base):
+    __tablename__ = "telegram_links"
+
+    tg_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="pending_reverification", server_default="pending_reverification"
+    )
+    verified_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TelegramLinkCode(Base):
+    __tablename__ = "telegram_link_codes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ApprovalChallenge(Base):
+    __tablename__ = "approval_challenges"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    allowed_decisions_json: Mapped[list[str]] = mapped_column(JSON_TYPE, nullable=False, default=list)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    used_decision: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SecurityEvent(Base):
+    """Append-only identity and authorization audit without credentials or tokens."""
+
+    __tablename__ = "security_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    outcome: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    auth_method: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    resource_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    details_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
 
 
 # Модель базы знаний RAG (датасета заявок)
@@ -150,6 +324,9 @@ class CommandRecord(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
     initiator: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    initiator_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     task_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     result_json: Mapped[dict | None] = mapped_column(JSON_TYPE, nullable=True)
@@ -231,6 +408,9 @@ class CommandApproval(Base):
     decision: Mapped[str] = mapped_column(String(20), nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     operator: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    approver_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

@@ -8,40 +8,23 @@ router = Router()
 
 
 class AuthStates(StatesGroup):
-    waiting_for_login = State()
-    waiting_for_password = State()
+    waiting_for_link_code = State()
 
 
 @router.message(Command("login"))
 @router.message(F.text == "🔑 Авторизация")
 async def cmd_login(message: types.Message, state: FSMContext):
-    await message.answer("Пожалуйста, введите ваш логин от IntraService:")
-    await state.set_state(AuthStates.waiting_for_login)
+    await message.answer(
+        "Откройте панель оператора, создайте одноразовый код привязки Telegram "
+        "и отправьте его сюда. Код действует 10 минут."
+    )
+    await state.set_state(AuthStates.waiting_for_link_code)
 
 
-@router.message(AuthStates.waiting_for_login)
-async def process_login(message: types.Message, state: FSMContext):
-    await state.update_data(login=message.text)
-    await message.answer("Теперь введите ваш пароль:")
-    await state.set_state(AuthStates.waiting_for_password)
-
-
-@router.message(AuthStates.waiting_for_password)
-async def process_password(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    login = data.get("login")
-    password = message.text
-
-    # Удаляем сообщение с паролем для безопасности
-    try:
-        await message.delete()
-    except Exception:
-        pass
-
-    msg = await message.answer("⏳ Проверяю учетные данные...")
-
-    # Вызываем Core API для авторизации
-    response = await api_client.login(message.from_user.id, login, password)
+@router.message(AuthStates.waiting_for_link_code)
+async def process_link_code(message: types.Message, state: FSMContext):
+    msg = await message.answer("Проверяю одноразовый код...")
+    response = await api_client.link_telegram(message.from_user.id, message.text.strip())
 
     if response and response.get("status") == "success":
         # Импортируем клавиатуру из start_help для обновления интерфейса
@@ -49,7 +32,7 @@ async def process_password(message: types.Message, state: FSMContext):
 
         # Редактируем старое сообщение
         await msg.edit_text(
-            "✅ Авторизация прошла успешно! Теперь я буду мониторить ваши заявки."
+            "Telegram успешно привязан к вашей корпоративной учётной записи."
         )
 
         # Отправляем новое сообщение с Reply-клавиатурой
@@ -60,7 +43,7 @@ async def process_password(message: types.Message, state: FSMContext):
         await state.clear()
     else:
         await msg.edit_text(
-            "❌ Ошибка авторизации. Проверьте логин/пароль и попробуйте еще раз."
+            "Код недействителен или истёк. Создайте новый код в панели оператора."
         )
         await state.clear()
 

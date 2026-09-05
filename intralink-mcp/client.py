@@ -12,6 +12,8 @@ logger = logging.getLogger("intralink_mcp.client")
 
 CORE_API_URL = os.getenv("CORE_API_URL", "http://127.0.0.1:8000").rstrip("/")
 BOT_API_KEY = os.getenv("BOT_API_KEY", "")
+SERVICE_KEY_ID = os.getenv("MCP_SERVICE_KEY_ID") or os.getenv("SERVICE_KEY_ID", "")
+SERVICE_SECRET = os.getenv("MCP_SERVICE_SECRET") or os.getenv("SERVICE_SECRET", "")
 
 
 class CoreApiClient:
@@ -19,11 +21,11 @@ class CoreApiClient:
 
     def __init__(self, base_url: str = CORE_API_URL, api_key: str = BOT_API_KEY):
         self.base_url = base_url
-        self.headers = {
-            "X-Bot-Api-Key": api_key,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
+        self.headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if SERVICE_KEY_ID and SERVICE_SECRET:
+            self.headers.update({"X-Service-Key-Id": SERVICE_KEY_ID, "X-Service-Secret": SERVICE_SECRET})
+        elif api_key:
+            self.headers["X-Bot-Api-Key"] = api_key
 
     async def get_triage_batch(
         self,

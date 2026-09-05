@@ -238,6 +238,8 @@ services:
     environment:
       - CORE_API_URL=http://core-api:8000/api/v1
       - REDIS_URL=redis://redis:6379/0
+      - SERVICE_KEY_ID=${TELEGRAM_SERVICE_KEY_ID:-}
+      - SERVICE_SECRET=${TELEGRAM_SERVICE_SECRET:-}
     dns:
       - 10.244.0.11
       - 172.18.128.50

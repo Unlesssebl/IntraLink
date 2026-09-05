@@ -13,6 +13,8 @@ logger = logging.getLogger("execution_worker.core_client")
 CORE_API_URL = os.getenv("CORE_API_URL", "http://127.0.0.1:8000").rstrip("/")
 BOT_API_KEY = os.getenv("BOT_API_KEY", "")
 WORKER_API_KEY = os.getenv("WORKER_API_KEY", "")
+SERVICE_KEY_ID = os.getenv("WINDOWS_WORKER_SERVICE_KEY_ID") or os.getenv("SERVICE_KEY_ID", "")
+SERVICE_SECRET = os.getenv("WINDOWS_WORKER_SERVICE_SECRET") or os.getenv("SERVICE_SECRET", "")
 
 
 class CoreApiClient:
@@ -24,18 +26,21 @@ class CoreApiClient:
     ):
         self.base_url = (base_url or CORE_API_URL).rstrip("/")
         self.api_key = api_key or BOT_API_KEY
-        if not self.api_key:
-            raise RuntimeError("BOT_API_KEY is required for the execution worker")
+        if not ((SERVICE_KEY_ID and SERVICE_SECRET) or self.api_key):
+            raise RuntimeError("SERVICE_KEY_ID and SERVICE_SECRET are required for the execution worker")
         self.timeout = aiohttp.ClientTimeout(total=timeout_sec)
         self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            headers = {
-                "X-Bot-Api-Key": self.api_key,
-                "X-Worker-Api-Key": WORKER_API_KEY or self.api_key,
-                "Content-Type": "application/json",
-            }
+            headers = {"Content-Type": "application/json"}
+            if SERVICE_KEY_ID and SERVICE_SECRET:
+                headers.update({"X-Service-Key-Id": SERVICE_KEY_ID, "X-Service-Secret": SERVICE_SECRET})
+            else:
+                headers.update({
+                    "X-Bot-Api-Key": self.api_key,
+                    "X-Worker-Api-Key": WORKER_API_KEY or self.api_key,
+                })
             connector = aiohttp.TCPConnector(
                 limit=15, ttl_dns_cache=300, keepalive_timeout=30.0
             )

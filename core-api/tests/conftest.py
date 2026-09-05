@@ -58,6 +58,20 @@ async def initialize_test_database():
 
     await init_db()
     yield
+    from app.main import app
+    from sqlalchemy import delete
+    from app.database.db import (
+        ApprovalChallenge, AsyncSessionLocal, AuthSession, Principal, PrincipalRole,
+        SecurityEvent, ServiceCredential, TelegramLink, TelegramLinkCode, get_db,
+    )
+    app.dependency_overrides.pop(get_db, None)
+    async with AsyncSessionLocal() as db:
+        for model in (
+            ApprovalChallenge, TelegramLinkCode, TelegramLink, AuthSession,
+            ServiceCredential, SecurityEvent, PrincipalRole, Principal,
+        ):
+            await db.execute(delete(model))
+        await db.commit()
 
 
 @pytest_asyncio.fixture(autouse=True)

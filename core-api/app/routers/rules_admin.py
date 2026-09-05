@@ -14,7 +14,7 @@ from app.database.db import (
     TriageTemplate,
     get_db,
 )
-from app.routers.deps import verify_admin_or_api_key
+from app.routers.deps import principal_subject, require_permission
 from app.services.template_engine import invalidate_templates_cache
 from app.services.worker import get_redis_client
 
@@ -23,7 +23,7 @@ logger = logging.getLogger("core_api.routers.rules_admin")
 router = APIRouter(
     prefix="/api/v1/rules-admin",
     tags=["Triage Rules & Templates SSOT Admin"],
-    dependencies=[Depends(verify_admin_or_api_key)],
+    dependencies=[Depends(require_permission("rules:manage"))],
 )
 
 
@@ -140,7 +140,7 @@ async def get_templates_catalog_endpoint(
 @router.post("/templates", response_model=TemplateResponse, status_code=status.HTTP_201_CREATED)
 async def create_template(
     payload: TemplateCreateUpdate,
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """Создает новый шаблон ответов и регистрирует аудит-лог."""
@@ -175,7 +175,7 @@ async def create_template(
 async def update_template(
     template_id: int,
     payload: TemplateCreateUpdate,
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """Обновляет существующий шаблон ответов."""
@@ -215,7 +215,7 @@ async def update_template(
 @router.delete("/templates/{template_id}", status_code=status.HTTP_200_OK)
 async def delete_template(
     template_id: int,
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """Деактивирует шаблон (мягкое удаление)."""
@@ -261,7 +261,7 @@ async def list_rules(
 @router.post("/rules", response_model=RuleResponse, status_code=status.HTTP_201_CREATED)
 async def create_rule(
     payload: RuleCreateUpdate,
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """Создает новое правило триажа."""

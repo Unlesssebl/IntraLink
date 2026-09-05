@@ -15,6 +15,9 @@ from app.database.db import (
     CommandInbox,
     CommandOutbox,
     CommandRecord,
+    Principal,
+    PrincipalRole,
+    TelegramLink,
     User,
     init_db,
 )
@@ -22,6 +25,7 @@ from app.services.actions.policy import PolicyEngine
 from app.services.command_service import CommandService
 from app.config import settings
 from app.main import app
+from app.services.identity import ensure_rbac_catalog
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -273,20 +277,38 @@ async def test_telegram_approval_requires_registered_operator():
     headers = {"X-Bot-Api-Key": settings.BOT_API_KEY or "test-api-key"}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         denied = await client.post(
-            f"/api/v2/commands/{command_id}/approval/telegram",
+            f"/api/v2/commands/{command_id}/approval/telegram/challenge",
             headers=headers,
-            json={"decision": "approve", "tg_user_id": 10001},
+            json={"tg_user_id": 10001},
         )
         assert denied.status_code == 403
 
         async with AsyncSessionLocal() as db:
-            db.add(User(tg_user_id=10001, is_login="operator.test", is_password_b64="encrypted"))
+            await ensure_rbac_catalog(db, commit=False)
+            principal = Principal(
+                type="human", subject="operator.test", display_name="Operator Test", status="active"
+            )
+            db.add(principal)
+            await db.flush()
+            db.add(PrincipalRole(principal_id=principal.id, role_name="helpdesk_operator"))
+            db.add(TelegramLink(
+                tg_user_id=10001, principal_id=principal.id, status="verified"
+            ))
             await db.commit()
 
+        challenge = await client.post(
+            f"/api/v2/commands/{command_id}/approval/telegram/challenge",
+            headers=headers,
+            json={"tg_user_id": 10001},
+        )
+        assert challenge.status_code == 200
         approved = await client.post(
             f"/api/v2/commands/{command_id}/approval/telegram",
             headers=headers,
-            json={"decision": "approve", "tg_user_id": 10001},
+            json={
+                "decision": "approve",
+                "challenge_token": challenge.json()["challenge_token"],
+            },
         )
         assert approved.status_code == 200
         assert approved.json()["status"] == "queued"

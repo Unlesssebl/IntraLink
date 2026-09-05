@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.routers.deps import verify_admin_jwt, verify_admin_or_api_key, verify_trusted_origin
+from app.routers.deps import principal_subject, require_permission, verify_trusted_origin
 from app.services.actions import (
     ActionDefinition,
     PolicyMode,
@@ -22,7 +22,7 @@ logger = logging.getLogger("core_api.routers.skills_admin")
 router = APIRouter(
     prefix="/api/v1/skills",
     tags=["Skills Hub & Action Registry"],
-    dependencies=[Depends(verify_admin_or_api_key)],
+    dependencies=[Depends(require_permission("command:read"))],
 )
 
 
@@ -92,11 +92,11 @@ async def get_skill_details(
     )
 
 
-@router.patch("/{action_id}/policy", status_code=status.HTTP_200_OK)
+@router.patch("/{action_id}/policy", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("policy:manage"))])
 async def update_skill_policy(
     action_id: str,
     payload: UpdatePolicyRequest,
-    operator: str = Depends(verify_admin_jwt),
+    operator: str = Depends(principal_subject),
     _origin: None = Depends(verify_trusted_origin),
     registry=Depends(get_action_registry),
     policy_engine=Depends(get_policy_engine),
@@ -128,10 +128,10 @@ async def update_skill_policy(
     }
 
 
-@router.delete("/{action_id}/policy", status_code=status.HTTP_200_OK)
+@router.delete("/{action_id}/policy", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("policy:manage"))])
 async def reset_skill_policy(
     action_id: str,
-    _operator: str = Depends(verify_admin_jwt),
+    _operator: str = Depends(principal_subject),
     _origin: None = Depends(verify_trusted_origin),
     registry=Depends(get_action_registry),
     policy_engine=Depends(get_policy_engine),

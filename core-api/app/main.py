@@ -10,7 +10,16 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 
 from app.config import settings
-from app.database.db import CommandOutbox, CommandRecord, AsyncSessionLocal, init_db, verify_schema
+from app.database.db import (
+    ApprovalChallenge,
+    CommandOutbox,
+    CommandRecord,
+    SecurityEvent,
+    ServiceCredential,
+    AsyncSessionLocal,
+    init_db,
+    verify_schema,
+)
 from app.routers import (
     admin,
     admin_settings,
@@ -20,6 +29,7 @@ from app.routers import (
     commands_v2,
     desktop,
     events,
+    identity,
     kb_admin,
     rules_admin,
     self_service,
@@ -38,6 +48,7 @@ from app.services.template_engine import (
 )
 from app.services.worker import start_worker, stop_worker
 from app.services.rollout import rollout_readiness
+from app.services.identity import ensure_rbac_catalog
 from app.services.worker import get_redis_client
 
 # Настройка логирования
@@ -64,6 +75,7 @@ async def lifespan(_app: FastAPI):
     # Database Seeding и прогрев L1 кэша шаблонов
     try:
         async with AsyncSessionLocal() as session:
+            await ensure_rbac_catalog(session)
             await seed_templates_if_empty(session)
             await get_templates_from_db(session)
         logger.info("L1 кэш шаблонов триажа инициализирован из PostgreSQL.")
@@ -143,7 +155,10 @@ app.add_middleware(
     allow_origins=[origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Bot-Api-Key"],
+    allow_headers=[
+        "Authorization", "Content-Type", "Idempotency-Key", "X-Bot-Api-Key",
+        "X-Service-Key-Id", "X-Service-Secret",
+    ],
 )
 
 # Подключение роутеров с единым префиксом версии API v1
@@ -159,6 +174,7 @@ app.include_router(commands_v2.router)
 app.include_router(commands_v2.policy_router)
 app.include_router(desktop.router)
 app.include_router(events.router)
+app.include_router(identity.router)
 app.include_router(admin.router)
 app.include_router(admin_settings.router)
 app.include_router(kb_admin.router)
@@ -229,6 +245,22 @@ async def command_metrics():
         pending_outbox = int(await db.scalar(
             select(func.count(CommandOutbox.id)).where(CommandOutbox.published_at.is_(None))
         ) or 0)
+        denied_authorizations = int(await db.scalar(
+            select(func.count(SecurityEvent.id)).where(
+                SecurityEvent.event_type == "authorization.denied"
+            )
+        ) or 0)
+        active_challenges = int(await db.scalar(
+            select(func.count(ApprovalChallenge.id)).where(
+                ApprovalChallenge.used_at.is_(None),
+                ApprovalChallenge.expires_at > func.now(),
+            )
+        ) or 0)
+        active_service_credentials = int(await db.scalar(
+            select(func.count(ServiceCredential.id)).where(
+                ServiceCredential.revoked_at.is_(None)
+            )
+        ) or 0)
     lines = [
         "# HELP intralink_commands Commands by durable state",
         "# TYPE intralink_commands gauge",
@@ -241,6 +273,15 @@ async def command_metrics():
         "# HELP intralink_command_outbox_pending Unpublished command messages",
         "# TYPE intralink_command_outbox_pending gauge",
         f"intralink_command_outbox_pending {pending_outbox}",
+        "# HELP intralink_authorization_denied_total Recorded authorization denials",
+        "# TYPE intralink_authorization_denied_total counter",
+        f"intralink_authorization_denied_total {denied_authorizations}",
+        "# HELP intralink_approval_challenges_active Unused non-expired approval challenges",
+        "# TYPE intralink_approval_challenges_active gauge",
+        f"intralink_approval_challenges_active {active_challenges}",
+        "# HELP intralink_service_credentials_active Non-revoked service credentials",
+        "# TYPE intralink_service_credentials_active gauge",
+        f"intralink_service_credentials_active {active_service_credentials}",
     ])
     return "\n".join(lines) + "\n"
 

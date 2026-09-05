@@ -16,7 +16,8 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.db import JobLog, get_db
-from app.routers.deps import verify_admin_or_api_key
+from app.config import settings
+from app.routers.deps import principal_subject, require_permission
 from app.services.actions import get_policy_engine
 from app.services.ai_suggestions import require_current_suggestion
 from app.services.worker import get_redis_client
@@ -26,10 +27,18 @@ logger = logging.getLogger("core_api.routers.commands")
 router = APIRouter(
     prefix="/api/v1/commands",
     tags=["Command Bus (Unified Execution Hub)"],
-    dependencies=[Depends(verify_admin_or_api_key)],
+    dependencies=[Depends(require_permission("command:read"))],
 )
 
 STREAM_EXECUTION_QUEUE = "stream:execution_queue"
+
+
+async def require_legacy_command_api() -> None:
+    if settings.APP_ENV == "production":
+        raise HTTPException(
+            status.HTTP_410_GONE,
+            "Legacy command API is disabled; use /api/v2/commands",
+        )
 
 
 class SubmitCommandRequest(BaseModel):
@@ -77,11 +86,11 @@ class ConfirmDecisionRequest(BaseModel):
     operator: str | None = Field(None, description="Идентификатор оператора")
 
 
-@router.post("", status_code=status.HTTP_202_ACCEPTED)
-@router.post("/submit", status_code=status.HTTP_202_ACCEPTED)
+@router.post("", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_permission("command:create")), Depends(require_legacy_command_api)])
+@router.post("/submit", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_permission("command:create")), Depends(require_legacy_command_api)])
 async def submit_command(
     payload: SubmitCommandRequest,
-    initiator_identity: str = Depends(verify_admin_or_api_key),
+    initiator_identity: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -397,11 +406,11 @@ async def list_audit_log(
     }
 
 
-@router.post("/{job_id}/confirm", status_code=status.HTTP_200_OK)
+@router.post("/{job_id}/confirm", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("command:approve:r1")), Depends(require_legacy_command_api)])
 async def confirm_command(
     job_id: str,
     payload: ConfirmDecisionRequest,
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -484,11 +493,11 @@ async def confirm_command(
     }
 
 
-@router.post("/{job_id}/cancel", status_code=status.HTTP_200_OK)
+@router.post("/{job_id}/cancel", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("command:cancel")), Depends(require_legacy_command_api)])
 async def cancel_command(
     job_id: str,
     reason: str = Query("Отменено пользователем", description="Причина отмены"),
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """

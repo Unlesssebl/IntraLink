@@ -78,14 +78,14 @@ async def test_admin_auth_success_and_failure():
         assert res_sso.status_code == 200
         assert res_sso.json()["access_token"] == admin_token
 
-        # 5. Fallback: вход по устаревшему ADMIN_PASSWORD (если задан)
+        # 5. Устаревший общий мастер-пароль больше не принимается.
+        client.cookies.clear()
         with patch.object(settings, "ADMIN_PASSWORD", "legacy-master-pass"):
             res_fallback = await client.post(
                 "/api/v1/admin/auth/login",
                 json={"password": "legacy-master-pass"},
             )
-            assert res_fallback.status_code == 200
-            assert "access_token" in res_fallback.json()
+            assert res_fallback.status_code == 401
 
 
 @pytest.mark.asyncio

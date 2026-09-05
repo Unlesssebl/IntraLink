@@ -7,7 +7,6 @@ from sqlalchemy import delete
 from app.config import settings
 from app.database.db import ActionPolicyRecord, AsyncSessionLocal, get_db, init_db
 from app.main import app
-from app.routers.deps import verify_admin_jwt
 from app.services.actions import (
     ActionRegistry,
     PolicyEngine,
@@ -34,11 +33,7 @@ async def override_deps():
         session.add = AsyncMock()
         yield session
 
-    async def mock_admin():
-        return "test-admin"
-
     app.dependency_overrides[get_db] = mock_get_db
-    app.dependency_overrides[verify_admin_jwt] = mock_admin
     yield
     app.dependency_overrides.clear()
 

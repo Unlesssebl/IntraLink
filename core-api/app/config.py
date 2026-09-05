@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     WORKER_API_KEY: str | None = Field(
         None, description="Отдельный ключ только для claim/finish команд исполнителями"
     )
+    ALLOW_LEGACY_SHARED_KEYS: bool | None = Field(
+        None, description="Временная совместимость общих BOT/WORKER ключей вне production"
+    )
     SSL_VERIFY: bool = Field(
         False, description="Проверка SSL-сертификатов при запросах к IntraService"
     )
@@ -105,6 +108,10 @@ class Settings(BaseSettings):
     JWT_SECRET: str | None = Field(
         None, description="Секрет для подписи сессионных JWT токенов администратора"
     )
+    JWT_ISSUER: str = Field("intralink-core", description="JWT issuer")
+    JWT_AUDIENCE: str = Field("intralink", description="JWT audience")
+    ACCESS_TOKEN_TTL_MINUTES: int = Field(15, ge=5, le=60)
+    REFRESH_SESSION_TTL_HOURS: int = Field(8, ge=1, le=168)
 
     # Параметры LiteLLM и эмбеддингов
     GEMINI_API_KEY: str | None = Field(
@@ -246,26 +253,23 @@ class Settings(BaseSettings):
                 self.JWT_SECRET = generated_jwt_secret
 
         if not self.BOT_API_KEY:
-            if self.APP_ENV.lower() == "production":
-                raise ValueError("BOT_API_KEY обязателен в production")
-            # TODO(security): В продакшене обязательно настроить BOT_API_KEY
-            # в переменных окружения.
-            # Для разработки сгенерируем временный ключ, чтобы сервис запустился,
-            # но выдадим предупреждение.
-            generated_key = secrets.token_hex(32)
-            logger.warning(
-                "ВНИМАНИЕ: BOT_API_KEY не задан в окружении! "
-                "Сгенерирован временный случайный ключ. "
-                "Этот ключ будет сбрасываться при каждом перезапуске сервиса.",
-            )
-            self.BOT_API_KEY = generated_key
+            if self.APP_ENV.lower() != "production":
+                generated_key = secrets.token_hex(32)
+                logger.warning(
+                    "BOT_API_KEY не задан: создан временный ключ только для разработки.",
+                )
+                self.BOT_API_KEY = generated_key
 
         if not self.WORKER_API_KEY:
             self.WORKER_API_KEY = read_secret_file("WORKER_API_KEY_FILE")
         if not self.WORKER_API_KEY:
-            if self.APP_ENV.lower() == "production":
-                raise ValueError("WORKER_API_KEY или WORKER_API_KEY_FILE обязателен в production")
-            self.WORKER_API_KEY = self.BOT_API_KEY
+            if self.APP_ENV.lower() != "production":
+                self.WORKER_API_KEY = self.BOT_API_KEY
+
+        if self.ALLOW_LEGACY_SHARED_KEYS is None:
+            self.ALLOW_LEGACY_SHARED_KEYS = self.APP_ENV.lower() != "production"
+        if self.APP_ENV.lower() == "production" and self.ALLOW_LEGACY_SHARED_KEYS:
+            raise ValueError("ALLOW_LEGACY_SHARED_KEYS запрещён в production")
 
         if not self.LITELLM_API_KEY and self.APP_ENV.lower() == "production":
             raise ValueError("LITELLM_API_KEY обязателен в production")

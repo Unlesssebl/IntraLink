@@ -2,7 +2,7 @@ import aiohttp
 import logging
 import uuid
 from typing import Optional, Dict, Any, List
-from config import CORE_API_URL, BOT_API_KEY
+from config import CORE_API_URL, BOT_API_KEY, SERVICE_KEY_ID, SERVICE_SECRET
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +10,14 @@ logger = logging.getLogger(__name__)
 class CoreAPIClient:
     def __init__(self, base_url: str = CORE_API_URL, api_key: str = BOT_API_KEY):
         self.base_url = base_url.rstrip("/")
-        self.headers = {"Content-Type": "application/json", "X-Bot-Api-Key": api_key}
+        self.headers = {"Content-Type": "application/json"}
+        if SERVICE_KEY_ID and SERVICE_SECRET:
+            self.headers.update({
+                "X-Service-Key-Id": SERVICE_KEY_ID,
+                "X-Service-Secret": SERVICE_SECRET,
+            })
+        elif api_key:
+            self.headers["X-Bot-Api-Key"] = api_key
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def get_session(self) -> aiohttp.ClientSession:
@@ -30,7 +37,11 @@ class CoreAPIClient:
         json_data: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> Optional[Any]:
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        endpoint_path = endpoint.lstrip("/")
+        base_url = self.base_url
+        if endpoint_path.startswith("api/") and base_url.endswith("/api/v1"):
+            base_url = base_url[:-7]
+        url = f"{base_url}/{endpoint_path}"
 
         # TODO(security): Проверить SSL_VERIFY, если требуется. Используем системные настройки по умолчанию.
         try:
@@ -65,14 +76,11 @@ class CoreAPIClient:
             )
             return None
 
-    async def login(
-        self, tg_user_id: int, login: str, password: str
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Отправляет запрос на авторизацию пользователя в Core API.
-        """
-        payload = {"tg_user_id": tg_user_id, "login": login, "password": password}
-        return await self.make_post_request("auth/login", payload)
+    async def link_telegram(self, tg_user_id: int, code: str) -> Optional[Dict[str, Any]]:
+        """Links Telegram to a corporate identity using a one-time web code."""
+        return await self.make_post_request(
+            "api/v2/identities/telegram/link", {"tg_user_id": tg_user_id, "code": code}
+        )
 
     async def logout(self, tg_user_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -146,10 +154,17 @@ class CoreAPIClient:
         tg_user_id: int | None = None,
     ) -> Optional[Dict[str, Any]]:
         """Отправляет решение оператора (HitL) для ожидающей команды."""
+        challenge = await self._make_request(
+            endpoint=f"api/v2/commands/{job_id}/approval/telegram/challenge",
+            method="POST",
+            json_data={"tg_user_id": tg_user_id},
+        )
+        if not challenge:
+            return None
         payload = {
             "decision": decision,
             "reason": reason,
-            "tg_user_id": tg_user_id,
+            "challenge_token": challenge["challenge_token"],
         }
         return await self._make_request(
             endpoint=f"api/v2/commands/{job_id}/approval/telegram",

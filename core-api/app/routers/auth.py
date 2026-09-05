@@ -1,79 +1,50 @@
+"""Compatibility endpoints for the retired Telegram password flow."""
+
+import datetime as dt
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.db import User, get_db
-from app.models.schemas import LoginRequest, LoginResponse
-from app.routers.deps import verify_api_key
-from app.services.crypto import encrypt_token
-from app.services.intraservice import verify_credentials
+from app.database.db import TelegramLink, User, get_db
+from app.routers.deps import require_service_scope
+from app.services.identity import PrincipalContext, record_security_event
 
 router = APIRouter(
-    prefix="/auth", tags=["Authentication"], dependencies=[Depends(verify_api_key)]
+    prefix="/auth",
+    tags=["Authentication"],
+    dependencies=[Depends(require_service_scope("telegram:link"))],
 )
 
 
-@router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
-async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
-    """
-    Авторизация пользователя.
-    Проверяет данные в IntraService, затем сохраняет или
-    обновляет сессию пользователя в БД.
-    """
-    # 1. Проверяем учетные данные в IntraService API
-    auth_b64, user_id = await verify_credentials(payload.login, payload.password)
-
-    if not auth_b64 or not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверное имя пользователя или пароль в IntraService.",
-        )
-
-    encrypted_auth_b64 = encrypt_token(auth_b64)
-
-    # 2. Ищем пользователя в локальной БД
-    query = select(User).where(User.tg_user_id == payload.tg_user_id)
-    result = await db.execute(query)
-    db_user = result.scalar_one_or_none()
-
-    if db_user:
-        # Обновляем существующего пользователя
-        db_user.is_login = payload.login
-        db_user.is_password_b64 = encrypted_auth_b64
-        db_user.is_user_id = user_id
-    else:
-        # Создаем нового пользователя
-        db_user = User(
-            tg_user_id=payload.tg_user_id,
-            is_login=payload.login,
-            is_password_b64=encrypted_auth_b64,
-            is_user_id=user_id,
-        )
-        db.add(db_user)
-
-    await db.commit()
-
-    return LoginResponse(
-        status="success",
-        message="Авторизация успешно пройдена и сохранена.",
-        is_user_id=user_id,
+@router.post("/login", status_code=status.HTTP_410_GONE)
+async def retired_password_login():
+    raise HTTPException(
+        status.HTTP_410_GONE,
+        "Password login in Telegram was retired; use a one-time link code from the operator panel",
     )
 
 
 @router.delete("/logout", status_code=status.HTTP_200_OK)
-async def logout(tg_user_id: int, db: AsyncSession = Depends(get_db)):
-    """
-    Выход пользователя.
-    Удаляет учетные данные пользователя по его Telegram ID.
-    """
-    query = delete(User).where(User.tg_user_id == tg_user_id)
-    result = await db.execute(query)
+async def logout(
+    tg_user_id: int,
+    context: PrincipalContext = Depends(require_service_scope("telegram:link")),
+    db: AsyncSession = Depends(get_db),
+):
+    link = await db.get(TelegramLink, tg_user_id)
+    if link is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Telegram identity is not linked")
+    link.status = "revoked"
+    link.revoked_at = dt.datetime.now(dt.timezone.utc)
+    await db.execute(delete(User).where(User.tg_user_id == tg_user_id))
+    await record_security_event(
+        db,
+        event_type="telegram_link.revoked",
+        outcome="success",
+        context=context,
+        principal_id=link.principal_id,
+        resource_type="telegram_identity",
+        resource_id=str(tg_user_id),
+    )
     await db.commit()
-
-    if getattr(result, "rowcount", 0) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Пользователь с Telegram ID {tg_user_id} не найден.",
-        )
-
-    return {"status": "success", "message": "Сессия пользователя удалена."}
+    return {"status": "success", "message": "Telegram identity unlinked"}

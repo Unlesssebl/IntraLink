@@ -16,17 +16,17 @@ from app.database.db import (
     AsyncSessionLocal,
     CommandEvent,
     CommandRecord,
-    User,
     get_db,
 )
 from app.routers.deps import (
-    verify_admin_jwt,
-    verify_admin_or_api_key,
-    verify_api_key,
-    verify_command_worker,
+    require_permission,
+    require_object_permission,
+    require_service_scope,
     verify_trusted_origin,
 )
 from app.services.command_service import CommandService, serialize_command
+from app.services.identity import PrincipalContext, require_context_permission
+from app.services.identity import create_approval_challenge, consume_approval_challenge
 
 router = APIRouter(prefix="/api/v2/commands", tags=["Commands v2"])
 policy_router = APIRouter(prefix="/api/v2/action-policies", tags=["Action policies v2"])
@@ -46,6 +46,10 @@ class ApprovalRequest(BaseModel):
 
 
 class TelegramApprovalRequest(ApprovalRequest):
+    challenge_token: str = Field(min_length=20, max_length=200)
+
+
+class TelegramChallengeRequest(BaseModel):
     tg_user_id: int
 
 
@@ -71,13 +75,14 @@ class ReviewRequest(BaseModel):
 
 class PolicyRequest(BaseModel):
     mode: Literal["auto", "confirm", "disabled"]
+    reason: str = Field(min_length=3, max_length=1000)
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 async def create_command(
     payload: CreateCommandRequest,
     idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=8, max_length=128),
-    actor: str = Depends(verify_admin_or_api_key),
+    context: PrincipalContext = Depends(require_permission("command:create")),
     _origin: None = Depends(verify_trusted_origin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -86,7 +91,8 @@ async def create_command(
         target=payload.target,
         parameters=payload.parameters,
         idempotency_key=idempotency_key,
-        initiator=actor,
+        initiator=context.subject,
+        initiator_principal_id=context.principal_id,
         source=payload.source,
         priority=payload.priority,
     )
@@ -99,7 +105,7 @@ async def list_commands(
     action: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    _actor: str = Depends(verify_admin_or_api_key),
+    _context: PrincipalContext = Depends(require_permission("command:read")),
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(CommandRecord)
@@ -116,7 +122,7 @@ async def list_commands(
 @router.get("/{command_id}")
 async def get_command(
     command_id: uuid.UUID,
-    _actor: str = Depends(verify_admin_or_api_key),
+    _context: PrincipalContext = Depends(require_permission("command:read")),
     db: AsyncSession = Depends(get_db),
 ):
     return serialize_command(await CommandService(db).get(command_id))
@@ -126,12 +132,18 @@ async def get_command(
 async def approve_command(
     command_id: uuid.UUID,
     payload: ApprovalRequest,
-    actor: str = Depends(verify_admin_jwt),
+    context: PrincipalContext = Depends(require_object_permission("command:approve:dynamic")),
     _origin: None = Depends(verify_trusted_origin),
     db: AsyncSession = Depends(get_db),
 ):
     command = await CommandService(db).approve(
-        command_id, decision=payload.decision, reason=payload.reason, operator=actor
+        command_id,
+        decision=payload.decision,
+        reason=payload.reason,
+        operator=context.subject,
+        approver_principal_id=context.principal_id,
+        approver_roles=context.roles,
+        approver_permissions=context.permissions,
     )
     return serialize_command(command)
 
@@ -140,43 +152,73 @@ async def approve_command(
 async def approve_command_from_telegram(
     command_id: uuid.UUID,
     payload: TelegramApprovalRequest,
-    _bot: str = Depends(verify_api_key),
+    _service: PrincipalContext = Depends(require_service_scope("telegram:challenge:consume")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Accept an operator decision relayed by the trusted Telegram service."""
-    operator = await db.get(User, payload.tg_user_id)
-    if operator is None or not operator.is_login:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Telegram operator is not registered",
-        )
+    """Consume a short-lived, command-bound approval challenge."""
+    current = await CommandService(db).get(command_id)
+    approver = await consume_approval_challenge(
+        db,
+        command_id=command_id,
+        request_hash=current.request_hash,
+        token=payload.challenge_token,
+        decision=payload.decision,
+    )
     command = await CommandService(db).approve(
         command_id,
         decision=payload.decision,
         reason=payload.reason,
-        operator=f"telegram:{operator.is_login}:{payload.tg_user_id}",
+        operator=f"telegram:{approver.subject}",
+        approver_principal_id=approver.principal_id,
+        approver_roles=approver.roles,
+        approver_permissions=approver.permissions,
     )
     return serialize_command(command)
+
+
+@router.post("/{command_id}/approval/telegram/challenge")
+async def issue_telegram_approval_challenge(
+    command_id: uuid.UUID,
+    payload: TelegramChallengeRequest,
+    _service: PrincipalContext = Depends(require_service_scope("telegram:challenge:issue")),
+    db: AsyncSession = Depends(get_db),
+):
+    command = await CommandService(db).get(command_id)
+    if command.status != "awaiting_approval":
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Command is {command.status}")
+    challenge = await create_approval_challenge(
+        db,
+        command_id=command.id,
+        request_hash=command.request_hash,
+        tg_user_id=payload.tg_user_id,
+    )
+    return {"challenge_token": challenge, "expires_in": 600}
 
 
 @router.post("/{command_id}/cancel")
 async def cancel_command(
     command_id: uuid.UUID,
     reason: str = Query(..., min_length=3, max_length=500),
-    actor: str = Depends(verify_admin_jwt),
+    context: PrincipalContext = Depends(require_permission("command:cancel")),
     _origin: None = Depends(verify_trusted_origin),
     db: AsyncSession = Depends(get_db),
 ):
-    return serialize_command(await CommandService(db).cancel(command_id, reason=reason, actor=actor))
+    return serialize_command(
+        await CommandService(db).cancel(command_id, reason=reason, actor=context.subject)
+    )
 
 
 @router.post("/{command_id}/claim")
 async def claim_command(
     command_id: uuid.UUID,
     payload: ClaimRequest,
-    _actor: str = Depends(verify_command_worker),
+    context: PrincipalContext = Depends(require_object_permission("command:claim:executor")),
     db: AsyncSession = Depends(get_db),
 ):
+    command = await CommandService(db).get(command_id)
+    if context.principal_type != "service":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Service identity required")
+    require_context_permission(context, f"command:claim:{command.executor}")
     claim = await CommandService(db).claim(
         command_id,
         worker_id=payload.worker_id,
@@ -195,9 +237,13 @@ async def claim_command(
 async def finish_command(
     command_id: uuid.UUID,
     payload: FinishRequest,
-    _actor: str = Depends(verify_command_worker),
+    context: PrincipalContext = Depends(require_object_permission("command:finish:executor")),
     db: AsyncSession = Depends(get_db),
 ):
+    current = await CommandService(db).get(command_id)
+    if context.principal_type != "service":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Service identity required")
+    require_context_permission(context, f"command:finish:{current.executor}")
     command = await CommandService(db).finish(
         command_id,
         claim_token=payload.claim_token,
@@ -213,7 +259,7 @@ async def finish_command(
 async def resolve_command_review(
     command_id: uuid.UUID,
     payload: ReviewRequest,
-    actor: str = Depends(verify_admin_jwt),
+    context: PrincipalContext = Depends(require_permission("command:review")),
     _origin: None = Depends(verify_trusted_origin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -221,7 +267,7 @@ async def resolve_command_review(
         command_id,
         decision=payload.decision,
         reason=payload.reason,
-        actor=actor,
+        actor=context.subject,
     )
     return serialize_command(command)
 
@@ -230,7 +276,7 @@ async def resolve_command_review(
 async def stream_command_events(
     command_id: uuid.UUID,
     last_event_id: int | None = Header(None, alias="Last-Event-ID"),
-    _actor: str = Depends(verify_admin_or_api_key),
+    _context: PrincipalContext = Depends(require_permission("command:read")),
 ):
     async def generate():
         cursor = int(last_event_id or 0)
@@ -268,7 +314,7 @@ async def stream_command_events(
 
 @policy_router.get("")
 async def list_action_policies(
-    _actor: str = Depends(verify_admin_or_api_key),
+    _context: PrincipalContext = Depends(require_permission("command:read")),
     db: AsyncSession = Depends(get_db),
 ):
     records = list((await db.scalars(select(ActionPolicyRecord).order_by(ActionPolicyRecord.action))).all())
@@ -289,9 +335,12 @@ async def list_action_policies(
 async def update_action_policy(
     action: str,
     payload: PolicyRequest,
-    actor: str = Depends(verify_admin_jwt),
+    context: PrincipalContext = Depends(require_permission("policy:manage")),
     _origin: None = Depends(verify_trusted_origin),
     db: AsyncSession = Depends(get_db),
 ):
-    item = await CommandService(db).set_policy(action, mode=payload.mode, actor=actor)
+    item = await CommandService(db).set_policy(
+        action, mode=payload.mode, actor=context.subject, reason=payload.reason,
+        principal_id=context.principal_id,
+    )
     return {"action": item.action, "mode": item.mode, "updated_by": item.updated_by}

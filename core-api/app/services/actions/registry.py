@@ -27,6 +27,7 @@ class ActionDefinition(BaseModel):
         ...,
         description="Исполнитель действия: windows | backend",
     )
+    risk_level: int = Field(1, ge=0, le=3, description="Уровень риска R0-R3")
     implemented: bool = Field(
         True,
         description="Есть ли в выбранном исполнителе проверенная реализация действия",
@@ -63,6 +64,7 @@ class ActionRegistry:
                 default_mode=PolicyMode.CONFIRM,
                 target_type="host",
                 executor="windows",
+                risk_level=1,
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -85,6 +87,7 @@ class ActionRegistry:
                 default_mode=PolicyMode.CONFIRM,
                 target_type="user",
                 executor="windows",
+                risk_level=2,
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -105,6 +108,7 @@ class ActionRegistry:
                 default_mode=PolicyMode.AUTO,
                 target_type="host",
                 executor="windows",
+                risk_level=0,
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -125,6 +129,7 @@ class ActionRegistry:
                 default_mode=PolicyMode.CONFIRM,
                 target_type="user",
                 executor="windows",
+                risk_level=2,
                 implemented=False,
                 parameters_schema={
                     "type": "object",
@@ -149,6 +154,7 @@ class ActionRegistry:
                 default_mode=PolicyMode.CONFIRM,
                 target_type="user",
                 executor="windows",
+                risk_level=2,
                 implemented=False,
                 parameters_schema={
                     "type": "object",
@@ -171,6 +177,7 @@ class ActionRegistry:
                 default_mode=PolicyMode.CONFIRM,
                 target_type="ticket",
                 executor="backend",
+                risk_level=1,
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -194,6 +201,7 @@ class ActionRegistry:
                 default_mode=PolicyMode.AUTO,
                 target_type="system",
                 executor="backend",
+                risk_level=0,
                 parameters_schema={
                     "type": "object",
                     "properties": {

@@ -23,6 +23,7 @@ from app.database.db import (
     CommandInbox,
     CommandOutbox,
     CommandRecord,
+    SecurityEvent,
 )
 from app.services.actions.registry import PolicyMode, get_action_registry
 from app.services.actions.policy import AUTO_ELIGIBLE_ACTIONS
@@ -60,6 +61,9 @@ def serialize_command(command: CommandRecord) -> dict[str, Any]:
         "version": command.version,
         "priority": command.priority,
         "initiator": command.initiator,
+        "initiator_principal_id": (
+            str(command.initiator_principal_id) if command.initiator_principal_id else None
+        ),
         "source": command.source,
         "task_id": command.task_id,
         "result": command.result_json,
@@ -105,6 +109,7 @@ class CommandService:
         initiator: str,
         source: str,
         priority: int,
+        initiator_principal_id: uuid.UUID | None = None,
     ) -> tuple[CommandRecord, bool]:
         action_def = self.registry.get(action)
         if action_def is None:
@@ -147,6 +152,7 @@ class CommandService:
             status=command_status,
             priority=priority,
             initiator=initiator,
+            initiator_principal_id=initiator_principal_id,
             source=source,
             task_id=task_id,
         )
@@ -198,7 +204,15 @@ class CommandService:
         return command
 
     async def approve(
-        self, command_id: uuid.UUID, *, decision: str, reason: str | None, operator: str
+        self,
+        command_id: uuid.UUID,
+        *,
+        decision: str,
+        reason: str | None,
+        operator: str,
+        approver_principal_id: uuid.UUID | None = None,
+        approver_roles: frozenset[str] = frozenset(),
+        approver_permissions: frozenset[str] | None = None,
     ) -> CommandRecord:
         command = await self.get(command_id, for_update=True)
         if command.status != "awaiting_approval":
@@ -208,12 +222,40 @@ class CommandService:
         if decision == "reject" and not (reason or "").strip():
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Reason is required for rejection")
 
+        action_def = self.registry.get(command.action)
+        risk_level = action_def.risk_level if action_def else 3
+        required_permission = f"command:approve:r{max(1, risk_level)}"
+        if approver_permissions is not None and (
+            required_permission not in approver_permissions and "*" not in approver_permissions
+        ):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"Missing permission: {required_permission}")
+        if (
+            risk_level >= 2
+            and approver_principal_id is not None
+            and command.initiator_principal_id == approver_principal_id
+            and "system_admin" not in approver_roles
+        ):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "R2 command must be approved by another operator or a system administrator",
+            )
+
         self.db.add(CommandApproval(
             command_id=command.id,
             decision=decision,
             reason=reason,
             operator=operator,
+            approver_principal_id=approver_principal_id,
             request_hash=command.request_hash,
+        ))
+        self.db.add(SecurityEvent(
+            event_type="command.approval",
+            outcome=decision,
+            principal_id=approver_principal_id,
+            auth_method="command_api",
+            resource_type="command",
+            resource_id=str(command.id),
+            details_json={"action": command.action, "risk_level": risk_level},
         ))
         command.version += 1
         command.status = "queued" if decision == "approve" else "rejected"
@@ -396,7 +438,15 @@ class CommandService:
         await self.db.refresh(command)
         return command
 
-    async def set_policy(self, action: str, *, mode: str, actor: str) -> ActionPolicyRecord:
+    async def set_policy(
+        self,
+        action: str,
+        *,
+        mode: str,
+        actor: str,
+        reason: str | None = None,
+        principal_id: uuid.UUID | None = None,
+    ) -> ActionPolicyRecord:
         action_def = self.registry.get(action)
         if action_def is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown action")
@@ -416,6 +466,15 @@ class CommandService:
         else:
             record.mode = policy_mode.value
             record.updated_by = actor
+        self.db.add(SecurityEvent(
+            event_type="policy.changed",
+            outcome="success",
+            principal_id=principal_id,
+            auth_method="command_api",
+            resource_type="action_policy",
+            resource_id=action,
+            details_json={"mode": policy_mode.value, "reason": reason},
+        ))
         await self.db.commit()
         await self.db.refresh(record)
         return record
