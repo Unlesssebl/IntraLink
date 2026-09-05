@@ -5,13 +5,14 @@
 
 import logging
 import os
+import uuid
 from typing import Any
 import aiohttp
 
 logger = logging.getLogger("helpdesk_agent.core_client")
 
 CORE_API_URL = os.getenv("CORE_API_URL", "http://127.0.0.1:8000").rstrip("/")
-BOT_API_KEY = os.getenv("BOT_API_KEY", "dev_bot_api_key_tempo_2026")
+BOT_API_KEY = os.getenv("BOT_API_KEY", "")
 
 
 class CoreApiClient:
@@ -262,21 +263,24 @@ class CoreApiClient:
     ) -> dict[str, Any]:
         """Отправляет команду в единую шину Command Bus."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/commands"
+        url = f"{self.base_url}/api/v2/commands"
+        request_key = idempotency_key or str(uuid.uuid4())
         payload = {
-            "type": command_type,
+            "action": command_type,
             "target": target or {},
-            "params": params or {},
-            "mode": mode,
+            "parameters": params or {},
             "priority": priority,
-            "idempotency_key": idempotency_key,
-            "initiator": initiator,
             "source": source,
-            "auto_close_ticket": auto_close_ticket,
         }
-        async with session.post(url, json=payload) as resp:
+        async with session.post(url, json=payload, headers={"Idempotency-Key": request_key}) as resp:
             if resp.status in (200, 202):
-                return await resp.json()
+                data = await resp.json()
+                return {
+                    **data,
+                    "job_id": data.get("command_id"),
+                    "current_status": data.get("status"),
+                    "status": "accepted",
+                }
             err_text = await resp.text()
             logger.error("Ошибка submit_command (HTTP %d): %s", resp.status, err_text)
             return {"status": "error", "error": err_text}
@@ -284,10 +288,14 @@ class CoreApiClient:
     async def get_command_status(self, job_id: str) -> dict[str, Any] | None:
         """Получает статус выполнения команды по job_id."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/commands/{job_id}"
+        url = f"{self.base_url}/api/v2/commands/{job_id}"
         async with session.get(url) as resp:
             if resp.status == 200:
-                return await resp.json()
+                data = await resp.json()
+                if data.get("status") == "succeeded":
+                    data["status"] = "success"
+                data["job_id"] = data.get("command_id")
+                return data
             return None
 
     async def confirm_command(
@@ -299,8 +307,8 @@ class CoreApiClient:
     ) -> dict[str, Any]:
         """Отправляет решение оператора (HITL) по ожидающей задаче."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/commands/{job_id}/confirm"
-        payload = {"decision": decision, "reason": reason, "operator": operator}
+        url = f"{self.base_url}/api/v2/commands/{job_id}/approval"
+        payload = {"decision": decision, "reason": reason}
         async with session.post(url, json=payload) as resp:
             if resp.status == 200:
                 return await resp.json()
@@ -317,12 +325,12 @@ class CoreApiClient:
     ) -> dict[str, Any]:
         """Получает историю выполнения команд из audit log."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/commands"
+        url = f"{self.base_url}/api/v2/commands"
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if status_filter:
             params["status"] = status_filter
         if command_type:
-            params["command_type"] = command_type
+            params["action"] = command_type
         if initiator:
             params["initiator"] = initiator
         if task_id:

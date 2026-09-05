@@ -11,7 +11,8 @@ import aiohttp
 logger = logging.getLogger("execution_worker.core_client")
 
 CORE_API_URL = os.getenv("CORE_API_URL", "http://127.0.0.1:8000").rstrip("/")
-BOT_API_KEY = os.getenv("BOT_API_KEY", "dev_bot_api_key_tempo_2026")
+BOT_API_KEY = os.getenv("BOT_API_KEY", "")
+WORKER_API_KEY = os.getenv("WORKER_API_KEY", "")
 
 
 class CoreApiClient:
@@ -23,6 +24,8 @@ class CoreApiClient:
     ):
         self.base_url = (base_url or CORE_API_URL).rstrip("/")
         self.api_key = api_key or BOT_API_KEY
+        if not self.api_key:
+            raise RuntimeError("BOT_API_KEY is required for the execution worker")
         self.timeout = aiohttp.ClientTimeout(total=timeout_sec)
         self._session: aiohttp.ClientSession | None = None
 
@@ -30,6 +33,7 @@ class CoreApiClient:
         if self._session is None or self._session.closed:
             headers = {
                 "X-Bot-Api-Key": self.api_key,
+                "X-Worker-Api-Key": WORKER_API_KEY or self.api_key,
                 "Content-Type": "application/json",
             }
             connector = aiohttp.TCPConnector(
@@ -110,4 +114,59 @@ class CoreApiClient:
                 return resp.status == 200
         except Exception as e:
             logger.debug("Сбой отправки результата команды %s: %s", job_id, e)
+            return False
+
+    async def claim_command_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        message_id: str,
+        outbox_id: str | None = None,
+        lease_seconds: int = 300,
+    ) -> tuple[int, dict[str, Any] | None]:
+        """Atomically lease a queued v2 command from the authoritative API."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/claim"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "message_id": message_id,
+                    "outbox_id": outbox_id,
+                    "lease_seconds": lease_seconds,
+                },
+            ) as resp:
+                data = await resp.json() if resp.content_type == "application/json" else None
+                return resp.status, data
+        except Exception as e:
+            logger.debug("Сбой lease команды %s: %s", command_id, e)
+            return 0, None
+
+    async def finish_command_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        claim_token: str,
+        outcome: str,
+        result: dict[str, Any] | None = None,
+        error_message: str | None = None,
+    ) -> bool:
+        """Persist a v2 result before the Redis message is acknowledged."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/finish"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "claim_token": claim_token,
+                    "outcome": outcome,
+                    "result": result or {},
+                    "error_message": error_message,
+                },
+            ) as resp:
+                return resp.status == 200
+        except Exception as e:
+            logger.debug("Сбой фиксации результата команды %s: %s", command_id, e)
             return False

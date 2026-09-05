@@ -26,6 +26,7 @@ logger = logging.getLogger("execution_worker")
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 STREAM_EXECUTION_QUEUE = "stream:execution_queue"
+STREAM_EXECUTION_QUEUE_V2 = "stream:execution_commands:v2"
 STREAM_GROUP_NAME = "execution_group"
 CONSUMER_NAME = f"windows_node_{os.getenv('COMPUTERNAME', 'host')}"
 
@@ -75,18 +76,16 @@ class WindowsExecutionWorker:
         self._running = True
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
-        # Создание Consumer Group, если еще не создана
-        try:
-            await self.redis.xgroup_create(
-                STREAM_EXECUTION_QUEUE,
-                STREAM_GROUP_NAME,
-                id="0",
-                mkstream=True,
-            )
-            logger.info("Создана Consumer Group '%s'", STREAM_GROUP_NAME)
-        except Exception as e:
-            if "BUSYGROUP" not in str(e):
-                logger.debug("xgroup_create info: %s", e)
+        # Отдельная consumer group создаётся для каждого stream.
+        for stream in (STREAM_EXECUTION_QUEUE, STREAM_EXECUTION_QUEUE_V2):
+            try:
+                await self.redis.xgroup_create(
+                    stream, STREAM_GROUP_NAME, id="0", mkstream=True
+                )
+                logger.info("Создана Consumer Group '%s' для %s", STREAM_GROUP_NAME, stream)
+            except Exception as e:
+                if "BUSYGROUP" not in str(e):
+                    logger.debug("xgroup_create info: %s", e)
 
         print(
             f"🚀 [Windows Execution Worker] Запущен. Ожидание задач из Redis Streams ({STREAM_EXECUTION_QUEUE})..."
@@ -101,17 +100,23 @@ class WindowsExecutionWorker:
                 events = await self.redis.xreadgroup(
                     groupname=STREAM_GROUP_NAME,
                     consumername=CONSUMER_NAME,
-                    streams={STREAM_EXECUTION_QUEUE: ">"},
+                    streams={
+                        STREAM_EXECUTION_QUEUE: ">",
+                        STREAM_EXECUTION_QUEUE_V2: ">",
+                    },
                     count=5,
                     block=3000,
                 )
 
                 if not events:
+                    await self._recover_stale_messages()
                     continue
 
                 for stream_name, messages in events:
                     for msg_id, data in messages:
-                        asyncio.create_task(self._process_job_safe(msg_id, data))
+                        asyncio.create_task(
+                            self._process_job_safe(stream_name, msg_id, data)
+                        )
 
             except asyncio.CancelledError:
                 break
@@ -119,11 +124,36 @@ class WindowsExecutionWorker:
                 logger.error("Ошибка в цикле execution_worker: %s", e)
                 await asyncio.sleep(2.0)
 
-    async def _process_job_safe(self, msg_id: str, data: dict[str, Any]) -> None:
+    async def _recover_stale_messages(self) -> None:
+        """Claim messages abandoned by a dead consumer."""
+        if not self.redis:
+            return
+        for stream in (STREAM_EXECUTION_QUEUE, STREAM_EXECUTION_QUEUE_V2):
+            try:
+                result = await self.redis.xautoclaim(
+                    stream,
+                    STREAM_GROUP_NAME,
+                    CONSUMER_NAME,
+                    min_idle_time=120_000,
+                    start_id="0-0",
+                    count=10,
+                )
+                messages = result[1] if result and len(result) > 1 else []
+                for msg_id, data in messages:
+                    asyncio.create_task(
+                        self._process_job_safe(stream, msg_id, data)
+                    )
+            except Exception as exc:
+                logger.debug("XAUTOCLAIM %s failed: %s", stream, exc)
+
+    async def _process_job_safe(
+        self, stream_name: str, msg_id: str, data: dict[str, Any]
+    ) -> None:
         """Безопасная конкурентная обработка задачи с подтверждением доставки XACK и записью в DLQ при сбое."""
         async with self._concurrency_sem:
+            should_ack = False
             try:
-                await self._process_job(msg_id, data)
+                should_ack = await self._process_job(stream_name, msg_id, data)
             except Exception as e:
                 logger.error("Критический сбой обработки задачи msg_id=%s: %s", msg_id, e)
                 # Dead-Letter Queue (DLQ): сохранение сбойной задачи для аудита
@@ -138,16 +168,14 @@ class WindowsExecutionWorker:
                         }
                         await self.redis.xadd("stream:execution_failed", dlq_payload, maxlen=5000)
                         logger.info("Задача %s отправлена в Dead-Letter Queue (stream:execution_failed)", msg_id)
+                        should_ack = True
                     except Exception as dlq_err:
                         logger.debug("Ошибка записи в DLQ stream: %s", dlq_err)
-            finally:
-                if self.redis:
-                    try:
-                        await self.redis.xack(
-                            STREAM_EXECUTION_QUEUE, STREAM_GROUP_NAME, msg_id
-                        )
-                    except Exception as e:
-                        logger.debug("Ошибка XACK для %s: %s", msg_id, e)
+            if should_ack and self.redis:
+                try:
+                    await self.redis.xack(stream_name, STREAM_GROUP_NAME, msg_id)
+                except Exception as e:
+                    logger.debug("Ошибка XACK для %s: %s", msg_id, e)
 
     async def stop(self) -> None:
         self._running = False
@@ -251,7 +279,39 @@ class WindowsExecutionWorker:
         )
         return False
 
-    async def _process_job(self, msg_id: str, data: dict[str, Any]) -> None:
+    async def _process_job(
+        self, stream_name: str, msg_id: str, data: dict[str, Any]
+    ) -> bool:
+        is_v2 = stream_name == STREAM_EXECUTION_QUEUE_V2
+        claim_token: str | None = None
+        if is_v2:
+            command_id = str(data.get("command_id") or "")
+            if not command_id:
+                return True
+            claim_status, claim = await self.api_client.claim_command_v2(
+                command_id,
+                CONSUMER_NAME,
+                msg_id,
+                str(data.get("outbox_id") or "") or None,
+            )
+            # Duplicate outbox delivery for a command already claimed or completed.
+            if claim_status == 409:
+                return True
+            if claim_status != 200 or not claim:
+                return False
+            claim_token = str(claim["claim_token"])
+            merged_params = dict(claim.get("target") or {})
+            merged_params.update(claim.get("parameters") or {})
+            data = {
+                **data,
+                "job_id": command_id,
+                "action": claim.get("action", ""),
+                "task_id": str(claim.get("task_id") or 0),
+                "payload": json.dumps(merged_params, ensure_ascii=False),
+                "mode": "auto",
+                "auto_close": "false",
+            }
+
         job_id = data.get("job_id", "unknown")
         action = data.get("action", "")
         task_id_str = data.get("task_id", "0")
@@ -283,8 +343,26 @@ class WindowsExecutionWorker:
         close_ticket_payload: dict[str, Any] | None = None
 
         try:
+            if action == "diagnose_host":
+                host = str(params.get("host") or params.get("pc_name") or "").strip()
+                if not host:
+                    result_message = "Не указан обязательный параметр host."
+                else:
+                    await self._publish_event(
+                        job_id,
+                        "progress",
+                        {"phase": "diagnostics", "pct": 30, "detail": f"Диагностика {host}"},
+                    )
+                    diagnostics = await run_host_diagnostics(host, use_cache=False)
+                    result_status = "success"
+                    result_message = (
+                        f"Диагностика {host} завершена: "
+                        f"{'хост доступен' if diagnostics.get('is_online') else 'хост недоступен'}"
+                    )
+                    result_payload = {"diagnostics": diagnostics}
+
             # 1. Выдача доступа Wi-Fi в AD (WLAN-WORKNET)
-            if action in ("grant_wlan", "wifi"):
+            elif action in ("grant_wlan", "wifi"):
                 await self._publish_event(
                     job_id,
                     "progress",
@@ -457,15 +535,26 @@ class WindowsExecutionWorker:
                         json.dumps(final_data, ensure_ascii=False),
                         ex=3600 * 24 * 7,
                     )
-                await self.redis.xack(
-                    STREAM_EXECUTION_QUEUE, STREAM_GROUP_NAME, msg_id
-                )
-
             # Публикуем событие завершения
             await self._publish_event(job_id, result_status, final_data)
             print(
                 f"🏁 [Job Completed] ID: {job_id} | Статус: {result_status.upper()} | {result_message}\n"
             )
+
+            if is_v2 and claim_token:
+                outcome = "succeeded" if result_status == "success" else "failed"
+                persisted = await self.api_client.finish_command_v2(
+                    job_id,
+                    CONSUMER_NAME,
+                    claim_token,
+                    outcome,
+                    result=final_data,
+                    error_message=None if outcome == "succeeded" else result_message,
+                )
+                if not persisted:
+                    logger.error("Результат v2 команды %s не сохранён; XACK запрещён", job_id)
+                    return False
+            return True
 
 
 async def main():

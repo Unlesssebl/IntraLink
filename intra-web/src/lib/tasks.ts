@@ -586,16 +586,17 @@ export async function enqueueExecution(payload: {
   params?: Record<string, any>;
   auto_close_ticket?: boolean;
 }): Promise<{ status: string; job_id: string; action: string; task_id?: number }> {
-  return apiFetch('/api/v1/commands', {
+  const result = await apiFetch<any>('/api/v2/commands', {
     method: 'POST',
+    headers: { 'Idempotency-Key': crypto.randomUUID() },
     body: JSON.stringify({
-      type: payload.action,
+      action: payload.action,
       target: { task_id: payload.task_id },
-      params: payload.params || {},
-      auto_close_ticket: payload.auto_close_ticket ?? true,
+      parameters: payload.params || {},
       source: 'web',
     }),
   });
+  return { ...result, job_id: result.command_id };
 }
 
 export async function submitCommand(payload: {
@@ -609,21 +610,18 @@ export async function submitCommand(payload: {
   suggestion_task_id?: number;
   suggestion_fingerprint?: string;
 }): Promise<{ status: string; job_id: string; command_type: string; task_id?: number }> {
-  return apiFetch('/api/v1/commands', {
+  const result = await apiFetch<any>('/api/v2/commands', {
     method: 'POST',
+    headers: { 'Idempotency-Key': payload.idempotency_key || crypto.randomUUID() },
     body: JSON.stringify({
-      type: payload.type,
+      action: payload.type,
       target: payload.target || {},
-      params: payload.params || {},
-      mode: payload.mode || 'auto',
+      parameters: payload.params || {},
       priority: payload.priority || 5,
-      idempotency_key: payload.idempotency_key,
-      auto_close_ticket: payload.auto_close_ticket ?? true,
-      suggestion_task_id: payload.suggestion_task_id,
-      suggestion_fingerprint: payload.suggestion_fingerprint,
       source: 'web',
     }),
   });
+  return { ...result, job_id: result.command_id, command_type: result.action };
 }
 
 export async function confirmExecutionJob(
@@ -631,7 +629,7 @@ export async function confirmExecutionJob(
   decision: 'approve' | 'reject',
   reason?: string,
 ): Promise<{ status: string; job_id: string; decision: string }> {
-  return apiFetch(`/api/v1/commands/${jobId}/confirm`, {
+  return apiFetch(`/api/v2/commands/${jobId}/approval`, {
     method: 'POST',
     body: JSON.stringify({ decision, reason }),
   });
@@ -643,11 +641,12 @@ export async function getExecutionJobStatus(jobId: string): Promise<{
   action?: string;
   command_type?: string;
   task_id?: number;
-  status: 'queued' | 'running' | 'confirm_required' | 'success' | 'failed' | 'cancelled';
+  status: 'awaiting_approval' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'needs_review';
   error_message?: string;
   result?: any;
 }> {
-  return apiFetch(`/api/v1/commands/${jobId}`);
+  const result = await apiFetch<any>(`/api/v2/commands/${jobId}`);
+  return { ...result, job_id: result.command_id, command_type: result.action };
 }
 
 
@@ -659,14 +658,14 @@ export async function pollExecutionJob(
   job_id: string;
   action: string;
   task_id: number;
-  status: 'success' | 'failed';
+  status: 'succeeded' | 'failed';
   error_message?: string;
   result?: any;
 }> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     const job = await getExecutionJobStatus(jobId);
-    if (job.status === 'success') {
+    if (job.status === 'succeeded') {
       return job as any;
     }
     if (job.status === 'failed' || job.status === 'cancelled') {

@@ -90,12 +90,12 @@ timeline
    - Восстановлена база знаний принтеров `shared/printers_knowledge_base.json` и типизированный модуль `shared/printers.py` (SSOT).
    - Внедрен стандарт `BaseActionExecutor`: цикл `Preflight ➔ Execute ➔ Verify`, распределенная блокировка хоста `lock:host:<pc_name>` (TTL 30s) и динамический WMI Bootstrap WinRM.
    - `PrinterExecutor` унаследован от `BaseActionExecutor` с установкой принтеров через PowerShell и контролем через `Get-Printer`.
-   - Telegram-бот (`printer_approvals.py`) и клиент API переведены на вызовы Command Bus (`/api/v1/commands/submit` и `/api/v1/commands/{job_id}/confirm`).
+   - Telegram-бот (`printer_approvals.py`) и клиент API используют durable Command API v2; подтверждение связывается с существующей командой и зарегистрированным оператором.
 5. **✅ Декларативный реестр навыков и Dynamic Policy Engine (Внедрено):**
    - Реестр `ActionRegistry` с декларацией схем параметров и типов целей: `install_printer`, `grant_wlan`, `diagnose_host`, `create_user`, `reset_password`, `apply_triage`, `rag_sync`.
-   - Движок `PolicyEngine` с поддержкой режимов `auto`, `confirm` (HitL) и мгновенного Killswitch (`disabled`) с хранением оверрайдов в Redis.
+   - Движок `PolicyEngine` с поддержкой режимов `auto`, `confirm` (HitL) и мгновенного Killswitch (`disabled`) с хранением оверрайдов в PostgreSQL.
    - REST API управления политиками в роутере `skills_admin.py` (`GET /api/v1/skills`, `PATCH /api/v1/skills/{id}/policy`).
-   - Защита Killswitch и проверка политик встроена в шлюз команд `POST /api/v1/commands/submit`.
+   - Защита Killswitch и проверка политик встроена в транзакционный шлюз `POST /api/v2/commands`.
 6. **✅ Шлюз инструментов FastMCP для AI-агента (`intralink-mcp`) (Внедрено):**
    - Реализован MCP-сервер инструментов по спецификации Model Context Protocol (JSON-RPC 2.0 stdio): `triage_batch`, `get_ticket_details`, `apply_triage_decision`, `diagnose_host`, `search_kb`, `submit_action_command`, `list_skills`.
    - Сервер покрыт тестами `test_mcp_server.py` и документирован в `intralink-mcp/README.md`.
@@ -112,7 +112,7 @@ timeline
 2. **Distributed Host Concurrency Lock (`lock:host:<pc_name>`):**
    - Защитить выполнение любых задач мьютексом в Redis (TTL 30s) с токеном владельца и Lua-скриптом — предотвращение коллизий WinRM/CIM сессий и сбоев `0x80338029`.
 3. **Единый омниканальный контур HitL (Unified Approval Inbox):**
-   - Запрос подтверждения деструктивного действия публикуется в `job:{id}:confirm` и рассылается параллельно в Web UI (Live Modal), Telegram-бот и MCP-клиент. Первый ответивший атомарно разблокирует выполнение.
+   - Запрос подтверждения хранится в PostgreSQL и показывается в Web UI, Telegram и MCP-клиенте. Первый допустимый ответ атомарно переводит команду в очередь исполнения.
 4. **Сетевая топология (Linux Docker vs Windows Runner):**
    - Изоляция окружений: Core API и базы живут в Docker, а `execution-worker` запущен строго на Windows-хосте домена `corporate.loc`. Общение только через Redis Streams без прямых файловых шарингов.
 5. **Универсальный One-Liner Fallback (`self_service.py`):**

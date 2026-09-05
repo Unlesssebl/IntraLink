@@ -4,7 +4,7 @@
 
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from app.config import settings
 from app.services.lifecycle.orchestrator import AutonomousTicketOrchestrator, get_ticket_orchestrator
@@ -116,11 +116,11 @@ async def test_orchestrator_processes_open_task_ready_for_execution(mock_redis):
          patch("app.services.lifecycle.orchestrator.get_tasks", new_callable=AsyncMock) as mock_get_tasks, \
          patch("app.services.lifecycle.orchestrator.update_task_status", new_callable=AsyncMock) as mock_update_status, \
          patch("app.services.lifecycle.orchestrator.add_task_comment", new_callable=AsyncMock) as mock_add_comment, \
-         patch("app.services.lifecycle.orchestrator.AsyncSessionLocal") as mock_db_ctx:
-
-        mock_db = AsyncMock()
-        mock_db.add = MagicMock()
-        mock_db_ctx.return_value.__aenter__.return_value = mock_db
+         patch.object(
+             orchestrator,
+             "_dispatch_execution_command",
+             new=AsyncMock(return_value="11111111-1111-1111-1111-111111111111"),
+         ):
 
         mock_get_tasks.return_value = {"Tasks": [task_31_ready]}
         mock_update_status.return_value = True

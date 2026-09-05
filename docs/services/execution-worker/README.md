@@ -7,11 +7,11 @@
 ## 📌 Зона ответственности
 
 * **Отвечает за:**
-  * Обработку очереди задач на исполнение из Redis Streams (`stream:execution_queue`) через Consumer Group (`execution_group`).
+  * Обработку очереди задач на исполнение из Redis Streams (`stream:execution_commands:v2`) через Consumer Group (`execution_group_v2`).
   * Прямое взаимодействие с инфраструктурой Windows (Active Directory, PowerShell, WinRM, WMI, SMB).
   * Выдачу сетевых доступов (группа `WLAN-WORKNET`), создание пользователей в AD.
   * Удаленную установку и диагностику принтеров через WinRM/CIM.
-  * Режим Human-in-the-Loop (`confirm`) с блокирующим ожиданием решения оператора.
+  * Исполнение только уже подтверждённых Core API команд; ожидание оператора не занимает слот Windows worker.
   * Отправку регулярного Heartbeat в Redis (`worker:health:win_daemon`).
   * Фиксацию сбойных задач в Dead-Letter Queue (DLQ, `stream:execution_failed`).
 
@@ -26,11 +26,10 @@
 
 | Канал / Протокол | Назначение | Контракт |
 |---|---|---|
-| **Redis Stream:** `stream:execution_queue` | Входная очередь задач от Core API | JSON-пейлоад: `{job_id, action, task_id, mode, payload}` |
+| **Redis Stream:** `stream:execution_commands:v2` | Транспорт подтверждённых команд из PostgreSQL Outbox | `{outbox_id, command_id, payload}` |
 | **Redis Stream:** `stream:execution_failed` | DLQ для аудита сбойных задач | JSON-пейлоад с ошибкой и трассировкой |
-| **Redis Key:** `job:{id}:confirm` | Канал HITL-решений оператора | `brpop` решения: `approve` / `reject` |
 | **Redis Key:** `worker:health:win_daemon` | Метка доступности демона (Heartbeat) | Значение `online` (TTL 25s) |
-| **HTTP REST:** `http://core-api:8000/api/v1` | Запросы данных и закрытие тикетов | Заголовок `X-Bot-Api-Key` |
+| **HTTP REST:** `/api/v2/commands/{id}/claim`, `/finish` | Lease и фиксация результата до `XACK` | Заголовок `X-Worker-Api-Key` |
 | **Active Directory / WinRM** | Корпоративный домен | PowerShell cmdlets, CIM over WinRM:5985 |
 
 ---
@@ -42,7 +41,7 @@
 2. **Fail-Fast TCP Probe:**
    Перед тяжелыми вызовами WinRM/WMI сервис выполняет быструю TCP-проверку порта 5985 (таймаут 1.5 сек) для моментального отсечения недоступных хостов.
 3. **Гарантированное подтверждение (At-Least-Once):**
-   Каждая задача подтверждается через `XACK` только после завершения обработки либо после гарантированной записи в DLQ.
+   Каждая задача подтверждается через `XACK` только после фиксации результата в PostgreSQL либо после гарантированной записи в DLQ.
 
 ---
 
@@ -58,6 +57,7 @@
 $env:REDIS_URL = "redis://127.0.0.1:6379/0"
 $env:CORE_API_URL = "http://127.0.0.1:8000/api/v1"
 $env:BOT_API_KEY = "<secret-api-key>"
+$env:WORKER_API_KEY = "<separate-worker-key>"
 
 # Запуск демона
 uv run python execution-worker/worker.py

@@ -49,6 +49,7 @@ flowchart TB
 
     subgraph Core_Layer ["Core API Gateway & Poller (SSOT)"]
         API_Main["⚡ FastAPI Gateway Hub"]:::coreStyle
+        Command_Worker["📨 Command Outbox Worker"]:::coreStyle
         Poller_Daemon["👑 Poller Daemon (Leader Lock)"]:::coreStyle
         Rule_Engine["⚙️ Rule Engine & SSOT Templates"]:::coreStyle
         AI_Hub["🛡️ AI Hub & DLP Sanitizer"]:::coreStyle
@@ -93,11 +94,13 @@ flowchart TB
     API_Main <--> Postgres_DB
     AI_Hub -->|RED Zone| Ollama_Local
     API_Main -->|Host Locks / Dead Man's Switch| Redis_Broker
-    API_Main -->|stream:execution_queue| Redis_Broker
+    API_Main -->|Transactional Outbox| Postgres_DB
+    Command_Worker <--> Postgres_DB
+    Command_Worker -->|stream:execution_commands:v2| Redis_Broker
 
     %% Очереди исполнения и доставки
     Redis_Broker -->|stream:intraservice_events (XAUTOCLAIM)| TG_Bot
-    Redis_Broker -->|stream:execution_queue| Win_Worker
+    Redis_Broker -->|stream:execution_commands:v2| Win_Worker
     Win_Worker --> AD_Exec & Prn_Exec
     AD_Exec & Prn_Exec --> AD_Domain
     Win_Worker -->|HTTP REST / Complete| API_Main
@@ -278,9 +281,9 @@ flowchart TD
 - **Контекст подключения принтеров:** подключение выполняется от имени доменного сервисного аккаунта (UPN `svc_intralink@corporate.loc`), но принтер регистрируется на системном уровне (**Machine-Wide / All Users**). Пользователям не требуются локальные права администратора.
 
 ### 7.3. Омниканальный контур подтверждений (Unified HitL Inbox)
-- Действия в режиме `Requires HitL` публикуются в единую шину `job:{id}:confirm`.
-- Запрос параллельно отображается в Web UI (Live Modal), в Telegram-боте дежурного и в MCP-интерфейсе агента.
-- Решение фиксируется атомарно (кто первый подтвердил — тот разблокировал выполнение).
+- Действия в режиме `Requires HitL` сохраняются в PostgreSQL со статусом `awaiting_approval`; до решения Outbox-сообщение не создаётся.
+- Web UI отправляет решение с admin JWT. Telegram использует сервисный ключ бота и ID зарегистрированного оператора.
+- Первое решение атомарно фиксируется в `command_approvals` и переводит команду в `queued` либо `rejected`; последующие ответы получают конфликт состояния.
 
 ---
 

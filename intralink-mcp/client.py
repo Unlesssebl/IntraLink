@@ -4,13 +4,14 @@ HTTP-клиент шлюза Core API Gateway для MCP сервера IntraLin
 
 import os
 import logging
+import uuid
 from typing import Any
 import httpx
 
 logger = logging.getLogger("intralink_mcp.client")
 
 CORE_API_URL = os.getenv("CORE_API_URL", "http://127.0.0.1:8000").rstrip("/")
-BOT_API_KEY = os.getenv("BOT_API_KEY", "default-dev-bot-key")
+BOT_API_KEY = os.getenv("BOT_API_KEY", "")
 
 
 class CoreApiClient:
@@ -83,9 +84,9 @@ class CoreApiClient:
             return resp.json()
 
     async def search_kb(
-        self, query: str, limit: int = 3, threshold: float = 0.70
+        self, query: str, limit: int = 3, profile: str = "balanced"
     ) -> dict[str, Any]:
-        payload = {"query": query, "limit": limit, "threshold": threshold}
+        payload = {"query": query, "limit": limit, "profile": profile}
         async with httpx.AsyncClient(base_url=self.base_url, timeout=20.0) as client:
             resp = await client.post("/api/v1/triage/rag/search", headers=self.headers, json=payload)
             resp.raise_for_status()
@@ -99,17 +100,17 @@ class CoreApiClient:
         mode: str = "auto",
     ) -> dict[str, Any]:
         payload = {
-            "type": action_type,
+            "action": action_type,
             "target": target,
-            "params": params or {},
-            "mode": mode,
+            "parameters": params or {},
             "source": "mcp",
-            "initiator": "antigravity_agent",
         }
+        headers = {**self.headers, "Idempotency-Key": str(uuid.uuid4())}
         async with httpx.AsyncClient(base_url=self.base_url, timeout=30.0) as client:
-            resp = await client.post("/api/v1/commands/submit", headers=self.headers, json=payload)
+            resp = await client.post("/api/v2/commands", headers=headers, json=payload)
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            return {**data, "job_id": data.get("command_id")}
 
     async def list_skills(self) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(base_url=self.base_url, timeout=15.0) as client:

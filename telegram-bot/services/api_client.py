@@ -1,5 +1,6 @@
 import aiohttp
 import logging
+import uuid
 from typing import Optional, Dict, Any, List
 from config import CORE_API_URL, BOT_API_KEY
 
@@ -27,6 +28,7 @@ class CoreAPIClient:
         method: str = "GET",
         params: Optional[Dict[str, Any]] = None,
         json_data: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Optional[Any]:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
 
@@ -36,12 +38,12 @@ class CoreAPIClient:
             async with session.request(
                 method=method,
                 url=url,
-                headers=self.headers,
+                headers={**self.headers, **(headers or {})},
                 params=params,
                 json=json_data,
                 timeout=aiohttp.ClientTimeout(total=20),
             ) as response:
-                if response.status in (200, 201):
+                if response.status in (200, 201, 202):
                     return await response.json()
                 elif response.status == 404:
                     logger.warning(
@@ -123,15 +125,16 @@ class CoreAPIClient:
     ) -> Optional[Dict[str, Any]]:
         """Отправляет команду на исполнение через Command Bus Core API."""
         payload = {
-            "type": command_type,
+            "action": command_type,
             "target": target,
-            "params": params or {},
-            "mode": mode,
-            "initiator": initiator,
+            "parameters": params or {},
             "source": source,
         }
         return await self._make_request(
-            endpoint="api/v1/commands/submit", method="POST", json_data=payload
+            endpoint="api/v2/commands",
+            method="POST",
+            json_data=payload,
+            headers={"Idempotency-Key": str(uuid.uuid4())},
         )
 
     async def confirm_command(
@@ -140,15 +143,18 @@ class CoreAPIClient:
         decision: str,
         reason: str = "",
         operator: str = "telegram_bot",
+        tg_user_id: int | None = None,
     ) -> Optional[Dict[str, Any]]:
         """Отправляет решение оператора (HitL) для ожидающей команды."""
         payload = {
             "decision": decision,
             "reason": reason,
-            "operator": operator,
+            "tg_user_id": tg_user_id,
         }
         return await self._make_request(
-            endpoint=f"api/v1/commands/{job_id}/confirm", method="POST", json_data=payload
+            endpoint=f"api/v2/commands/{job_id}/approval/telegram",
+            method="POST",
+            json_data=payload,
         )
 
 

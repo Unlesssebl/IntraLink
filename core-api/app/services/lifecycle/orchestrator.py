@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -12,7 +13,8 @@ import uuid
 from typing import Any, Optional
 
 from app.config import settings
-from app.database.db import AsyncSessionLocal, JobLog
+from app.database.db import AsyncSessionLocal, CommandRecord
+from app.services.command_service import CommandService
 from app.services.intraservice import (
     add_task_comment,
     add_task_expenses,
@@ -31,9 +33,6 @@ from app.services.lifecycle.state_machine import LifecycleStateMachine
 from app.services.worker import get_redis_client
 
 logger = logging.getLogger("core_api.services.lifecycle.orchestrator")
-
-STREAM_EXECUTION_QUEUE = "stream:execution_queue"
-
 
 class AutonomousTicketOrchestrator:
     """Сервис управления автономным прохождением жизненного цикла заявок."""
@@ -277,12 +276,31 @@ class AutonomousTicketOrchestrator:
                 return None
 
             job_id = raw_job_id.decode() if isinstance(raw_job_id, bytes) else str(raw_job_id)
-            raw_job_data = await redis.get(f"execution_job:{job_id}")
-            if not raw_job_data:
-                return None
-
-            job_data = json.loads(raw_job_data.decode() if isinstance(raw_job_data, bytes) else raw_job_data)
+            job_data = None
+            try:
+                command_uuid = uuid.UUID(job_id)
+                async with AsyncSessionLocal() as db:
+                    command = await db.get(CommandRecord, command_uuid)
+                    if command:
+                        result = dict(command.result_json or {})
+                        job_data = {
+                            **result,
+                            "status": command.status,
+                            "created_at": command.created_at.timestamp(),
+                            "message": command.error_message or result.get("message"),
+                        }
+            except (ValueError, TypeError):
+                pass
+            if job_data is None:
+                raw_job_data = await redis.get(f"execution_job:{job_id}")
+                if not raw_job_data:
+                    return None
+                job_data = json.loads(raw_job_data.decode() if isinstance(raw_job_data, bytes) else raw_job_data)
             job_status = job_data.get("status")
+            if job_status == "succeeded":
+                job_status = "success"
+            elif job_status == "needs_review":
+                job_status = "failed"
 
             # FSM Guard: защита от конфликта с оператором (ручной перехват)
             current_status = int(task.get("StatusId") or 0)
@@ -294,6 +312,8 @@ class AutonomousTicketOrchestrator:
             # Проверка таймаута зависших заданий (Zombie Jobs)
             created_at = float(job_data.get("created_at") or 0)
             now_ts = time.time()
+            if job_status == "awaiting_approval":
+                return None
             if job_status in ("queued", "running"):
                 if created_at > 0 and (now_ts - created_at) > 600:
                     logger.warning("Задача #%d: задание %s зависло в '%s' (> 10 мин). Таймаут и эскалация.", task_id, job_id, job_status)
@@ -420,11 +440,7 @@ class AutonomousTicketOrchestrator:
     async def _dispatch_execution_command(
         self, task_id: int, pc_name: str, printer_address: str, redis
     ) -> str:
-        """Постановка инфраструктурной команды в Command Bus."""
-        job_uuid = uuid.uuid4()
-        job_id = f"job_{job_uuid.hex[:12]}"
-        now_ts = time.time()
-
+        """Create a durable v2 command; policy keeps printer changes awaiting approval."""
         target_payload = {
             "task_id": task_id,
             "pc_name": pc_name,
@@ -437,69 +453,20 @@ class AutonomousTicketOrchestrator:
             "target": pc_name,
         }
 
-        # 1. Запись в БД PostgreSQL JobLog
         async with AsyncSessionLocal() as db:
-            try:
-                new_job = JobLog(
-                    id=job_uuid,
-                    command_type="install_printer",
-                    target_json=target_payload,
-                    params_json=params_payload,
-                    mode="auto",
-                    initiator="autonomous_orchestrator",
-                    source="poller",
-                    status="queued",
-                    priority=7,
-                    task_id=task_id,
-                )
-                db.add(new_job)
-                await db.commit()
-            except Exception as db_err:
-                logger.warning("Ошибка сохранения JobLog в БД для #%d: %s", task_id, db_err)
-                await db.rollback()
-
-        # 2. Запись состояния в Redis
-        job_data = {
-            "job_id": job_id,
-            "uuid": str(job_uuid),
-            "action": "install_printer",
-            "command_type": "install_printer",
-            "task_id": task_id,
-            "target": target_payload,
-            "params": params_payload,
-            "mode": "auto",
-            "initiator": "autonomous_orchestrator",
-            "source": "poller",
-            "priority": 7,
-            "auto_close_ticket": True,
-            "status": "queued",
-            "created_at": now_ts,
-        }
-        await redis.set(
-            f"execution_job:{job_id}",
-            json.dumps(job_data, ensure_ascii=False),
-            ex=3600 * 24 * 7,
-        )
-
-        # 3. Публикация в Redis Stream для Windows Execution Worker
-        await redis.xadd(
-            STREAM_EXECUTION_QUEUE,
-            {
-                "job_id": job_id,
-                "uuid": str(job_uuid),
-                "action": "install_printer",
-                "task_id": str(task_id),
-                "payload": json.dumps(params_payload, ensure_ascii=False),
-                "target": json.dumps(target_payload, ensure_ascii=False),
-                "mode": "auto",
-                "auto_close": "true",
-                "initiator": "autonomous_orchestrator",
-            },
-            maxlen=10000,
-            approximate=True,
-        )
-
-        return job_id
+            command, _ = await CommandService(db).create(
+                action="install_printer",
+                target=target_payload,
+                parameters=params_payload,
+                idempotency_key=(
+                    f"lifecycle:install_printer:{task_id}:"
+                    f"{hashlib.sha256(f'{pc_name}|{printer_address}'.encode()).hexdigest()[:16]}"
+                ),
+                initiator="autonomous_orchestrator",
+                source="poller",
+                priority=7,
+            )
+            return str(command.id)
 
 
 _orchestrator_instance: Optional[AutonomousTicketOrchestrator] = None

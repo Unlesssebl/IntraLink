@@ -101,17 +101,17 @@ flowchart LR
     Poller -->|stream:intraservice_events| Redis
 
     CoreAPI -->|SQLAlchemy Async| PG
-    CoreAPI -->|stream:execution_queue| Redis
+    CoreAPI -->|Outbox relay: stream:execution_commands:v2| Redis
     Redis -->|stream:intraservice_events (XAUTOCLAIM)| TG
 
-    Redis -->|stream:execution_queue| Worker
+    Redis -->|stream:execution_commands:v2| Worker
     Worker -->|PowerShell / WinRM| AD
     Worker -->|HTTP REST / Update Status| CoreAPI
 ```
 
 ### Ключевые каналы Redis Streams:
 * `stream:intraservice_events` — поток событий очереди (Consumer Group `bot_group`, `XACK`, `XAUTOCLAIM`).
-* `stream:execution_queue` — очередь задач на исполнение в домене для Windows-воркера (`execution_group`).
+* `stream:execution_commands:v2` — транспорт подтверждённых PostgreSQL-команд для Windows-воркера (`execution_group_v2`).
 * `stream:execution_failed` — Dead-Letter Queue (DLQ) для аудита аварийных задач.
 * `lock:poller_leader` — распределенный мьютекс лидера опроса (TTL 15s).
 * `lock:host:<pc_name>` — распределенный мьютекс исключительного доступа к ПК (TTL 30s).

@@ -15,7 +15,7 @@
 | `apply_triage_decision` | Атомарное применение решения к группе заявок (с защитой Dead Man's Switch) | `POST /api/v1/triage/apply` |
 | `diagnose_host` | Экспресс-диагностика доступности рабочей станции (Ping, DNS, SMB:445, WinRM:5985) | `GET /api/v1/admin/diagnose-host` |
 | `search_kb` | Векторный RAG-поиск в базе исторических решений (PostgreSQL + pgvector) | `POST /api/v1/triage/rag/search` |
-| `submit_action_command` | Запуск целевого действия (установка принтера, Wi-Fi, AD) через Command Bus | `POST /api/v1/commands/submit` |
+| `submit_action_command` | Запуск целевого действия через транзакционный Command Bus | `POST /api/v2/commands` |
 | `list_skills` | Просмотр каталога действий, действующих политик безопасности и Killswitch | `GET /api/v1/skills` |
 
 ---

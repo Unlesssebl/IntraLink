@@ -37,7 +37,7 @@ IntraLink/
 * **Шлюз инструментов FastMCP Hub (`intralink-mcp`)**: Автономный MCP-сервер инструментов для AI-агента Antigravity (пакетный триаж, карточки тикетов, телеметрия хостов, векторный RAG и постановка задач в Command Bus).
 * **Изолированный Poller с Leader Lock**: Независимый демон фонового опроса очереди от сервисного аккаунта под защитой распределенного замка (`lock:poller_leader`, TTL 15s) для предотвращения Split-Brain при масштабировании.
 * **Гарантированная доставка событий (Redis Streams)**: Поток `stream:intraservice_events` с Consumer Groups, подтверждением `XACK` и периодическим перехватом зависших сообщений `XAUTOCLAIM` (At-Least-Once).
-* **Исполнение в Windows-домене (Execution Worker)**: Фоновая обработка очереди `stream:execution_queue` на базе стандарта `BaseActionExecutor` (`Preflight ➔ Execute ➔ Verify`) — выдача сетевого доступа в AD (`WLAN-WORKNET`), создание учетных записей, удаленная установка принтеров через WinRM с WMI Bootstrap и защитой от коллизий сессий (`lock:host:<pc>`, TTL 30s).
+* **Исполнение в Windows-домене (Execution Worker)**: Фоновая обработка подтверждённых команд из `stream:execution_commands:v2` на базе стандарта `BaseActionExecutor` (`Preflight ➔ Execute ➔ Verify`) — выдача сетевого доступа в AD (`WLAN-WORKNET`), диагностика и удаленная установка принтеров через WinRM с WMI Bootstrap и защитой от коллизий сессий (`lock:host:<pc>`, TTL 30s).
 * **Многоконтурная безопасность данных (Zero Trust DLP)**:
   * 🔴 **RED Zone (On-Prem)**: пароли и заявки СБ обрабатываются локально (Ollama Qwen2.5 / bge-m3).
   * 🟡 **YELLOW Zone (Sanitized Cloud)**: ПДн, IP и имена хостов маскируются токенами через Redis PII Vault перед вызовом облачных моделей.
