@@ -98,8 +98,10 @@ class SkipSessionRequest(BaseModel):
 
 class RAGSearchRequest(BaseModel):
     query: str = Field(..., description="Текст поискового запроса")
-    limit: int = Field(3, description="Лимит совпадений")
-    threshold: float = Field(0.70, description="Порог косинусного расстояния")
+    limit: int = Field(3, ge=1, le=20, description="Лимит совпадений")
+    profile: Literal["precise", "balanced", "broad"] = Field(
+        "balanced", description="Версионируемый профиль качества поиска"
+    )
 
 
 class RAGIndexRequest(BaseModel):
@@ -230,7 +232,7 @@ def extract_operator_user_id(
         token = admin_session.strip()
 
     if token:
-        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
+        for sec in [settings.JWT_SECRET]:
             if not sec:
                 continue
             try:
@@ -395,11 +397,18 @@ async def rag_search_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Поиск похожих решений в векторной базе PostgreSQL pgvector."""
+    profiles = {
+        "precise": {"distance": 0.35, "rerank": 0.90},
+        "balanced": {"distance": 0.70, "rerank": 0.85},
+        "broad": {"distance": 0.90, "rerank": 0.65},
+    }
+    profile = profiles[payload.profile]
     matches = await search_knowledge_base(
         db=db,
         query_text=payload.query,
         limit=payload.limit,
-        distance_threshold=payload.threshold,
+        distance_threshold=profile["distance"],
+        rerank_threshold=profile["rerank"],
     )
     return {"total": len(matches), "matches": matches}
 

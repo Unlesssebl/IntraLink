@@ -289,35 +289,8 @@ async def get_embedding_vector(
             _last_embedding_error = f"LiteLLM исключение: {e}"
             logger.debug("Исключение LiteLLM Proxy: %s", e)
 
-    # 6. Fallback на прямой вызов Gemini (если ключ задан и LiteLLM не ответил)
-    gemini_keys = [
-        getattr(settings, "GEMINI_API_KEY", None),
-        getattr(settings, "GEMINI_API_KEY_2", None),
-        getattr(settings, "GEMINI_API_KEY_3", None),
-    ]
-    gemini_keys = [k for k in gemini_keys if k]
-    if gemini_keys:
-        candidate_models = ["gemini-embedding-001", "text-embedding-004"]
-        for g_key in gemini_keys:
-            for embed_model in dict.fromkeys(candidate_models):
-                try:
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{embed_model}:embedContent?key={g_key}"
-                    payload = {
-                        "model": f"models/{embed_model}",
-                        "content": {"parts": [{"text": payload_text}]},
-                        "output_dimensionality": settings.EMBEDDING_DIMENSION,
-                    }
-                    async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=8.0)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            vec = data.get("embedding", {}).get("values", [])
-                            if vec and len(vec) == settings.EMBEDDING_DIMENSION:
-                                await _save_embedding_to_cache(cache_key, vec)
-                                return vec
-                except Exception:
-                    pass
-
-    # 7. Локальный Fallback (Ollama / FastEmbed) при отказе облачных сервисов
+    # 6. Локальный fallback сохраняет то же пространство BGE-M3. Смешивать
+    # в одном индексе векторы разных моделей запрещено.
     if getattr(settings, "OLLAMA_BASE_URL", None):
         try:
             ollama_url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/embed"

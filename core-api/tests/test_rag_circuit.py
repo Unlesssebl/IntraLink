@@ -130,39 +130,42 @@ async def test_search_knowledge_base_auto_circuit():
 
 
 @pytest.mark.asyncio
-async def test_get_embedding_vector_gemini_fallback_when_litellm_fails():
-    """Проверка fallback на прямой вызов Gemini API при недоступности LiteLLM."""
+async def test_get_embedding_vector_ollama_bge_fallback_when_litellm_fails():
+    """Fallback сохраняет единое пространство BGE-M3 через локальный Ollama."""
+    rag._EMBED_MEMORY_CACHE.clear()
     raw_text = "Инструкция по настройке сканирования в сетевую папку SMB"
     dummy_vec = [0.5] * 1024
 
     litellm_resp = MagicMock()
     litellm_resp.status = 503
 
-    gemini_resp = MagicMock()
-    gemini_resp.status = 200
-    gemini_resp.json = AsyncMock(return_value={"embedding": {"values": dummy_vec}})
+    ollama_resp = MagicMock()
+    ollama_resp.status = 200
+    ollama_resp.json = AsyncMock(return_value={"embeddings": [dummy_vec]})
 
     mock_cm_litellm = AsyncMock()
     mock_cm_litellm.__aenter__.return_value = litellm_resp
 
-    mock_cm_gemini = AsyncMock()
-    mock_cm_gemini.__aenter__.return_value = gemini_resp
+    mock_cm_ollama = AsyncMock()
+    mock_cm_ollama.__aenter__.return_value = ollama_resp
 
     def post_side_effect(url, *args, **kwargs):
         if "embeddings" in url:
             return mock_cm_litellm
-        elif "generativelanguage" in url:
-            return mock_cm_gemini
+        if "/api/embed" in url:
+            return mock_cm_ollama
         raise ValueError(f"Unexpected url: {url}")
 
-    with patch("app.services.rag.get_rag_http_session") as mock_session_getter, \
-         patch("app.config.settings.GEMINI_API_KEY", "test-gemini-key"):
+    with patch("app.services.rag.get_rag_http_session") as mock_session_getter:
         mock_session = MagicMock()
         mock_session.post = MagicMock(side_effect=post_side_effect)
         mock_session_getter.return_value = mock_session
 
         vec = await rag.get_embedding_vector(raw_text, circuit=DataCircuit.GREEN)
         assert vec == dummy_vec
+        urls = [call.args[0] for call in mock_session.post.call_args_list]
+        assert any("/api/embed" in url for url in urls)
+        assert all("generativelanguage" not in url for url in urls)
 
 
 @pytest.mark.asyncio
