@@ -2,27 +2,17 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { Ticket } from '../data/mock';
 import {
   fetchDiagnostics,
-  applyTask,
   fetchTaskDetails,
-  reanalyzeTask,
   fetchTemplatesCatalog,
-  enqueueExecution,
-  pollExecutionJob,
-  submitCommand,
-  confirmExecutionJob,
   fetchTicketSummary,
 } from '../lib/tasks';
 import type { TaskDetails, TicketSummaryResult } from '../lib/types';
 import InspectorHeader from './inspector/InspectorHeader';
 import RequesterCard from './inspector/RequesterCard';
-import { type DiagStatus } from './inspector/DiagnosticsSection';
-import AiTriageCard from './inspector/AiTriageCard';
-import AiSummarySection from './inspector/AiSummarySection';
-import RagMatchesSection from './inspector/RagMatchesSection';
 import AttachmentsSection from './inspector/AttachmentsSection';
 import CommentsTimeline from './inspector/CommentsTimeline';
-import ReplyActionForm, { type MainActionConfig } from './inspector/ReplyActionForm';
-import { ensureManualTicketRun, type TicketRun } from '../lib/ticketRuns';
+import UnifiedDecisionPanel from './inspector/UnifiedDecisionPanel';
+import { type DiagStatus } from './inspector/DiagnosticsSection';
 
 interface Props {
   ticket: Ticket;
@@ -34,47 +24,47 @@ interface Props {
 export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToast }: Props) {
   const [details, setDetails] = useState<TaskDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
-  const [replyMode, setReplyMode] = useState<'reply' | 'internal'>('reply');
-  const [replyText, setReplyText] = useState('');
-  const [expenses, setExpenses] = useState<number>(10);
-  const [diagStatus, setDiagStatus] = useState<Record<string, DiagStatus>>({
-    ping: 'idle', smb: 'idle', winrm: 'idle',
-  });
-  const [multiHostDiag, setMultiHostDiag] = useState<Record<string, { ping: DiagStatus; smb: DiagStatus; winrm: DiagStatus; rtt?: string | null; isOnline?: boolean }>>({});
   const [expanded, setExpanded] = useState<boolean>(() => {
     return localStorage.getItem('intralink_inspector_expanded') === 'true';
   });
 
   const toggleExpanded = () => {
-    setExpanded(prev => {
+    setExpanded((prev) => {
       const next = !prev;
       localStorage.setItem('intralink_inspector_expanded', String(next));
       return next;
     });
   };
 
-  const [submitting, setSubmitting] = useState(false);
   const [templates, setTemplates] = useState<any[]>([]);
-  const [selectedTemplateKey, setSelectedTemplateKey] = useState<string>('');
-  const [selectedStatusOverride, setSelectedStatusOverride] = useState<number | null>(null);
-  const [isActionsMenuOpen, setIsActionsMenuOpen] = useState<boolean>(false);
-  const [confirmingCancel, setConfirmingCancel] = useState<boolean>(false);
-  const [ticketRun, setTicketRun] = useState<TicketRun | null>(null);
+  const [diagStatus, setDiagStatus] = useState<Record<string, DiagStatus>>({
+    ping: 'idle',
+    smb: 'idle',
+    winrm: 'idle',
+  });
+  const [multiHostDiag, setMultiHostDiag] = useState<
+    Record<
+      string,
+      {
+        ping: DiagStatus;
+        smb: DiagStatus;
+        winrm: DiagStatus;
+        rtt?: string | null;
+        isOnline?: boolean;
+      }
+    >
+  >({});
 
-  // AI & RAG States
+  // AI Summary State
   const [aiSummary, setAiSummary] = useState<TicketSummaryResult | null>(null);
   const [loadingAiSummary, setLoadingAiSummary] = useState(false);
-  const [isAiSummaryExpanded, setIsAiSummaryExpanded] = useState(true);
-  const [isRagExpanded, setIsRagExpanded] = useState(false);
   const [isCommentsExpanded, setIsCommentsExpanded] = useState(false);
-  const [reanalyzing, setReanalyzing] = useState(false);
-  const [pendingConfirmation, setPendingConfirmation] = useState<{ jobId: string; plan: any } | null>(null);
 
   // Resizing state
   const [inspectorWidth, setInspectorWidth] = useState<number>(() => {
     const saved = localStorage.getItem('intralink_inspector_width');
-    const parsed = saved ? parseInt(saved, 10) : 560;
-    return !isNaN(parsed) && parsed >= 420 ? parsed : 560;
+    const parsed = saved ? parseInt(saved, 10) : 600;
+    return !isNaN(parsed) && parsed >= 440 ? parsed : 600;
   });
   const [isResizing, setIsResizing] = useState(false);
 
@@ -84,7 +74,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
     const handleMouseMove = (e: MouseEvent) => {
       const maxW = Math.min(1200, window.innerWidth * 0.92);
-      const minW = 420;
+      const minW = 440;
       const newWidth = Math.max(minW, Math.min(maxW, window.innerWidth - e.clientX));
       setInspectorWidth(newWidth);
     };
@@ -103,39 +93,19 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   }, [isResizing, inspectorWidth]);
 
   const rawId = ticket.rawId || parseInt(ticket.id.replace(/\D/g, ''), 10);
-  const currentExecutorIds = ticket.executorIds?.map(String).join(',');
-  const ensureManualRun = async (): Promise<TicketRun> => {
-    const current = await ensureManualTicketRun(rawId);
-    setTicketRun(current);
-    return current;
-  };
   const effectiveHost = ticket.host || details?.pc_name || '';
-  const hostList = effectiveHost
-    ? Array.from(new Set(effectiveHost.split(/[,;]+/).map(h => h.trim().replace(/\s+/g, '')).filter(Boolean)))
-    : [];
-
-  const handleReanalyze = async () => {
-    if (!rawId || reanalyzing) return;
-    setReanalyzing(true);
-    try {
-      const updated = await reanalyzeTask(rawId);
-      setDetails(updated);
-      if (updated.ai_suggested_resolution && updated.ai_suggested_resolution.trim().length > 10) {
-        setReplyText(updated.ai_suggested_resolution);
-      }
-      onToast({
-        type: 'success',
-        message: `Заявка #${rawId} переанализирована по актуальным правилам`,
-      });
-    } catch (err: any) {
-      onToast({
-        type: 'error',
-        message: `Ошибка переанализа: ${err.message || err}`,
-      });
-    } finally {
-      setReanalyzing(false);
-    }
-  };
+  const hostList = useMemo(() => {
+    return effectiveHost
+      ? Array.from(
+          new Set(
+            effectiveHost
+              .split(/[,;]+/)
+              .map((h) => h.trim().replace(/\s+/g, ''))
+              .filter(Boolean)
+          )
+        )
+      : [];
+  }, [effectiveHost]);
 
   // Load Task Details from Core API
   const loadDetails = useCallback(async () => {
@@ -144,41 +114,62 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     try {
       const data = await fetchTaskDetails(rawId);
       setDetails(data);
-      if (data.ai_suggested_resolution && data.ai_suggested_resolution.trim().length > 10) {
-        setReplyText(prev => {
-          const defaultInit = ticket.aiPlan?.comment || ticket.aiSuggestion || '';
-          if (!prev || prev === defaultInit) {
-            return data.ai_suggested_resolution!;
-          }
-          return prev;
-        });
-      }
     } catch (err: any) {
       console.warn('Не удалось загрузить подробности заявки:', err);
     } finally {
       setLoadingDetails(false);
     }
-  }, [rawId, ticket.aiPlan?.comment, ticket.aiSuggestion]);
+  }, [rawId]);
 
-  const rawComments = details?.comments;
-  const commentsList: any[] = Array.isArray(rawComments)
-    ? rawComments
-    : (rawComments && typeof rawComments === 'object' && Array.isArray((rawComments as any).TaskLifetimes))
-    ? (rawComments as any).TaskLifetimes
-    : Array.isArray((details as any)?.history)
-    ? (details as any).history
-    : (details as any)?.history && typeof (details as any).history === 'object' && Array.isArray((details as any).history.TaskLifetimes)
-    ? (details as any).history.TaskLifetimes
-    : [];
+  // Initial load details and catalog
+  useEffect(() => {
+    loadDetails();
+  }, [loadDetails]);
+
+  useEffect(() => {
+    fetchTemplatesCatalog()
+      .then((res) => {
+        if (res && Array.isArray(res.templates)) setTemplates(res.templates);
+      })
+      .catch(() => {});
+  }, []);
+
+  const commentsList: any[] = useMemo(() => {
+    const rawComments = details?.comments;
+    if (Array.isArray(rawComments)) return rawComments;
+    if (
+      rawComments &&
+      typeof rawComments === 'object' &&
+      Array.isArray((rawComments as any).TaskLifetimes)
+    )
+      return (rawComments as any).TaskLifetimes;
+    if (Array.isArray((details as any)?.history)) return (details as any).history;
+    if (
+      (details as any)?.history &&
+      typeof (details as any).history === 'object' &&
+      Array.isArray((details as any).history.TaskLifetimes)
+    )
+      return (details as any).history.TaskLifetimes;
+    return [];
+  }, [details]);
 
   const rawAttachments = details?.attachments ?? ticket.attachments;
-  const attachmentsList: any[] = Array.isArray(rawAttachments)
-    ? rawAttachments
-    : (rawAttachments && typeof rawAttachments === 'object' && Array.isArray((rawAttachments as any).Attachment))
-    ? (rawAttachments as any).Attachment
-    : (rawAttachments && typeof rawAttachments === 'object' && Array.isArray((rawAttachments as any).Attachments))
-    ? (rawAttachments as any).Attachments
-    : [];
+  const attachmentsList: any[] = useMemo(() => {
+    if (Array.isArray(rawAttachments)) return rawAttachments;
+    if (
+      rawAttachments &&
+      typeof rawAttachments === 'object' &&
+      Array.isArray((rawAttachments as any).Attachment)
+    )
+      return (rawAttachments as any).Attachment;
+    if (
+      rawAttachments &&
+      typeof rawAttachments === 'object' &&
+      Array.isArray((rawAttachments as any).Attachments)
+    )
+      return (rawAttachments as any).Attachments;
+    return [];
+  }, [rawAttachments]);
 
   const handleGenerateAiSummary = async () => {
     if (!rawId || loadingAiSummary) return;
@@ -192,7 +183,6 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         false
       );
       setAiSummary(res);
-      setIsAiSummaryExpanded(true);
       onToast({ type: 'success', message: 'Сводка переписки успешно сформирована AI Hub' });
     } catch (err: any) {
       console.error('Ошибка суммаризации переписки:', err);
@@ -201,32 +191,6 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       setLoadingAiSummary(false);
     }
   };
-
-  // Load Templates catalog
-  useEffect(() => {
-    fetchTemplatesCatalog().then(res => {
-      if (res && Array.isArray(res.templates)) setTemplates(res.templates);
-    }).catch(() => {});
-  }, []);
-
-  // Reset local form when switching ticket
-  useEffect(() => {
-    const initialText = ticket.aiPlan?.comment || ticket.aiSuggestion || '';
-    setReplyText(initialText);
-    setSelectedTemplateKey('');
-    setSelectedStatusOverride(null);
-    setIsActionsMenuOpen(false);
-    setConfirmingCancel(false);
-    setExpenses(ticket.aiPlan?.expensesMinutes || ticket.expenses || 10);
-    setDiagStatus({ ping: 'idle', smb: 'idle', winrm: 'idle' });
-    setMultiHostDiag({});
-    setAiSummary(null);
-    setLoadingAiSummary(false);
-    setIsAiSummaryExpanded(true);
-    setIsRagExpanded(false);
-    setIsCommentsExpanded(false);
-    loadDetails();
-  }, [ticket.id, loadDetails]);
 
   // Network diagnostic runner
   const runDiag = async (targetHost?: string) => {
@@ -238,7 +202,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
     setDiagStatus({ ping: 'checking', smb: 'checking', winrm: 'checking' });
     const initialMulti: typeof multiHostDiag = {};
-    hostList.forEach(h => {
+    hostList.forEach((h) => {
       initialMulti[h] = { ping: 'checking', smb: 'checking', winrm: 'checking' };
     });
     setMultiHostDiag(initialMulti);
@@ -253,7 +217,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
       if (res.hosts && res.hosts.length > 0) {
         const nextMulti: typeof multiHostDiag = {};
-        res.hosts.forEach(h => {
+        res.hosts.forEach((h) => {
           nextMulti[h.host] = {
             ping: h.is_online ? 'ok' : 'fail',
             smb: h.smb_ok ? 'ok' : 'fail',
@@ -267,9 +231,12 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
       onToast({
         type: 'info',
-        message: res.hosts && res.hosts.length > 1
-          ? `Диагностика (${res.hosts.length} ПК): ${res.is_online ? 'Есть доступные ПК' : 'Все офлайн'}`
-          : `Диагностика ${hostToTest}: ${res.is_online ? 'В сети' : 'Недоступен'}`,
+        message:
+          res.hosts && res.hosts.length > 1
+            ? `Диагностика (${res.hosts.length} ПК): ${
+                res.is_online ? 'Есть доступные ПК' : 'Все офлайн'
+              }`
+            : `Диагностика ${hostToTest}: ${res.is_online ? 'В сети' : 'Недоступен'}`,
       });
     } catch {
       setDiagStatus({ ping: 'fail', smb: 'fail', winrm: 'fail' });
@@ -277,524 +244,27 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     }
   };
 
-  const handleTemplateSelect = (key: string) => {
-    setSelectedTemplateKey(key);
-    setSelectedStatusOverride(null);
-    const tmpl = templates.find(t => t.key === key);
-    if (tmpl) {
-      setReplyText(tmpl.template);
-      if (tmpl.expenses) setExpenses(tmpl.expenses);
-    }
-  };
-
-  const allowedStatuses = details?.rights?.to_statuses ?? null;
-  const isStatusAllowed = (statusId: number) => {
-    if (allowedStatuses === null) return true;
-    return allowedStatuses.includes(statusId);
-  };
-
-  const getStatusNameById = (id: number) => {
-    switch (id) {
-      case 26: return 'Открыта';
-      case 27: return 'В работе';
-      case 29: return 'Выполнена';
-      case 30: return 'Отменена';
-      case 35: return 'Ожидание ответа заявителя';
-      case 36: return 'Ожидание поставки / ЗИП';
-      case 37: return 'Ожидание подрядчика';
-      case 48: return 'Ожидание устройства (каб. 112)';
-      default: return `Статус #${id}`;
-    }
-  };
-
-  // Main button label & status config
-  const getMainActionConfig = (): MainActionConfig => {
-    const primaryBtnClass = 'bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-neutral-200 dark:text-neutral-900';
-
-    if (selectedStatusOverride !== null) {
-      return {
-        label: `Перевести в «${getStatusNameById(selectedStatusOverride)}»`,
-        statusId: selectedStatusOverride,
-        buttonClass: primaryBtnClass,
-      };
-    }
-
-    if (ticket.aiPlan) {
-      return {
-        label: ticket.aiPlan.actionTitle,
-        statusId: ticket.aiPlan.targetStatusId,
-        buttonClass: 'bg-blue-600 hover:bg-blue-500 text-white shadow-sm',
-        isAiPlan: true,
-      };
-    }
-
-    if ((selectedTemplateKey === 'wifi_access' || ticket.ruleType === 'wlan_access') && isStatusAllowed(29)) {
-      return { label: 'Выдать доступ к Wi-Fi', statusId: 29, buttonClass: primaryBtnClass, actionType: 'wlan' };
-    }
-    const isPrinterTask =
-      selectedTemplateKey === 'printer_install' ||
-      ticket.ruleType === 'printer_install' ||
-      ticket.serviceName?.toLowerCase().includes('принтер') ||
-      ticket.serviceName?.toLowerCase().includes('печать') ||
-      ticket.title?.toLowerCase().includes('принтер');
-    if (isPrinterTask && isStatusAllowed(29)) {
-      return { label: 'Установить принтер', statusId: 29, buttonClass: primaryBtnClass, actionType: 'printer' };
-    }
-    if ((selectedTemplateKey === 'hardware_repair' || ticket.ruleType === 'hardware_repair') && isStatusAllowed(48)) {
-      return { label: 'В ремонт (каб. 112)', statusId: 48, buttonClass: primaryBtnClass };
-    }
-    if ((ticket.isRedirect || ticket.ruleType?.startsWith('redirect') || selectedTemplateKey === 'redirect_catalog') && isStatusAllowed(30)) {
-      return { label: 'Перенаправить и отменить', statusId: 30, buttonClass: primaryBtnClass };
-    }
-    if ((ticket.isDuplicate || ticket.ruleType === 'duplicate_task' || selectedTemplateKey === 'duplicate_close') && isStatusAllowed(30)) {
-      return { label: 'Отменить как дубликат', statusId: 30, buttonClass: primaryBtnClass };
-    }
-    if (ticket.statusId === 35 && isStatusAllowed(35)) {
-      return { label: 'В ожидание заявителя', statusId: 35, buttonClass: primaryBtnClass };
-    }
-
-    if (isStatusAllowed(29)) return { label: 'Выполнить заявку', statusId: 29, buttonClass: primaryBtnClass };
-    if (isStatusAllowed(27)) return { label: 'В работу', statusId: 27, buttonClass: primaryBtnClass };
-    if (isStatusAllowed(30)) return { label: 'Отменить заявку', statusId: 30, buttonClass: primaryBtnClass };
-
-    if (allowedStatuses && allowedStatuses.length > 0) {
-      return { label: `В статус #${allowedStatuses[0]}`, statusId: allowedStatuses[0], buttonClass: primaryBtnClass };
-    }
-
-    return { label: 'Нет доступных действий', statusId: 0, buttonClass: 'bg-neutral-200 dark:bg-neutral-800 text-neutral-400 cursor-not-allowed' };
-  };
-
-  const mainAction = getMainActionConfig();
-
-  const handleSelectMenuStatus = (statusId: number, defaultText?: string, defaultMinutes?: number) => {
-    setSelectedStatusOverride(statusId);
-    setIsActionsMenuOpen(false);
-    if (defaultText && !replyText.trim()) {
-      setReplyText(defaultText);
-    }
-    if (defaultMinutes) {
-      setExpenses(defaultMinutes);
-    }
-  };
-
-  // Generic Save / Dispatch Handler
-  const handleSendAction = async (targetStatusId: number, explicitComment?: string) => {
-    const textToSend = (explicitComment !== undefined ? explicitComment : replyText).trim();
-    if (!textToSend && targetStatusId !== 27) {
-      onToast({ type: 'warning', message: 'Введите текст ответа или комментария' });
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      const run = await ensureManualRun();
-      const res = await applyTask(rawId, {
-        status_id: targetStatusId,
-        comment: textToSend || 'Взято в работу инженером 1-й линии',
-        minutes: expenses,
-        is_private: replyMode === 'internal',
-        executor_ids: currentExecutorIds,
-        ticket_run_id: run.id,
-        decision_id: details?.decision?.id,
-        decision_version: details?.decision?.version,
-      });
-
-      const firstRes = res?.results?.[0];
-      if (firstRes && firstRes.update_ok === false) {
-        throw new Error(firstRes.error || 'IntraService отклонил изменение заявки');
-      }
-
-      const newStatus = targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : (targetStatusId === 35 || targetStatusId === 36 || targetStatusId === 37 || targetStatusId === 48 ? 'waiting' : 'in_progress');
-      const newStatusName = getStatusNameById(targetStatusId);
-
-      onUpdateTicket(ticket.id, {
-        status: newStatus,
-        statusId: targetStatusId,
-        statusName: newStatusName,
-      });
-
-      onToast({
-        type: 'success',
-        message: targetStatusId === 29 ? `Заявка #${rawId} выполнена` : (targetStatusId === 30 ? `Заявка #${rawId} отменена` : 'Изменения сохранены'),
-      });
-
-      if (targetStatusId === 29 || targetStatusId === 30) {
-        onClose();
-      } else {
-        setReplyText('');
-        loadDetails();
-      }
-    } catch (err: any) {
-      if ((err.message || '').includes('decision_stale')) {
-        onToast({
-          type: 'warning',
-          message: 'Заявка или рекомендация обновились на сервере. Контекст перегружен, введённый текст сохранён.',
-        });
-        loadDetails();
-      } else {
-        onToast({ type: 'error', message: `Ошибка сохранения: ${err.message || err}` });
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // Execute AI Plan with Domain RPC execution if needed
-  const handleApplyAIPlan = async () => {
-    if (!ticket.aiPlan) return;
-    const plan = ticket.aiPlan;
-    const suggestion = details?.ai_suggestion;
-    if (suggestion?.state === 'stale') {
-      onToast({ type: 'warning', message: 'AI-предложение неактуально. Сначала выполните повторный расчёт.' });
-      return;
-    }
-    if (suggestion?.policy.blocked) {
-      onToast({ type: 'error', message: suggestion.policy.reason || 'Действие заблокировано policy.' });
-      return;
-    }
-    if (suggestion?.missing_data?.length) {
-      onToast({ type: 'warning', message: `Не хватает данных: ${suggestion.missing_data.join(', ')}` });
-      return;
-    }
-    setSubmitting(true);
-
-    try {
-      const run = await ensureManualRun();
-      if (plan.requiresDomainJob && plan.domainJob) {
-        const job = await submitCommand({
-          type: plan.domainJob.action,
-          target: { task_id: rawId },
-          params: plan.domainJob.params || { identity: plan.domainJob.identity },
-          mode: 'confirm',
-          auto_close_ticket: false,
-          ticket_run_id: run.id,
-          suggestion_task_id: suggestion?.task_id,
-          suggestion_fingerprint: suggestion?.fingerprint,
-          decision_id: details?.decision?.id,
-          decision_version: details?.decision?.version,
-        });
-        setPendingConfirmation({ jobId: job.job_id, plan });
-        onToast({ type: 'info', message: 'Команда подготовлена. Проверьте действие и подтвердите его отдельно.' });
-        return;
-      }
-
-      const res = await applyTask(rawId, {
-        status_id: selectedStatusOverride ?? plan.targetStatusId,
-        comment: replyText.trim() || plan.comment,
-        minutes: expenses || plan.expensesMinutes,
-        is_private: replyMode === 'internal',
-        executor_ids: currentExecutorIds,
-        ticket_run_id: run.id,
-        decision_id: details?.decision?.id,
-        decision_version: details?.decision?.version,
-      });
-
-      const firstRes = res?.results?.[0];
-      if (firstRes && firstRes.update_ok === false) {
-        throw new Error(firstRes.error || 'IntraService отклонил изменение заявки');
-      }
-
-      const finalStatusId = selectedStatusOverride ?? plan.targetStatusId;
-      const newStatus = finalStatusId === 29 || finalStatusId === 30 ? 'resolved' : (finalStatusId === 35 || finalStatusId === 48 ? 'waiting' : 'in_progress');
-
-      onUpdateTicket(ticket.id, {
-        status: newStatus,
-        statusId: finalStatusId,
-        statusName: plan.targetStatusName,
-      });
-
-      onToast({
-        type: 'success',
-        message: `Заявка #${rawId}: ${plan.actionTitle} успешно применено`,
-      });
-
-      onClose();
-    } catch (err: any) {
-      if ((err.message || '').includes('decision_stale')) {
-        onToast({
-          type: 'warning',
-          message: 'Решение по заявке устарело (контекст изменился). Данные обновлены, введённый текст сохранён.',
-        });
-        loadDetails();
-      } else {
-        onToast({ type: 'error', message: `Ошибка выполнения: ${err.message || err}` });
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleConfirmSuggestedJob = async (decision: 'approve' | 'reject') => {
-    if (!pendingConfirmation) return;
-    const { jobId, plan } = pendingConfirmation;
-    if (decision === 'reject') {
-      try {
-        await confirmExecutionJob(jobId, 'reject', 'Оператор отклонил AI-предложение');
-        onToast({ type: 'info', message: 'Предложенное действие отклонено; выполнение не запускалось.' });
-      } catch (err: any) {
-        onToast({ type: 'error', message: `Не удалось отклонить команду: ${err.message || err}` });
-      } finally {
-        setPendingConfirmation(null);
-      }
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const run = await ensureManualRun();
-      await confirmExecutionJob(jobId, 'approve');
-      const job = await pollExecutionJob(jobId, 30000, 1000);
-      const finalStatusId = selectedStatusOverride ?? plan.targetStatusId;
-      const res = await applyTask(rawId, {
-        status_id: finalStatusId,
-        comment: replyText.trim() || plan.comment,
-        minutes: expenses || plan.expensesMinutes,
-        is_private: replyMode === 'internal',
-        verified_execution_job_id: job.job_id,
-        executor_ids: currentExecutorIds,
-        ticket_run_id: run.id,
-        decision_id: details?.decision?.id,
-        decision_version: details?.decision?.version,
-      });
-      if (res?.results?.[0]?.update_ok === false) throw new Error(res.results[0].error || 'IntraService отклонил изменение заявки');
-      onUpdateTicket(ticket.id, {
-        status: finalStatusId === 29 || finalStatusId === 30 ? 'resolved' : finalStatusId === 35 || finalStatusId === 48 ? 'waiting' : 'in_progress',
-        statusId: finalStatusId,
-        statusName: plan.targetStatusName,
-      });
-      onToast({ type: 'success', message: `Заявка #${rawId}: подтверждённое действие выполнено` });
-      setPendingConfirmation(null);
-      onClose();
-    } catch (err: any) {
-      if ((err.message || '').includes('decision_stale')) {
-        onToast({
-          type: 'warning',
-          message: 'Контекст заявки обновился во время подтверждения. Решение обновлено, введённый текст сохранён.',
-        });
-        loadDetails();
-      } else {
-        onToast({ type: 'error', message: `Ошибка после подтверждения: ${err.message || err}` });
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // Primary action button dispatcher
-  const handleExecuteMainAction = async () => {
-    const cfg = getMainActionConfig();
-    if (selectedStatusOverride === null && ticket.aiPlan) {
-      await handleApplyAIPlan();
-      return;
-    }
-    if (cfg.actionType === 'wlan') {
-      const username = ticket.requesterLogin || effectiveHost || '';
-      if (!username) {
-        onToast({ type: 'error', message: 'Логин заявителя или имя ПК не указаны для добавления в AD' });
-        return;
-      }
-      setSubmitting(true);
-      try {
-        const run = await ensureManualRun();
-        onToast({ type: 'info', message: `Добавление ${username} в группу AD WLAN-WORKNET...` });
-        const job = await enqueueExecution({
-          action: 'grant_wlan',
-          task_id: rawId,
-          params: { identity: username },
-          auto_close_ticket: false,
-          ticket_run_id: run.id,
-        });
-        if (job.status === 'awaiting_approval') {
-          setPendingConfirmation({
-            jobId: job.job_id,
-            plan: {
-              actionTitle: `Предоставить Wi-Fi для ${username}`,
-              targetStatusId: 29,
-              targetStatusName: 'Выполнена',
-              comment: `Добрый день! Доступ к сети Wi-Fi успешно предоставлен для учетной записи ${username}.`,
-              expensesMinutes: 10,
-            },
-          });
-          onToast({ type: 'info', message: 'Команда WLAN ожидает подтверждения другого уполномоченного инженера.' });
-          return;
-        }
-        await pollExecutionJob(job.job_id, 15000, 1000);
-
-        const res = await applyTask(rawId, {
-          status_id: 29,
-          comment: `Добрый день! Доступ к сети Wi-Fi успешно предоставлен для учетной записи ${username}.`,
-          minutes: 10,
-          executor_ids: currentExecutorIds,
-          verified_execution_job_id: job.job_id,
-          ticket_run_id: run.id,
-          decision_id: details?.decision?.id,
-          decision_version: details?.decision?.version,
-        });
-        const firstRes = res?.results?.[0];
-        if (firstRes && firstRes.update_ok === false) {
-          throw new Error(firstRes.error || 'IntraService отклонил изменение заявки');
-        }
-
-        onToast({ type: 'success', message: `Заявка #${rawId} выполнена: доступ к Wi-Fi предоставлен` });
-        onUpdateTicket(ticket.id, { status: 'resolved', statusId: 29, statusName: 'Выполнена' });
-        onClose();
-      } catch (err: any) {
-        onToast({ type: 'error', message: `Ошибка исполнения: ${err.message || err}` });
-      } finally {
-        setSubmitting(false);
-      }
-      return;
-    }
-    if (cfg.actionType === 'printer') {
-      const pc_name = effectiveHost || ticket.host;
-      if (!pc_name) {
-        onToast({ type: 'warning', message: 'Имя ПК не указано для удаленной установки принтера' });
-        return;
-      }
-      setSubmitting(true);
-      try {
-        const run = await ensureManualRun();
-        onToast({ type: 'info', message: `Отправка задачи установки принтера на ${pc_name}...` });
-        const job = await enqueueExecution({
-          action: 'install_printer',
-          task_id: rawId,
-          params: {
-            pc_name,
-            printer_name: details?.printer_address || ticket.title,
-            printer_ip: details?.printer_address || undefined,
-          },
-          auto_close_ticket: false,
-          ticket_run_id: run.id,
-        });
-        if (job.status === 'awaiting_approval') {
-          await confirmExecutionJob(job.job_id, 'approve');
-        }
-        await pollExecutionJob(job.job_id, 30000, 1500);
-        const res = await applyTask(rawId, {
-          status_id: 29,
-          comment: `Добрый день! Принтер успешно установлен на ${pc_name}.`,
-          minutes: 10,
-          executor_ids: currentExecutorIds,
-          verified_execution_job_id: job.job_id,
-          ticket_run_id: run.id,
-          decision_id: details?.decision?.id,
-          decision_version: details?.decision?.version,
-        });
-        if (res?.results?.[0]?.update_ok === false) {
-          throw new Error(res.results[0].error || 'IntraService отклонил изменение заявки');
-        }
-        onToast({ type: 'success', message: `Заявка #${rawId}: принтер успешно установлен на ${pc_name}` });
-        onUpdateTicket(ticket.id, { status: 'resolved', statusId: 29, statusName: 'Выполнена' });
-        onClose();
-      } catch (err: any) {
-        onToast({ type: 'error', message: `Ошибка установки принтера: ${err.message || err}` });
-      } finally {
-        setSubmitting(false);
-      }
-      return;
-    }
-
-    await handleSendAction(cfg.statusId);
-  };
-
-  // Cancel Ticket Handler with 2-step inline confirm
-  const handleCancelTicketClick = async () => {
-    if (!confirmingCancel) {
-      setConfirmingCancel(true);
-      return;
-    }
-    setConfirmingCancel(false);
-    const cancelComment = replyText.trim() || 'Заявка отменена специалистом 1-й линии техподдержки.';
-    await handleSendAction(30, cancelComment);
-  };
-
-  // Take Ticket in progress
-  const handleTakeOwnership = async () => {
-    setSubmitting(true);
-    try {
-      const run = await ensureManualRun();
-      await applyTask(rawId, {
-        status_id: 27,
-        comment: 'Взято в работу инженером 1-й линии',
-        minutes: 5,
-        is_private: true,
-        executor_ids: currentExecutorIds,
-        ticket_run_id: run.id,
-        decision_id: details?.decision?.id,
-        decision_version: details?.decision?.version,
-      });
-      onUpdateTicket(ticket.id, { status: 'in_progress', statusId: 27, statusName: 'В работе' });
-      onToast({ type: 'success', message: `Заявка #${rawId} взята в работу` });
-      loadDetails();
-    } catch (err: any) {
-      if ((err.message || '').includes('decision_stale')) {
-        onToast({
-          type: 'warning',
-          message: 'Заявка или рекомендация обновились на сервере. Контекст перегружен.',
-        });
-        loadDetails();
-      } else {
-        onToast({ type: 'error', message: `Ошибка: ${err.message || err}` });
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // Keyboard shortcut Ctrl+Enter & Esc
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        e.preventDefault();
-        handleExecuteMainAction();
-      }
-      if (e.key === 'Escape' && confirmingCancel) {
-        setConfirmingCancel(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [ticket, replyText, submitting, selectedStatusOverride, confirmingCancel]);
-
-  const panelClass = expanded
-    ? 'fixed inset-0 z-40 flex flex-col bg-neutral-100 dark:bg-neutral-950 animate-in fade-in duration-150 overflow-hidden'
-    : 'fixed top-0 bottom-0 right-0 z-30 flex flex-col border-l border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-2xl animate-in slide-in-from-right duration-200';
-
-  // Check WinRM Assistant condition
-  const hasFailedWorkerAttempt = useMemo(() => {
-    if (!details?.comments || !Array.isArray(details.comments)) return false;
-    return details.comments.some((c: any) => {
-      const text = (c.Comment || c.comment || c.text || '').toLowerCase();
-      return (
-        text.includes('ошибка подключения') ||
-        (text.includes('winrm') && (text.includes('сбой') || text.includes('не удалось') || text.includes('таймаут') || text.includes('отказано'))) ||
-        text.includes('worker error') ||
-        text.includes('failed')
-      );
-    });
-  }, [details?.comments]);
-
-  const isWinRMBlockedWhileOnline = useMemo(() => {
-    const d = multiHostDiag[effectiveHost] || diagStatus;
-    const isOnline = d.ping === 'ok' || d.smb === 'ok';
-    const isWinRMClosed = d.winrm === 'fail';
-    return isOnline && isWinRMClosed;
-  }, [multiHostDiag, effectiveHost, diagStatus]);
-
-  const showWinRMAssistant = Boolean(
-    (ticket.title?.toLowerCase().includes('принтер') || ticket.serviceName?.toLowerCase().includes('принтер')) &&
-    (hasFailedWorkerAttempt || isWinRMBlockedWhileOnline)
-  );
-
   const renderDescription = () => (
     <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 shadow-xs space-y-2">
-      <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 block">
-        Описание проблемы
-      </span>
-      <div className="text-[13.5px] text-neutral-800 dark:text-neutral-200 leading-relaxed whitespace-pre-wrap font-sans bg-neutral-50/80 dark:bg-neutral-950/60 p-3 rounded-lg border border-neutral-200/70 dark:border-neutral-800/70">
-        {(details?.description || ticket.description || 'Без описания').replace(/[#*`]/g, '').trim()}
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+          Описание проблемы
+        </span>
+        {ticket.serviceName && (
+          <span className="text-[11px] px-2 py-0.5 rounded-md bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 font-medium">
+            {ticket.serviceName}
+          </span>
+        )}
+      </div>
+      <div className="text-xs text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap leading-relaxed">
+        {ticket.description || details?.description || 'Описание отсутствует'}
       </div>
     </div>
   );
+
+  const panelClass = expanded
+    ? 'fixed inset-0 z-50 bg-neutral-50 dark:bg-neutral-950 flex flex-col overflow-hidden animate-in fade-in duration-200'
+    : 'fixed inset-y-0 right-0 z-50 bg-neutral-50 dark:bg-neutral-950 border-l border-neutral-200 dark:border-neutral-800 flex flex-col shadow-2xl animate-in slide-in-from-right duration-200';
 
   return (
     <div
@@ -811,10 +281,10 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           className={`absolute -left-1.5 top-0 bottom-0 w-3 cursor-col-resize z-30 transition-colors group flex items-center justify-center ${
             isResizing ? 'bg-blue-500/20' : 'hover:bg-blue-500/20'
           }`}
-          title="Потяните для изменения ширины панели (дважды кликните для сброса к 560px)"
+          title="Потяните для изменения ширины панели (дважды кликните для сброса к 600px)"
           onDoubleClick={() => {
-            setInspectorWidth(560);
-            localStorage.setItem('intralink_inspector_width', '560');
+            setInspectorWidth(600);
+            localStorage.setItem('intralink_inspector_width', '600');
           }}
         >
           <div className="w-0.5 h-12 rounded-full bg-neutral-300 dark:bg-neutral-700 group-hover:bg-blue-500 transition-colors" />
@@ -831,10 +301,11 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         onToast={onToast}
       />
 
-      {/* 2. Body Content (Adaptive single column or dual pane when expanded) */}
+      {/* 2. Body Content (Dual pane when expanded, Single column when standard) */}
       {expanded ? (
         <div className="flex-1 min-h-0 overflow-hidden">
           <div className="max-w-7xl mx-auto w-full h-full p-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Left pane: Context, Requester, Description, Attachments, Timeline */}
             <div className="space-y-3.5 overflow-y-auto pr-1">
               <RequesterCard
                 ticket={ticket}
@@ -844,39 +315,37 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                 rawId={rawId}
                 diagStatus={diagStatus}
                 multiHostDiag={multiHostDiag}
-                showWinRMAssistant={showWinRMAssistant}
+                showWinRMAssistant={false}
                 onRunDiag={runDiag}
                 onToast={onToast}
               />
               {renderDescription()}
               <AttachmentsSection attachments={attachmentsList} rawId={rawId} />
-              <RagMatchesSection
-                kbMatches={details?.kb_matches || []}
-                isRagExpanded={isRagExpanded}
-                onToggleRagExpanded={() => setIsRagExpanded(prev => !prev)}
-                onInsertSolution={(solution, taskId) => {
-                  setReplyText(solution);
-                  onToast({ type: 'info', message: `Решение из заявки #${taskId} подставлено в редактор` });
-                }}
-              />
-            </div>
-            <div className="flex flex-col gap-3 min-h-0 overflow-hidden">
               <CommentsTimeline
                 commentsList={commentsList}
                 loadingDetails={loadingDetails}
                 isCommentsExpanded={isCommentsExpanded}
-                onToggleCommentsExpanded={() => setIsCommentsExpanded(prev => !prev)}
+                onToggleCommentsExpanded={() => setIsCommentsExpanded((prev) => !prev)}
                 expandedMode={true}
-                aiSummarySlot={
-                  <AiSummarySection
-                    commentsCount={commentsList.length}
-                    aiSummary={aiSummary}
-                    loadingAiSummary={loadingAiSummary}
-                    isAiSummaryExpanded={isAiSummaryExpanded}
-                    onToggleAiSummaryExpanded={() => setIsAiSummaryExpanded(prev => !prev)}
-                    onGenerateAiSummary={handleGenerateAiSummary}
-                  />
-                }
+              />
+            </div>
+
+            {/* Right pane: Unified Decision & Action Platform */}
+            <div className="overflow-y-auto pr-1">
+              <UnifiedDecisionPanel
+                ticket={ticket}
+                details={details}
+                rawId={rawId}
+                templates={templates}
+                aiSummary={aiSummary}
+                loadingAiSummary={loadingAiSummary}
+                onGenerateAiSummary={handleGenerateAiSummary}
+                onUpdateTicket={onUpdateTicket}
+                onToast={onToast}
+                onClose={onClose}
+                onRefreshDetails={loadDetails}
+                diagStatus={diagStatus}
+                onRunDiag={runDiag}
               />
             </div>
           </div>
@@ -884,6 +353,24 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       ) : (
         <div className="flex-1 overflow-y-auto">
           <div className="p-4 space-y-3.5">
+            {/* Единая монолитная панель управления решением наверху карточки */}
+            <UnifiedDecisionPanel
+              ticket={ticket}
+              details={details}
+              rawId={rawId}
+              templates={templates}
+              aiSummary={aiSummary}
+              loadingAiSummary={loadingAiSummary}
+              onGenerateAiSummary={handleGenerateAiSummary}
+              onUpdateTicket={onUpdateTicket}
+              onToast={onToast}
+              onClose={onClose}
+              onRefreshDetails={loadDetails}
+              diagStatus={diagStatus}
+              onRunDiag={runDiag}
+            />
+
+            {/* Контекстные секции заявки */}
             <RequesterCard
               ticket={ticket}
               details={details}
@@ -892,97 +379,24 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
               rawId={rawId}
               diagStatus={diagStatus}
               multiHostDiag={multiHostDiag}
-              showWinRMAssistant={showWinRMAssistant}
+              showWinRMAssistant={false}
               onRunDiag={runDiag}
               onToast={onToast}
             />
+
             {renderDescription()}
             <AttachmentsSection attachments={attachmentsList} rawId={rawId} />
-            <RagMatchesSection
-              kbMatches={details?.kb_matches || []}
-              isRagExpanded={isRagExpanded}
-              onToggleRagExpanded={() => setIsRagExpanded(prev => !prev)}
-              onInsertSolution={(solution, taskId) => {
-                setReplyText(solution);
-                onToast({ type: 'info', message: `Решение из заявки #${taskId} подставлено в редактор` });
-              }}
-            />
+
             <CommentsTimeline
               commentsList={commentsList}
               loadingDetails={loadingDetails}
               isCommentsExpanded={isCommentsExpanded}
-              onToggleCommentsExpanded={() => setIsCommentsExpanded(prev => !prev)}
+              onToggleCommentsExpanded={() => setIsCommentsExpanded((prev) => !prev)}
               expandedMode={false}
-              aiSummarySlot={
-                <AiSummarySection
-                  commentsCount={commentsList.length}
-                  aiSummary={aiSummary}
-                  loadingAiSummary={loadingAiSummary}
-                  isAiSummaryExpanded={isAiSummaryExpanded}
-                  onToggleAiSummaryExpanded={() => setIsAiSummaryExpanded(prev => !prev)}
-                  onGenerateAiSummary={handleGenerateAiSummary}
-                />
-              }
             />
           </div>
         </div>
       )}
-
-      {/* 3. Consolidated Action Footer */}
-      <div className="border-t border-neutral-200 dark:border-neutral-800 p-3.5 shrink-0 bg-white dark:bg-neutral-900 shadow-md space-y-3">
-        {pendingConfirmation && (
-          <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-3 flex items-center justify-between gap-3">
-            <div className="text-[12px] text-amber-950 dark:text-amber-100">
-              <strong>Требуется подтверждение:</strong> {pendingConfirmation.plan.actionTitle}. До нажатия «Подтвердить» команда не выполняется.
-            </div>
-            <div className="flex shrink-0 gap-2">
-              <button type="button" onClick={() => handleConfirmSuggestedJob('reject')} disabled={submitting} className="px-2.5 py-1.5 text-[11.5px] font-semibold rounded border border-neutral-300 dark:border-neutral-700 hover:bg-white dark:hover:bg-neutral-800">Отклонить</button>
-              <button type="button" onClick={() => handleConfirmSuggestedJob('approve')} disabled={submitting} className="px-2.5 py-1.5 text-[11.5px] font-semibold rounded bg-amber-600 hover:bg-amber-500 text-white">Подтвердить</button>
-            </div>
-          </div>
-        )}
-        <AiTriageCard
-          ticket={ticket}
-          details={details}
-          ticketRun={ticketRun}
-          onRunChange={setTicketRun}
-          onToast={onToast}
-          targetStatusId={mainAction.statusId}
-          targetStatusName={getStatusNameById(mainAction.statusId)}
-          selectedStatusOverride={selectedStatusOverride}
-          onResetStatusOverride={() => setSelectedStatusOverride(null)}
-          reanalyzing={reanalyzing}
-          onReanalyze={handleReanalyze}
-          replyText={replyText}
-          onInsertAiSynthesis={(txt) => {
-            setReplyText(txt);
-            onToast({ type: 'info', message: 'Синтез AI подставлен в ответ' });
-          }}
-          expenses={expenses}
-          onChangeExpenses={setExpenses}
-        />
-
-        <ReplyActionForm
-          ticket={ticket}
-          replyMode={replyMode}
-          onSetReplyMode={setReplyMode}
-          replyText={replyText}
-          onChangeReplyText={setReplyText}
-          templates={templates}
-          selectedTemplateKey={selectedTemplateKey}
-          onSelectTemplate={handleTemplateSelect}
-          isStatusAllowed={isStatusAllowed}
-          isActionsMenuOpen={isActionsMenuOpen}
-          onToggleActionsMenu={() => setIsActionsMenuOpen(!isActionsMenuOpen)}
-          onSelectMenuStatus={handleSelectMenuStatus}
-          confirmingCancel={confirmingCancel}
-          onCancelTicketClick={handleCancelTicketClick}
-          onTakeOwnership={handleTakeOwnership}
-          onExecuteMainAction={handleExecuteMainAction}
-          mainAction={mainAction}
-          submitting={submitting}
-        />
-      </div>
     </div>
   );
 }

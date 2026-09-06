@@ -2,7 +2,7 @@ import React from 'react';
 import type { Ticket } from '../../data/mock';
 import type { TaskDetails } from '../../lib/types';
 import { IconUser, IconPhone, IconBuilding, IconRefresh } from '../Icons';
-import DiagnosticsSection, { type DiagStatus } from './DiagnosticsSection';
+import { type DiagStatus } from './DiagnosticsSection';
 
 interface RequesterCardProps {
   ticket: Ticket;
@@ -112,17 +112,39 @@ export default function RequesterCard({
           </div>
         )}
 
-        {/* Workstation Hosts & Diagnostics */}
+        {/* Workstation Host Compact Badge */}
         {effectiveHost && (
-          <DiagnosticsSection
-            hostList={hostList}
-            rawId={rawId}
-            diagStatus={diagStatus}
-            multiHostDiag={multiHostDiag}
-            showWinRMAssistant={showWinRMAssistant}
-            onRunDiag={() => onRunDiag()}
-            onToast={onToast}
-          />
+          <div className="flex-1 min-w-[190px] bg-neutral-50 dark:bg-neutral-800/40 border border-neutral-200/70 dark:border-neutral-800 rounded-lg p-2.5 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <span
+                className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                  diagStatus.ping === 'ok'
+                    ? 'bg-emerald-500'
+                    : diagStatus.ping === 'fail'
+                    ? 'bg-rose-500'
+                    : diagStatus.ping === 'checking'
+                    ? 'bg-blue-500 animate-pulse'
+                    : 'bg-neutral-400'
+                }`}
+              />
+              <div className="min-w-0">
+                <span className="text-neutral-400 block text-[10px] uppercase font-bold tracking-wider">
+                  Рабочая станция
+                </span>
+                <span className="text-neutral-900 dark:text-neutral-100 font-mono font-semibold block truncate">
+                  {effectiveHost}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onRunDiag()}
+              disabled={diagStatus.ping === 'checking'}
+              className="text-[11px] text-neutral-600 dark:text-neutral-300 hover:text-blue-600 dark:hover:text-blue-400 font-medium px-2 py-1 rounded bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+            >
+              {diagStatus.ping === 'checking' ? '...' : 'Пинг'}
+            </button>
+          </div>
         )}
       </div>
     </div>

@@ -42,10 +42,71 @@ interface Props {
 
 type ViewMode = 'table' | 'kanban';
 type FilterTab = 'all' | 'duplicates' | 'redirects' | 'repair' | 'wifi';
+type AuditFilter = 'all' | 'needs_attention' | 'waiting_approval' | 'system_error' | 'fallback' | 'autopilot';
 
 interface SmartBatchModalState {
   open: boolean;
   items: SmartBatchItem[];
+}
+
+function getRunBadgeConfig(state: string, mode: string) {
+  switch (state) {
+    case 'running':
+      return {
+        label: mode === 'autopilot' ? 'Автопилот: в работе' : 'В работе',
+        className: 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-900',
+        dotClass: 'bg-blue-500 animate-pulse',
+      };
+    case 'waiting_approval':
+      return {
+        label: 'Ждёт подтверждения',
+        className: 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-900',
+        dotClass: 'bg-amber-500 animate-ping',
+      };
+    case 'waiting_answer':
+      return {
+        label: 'Ждёт ответа',
+        className: 'bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-900',
+        dotClass: 'bg-sky-500',
+      };
+    case 'paused':
+      return {
+        label: 'На паузе',
+        className: 'bg-orange-50 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 border-orange-200 dark:border-orange-900',
+        dotClass: 'bg-orange-500',
+      };
+    case 'system_error':
+      return {
+        label: 'Ошибка связи',
+        className: 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-900',
+        dotClass: 'bg-rose-500',
+      };
+    case 'completed':
+      return {
+        label: 'Завершён',
+        className: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border-neutral-200 dark:border-neutral-700',
+        dotClass: 'bg-neutral-400',
+      };
+    default:
+      return {
+        label: mode === 'autopilot' ? 'Автопилот' : 'Ожидает',
+        className: 'bg-neutral-50 dark:bg-neutral-850 text-neutral-600 dark:text-neutral-400 border-neutral-200 dark:border-neutral-750',
+        dotClass: 'bg-neutral-400',
+      };
+  }
+}
+
+function renderTicketRunPill(run: TicketRun) {
+  const cfg = getRunBadgeConfig(run.state, run.mode);
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border ${cfg.className}`}
+      title={`Цикл #${run.id} · шаг: ${run.current_step || '—'}`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cfg.dotClass}`} />
+      <span>{cfg.label}</span>
+    </span>
+  );
 }
 
 function getSlaClass(deadline: Date) {
@@ -89,6 +150,7 @@ export default function QueuePage({
   const [filterTab, setFilterTab] = useState<FilterTab>('all');
   const [showRuleEngineOnly, setShowRuleEngineOnly] = useState(false);
   const [showAiOnly, setShowAiOnly] = useState(false);
+  const [auditFilter, setAuditFilter] = useState<AuditFilter>('all');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [inlineStatusTicketId, setInlineStatusTicketId] = useState<string | null>(null);
   const [openHostTicketId, setOpenHostTicketId] = useState<string | null>(null);
@@ -110,10 +172,14 @@ export default function QueuePage({
     }
     let cancelled = false;
     const loadRuns = () => {
+      if (document.hidden) return;
       void fetchTicketRuns(taskIds)
         .then(({ items }) => {
-          if (!cancelled) {
-            setTicketRuns(Object.fromEntries(items.map(run => [run.task_id, run])));
+          if (!cancelled && Array.isArray(items)) {
+            setTicketRuns(prev => ({
+              ...prev,
+              ...Object.fromEntries(items.map(run => [run.task_id, run])),
+            }));
             setTicketRunsStaleAt(null);
           }
         })
@@ -122,7 +188,7 @@ export default function QueuePage({
         });
     };
     loadRuns();
-    const refreshTimer = window.setInterval(loadRuns, 15000);
+    const refreshTimer = window.setInterval(loadRuns, 30000);
     return () => {
       cancelled = true;
       window.clearInterval(refreshTimer);
@@ -156,6 +222,16 @@ export default function QueuePage({
       t.templateKey === 'bring_pc_112'
   ).length;
   const countWifi = scopedTickets.filter(t => t.ruleType === 'wlan_access' || t.templateKey === 'wifi_access').length;
+
+  // Counts for audit status filter
+  const countAttention = scopedTickets.filter(t => {
+    const run = ticketRuns[t.rawId];
+    return run && (run.state === 'waiting_approval' || run.state === 'paused' || run.state === 'system_error');
+  }).length;
+  const countApproval = scopedTickets.filter(t => ticketRuns[t.rawId]?.state === 'waiting_approval').length;
+  const countSystemError = scopedTickets.filter(t => ticketRuns[t.rawId]?.state === 'system_error').length;
+  const countAutopilot = scopedTickets.filter(t => ticketRuns[t.rawId]?.mode === 'autopilot').length;
+  const countFallback = scopedTickets.filter(t => !t.hasRuleEngine && !t.hasAiSolution).length;
 
   // Adaptive smart tabs: hide tabs that have 0 items in selected service scope (Marks #3)
   const availableTabs: { key: FilterTab; label: string; count: number }[] = [
@@ -196,6 +272,22 @@ export default function QueuePage({
     )
       return false;
     if (filterTab === 'wifi' && t.ruleType !== 'wlan_access' && t.templateKey !== 'wifi_access') return false;
+
+    // Audit State Filter
+    if (auditFilter === 'needs_attention') {
+      const run = ticketRuns[t.rawId];
+      if (!run || !(run.state === 'waiting_approval' || run.state === 'paused' || run.state === 'system_error')) {
+        return false;
+      }
+    } else if (auditFilter === 'waiting_approval') {
+      if (ticketRuns[t.rawId]?.state !== 'waiting_approval') return false;
+    } else if (auditFilter === 'system_error') {
+      if (ticketRuns[t.rawId]?.state !== 'system_error') return false;
+    } else if (auditFilter === 'autopilot') {
+      if (ticketRuns[t.rawId]?.mode !== 'autopilot') return false;
+    } else if (auditFilter === 'fallback') {
+      if (t.hasRuleEngine || t.hasAiSolution) return false;
+    }
 
     // Search with null-guards (Audit E-5)
     if (searchQuery) {
@@ -700,6 +792,56 @@ export default function QueuePage({
           </div>
         </div>
 
+        {/* Audit Filter Sub-bar */}
+        <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-2 border-b border-neutral-150 dark:border-neutral-850 bg-neutral-50/50 dark:bg-neutral-900/30 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[11px] uppercase tracking-wider font-bold text-neutral-400 dark:text-neutral-500 mr-1">
+              Аудит:
+            </span>
+            {([
+              { key: 'all' as AuditFilter, label: 'Все', count: scopedTickets.length },
+              { key: 'needs_attention' as AuditFilter, label: 'Внимание', count: countAttention, variant: 'alert' },
+              { key: 'waiting_approval' as AuditFilter, label: 'Подтверждение', count: countApproval, variant: 'warn' },
+              { key: 'system_error' as AuditFilter, label: 'Ошибка связи', count: countSystemError, variant: 'danger' },
+              { key: 'autopilot' as AuditFilter, label: 'Автопилот', count: countAutopilot },
+              { key: 'fallback' as AuditFilter, label: 'Fallback', count: countFallback },
+            ])
+              .filter(chip => chip.key === 'all' || chip.count > 0)
+              .map(chip => {
+                const isActive = auditFilter === chip.key;
+                return (
+                  <button
+                    key={chip.key}
+                    type="button"
+                    onClick={() => setAuditFilter(chip.key)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11.5px] font-semibold border transition-colors cursor-pointer ${
+                      isActive
+                        ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 border-neutral-900 dark:border-neutral-100 shadow-2xs'
+                        : chip.variant === 'danger'
+                        ? 'bg-rose-50/70 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-900 hover:bg-rose-100'
+                        : chip.variant === 'warn'
+                        ? 'bg-amber-50/70 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-900 hover:bg-amber-100'
+                        : chip.variant === 'alert'
+                        ? 'bg-orange-50/70 dark:bg-orange-950/40 text-orange-800 dark:text-orange-300 border-orange-200 dark:border-orange-900 hover:bg-orange-100'
+                        : 'bg-white dark:bg-neutral-850 text-neutral-600 dark:text-neutral-400 border-neutral-200/90 dark:border-neutral-750 hover:bg-neutral-100 dark:hover:bg-neutral-800'
+                    }`}
+                  >
+                    <span>{chip.label}</span>
+                    <span
+                      className={`text-[10.5px] tabular-nums font-mono px-1 rounded-full ${
+                        isActive
+                          ? 'bg-white/20 text-white dark:bg-neutral-900/20 dark:text-neutral-900'
+                          : 'bg-black/5 dark:bg-white/10'
+                      }`}
+                    >
+                      {chip.count}
+                    </span>
+                  </button>
+                );
+              })}
+          </div>
+        </div>
+
         {/* Table View (Matching style and layout from image-2.png) */}
         {view === 'table' && (
           <div className="flex-1 overflow-auto bg-white dark:bg-neutral-950">
@@ -805,8 +947,8 @@ export default function QueuePage({
                           </button>
 
                           {ticketRun && (
-                            <div className={`mt-1 px-1 text-[10px] font-semibold ${ticketRun.state === 'system_error' ? 'text-rose-600 dark:text-rose-400' : 'text-neutral-500 dark:text-neutral-400'}`}>
-                              {ticketRun.mode === 'autopilot' ? 'Автопилот' : 'Ручной'} · {runStateLabel[ticketRun.state] || ticketRun.state}
+                            <div className="mt-1.5">
+                              {renderTicketRunPill(ticketRun)}
                             </div>
                           )}
 
@@ -1178,6 +1320,12 @@ export default function QueuePage({
                               {formatSla(t.slaDeadline)}
                             </span>
                           </div>
+
+                          {ticketRuns[t.rawId] && (
+                            <div className="mt-2 pt-1.5 border-t border-neutral-100 dark:border-neutral-700/60">
+                              {renderTicketRunPill(ticketRuns[t.rawId])}
+                            </div>
+                          )}
                         </div>
                       ))}
 

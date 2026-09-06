@@ -83,7 +83,7 @@ function MainApp() {
     }
   }, [isLoggedIn, loadQueue]);
 
-  // Smart background polling (every 15s when logged in & page visible)
+  // Smart background polling (every 60s when logged in & page visible)
   useEffect(() => {
     if (!isLoggedIn) return;
 
@@ -92,7 +92,7 @@ function MainApp() {
       if (isAutoRefresh && document.visibilityState === 'visible') {
         loadQueue(true);
       }
-    }, 15000);
+    }, 60000);
 
     return () => clearInterval(interval);
   }, [isLoggedIn, loadQueue]);

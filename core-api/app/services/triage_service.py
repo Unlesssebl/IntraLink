@@ -487,7 +487,8 @@ class TriageService:
                 },
                 "history": history,
                 "decision": decision,
-                "telemetry_collected_at": (telemetry or {}).get("collected_at"),
+                "telemetry_status": (telemetry or {}).get("status")
+                or (telemetry or {}).get("is_online"),
             },
             ensure_ascii=False,
             sort_keys=True,
