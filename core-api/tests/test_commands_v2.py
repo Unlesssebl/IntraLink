@@ -1,3 +1,4 @@
+import datetime as dt
 import uuid
 
 import pytest
@@ -140,6 +141,42 @@ async def test_idempotency_key_rejects_a_different_request():
 
 
 @pytest.mark.asyncio
+async def test_expired_running_claim_moves_to_needs_review_without_reexecution():
+    async with AsyncSessionLocal() as db:
+        service = CommandService(db)
+        command, _ = await service.create(
+            action="diagnose_host",
+            target={"host": "PC-LEASE"},
+            parameters={},
+            idempotency_key="expired-claim-test",
+            initiator="operator",
+            source="test",
+            priority=5,
+        )
+        await service.claim(
+            command.id,
+            worker_id="worker-1",
+            message_id="lease-1",
+        )
+        command.lease_expires_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        await db.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            await service.claim(
+                command.id,
+                worker_id="worker-2",
+                message_id="lease-2",
+            )
+
+        assert exc.value.status_code == 409
+        assert exc.value.detail["command_status"] == "needs_review"
+        persisted = await db.get(CommandRecord, command.id)
+        assert persisted is not None
+        assert persisted.status == "needs_review"
+        assert persisted.error_message == "claim_lease_expired_result_unknown"
+
+
+@pytest.mark.asyncio
 async def test_claim_token_guards_final_result():
     async with AsyncSessionLocal() as db:
         service = CommandService(db)
@@ -242,6 +279,36 @@ async def test_safe_failure_is_requeued_with_bounded_retry():
         assert await db.scalar(
             select(func.count(CommandOutbox.id)).where(CommandOutbox.command_id == command.id)
         ) == 2
+
+
+@pytest.mark.asyncio
+async def test_queued_command_is_cancelled_if_policy_is_disabled_before_claim():
+    async with AsyncSessionLocal() as db:
+        service = CommandService(db)
+        command, _ = await service.create(
+            action="diagnose_host",
+            target={"host": "PC-POLICY"},
+            parameters={},
+            idempotency_key="policy-disabled-before-claim",
+            initiator="operator",
+            source="test",
+            priority=5,
+        )
+        db.add(
+            ActionPolicyRecord(
+                action="diagnose_host",
+                mode="disabled",
+                updated_by="admin:test",
+            )
+        )
+        await db.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            await service.claim(command.id, worker_id="worker-1")
+        assert exc.value.status_code == 409
+        await db.refresh(command)
+        assert command.status == "cancelled"
+        assert command.error_message == "action_policy_disabled_before_execution"
 
 
 @pytest.mark.asyncio

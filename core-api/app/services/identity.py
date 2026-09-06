@@ -40,6 +40,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         "task:read", "task:mutate", "triage:read", "triage:mutate", "ai:use",
         "command:read", "command:create", "command:approve:r1", "command:approve:r2", "command:cancel",
         "diagnostic:run", "events:read",
+        "autopilot:read", "autopilot:control",
         "identity:link:self",
     }),
     "system_admin": frozenset({
@@ -47,6 +48,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         "command:read", "command:create", "command:approve:r1", "command:approve:r2",
         "command:cancel", "command:review", "policy:manage", "identity:manage",
         "credentials:manage", "rules:manage", "diagnostic:run", "events:read", "audit:read",
+        "autopilot:read", "autopilot:control", "autopilot:manage",
         "identity:link:self",
     }),
     "security_auditor": frozenset({

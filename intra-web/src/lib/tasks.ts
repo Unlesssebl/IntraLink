@@ -14,6 +14,7 @@ import type {
   AIHealthData,
   SanitizePreviewResult,
 } from './types';
+import { ensureManualTicketRun } from './ticketRuns';
 
 export function mapStatusIdToStatus(statusId: number, statusName?: string): Status {
   if (statusId === 1 || (statusName && /новая/i.test(statusName))) return 'new';
@@ -482,61 +483,44 @@ export async function fetchSanitizePreview(text: string): Promise<SanitizePrevie
 }
 
 export async function applyTask(taskId: number, payload: SingleApplyPayload): Promise<any> {
-  const res = await apiFetch('/api/v1/triage/apply', {
+  const ticketRunId = payload.ticket_run_id || (await ensureManualTicketRun(taskId)).id;
+  const command = await apiFetch<any>('/api/v2/commands', {
     method: 'POST',
+    headers: { 'Idempotency-Key': crypto.randomUUID() },
     body: JSON.stringify({
-      task_ids: [taskId],
-      status_id: payload.status_id,
-      comment: payload.comment || '',
-      expenses: payload.minutes ?? 10,
-      executor_ids: payload.executor_ids,
-      confirmed_by_human: true,
-      verified_execution_job_id: payload.verified_execution_job_id,
+      action: 'apply_triage',
+      target: { task_id: taskId },
+      parameters: {
+        task_ids: [taskId],
+        status_id: payload.status_id,
+        comment: payload.comment || '',
+        expenses: payload.minutes ?? 10,
+        executor_ids: payload.executor_ids,
+        is_private: payload.is_private || false,
+        verified_execution_job_id: payload.verified_execution_job_id,
+      },
+      source: 'web',
+      ticket_run_id: ticketRunId,
     }),
   });
-  const first = res?.results?.[0];
-  if (first && first.update_ok === false) {
-    throw new Error(first.error || 'Ошибка IntraService: статус заявки не был обновлен.');
+  if (command.status === 'awaiting_approval') {
+    await confirmExecutionJob(command.command_id, 'approve');
   }
-  return res;
+  const completed = await pollExecutionJob(command.command_id, 30000, 1000);
+  return completed.result || { results: [{ task_id: taskId, update_ok: true }] };
 }
 
 export async function bulkApplyTasks(tasks: BulkApplyItemPayload[]): Promise<BulkApplyResponse> {
-  const taskIds = tasks.map(t => t.task_id);
-  if (tasks.length > 0 && tasks.every(t => t.status_id === tasks[0].status_id && t.comment === tasks[0].comment)) {
-    const res = await apiFetch<any>('/api/v1/triage/apply', {
-      method: 'POST',
-      body: JSON.stringify({
-        task_ids: taskIds,
-        status_id: tasks[0].status_id,
-        comment: tasks[0].comment || '',
-        expenses: tasks[0].minutes || 10,
-        executor_ids: tasks[0].executor_ids,
-      }),
-    });
-    const results = res.results || [];
-    return {
-      total: tasks.length,
-      success_count: results.filter((r: any) => r.status === 'success').length,
-      failed_count: results.filter((r: any) => r.status !== 'success').length,
-      applied: results.filter((r: any) => r.status === 'success'),
-      failed: results.filter((r: any) => r.status !== 'success'),
-    };
-  }
-
   const applied: any[] = [];
   const failed: any[] = [];
   for (const item of tasks) {
     try {
-      const res = await apiFetch<any>('/api/v1/triage/apply', {
-        method: 'POST',
-        body: JSON.stringify({
-          task_ids: [item.task_id],
-          status_id: item.status_id,
-          comment: item.comment || '',
-          expenses: item.minutes || 10,
-          executor_ids: item.executor_ids,
-        }),
+      const res = await applyTask(item.task_id, {
+        status_id: item.status_id,
+        comment: item.comment || '',
+        minutes: item.minutes || 10,
+        executor_ids: item.executor_ids,
+        is_private: item.is_private,
       });
       applied.push({ task_id: item.task_id, res });
     } catch (err: any) {
@@ -585,6 +569,7 @@ export async function enqueueExecution(payload: {
   task_id?: number;
   params?: Record<string, any>;
   auto_close_ticket?: boolean;
+  ticket_run_id?: string;
 }): Promise<{ status: string; job_id: string; action: string; task_id?: number }> {
   const result = await apiFetch<any>('/api/v2/commands', {
     method: 'POST',
@@ -594,6 +579,7 @@ export async function enqueueExecution(payload: {
       target: { task_id: payload.task_id },
       parameters: payload.params || {},
       source: 'web',
+      ticket_run_id: payload.ticket_run_id,
     }),
   });
   return { ...result, job_id: result.command_id };
@@ -607,6 +593,7 @@ export async function submitCommand(payload: {
   priority?: number;
   idempotency_key?: string;
   auto_close_ticket?: boolean;
+  ticket_run_id?: string;
   suggestion_task_id?: number;
   suggestion_fingerprint?: string;
 }): Promise<{ status: string; job_id: string; command_type: string; task_id?: number }> {
@@ -619,6 +606,7 @@ export async function submitCommand(payload: {
       parameters: payload.params || {},
       priority: payload.priority || 5,
       source: 'web',
+      ticket_run_id: payload.ticket_run_id,
     }),
   });
   return { ...result, job_id: result.command_id, command_type: result.action };
@@ -742,15 +730,22 @@ export async function smartBulkApplyTasks(
     if (onProgress) onProgress(i, items.length, item.task_id);
 
     try {
+      const run = await ensureManualTicketRun(item.task_id);
+      let verifiedExecutionJobId: string | undefined;
       // 1. Если требуется доменное исполнение (например, grant_wlan)
       if (item.requires_domain_job && item.domain_job) {
         const job = await enqueueExecution({
           action: item.domain_job.action,
           task_id: item.task_id,
-          params: item.domain_job.params || { username: item.domain_job.identity },
+          params: item.domain_job.params || { identity: item.domain_job.identity },
           auto_close_ticket: false,
+          ticket_run_id: run.id,
         });
+        if (job.status === 'awaiting_approval') {
+          await confirmExecutionJob(job.job_id, 'approve');
+        }
         await pollExecutionJob(job.job_id, 15000, 1000);
+        verifiedExecutionJobId = job.job_id;
       }
 
       // 2. Применяем решение к заявке в IntraService
@@ -760,6 +755,8 @@ export async function smartBulkApplyTasks(
         minutes: item.minutes,
         executor_ids: item.executor_ids,
         is_private: item.is_private || false,
+        verified_execution_job_id: verifiedExecutionJobId,
+        ticket_run_id: run.id,
       });
 
       success_count++;

@@ -5,7 +5,7 @@
 3. Интеграция с эндпоинтом POST /api/v1/triage/apply (HTTP 429).
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -40,6 +40,10 @@ def override_deps():
     async def mock_get_db():
         session = AsyncMock()
         session.execute = AsyncMock()
+        session.scalar = AsyncMock(return_value=None)
+        scalar_result = MagicMock()
+        scalar_result.all.return_value = []
+        session.scalars = AsyncMock(return_value=scalar_result)
         session.commit = AsyncMock()
         session.rollback = AsyncMock()
         yield session

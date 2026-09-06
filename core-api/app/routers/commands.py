@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.db import JobLog, get_db
+from app.database.db import JobLog, TicketRun, get_db
 from app.config import settings
 from app.routers.deps import principal_subject, require_permission
 from app.services.actions import get_policy_engine
@@ -143,6 +143,22 @@ async def submit_command(
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    if task_id is not None and payload.mode != "dry_run":
+        active_run_id = await db.scalar(
+            select(TicketRun.id).where(
+                TicketRun.task_id == task_id,
+                TicketRun.completed_at.is_(None),
+            )
+        )
+        if active_run_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Заявка управляется активным TicketRun; legacy-команда запрещена, "
+                    "используйте /api/v2/commands"
+                ),
+            )
 
     job_uuid = uuid.uuid4()
     job_id = f"job_{job_uuid.hex[:12]}"

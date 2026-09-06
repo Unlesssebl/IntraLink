@@ -7,7 +7,9 @@ from datetime import datetime
 from typing import Any, Iterable
 
 
-SAFE_AUTONOMOUS_ACTIONS = frozenset({"diagnose_host", "rag_sync"})
+from app.services.actions.policy import AUTO_ELIGIBLE_ACTIONS
+
+SAFE_AUTONOMOUS_ACTIONS = AUTO_ELIGIBLE_ACTIONS
 QUALITY_METRICS = ("recall_at_5", "mrr_at_5", "triage_accuracy", "safe_recommendation_precision")
 
 

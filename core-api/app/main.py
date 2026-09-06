@@ -1,4 +1,5 @@
 import asyncio
+import datetime as dt
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,6 +17,7 @@ from app.database.db import (
     CommandRecord,
     SecurityEvent,
     ServiceCredential,
+    TicketRun,
     AsyncSessionLocal,
     init_db,
     verify_schema,
@@ -36,6 +38,7 @@ from app.routers import (
     service_tasks,
     skills_admin,
     tasks,
+    ticket_runs,
     triage,
     users,
 )
@@ -172,6 +175,8 @@ app.include_router(ai.router)
 app.include_router(commands.router)
 app.include_router(commands_v2.router)
 app.include_router(commands_v2.policy_router)
+app.include_router(ticket_runs.router)
+app.include_router(ticket_runs.settings_router)
 app.include_router(desktop.router)
 app.include_router(events.router)
 app.include_router(identity.router)
@@ -261,6 +266,30 @@ async def command_metrics():
                 ServiceCredential.revoked_at.is_(None)
             )
         ) or 0)
+        ticket_run_rows = (await db.execute(
+            select(
+                TicketRun.state,
+                func.count(TicketRun.id),
+                func.min(TicketRun.created_at),
+            )
+            .where(TicketRun.completed_at.is_(None))
+            .group_by(TicketRun.state)
+        )).all()
+        oldest_active_run = await db.scalar(
+            select(func.min(TicketRun.created_at)).where(TicketRun.completed_at.is_(None))
+        )
+        oldest_pending_outbox = await db.scalar(
+            select(func.min(CommandOutbox.available_at)).where(
+                CommandOutbox.published_at.is_(None)
+            )
+        )
+
+    def age_seconds(value) -> int:
+        if value is None:
+            return 0
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt.timezone.utc)
+        return max(0, int((dt.datetime.now(dt.timezone.utc) - value).total_seconds()))
     lines = [
         "# HELP intralink_commands Commands by durable state",
         "# TYPE intralink_commands gauge",
@@ -282,7 +311,27 @@ async def command_metrics():
         "# HELP intralink_service_credentials_active Non-revoked service credentials",
         "# TYPE intralink_service_credentials_active gauge",
         f"intralink_service_credentials_active {active_service_credentials}",
+        "# HELP intralink_ticket_runs_active Active ticket cycles by state",
+        "# TYPE intralink_ticket_runs_active gauge",
     ])
+    lines.extend(
+        f'intralink_ticket_runs_active{{state="{run_state}"}} {count}'
+        for run_state, count, _oldest in ticket_run_rows
+    )
+    lines.extend([
+        "# HELP intralink_ticket_run_oldest_active_seconds Age of the oldest active ticket cycle",
+        "# TYPE intralink_ticket_run_oldest_active_seconds gauge",
+        f"intralink_ticket_run_oldest_active_seconds {age_seconds(oldest_active_run)}",
+        "# HELP intralink_command_outbox_oldest_pending_seconds Age of the oldest unpublished outbox item",
+        "# TYPE intralink_command_outbox_oldest_pending_seconds gauge",
+        f"intralink_command_outbox_oldest_pending_seconds {age_seconds(oldest_pending_outbox)}",
+        "# HELP intralink_ticket_run_oldest_state_seconds Age of the oldest active ticket cycle by state",
+        "# TYPE intralink_ticket_run_oldest_state_seconds gauge",
+    ])
+    lines.extend(
+        f'intralink_ticket_run_oldest_state_seconds{{state="{run_state}"}} {age_seconds(oldest)}'
+        for run_state, _count, oldest in ticket_run_rows
+    )
     return "\n".join(lines) + "\n"
 
 

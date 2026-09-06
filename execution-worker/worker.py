@@ -294,9 +294,18 @@ class WindowsExecutionWorker:
                 msg_id,
                 str(data.get("outbox_id") or "") or None,
             )
-            # Duplicate outbox delivery for a command already claimed or completed.
             if claim_status == 409:
-                return True
+                detail = claim.get("detail") if isinstance(claim, dict) else None
+                command_status = (
+                    detail.get("command_status") if isinstance(detail, dict) else None
+                )
+                return command_status in {
+                    "succeeded",
+                    "failed",
+                    "rejected",
+                    "cancelled",
+                    "needs_review",
+                }
             if claim_status != 200 or not claim:
                 return False
             claim_token = str(claim["claim_token"])
@@ -340,6 +349,9 @@ class WindowsExecutionWorker:
         result_status = "failed"
         result_message = ""
         result_payload = {}
+        failure_kind: str | None = None
+        failure_code: str | None = None
+        verified_failure = False
         close_ticket_payload: dict[str, Any] | None = None
 
         try:
@@ -433,6 +445,8 @@ class WindowsExecutionWorker:
 
                 if not pc_name or not printer_name:
                     result_message = "Не указаны обязательные параметры (pc_name или printer_name)."
+                    failure_kind = "configuration"
+                    failure_code = "printer_parameters_missing"
                 else:
                     # Fail-Fast проверка доступности ПК по сети перед WinRM
                     await self._publish_event(
@@ -448,6 +462,8 @@ class WindowsExecutionWorker:
                     if not is_online:
                         result_status = "failed"
                         result_message = f"Рабочая станция {pc_name} недоступна по сети (WinRM порт 5985 закрыт/выключен)."
+                        failure_kind = "infrastructure"
+                        failure_code = "host_unreachable"
                     else:
                         if mode == "confirm":
                             approved = await self._wait_for_confirmation(
@@ -473,11 +489,20 @@ class WindowsExecutionWorker:
                             },
                         )
                         res = await self.printer_exec.install_printer(
-                            pc_name, printer_name
+                            pc_name,
+                            printer_name,
+                            printer_ip=params.get("printer_ip") or params.get("printer_address"),
                         )
                         result_status = "success" if res.success else "failed"
                         result_message = res.message
-                        result_payload = {"log": res.log}
+                        result_payload = {
+                            "log": res.log,
+                            "installed": res.success,
+                            "verified": res.success,
+                        }
+                        failure_kind = res.failure_kind
+                        failure_code = res.failure_code
+                        verified_failure = res.verified_failure
 
                         if res.success and task_id > 0 and auto_close:
                             close_ticket_payload = {
@@ -488,11 +513,15 @@ class WindowsExecutionWorker:
 
             else:
                 result_message = f"Неизвестное действие: '{action}'"
+                failure_kind = "configuration"
+                failure_code = "unsupported_action"
 
         except Exception as e:
             logger.exception("Исключение при выполнении задачи %s: %s", job_id, e)
             result_status = "failed"
             result_message = f"Внутренняя ошибка исполнения: {e}"
+            failure_kind = "infrastructure"
+            failure_code = "worker_exception"
 
         finally:
             # Сохраняем финальный результат в Redis
@@ -504,6 +533,9 @@ class WindowsExecutionWorker:
                 "status": result_status,
                 "message": result_message,
                 "payload": result_payload,
+                "failure_kind": failure_kind,
+                "failure_code": failure_code,
+                "verified_failure": verified_failure,
                 "completed_at": time.time(),
                 "node": CONSUMER_NAME,
             }

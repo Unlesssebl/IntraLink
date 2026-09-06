@@ -32,7 +32,7 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
-CURRENT_SCHEMA_REVISION = "20260905_0003"
+CURRENT_SCHEMA_REVISION = "20260906_0004"
 
 
 
@@ -308,6 +308,109 @@ class JobLog(Base):
     )
 
 
+class AutopilotSetting(Base):
+    """Database-backed global gate for all automatic ticket cycles."""
+
+    __tablename__ = "autopilot_settings"
+
+    key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class AutopilotSettingEvent(Base):
+    """Append-only audit trail for changes to the global autopilot gate."""
+
+    __tablename__ = "autopilot_setting_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    setting_key: Mapped[str] = mapped_column(
+        String(32), ForeignKey("autopilot_settings.key", ondelete="CASCADE"), nullable=False, index=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
+class TicketRun(Base):
+    """Durable manual or autopilot cycle for one IntraService ticket."""
+
+    __tablename__ = "ticket_runs"
+    __table_args__ = (
+        UniqueConstraint("task_id", "trigger_key", name="uq_ticket_run_trigger"),
+        Index(
+            "uq_ticket_run_active_task",
+            "task_id",
+            unique=True,
+            postgresql_where=text("completed_at IS NULL"),
+            sqlite_where=text("completed_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    trigger_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    trigger_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    trigger_snapshot_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    current_step: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    waiting_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    waiting_until: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    clarification_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    pause_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TicketRunEvent(Base):
+    """Append-only state and decision history for a ticket cycle."""
+
+    __tablename__ = "ticket_run_events"
+    __table_args__ = (
+        UniqueConstraint("ticket_run_id", "sequence", name="uq_ticket_run_event_sequence"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    ticket_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("ticket_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False)
+    details_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
 class CommandRecord(Base):
     """Authoritative v2 command state. Redis only transports its outbox events."""
 
@@ -329,6 +432,9 @@ class CommandRecord(Base):
     )
     source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     task_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    ticket_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("ticket_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     result_json: Mapped[dict | None] = mapped_column(JSON_TYPE, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     lease_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)

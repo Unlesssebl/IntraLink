@@ -26,6 +26,7 @@ import {
 
 import SmartBatchModal, { type SmartBatchItem } from '../components/queue/SmartBatchModal';
 import BulkConfirmModal, { type BulkConfirmModalState } from '../components/queue/BulkConfirmModal';
+import { fetchTicketRuns, type TicketRun } from '../lib/ticketRuns';
 
 interface Props {
   tickets: Ticket[];
@@ -97,6 +98,34 @@ export default function QueuePage({
   const [processingBulk, setProcessingBulk] = useState(false);
   const [bulkModal, setBulkModal] = useState<BulkConfirmModalState | null>(null);
   const [smartBatchModal, setSmartBatchModal] = useState<SmartBatchModalState | null>(null);
+  const [ticketRuns, setTicketRuns] = useState<Record<number, TicketRun>>({});
+
+  const ticketIdsKey = tickets.map(ticket => ticket.rawId).join(',');
+  useEffect(() => {
+    const taskIds = tickets.map(ticket => ticket.rawId).filter(Boolean).slice(0, 200);
+    if (taskIds.length === 0) {
+      setTicketRuns({});
+      return;
+    }
+    let cancelled = false;
+    const loadRuns = () => {
+      void fetchTicketRuns(taskIds)
+        .then(({ items }) => {
+          if (!cancelled) {
+            setTicketRuns(Object.fromEntries(items.map(run => [run.task_id, run])));
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setTicketRuns({});
+        });
+    };
+    loadRuns();
+    const refreshTimer = window.setInterval(loadRuns, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(refreshTimer);
+    };
+  }, [ticketIdsKey]);
 
   const selectedTicket = tickets.find(t => t.id === selectedTicketId) ?? null;
 
@@ -698,6 +727,16 @@ export default function QueuePage({
                   const primaryHost = hostList[0];
                   const otherHosts = hostList.slice(1);
                   const smartTagClass = "px-2 py-0.5 border border-neutral-200/80 dark:border-neutral-700/80 bg-neutral-100/80 dark:bg-neutral-800/80 text-neutral-600 dark:text-neutral-400 rounded text-[11.5px] font-medium";
+                  const ticketRun = ticketRuns[ticket.rawId];
+                  const runStateLabel: Record<string, string> = {
+                    pending: 'ожидает',
+                    running: 'выполняется',
+                    waiting_answer: 'ждёт ответа',
+                    waiting_approval: 'ждёт подтверждения',
+                    paused: 'пауза',
+                    system_error: 'ошибка',
+                    completed: 'завершён',
+                  };
 
                   return (
                     <tr
@@ -733,6 +772,12 @@ export default function QueuePage({
                             <span>{ticket.statusName || statusConfig[ticket.status].label}</span>
                             <IconChevronDown size={10} className="opacity-40 group-hover:opacity-100 transition-opacity ml-0.5" />
                           </button>
+
+                          {ticketRun && (
+                            <div className={`mt-1 px-1 text-[10px] font-semibold ${ticketRun.state === 'system_error' ? 'text-rose-600 dark:text-rose-400' : 'text-neutral-500 dark:text-neutral-400'}`}>
+                              {ticketRun.mode === 'autopilot' ? 'Автопилот' : 'Ручной'} · {runStateLabel[ticketRun.state] || ticketRun.state}
+                            </div>
+                          )}
 
                           {inlineStatusTicketId === ticket.id && (
                             <div className="absolute left-0 top-8 z-30 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-xl shadow-xl py-1.5 min-w-[170px] animate-in fade-in zoom-in-95 duration-100">

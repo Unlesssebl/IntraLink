@@ -16,6 +16,7 @@ def override_deps():
     async def mock_get_db():
         session = AsyncMock()
         session.execute = AsyncMock()
+        session.scalar = AsyncMock(return_value=None)
         session.commit = AsyncMock()
         session.rollback = AsyncMock()
         session.add = MagicMock()

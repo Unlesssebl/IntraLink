@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
+import uuid
 
 from app.config import settings
 from app.services import intraservice
@@ -64,12 +65,29 @@ class TriageService:
         job_id: str | None,
         task_id: int,
         expected_actions: set[str],
+        db: AsyncSession | None = None,
     ) -> tuple[bool, str | None]:
         if not job_id:
             return (
                 False,
                 "Для статуса «Выполнена» требуется подтверждение успешной команды Execution Worker.",
             )
+        try:
+            from app.database.db import CommandRecord
+
+            command = (
+                await db.get(CommandRecord, uuid.UUID(str(job_id))) if db is not None else None
+            )
+        except (TypeError, ValueError):
+            command = None
+        if command is not None:
+            if command.status != "succeeded":
+                return False, f"Команда '{job_id}' не завершена успешно."
+            if command.task_id != task_id:
+                return False, f"Команда '{job_id}' относится к другой заявке."
+            if command.action not in expected_actions:
+                return False, f"Команда '{job_id}' не подтверждает требуемое действие."
+            return True, None
         try:
             import app.routers.triage as tr
 
@@ -513,6 +531,20 @@ class TriageService:
         if decision:
             decision["confidence"] = card_confidence
 
+        printer_address = ""
+        for field in task.get("CustomFields", []) or []:
+            field_id = field.get("CustomFieldId") or field.get("FieldId")
+            if field_id == settings.PRINTER_IP_CUSTOM_FIELD_ID:
+                printer_address = str(field.get("Value") or "").strip()
+                if printer_address:
+                    break
+        if not printer_address:
+            from app.services.lifecycle.intent_analyzer import IntentAnalyzer
+
+            extracted = IntentAnalyzer.analyze_fast_regex(f"{t_name} {t_desc}")
+            if extracted and extracted.extracted_ip:
+                printer_address = extracted.extracted_ip
+
         return {
             "task": task,
             "history": history,
@@ -526,6 +558,7 @@ class TriageService:
             "has_ai_solution": bool(len(kb_matches) > 0 or (decision and decision.get("rule_type") != "standard_in_work")),
             "confidence_score": card_confidence,
             "requires_human_review": bool(card_confidence < 0.80),
+            "printer_address": printer_address,
         }
 
     @staticmethod
@@ -540,6 +573,7 @@ class TriageService:
         dry_run: bool = False,
         operator_user_id: int | None = None,
         verified_execution_job_id: str | None = None,
+        is_private: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Применяет решение к заявке/группе заявок:
@@ -593,6 +627,7 @@ class TriageService:
                             verified_execution_job_id,
                             tid,
                             expected_actions,
+                            db=db,
                         )
                         if not proof_ok:
                             results.append({
@@ -641,6 +676,7 @@ class TriageService:
                 status_id=status_id,
                 comment=comment if comment else None,
                 executor_ids=exec_ids,
+                is_private=is_private,
             )
 
             # 3. Списание трудозатрат от имени авторизованного оператора

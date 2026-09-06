@@ -44,6 +44,7 @@ async def _execute(action: str, values: dict, db) -> dict:
             executor_ids=values.get("executor_ids"),
             operator_user_id=values.get("operator_user_id"),
             verified_execution_job_id=values.get("verified_execution_job_id"),
+            is_private=bool(values.get("is_private", False)),
         )
         if not results or any(not item.get("update_ok", False) for item in results):
             raise RuntimeError("One or more triage updates failed")
@@ -66,7 +67,15 @@ async def _process_message(redis, message_id: str, data: dict) -> bool:
                 lease_seconds=900,
             )
         except HTTPException as exc:
-            return exc.status_code == 409
+            if exc.status_code != 409 or not isinstance(exc.detail, dict):
+                return False
+            return exc.detail.get("command_status") in {
+                "succeeded",
+                "failed",
+                "rejected",
+                "cancelled",
+                "needs_review",
+            }
 
         values = dict(claim.command.target_json or {})
         values.update(claim.command.params_json or {})

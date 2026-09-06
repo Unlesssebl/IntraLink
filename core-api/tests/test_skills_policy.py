@@ -78,7 +78,7 @@ async def test_policy_engine_default_and_override():
 
 
 @pytest.mark.asyncio
-async def test_policy_cannot_escalate_confirmation_to_auto():
+async def test_printer_policy_defaults_to_confirm_but_admin_can_enable_auto():
     engine = PolicyEngine()
 
     mode, allowed, _ = await engine.evaluate_execution_mode(
@@ -87,8 +87,12 @@ async def test_policy_cannot_escalate_confirmation_to_auto():
     assert allowed is True
     assert mode == "confirm"
 
-    with pytest.raises(ValueError):
-        await engine.set_action_policy("install_printer", PolicyMode.AUTO)
+    await engine.set_action_policy("install_printer", PolicyMode.AUTO, actor="test-admin")
+    mode, allowed, _ = await engine.evaluate_execution_mode(
+        "install_printer", requested_mode="auto"
+    )
+    assert allowed is True
+    assert mode == "auto"
 
 
 @pytest.mark.asyncio
@@ -111,13 +115,14 @@ async def test_skills_admin_api():
             assert detail_resp.status_code == 200
             assert detail_resp.json()["id"] == "install_printer"
 
-            # 3. Небезопасное действие нельзя визуально перевести в AUTO.
+            # 3. Администратор может явно разрешить AUTO для первого сценария.
             patch_resp = await client.patch(
                 "/api/v1/skills/install_printer/policy",
                 headers=HEADERS,
                 json={"mode": "auto"},
             )
-            assert patch_resp.status_code == 409
+            assert patch_resp.status_code == 200
+            assert patch_resp.json()["effective_mode"] == "auto"
 
             # 4. Безопасная диагностика может быть автономной.
             patch_resp = await client.patch(

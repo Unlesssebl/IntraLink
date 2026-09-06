@@ -15,6 +15,7 @@ from app.database.db import AsyncSessionLocal, User
 from app.utils.json_utils import json_dumps, json_loads
 from app.services.intraservice import (
     get_task_lifetime,
+    get_single_task,
     get_tasks,
     parse_api_date,
     get_tasks_by_status,
@@ -456,17 +457,116 @@ async def process_user(
 
 
 async def process_autonomous_lifecycle(service_auth_b64: str) -> None:
-    """
-    Запуск автономного конечного автомата (Lifecycle FSM) для тикетов,
-    назначенных на системный аккаунт бота.
-    """
-    if getattr(settings, "AUTONOMOUS_LIFECYCLE_ENABLED", True):
-        try:
-            from app.services.lifecycle.orchestrator import get_ticket_orchestrator
-            orchestrator = get_ticket_orchestrator()
-            await orchestrator.process_assigned_tasks(service_auth_b64)
-        except Exception as exc:
-            logger.exception("Ошибка в процессе выполнения автономного жизненного цикла: %s", exc)
+    """Persist newly observed assistant assignments without executing legacy FSM steps."""
+    assistant_user_id = settings.INTRASERVICE_SERVICE_USER_ID
+    if not assistant_user_id:
+        return
+    try:
+        response = await get_tasks(
+            service_auth_b64,
+            {
+                "ExecutorId": assistant_user_id,
+                "StatusId": str(settings.STATUS_OPEN_ID),
+                "include": "executorids,status",
+            },
+        )
+        if isinstance(response, dict):
+            tasks = response.get("Tasks", [])
+        elif isinstance(response, list):
+            tasks = response
+        else:
+            tasks = []
+
+        from app.services.ticket_runs import register_observed_assignments
+
+        registrations = await register_observed_assignments(
+            tasks=tasks,
+            assistant_user_id=assistant_user_id,
+            open_status_id=settings.STATUS_OPEN_ID,
+        )
+        created = sum(1 for item in registrations if item.created)
+        if created:
+            logger.info("Зарегистрировано новых циклов автопилота: %d", created)
+
+        from app.database.db import AsyncSessionLocal
+        from app.services.ticket_run_runner import TicketRunRunner
+        from app.services.ticket_runs import TicketRunService, task_executor_ids
+
+        observed = {
+            int(task.get("Id") or 0): task
+            for task in tasks
+            if int(task.get("Id") or 0) > 0
+        }
+        semaphore = asyncio.Semaphore(settings.AUTOPILOT_MAX_CONCURRENCY)
+
+        async def reconcile_run(run) -> None:
+            async with semaphore:
+                try:
+                    task = observed.get(run.task_id)
+                    if task is None:
+                        task = await get_single_task(service_auth_b64, run.task_id)
+                    if not isinstance(task, dict):
+                        return
+                    current_status = int(task.get("StatusId") or 0)
+                    async with AsyncSessionLocal() as db:
+                        run_service = TicketRunService(db)
+                        if current_status in {
+                            settings.STATUS_COMPLETED_ID,
+                            settings.STATUS_CANCELLED_ID,
+                            settings.STATUS_CLOSED_ID,
+                        }:
+                            await run_service.finish_external(
+                                run_id=run.id,
+                                actor="poller",
+                                status_id=current_status,
+                            )
+                            return
+                        if (
+                            run.mode == "autopilot"
+                            and assistant_user_id not in task_executor_ids(task)
+                        ):
+                            await run_service.pause_automatic(
+                                run_id=run.id,
+                                actor="poller",
+                                reason="assistant_removed",
+                            )
+                            return
+                        if run.mode != "autopilot" or run.state not in {
+                            "running",
+                            "waiting_answer",
+                            "waiting_approval",
+                        }:
+                            return
+                        comments = None
+                        if run.state == "waiting_answer":
+                            comments = await get_task_comments(
+                                service_auth_b64, run.task_id
+                            )
+                        await TicketRunRunner(db).advance(
+                            run_id=run.id,
+                            task=task,
+                            comments=comments if isinstance(comments, list) else [],
+                        )
+                except Exception:
+                    logger.exception(
+                        "Ошибка сверки цикла %s для заявки %s", run.id, run.task_id
+                    )
+
+        after_id = None
+        while True:
+            async with AsyncSessionLocal() as db:
+                active_runs = await TicketRunService(db).list_active(
+                    limit=settings.AUTOPILOT_POLL_BATCH_SIZE,
+                    after_id=after_id,
+                )
+            if not active_runs:
+                break
+            after_id = active_runs[-1].id
+            await asyncio.gather(*(reconcile_run(run) for run in active_runs))
+            if len(active_runs) < settings.AUTOPILOT_POLL_BATCH_SIZE:
+                break
+    except Exception as exc:
+        logger.exception("Ошибка регистрации назначений автопилота: %s", exc)
 
 
 async def check_waiting_printer_tasks(
@@ -934,8 +1034,8 @@ async def check_updates():
             # Сохраняем измененные last_task_id пользователей в БД
             await db.commit()
 
-            # Автономный оркестратор жизненного цикла заявок (FSM)
-            # Включает полный цикл: проверка реквизитов, возобновление из ожидания, запуск и финализация
+            # Регистрация назначений в устойчивом PostgreSQL-цикле. Старый Redis FSM
+            # здесь не запускается, чтобы одна заявка не обрабатывалась двумя механизмами.
             try:
                 await process_autonomous_lifecycle(service_auth_b64)
             except Exception as e_lifecycle:

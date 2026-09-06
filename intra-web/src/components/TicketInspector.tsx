@@ -22,6 +22,8 @@ import RagMatchesSection from './inspector/RagMatchesSection';
 import AttachmentsSection from './inspector/AttachmentsSection';
 import CommentsTimeline from './inspector/CommentsTimeline';
 import ReplyActionForm, { type MainActionConfig } from './inspector/ReplyActionForm';
+import TicketRunCard from './inspector/TicketRunCard';
+import { ensureManualTicketRun, type TicketRun } from '../lib/ticketRuns';
 
 interface Props {
   ticket: Ticket;
@@ -58,6 +60,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   const [selectedStatusOverride, setSelectedStatusOverride] = useState<number | null>(null);
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState<boolean>(false);
   const [confirmingCancel, setConfirmingCancel] = useState<boolean>(false);
+  const [ticketRun, setTicketRun] = useState<TicketRun | null>(null);
 
   // AI & RAG States
   const [aiSummary, setAiSummary] = useState<TicketSummaryResult | null>(null);
@@ -101,6 +104,12 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   }, [isResizing, inspectorWidth]);
 
   const rawId = ticket.rawId || parseInt(ticket.id.replace(/\D/g, ''), 10);
+  const currentExecutorIds = ticket.executorIds?.map(String).join(',');
+  const ensureManualRun = async (): Promise<TicketRun> => {
+    const current = await ensureManualTicketRun(rawId);
+    setTicketRun(current);
+    return current;
+  };
   const effectiveHost = ticket.host || details?.pc_name || '';
   const hostList = effectiveHost
     ? Array.from(new Set(effectiveHost.split(/[,;]+/).map(h => h.trim().replace(/\s+/g, '')).filter(Boolean)))
@@ -379,11 +388,14 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
     setSubmitting(true);
     try {
+      const run = await ensureManualRun();
       const res = await applyTask(rawId, {
         status_id: targetStatusId,
         comment: textToSend || 'Взято в работу инженером 1-й линии',
         minutes: expenses,
         is_private: replyMode === 'internal',
+        executor_ids: currentExecutorIds,
+        ticket_run_id: run.id,
       });
 
       const firstRes = res?.results?.[0];
@@ -438,13 +450,15 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     setSubmitting(true);
 
     try {
+      const run = await ensureManualRun();
       if (plan.requiresDomainJob && plan.domainJob) {
         const job = await submitCommand({
           type: plan.domainJob.action,
           target: { task_id: rawId },
-          params: plan.domainJob.params || { username: plan.domainJob.identity },
+          params: plan.domainJob.params || { identity: plan.domainJob.identity },
           mode: 'confirm',
           auto_close_ticket: false,
+          ticket_run_id: run.id,
           suggestion_task_id: suggestion?.task_id,
           suggestion_fingerprint: suggestion?.fingerprint,
         });
@@ -458,6 +472,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         comment: replyText.trim() || plan.comment,
         minutes: expenses || plan.expensesMinutes,
         is_private: replyMode === 'internal',
+        executor_ids: currentExecutorIds,
+        ticket_run_id: run.id,
       });
 
       const firstRes = res?.results?.[0];
@@ -503,6 +519,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     }
     setSubmitting(true);
     try {
+      const run = await ensureManualRun();
       await confirmExecutionJob(jobId, 'approve');
       const job = await pollExecutionJob(jobId, 30000, 1000);
       const finalStatusId = selectedStatusOverride ?? plan.targetStatusId;
@@ -512,6 +529,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         minutes: expenses || plan.expensesMinutes,
         is_private: replyMode === 'internal',
         verified_execution_job_id: job.job_id,
+        executor_ids: currentExecutorIds,
+        ticket_run_id: run.id,
       });
       if (res?.results?.[0]?.update_ok === false) throw new Error(res.results[0].error || 'IntraService отклонил изменение заявки');
       onUpdateTicket(ticket.id, {
@@ -544,19 +563,38 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       }
       setSubmitting(true);
       try {
+        const run = await ensureManualRun();
         onToast({ type: 'info', message: `Добавление ${username} в группу AD WLAN-WORKNET...` });
         const job = await enqueueExecution({
           action: 'grant_wlan',
           task_id: rawId,
-          params: { username },
+          params: { identity: username },
           auto_close_ticket: false,
+          ticket_run_id: run.id,
         });
+        if (job.status === 'awaiting_approval') {
+          setPendingConfirmation({
+            jobId: job.job_id,
+            plan: {
+              actionTitle: `Предоставить Wi-Fi для ${username}`,
+              targetStatusId: 29,
+              targetStatusName: 'Выполнена',
+              comment: `Добрый день! Доступ к сети Wi-Fi успешно предоставлен для учетной записи ${username}.`,
+              expensesMinutes: 10,
+            },
+          });
+          onToast({ type: 'info', message: 'Команда WLAN ожидает подтверждения другого уполномоченного инженера.' });
+          return;
+        }
         await pollExecutionJob(job.job_id, 15000, 1000);
 
         const res = await applyTask(rawId, {
           status_id: 29,
           comment: `Добрый день! Доступ к сети Wi-Fi успешно предоставлен для учетной записи ${username}.`,
           minutes: 10,
+          executor_ids: currentExecutorIds,
+          verified_execution_job_id: job.job_id,
+          ticket_run_id: run.id,
         });
         const firstRes = res?.results?.[0];
         if (firstRes && firstRes.update_ok === false) {
@@ -581,14 +619,34 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       }
       setSubmitting(true);
       try {
+        const run = await ensureManualRun();
         onToast({ type: 'info', message: `Отправка задачи установки принтера на ${pc_name}...` });
         const job = await enqueueExecution({
           action: 'install_printer',
           task_id: rawId,
-          params: { pc_name, printer_name: ticket.title },
-          auto_close_ticket: true,
+          params: {
+            pc_name,
+            printer_name: details?.printer_address || ticket.title,
+            printer_ip: details?.printer_address || undefined,
+          },
+          auto_close_ticket: false,
+          ticket_run_id: run.id,
         });
+        if (job.status === 'awaiting_approval') {
+          await confirmExecutionJob(job.job_id, 'approve');
+        }
         await pollExecutionJob(job.job_id, 30000, 1500);
+        const res = await applyTask(rawId, {
+          status_id: 29,
+          comment: `Добрый день! Принтер успешно установлен на ${pc_name}.`,
+          minutes: 10,
+          executor_ids: currentExecutorIds,
+          verified_execution_job_id: job.job_id,
+          ticket_run_id: run.id,
+        });
+        if (res?.results?.[0]?.update_ok === false) {
+          throw new Error(res.results[0].error || 'IntraService отклонил изменение заявки');
+        }
         onToast({ type: 'success', message: `Заявка #${rawId}: принтер успешно установлен на ${pc_name}` });
         onUpdateTicket(ticket.id, { status: 'resolved', statusId: 29, statusName: 'Выполнена' });
         onClose();
@@ -618,11 +676,14 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   const handleTakeOwnership = async () => {
     setSubmitting(true);
     try {
+      const run = await ensureManualRun();
       await applyTask(rawId, {
         status_id: 27,
         comment: 'Взято в работу инженером 1-й линии',
         minutes: 5,
         is_private: true,
+        executor_ids: currentExecutorIds,
+        ticket_run_id: run.id,
       });
       onUpdateTicket(ticket.id, { status: 'in_progress', statusId: 27, statusName: 'В работе' });
       onToast({ type: 'success', message: `Заявка #${rawId} взята в работу` });
@@ -824,6 +885,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
       {/* 3. Consolidated Action Footer */}
       <div className="border-t border-neutral-200 dark:border-neutral-800 p-3.5 shrink-0 bg-white dark:bg-neutral-900 shadow-md space-y-3">
+        <TicketRunCard taskId={rawId} onToast={onToast} onRunChange={setTicketRun} />
         {pendingConfirmation && (
           <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-3 flex items-center justify-between gap-3">
             <div className="text-[12px] text-amber-950 dark:text-amber-100">

@@ -9,6 +9,12 @@ import {
 } from '../lib/tasks';
 import { IconSun, IconMoon } from '../components/Icons';
 import { apiFetch } from '../lib/api';
+import {
+  fetchAutopilotSetting,
+  updateAutopilotSetting,
+  type AutopilotSetting,
+} from '../lib/ticketRuns';
+import { useAuth } from '../lib/auth';
 
 interface Props {
   theme: 'light' | 'dark';
@@ -17,10 +23,16 @@ interface Props {
 }
 
 export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
+  const { user } = useAuth();
+  const canManageAutopilot = Boolean(
+    user?.permissions?.includes('autopilot:manage') || user?.permissions?.includes('*'),
+  );
   // System status state
   const [systemStatus, setSystemStatus] = useState<any>(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [restartingWorker, setRestartingWorker] = useState(false);
+  const [autopilot, setAutopilot] = useState<AutopilotSetting | null>(null);
+  const [savingAutopilot, setSavingAutopilot] = useState(false);
 
   // Domain auth state
   const [domainAuth, setDomainAuth] = useState<{ is_configured: boolean; username: string | null }>({
@@ -47,10 +59,11 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
     setLoadingStatus(true);
     setLoadingTgUsers(true);
     try {
-      const [sys, dom, usersRes] = await Promise.allSettled([
+      const [sys, dom, usersRes, autopilotRes] = await Promise.allSettled([
         fetchSystemStatus(),
         fetchDomainAuth(),
         fetchTelegramUsers(),
+        fetchAutopilotSetting(),
       ]);
 
       if (sys.status === 'fulfilled') setSystemStatus(sys.value);
@@ -60,6 +73,7 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
       if (usersRes.status === 'fulfilled' && usersRes.value.users) {
         setTgUsers(usersRes.value.users);
       }
+      if (autopilotRes.status === 'fulfilled') setAutopilot(autopilotRes.value);
     } catch (err: any) {
       console.error('Ошибка загрузки настроек:', err);
     } finally {
@@ -128,6 +142,29 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
     }
   };
 
+  const handleToggleAutopilot = async () => {
+    if (!autopilot || savingAutopilot) return;
+    setSavingAutopilot(true);
+    try {
+      const enabled = !autopilot.enabled;
+      const updated = await updateAutopilotSetting(
+        enabled,
+        autopilot.version,
+        enabled ? 'Включено администратором из Web UI' : 'Выключено администратором из Web UI',
+      );
+      setAutopilot(updated);
+      onToast({
+        type: enabled ? 'success' : 'warning',
+        message: enabled ? 'Автопилот включён' : 'Автопилот выключен; автоматические циклы приостановлены',
+      });
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Не удалось изменить автопилот: ${err.message || err}` });
+      await loadAll();
+    } finally {
+      setSavingAutopilot(false);
+    }
+  };
+
   const handleDensityChange = (density: 'compact' | 'normal' | 'comfortable') => {
     setTableDensity(density);
     localStorage.setItem('intralink_table_density', density);
@@ -164,6 +201,39 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-4">
+          <div className="flex items-start justify-between gap-4 border-b border-neutral-100 pb-3 dark:border-neutral-800">
+            <div>
+              <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Автопилот заявок</h2>
+              <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                Глобальный допуск автоматических циклов. Назначения assistant сохраняются и при выключенном режиме.
+              </p>
+            </div>
+            <span className={`rounded px-2 py-1 text-[11px] font-semibold ${autopilot?.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}>
+              {autopilot?.enabled ? 'Включён' : 'Выключен'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+              {autopilot ? `Версия ${autopilot.version} · ${autopilot.updated_by}` : 'Настройка недоступна'}
+              {autopilot && !autopilot.templates_ready && (
+                <div className="mt-1 text-amber-600 dark:text-amber-300">
+                  Не настроены шаблоны: {autopilot.missing_templates.join(', ')}
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              disabled={!canManageAutopilot || !autopilot || savingAutopilot || (!autopilot.enabled && !autopilot.templates_ready)}
+              onClick={handleToggleAutopilot}
+              title={canManageAutopilot ? undefined : 'Требуется право autopilot:manage'}
+              className={`rounded px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 ${autopilot?.enabled ? 'bg-rose-600 hover:bg-rose-500' : 'bg-blue-600 hover:bg-blue-500'}`}
+            >
+              {savingAutopilot ? 'Сохранение…' : autopilot?.enabled ? 'Выключить' : 'Включить'}
+            </button>
+          </div>
+        </div>
+
         {/* Card 1: System Integrations Health */}
         <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-4">
           <div className="flex items-center justify-between border-b border-neutral-100 dark:border-neutral-800 pb-3">

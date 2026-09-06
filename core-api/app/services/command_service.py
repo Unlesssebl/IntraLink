@@ -24,9 +24,13 @@ from app.database.db import (
     CommandOutbox,
     CommandRecord,
     SecurityEvent,
+    AutopilotSetting,
+    TicketRun,
+    TicketRunEvent,
 )
 from app.services.actions.registry import PolicyMode, get_action_registry
-from app.services.actions.policy import AUTO_ELIGIBLE_ACTIONS
+from app.services.actions.policy import AUTO_ELIGIBLE_ACTIONS, AUTO_RETRY_ELIGIBLE_ACTIONS
+from app.config import settings
 
 TERMINAL_STATES = frozenset({"succeeded", "failed", "rejected", "cancelled", "needs_review"})
 WINDOWS_STREAM = "stream:execution_commands:v2"
@@ -66,6 +70,7 @@ def serialize_command(command: CommandRecord) -> dict[str, Any]:
         ),
         "source": command.source,
         "task_id": command.task_id,
+        "ticket_run_id": str(command.ticket_run_id) if command.ticket_run_id else None,
         "result": command.result_json,
         "error_message": command.error_message,
         "created_at": command.created_at.isoformat() if command.created_at else None,
@@ -99,6 +104,49 @@ class CommandService:
         action_def = self.registry.get(action)
         return action_def.default_mode if action_def else PolicyMode.DISABLED
 
+    async def _assert_ticket_run_allows_execution(
+        self, ticket_run_id: uuid.UUID | None, *, task_id: int | None = None
+    ) -> TicketRun | None:
+        if ticket_run_id is None:
+            if task_id is not None:
+                active_run_id = await self.db.scalar(
+                    select(TicketRun.id).where(
+                        TicketRun.task_id == task_id,
+                        TicketRun.completed_at.is_(None),
+                    )
+                )
+                if active_run_id is not None:
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        "Active ticket run must be linked to the command",
+                    )
+            return None
+        run = await self.db.get(TicketRun, ticket_run_id)
+        if run is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Ticket run not found")
+        if run.completed_at is not None or run.state != "running":
+            raise HTTPException(status.HTTP_409_CONFLICT, f"Ticket run is {run.state}")
+        if task_id is not None and run.task_id != task_id:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Command task does not match ticket run")
+        if run.mode == "autopilot":
+            setting = await self.db.get(AutopilotSetting, "global")
+            if setting is None or not setting.enabled:
+                raise HTTPException(status.HTTP_409_CONFLICT, "Autopilot is disabled")
+        running_command = await self.db.scalar(
+            select(CommandRecord.id)
+            .where(
+                CommandRecord.ticket_run_id == run.id,
+                CommandRecord.status == "running",
+            )
+            .limit(1)
+        )
+        if running_command is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Ticket run already has an operation in progress",
+            )
+        return run
+
     async def create(
         self,
         *,
@@ -110,6 +158,7 @@ class CommandService:
         source: str,
         priority: int,
         initiator_principal_id: uuid.UUID | None = None,
+        ticket_run_id: uuid.UUID | None = None,
     ) -> tuple[CommandRecord, bool]:
         action_def = self.registry.get(action)
         if action_def is None:
@@ -141,6 +190,7 @@ class CommandService:
             task_id = int(task_id_raw) if task_id_raw is not None else None
         except (TypeError, ValueError):
             task_id = None
+        await self._assert_ticket_run_allows_execution(ticket_run_id, task_id=task_id)
 
         command = CommandRecord(
             idempotency_key=idempotency_key,
@@ -155,6 +205,7 @@ class CommandService:
             initiator_principal_id=initiator_principal_id,
             source=source,
             task_id=task_id,
+            ticket_run_id=ticket_run_id,
         )
         self.db.add(command)
         try:
@@ -271,6 +322,36 @@ class CommandService:
         ))
         if decision == "approve":
             self._enqueue(command)
+        if command.ticket_run_id:
+            run = await self.db.get(TicketRun, command.ticket_run_id)
+            if run is not None and run.completed_at is None:
+                run.version += 1
+                run.updated_by = operator
+                if decision == "approve":
+                    run.state = "running"
+                    run.pause_reason = None
+                    run_event_type = "command_approved"
+                else:
+                    run.state = "paused"
+                    run.pause_reason = "approval_rejected"
+                    run_event_type = "command_rejected"
+                run_sequence = int(
+                    await self.db.scalar(
+                        select(func.max(TicketRunEvent.sequence)).where(
+                            TicketRunEvent.ticket_run_id == run.id
+                        )
+                    )
+                    or 0
+                ) + 1
+                self.db.add(
+                    TicketRunEvent(
+                        ticket_run_id=run.id,
+                        sequence=run_sequence,
+                        event_type=run_event_type,
+                        actor=operator,
+                        details_json={"command_id": str(command.id)},
+                    )
+                )
         await self.db.commit()
         await self.db.refresh(command)
         return command
@@ -285,6 +366,56 @@ class CommandService:
         outbox_id: uuid.UUID | None = None,
     ) -> Claim:
         command = await self.get(command_id, for_update=True)
+        now = dt.datetime.now(dt.timezone.utc)
+        if command.status == "running":
+            lease_expires_at = command.lease_expires_at
+            if lease_expires_at is not None and lease_expires_at.tzinfo is None:
+                lease_expires_at = lease_expires_at.replace(tzinfo=dt.timezone.utc)
+            if lease_expires_at is not None and lease_expires_at <= now:
+                attempt = await self.db.scalar(
+                    select(CommandAttempt)
+                    .where(
+                        CommandAttempt.command_id == command.id,
+                        CommandAttempt.status == "running",
+                    )
+                    .order_by(CommandAttempt.attempt_no.desc())
+                )
+                if attempt is not None:
+                    attempt.status = "needs_review"
+                    attempt.completed_at = now
+                    attempt.error_message = "claim_lease_expired_result_unknown"
+                command.status = "needs_review"
+                command.error_message = "claim_lease_expired_result_unknown"
+                command.lease_token_hash = None
+                command.lease_expires_at = None
+                command.completed_at = now
+                command.version += 1
+                self.db.add(
+                    CommandEvent(
+                        command_id=command.id,
+                        sequence=await self._next_sequence(command.id),
+                        event_type="lease_expired_needs_review",
+                        details_json={"reason": "external_result_unknown"},
+                        actor=worker_id,
+                    )
+                )
+                await self.db.commit()
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    {
+                        "command_status": "needs_review",
+                        "reason": "claim_lease_expired_result_unknown",
+                    },
+                )
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {"command_status": "running", "reason": "claim_lease_active"},
+            )
+        if command.status in TERMINAL_STATES:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {"command_status": command.status, "reason": "command_terminal"},
+            )
         if message_id:
             duplicate_message = await self.db.scalar(
                 select(CommandInbox).where(
@@ -293,13 +424,38 @@ class CommandService:
                 )
             )
             if duplicate_message:
-                raise HTTPException(status.HTTP_409_CONFLICT, "Transport message already claimed")
-        if command.status in TERMINAL_STATES:
-            raise HTTPException(status.HTTP_409_CONFLICT, f"Command is {command.status}")
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    {"command_status": command.status, "reason": "transport_message_claimed"},
+                )
         if command.status != "queued":
-            raise HTTPException(status.HTTP_409_CONFLICT, f"Command is {command.status}")
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {"command_status": command.status, "reason": "command_not_queued"},
+            )
+        if await self._policy_mode(command.action) == PolicyMode.DISABLED:
+            command.status = "cancelled"
+            command.version += 1
+            command.error_message = "action_policy_disabled_before_execution"
+            command.completed_at = dt.datetime.now(dt.timezone.utc)
+            self.db.add(
+                CommandEvent(
+                    command_id=command.id,
+                    sequence=await self._next_sequence(command.id),
+                    event_type="policy_blocked",
+                    details_json={"reason": command.error_message},
+                    actor=worker_id,
+                )
+            )
+            await self.db.commit()
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Command action was disabled before execution",
+            )
+        await self._assert_ticket_run_allows_execution(
+            command.ticket_run_id, task_id=command.task_id
+        )
         token = secrets.token_urlsafe(32)
-        now = dt.datetime.now(dt.timezone.utc)
         attempt_no = int(await self.db.scalar(
             select(func.count(CommandAttempt.id)).where(CommandAttempt.command_id == command.id)
         ) or 0) + 1
@@ -353,7 +509,7 @@ class CommandService:
             .order_by(CommandAttempt.attempt_no.desc())
         )
         retry_delay: int | None = None
-        if outcome == "failed" and command.action in AUTO_ELIGIBLE_ACTIONS and attempt:
+        if outcome == "failed" and command.action in AUTO_RETRY_ELIGIBLE_ACTIONS and attempt:
             retry_delay = {1: 5, 2: 30}.get(attempt.attempt_no)
 
         command.status = "queued" if retry_delay is not None else outcome
@@ -382,6 +538,59 @@ class CommandService:
             },
             actor=worker_id,
         ))
+        if (
+            retry_delay is None
+            and outcome == "succeeded"
+            and command.action == "apply_triage"
+            and command.ticket_run_id is not None
+        ):
+            run = await self.db.scalar(
+                select(TicketRun)
+                .where(TicketRun.id == command.ticket_run_id)
+                .with_for_update()
+            )
+            final_status_id = command.params_json.get("status_id")
+            terminal_status_ids = {
+                settings.STATUS_COMPLETED_ID,
+                settings.STATUS_CANCELLED_ID,
+                settings.STATUS_CLOSED_ID,
+            }
+            if (
+                run is not None
+                and run.mode == "manual"
+                and run.completed_at is None
+                and final_status_id in terminal_status_ids
+            ):
+                run.state = "completed"
+                run.outcome = (
+                    "cancelled"
+                    if final_status_id == settings.STATUS_CANCELLED_ID
+                    else "completed"
+                )
+                run.completed_at = finished_at
+                run.version += 1
+                run.updated_by = command.initiator
+                run_sequence = (
+                    await self.db.scalar(
+                        select(func.max(TicketRunEvent.sequence)).where(
+                            TicketRunEvent.ticket_run_id == run.id
+                        )
+                    )
+                    or 0
+                ) + 1
+                self.db.add(
+                    TicketRunEvent(
+                        ticket_run_id=run.id,
+                        sequence=run_sequence,
+                        event_type="run_completed",
+                        details_json={
+                            "outcome": run.outcome,
+                            "status_id": final_status_id,
+                            "command_id": str(command.id),
+                        },
+                        actor=command.initiator,
+                    )
+                )
         await self.db.commit()
         await self.db.refresh(command)
         return command

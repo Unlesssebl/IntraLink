@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_REQUESTS: int = Field(
         10, description="Лимит одновременных подключений к IntraService"
     )
+    AUTOPILOT_POLL_BATCH_SIZE: int = Field(
+        200, ge=10, le=1000, description="Размер устойчивой страницы активных циклов"
+    )
+    AUTOPILOT_MAX_CONCURRENCY: int = Field(
+        5, ge=1, le=50, description="Лимит параллельной сверки циклов автопилота"
+    )
     PRINTER_PC_CUSTOM_FIELD_ID: int = Field(
         1112, description="ID кастомного поля 'Имя ПК'"
     )
@@ -83,17 +89,6 @@ class Settings(BaseSettings):
     STATUS_COMPLETED_ID: int = Field(29, description="ID статуса 'Выполнена'")
     STATUS_CANCELLED_ID: int = Field(30, description="ID статуса 'Отменена'")
     STATUS_CLOSED_ID: int = Field(28, description="ID статуса 'Закрыта'")
-
-    # Автономный оркестратор жизненного цикла заявок
-    AUTONOMOUS_LIFECYCLE_ENABLED: bool = Field(
-        True, description="Включение автономного оркестратора жизненного цикла заявок"
-    )
-    AUTONOMOUS_AUTO_EXPENSES_MINUTES: int = Field(
-        15, description="Норматив списания трудозатрат при автозакрытии"
-    )
-    AUTONOMOUS_TASK_LEASE_TTL: int = Field(
-        120, description="TTL распределенной блокировки заявки в Redis"
-    )
 
     # Параметры сервисного аккаунта и JWT
     INTRASERVICE_SERVICE_LOGIN: str | None = Field(

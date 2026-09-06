@@ -1,4 +1,5 @@
 import json
+import string
 import logging
 import os
 from typing import Any
@@ -196,6 +197,55 @@ def render_template(template_key: str, context: dict[str, Any]) -> dict[str, Any
         "status_name": tmpl.get("status_name", "В работе"),
         "expenses": tmpl.get("expenses", 10),
         "comment": rendered_text.strip(),
+    }
+
+
+async def render_template_strict(
+    session: AsyncSession,
+    template_key: str,
+    context: dict[str, Any],
+    *,
+    expected_status_id: int | None = None,
+) -> dict[str, Any]:
+    """Render an active PostgreSQL template without fallback or invented values."""
+    template = await session.scalar(
+        select(TriageTemplate).where(
+            TriageTemplate.key == template_key,
+            TriageTemplate.is_active.is_(True),
+        )
+    )
+    if template is None:
+        raise ValueError(f"required_template_unavailable:{template_key}")
+    if expected_status_id is not None and template.status_id != expected_status_id:
+        raise ValueError(f"required_template_status_mismatch:{template_key}")
+
+    fields = {
+        field_name
+        for _literal, field_name, _format_spec, _conversion in string.Formatter().parse(
+            template.template_text
+        )
+        if field_name
+    }
+    missing = sorted(
+        field for field in fields if field not in context or context[field] in (None, "")
+    )
+    if missing:
+        raise ValueError(
+            f"required_template_variables_missing:{template_key}:{','.join(missing)}"
+        )
+    try:
+        rendered = template.template_text.format_map(context).strip()
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"required_template_invalid:{template_key}") from exc
+    if not rendered:
+        raise ValueError(f"required_template_empty:{template_key}")
+    return {
+        "template_key": template.key,
+        "name": template.name,
+        "status_id": template.status_id,
+        "status_name": template.status_name,
+        "expenses": template.expenses,
+        "comment": rendered,
     }
 
 

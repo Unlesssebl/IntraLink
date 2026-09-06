@@ -12,7 +12,13 @@ logger = logging.getLogger("core_api.services.actions.policy")
 # Автономность — исключение, а не удобная настройка вызывающего клиента.
 # Этот набор одновременно является технической границей между безопасными
 # read-only задачами и действиями, меняющими заявки/доступы/инфраструктуру.
-AUTO_ELIGIBLE_ACTIONS = frozenset({"diagnose_host", "rag_sync"})
+AUTO_ELIGIBLE_ACTIONS = frozenset(
+    {"diagnose_host", "rag_sync", "install_printer", "apply_triage"}
+)
+
+# Retry eligibility is intentionally narrower than autonomous execution.
+# Mutating printer and ticket updates require result reconciliation after failure.
+AUTO_RETRY_ELIGIBLE_ACTIONS = frozenset({"diagnose_host", "rag_sync"})
 
 
 class PolicyEngine:

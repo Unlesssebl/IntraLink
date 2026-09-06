@@ -37,6 +37,10 @@ def override_dependencies():
     async def mock_get_db():
         session = AsyncMock()
         session.add = MagicMock()
+        session.scalar = AsyncMock(return_value=None)
+        scalar_result = MagicMock()
+        scalar_result.all.return_value = []
+        session.scalars = AsyncMock(return_value=scalar_result)
         yield session
 
     app.dependency_overrides[get_service_auth_b64] = mock_get_service_auth_b64

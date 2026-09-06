@@ -8,10 +8,11 @@ from typing import Any, Literal
 import jwt
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.db import get_db
+from app.database.db import TicketRun, get_db
 from app.routers.deps import (
     OperatorContext,
     get_operator_context,
@@ -70,6 +71,7 @@ class ApplyTriageRequest(BaseModel):
         ..., description="Разрешенный целевой ID статуса"
     )
     comment: str = Field("", description="Текст комментария заявителю")
+    is_private: bool = Field(False, description="Внутренний комментарий")
     expenses: int = Field(0, description="Списание трудозатрат в минутах")
     executor_ids: str = Field(
         settings.DEFAULT_EXECUTOR_IDS,
@@ -261,6 +263,26 @@ async def apply_triage_action(
             detail="Список task_ids не может быть пустым.",
         )
 
+    if not payload.dry_run:
+        active_task_ids = list(
+            (
+                await db.scalars(
+                    select(TicketRun.task_id).where(
+                        TicketRun.task_id.in_(payload.task_ids),
+                        TicketRun.completed_at.is_(None),
+                    )
+                )
+            ).all()
+        )
+        if active_task_ids:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Заявка управляется активным TicketRun; создайте связанную "
+                    f"команду через /api/v2/commands: {sorted(active_task_ids)}"
+                ),
+            )
+
     # Проверка аварийного лимита Dead Man's Switch
     if not payload.dry_run:
         try:
@@ -287,6 +309,7 @@ async def apply_triage_action(
         dry_run=payload.dry_run,
         operator_user_id=op_user_id,
         verified_execution_job_id=payload.verified_execution_job_id,
+        is_private=payload.is_private,
     )
 
     # Если ни одна задача не была успешно обновлена в IntraService, возвращаем ошибку клиенту

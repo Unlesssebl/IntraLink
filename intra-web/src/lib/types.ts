@@ -92,6 +92,7 @@ export interface TaskItem {
   status_id: number;
   status_name: string;
   pc_name: string;
+  printer_address?: string;
   phone: string;
   room: string;
   department: string;
@@ -134,6 +135,7 @@ export interface TaskDetails {
   status_id: number;
   status_name: string;
   pc_name: string;
+  printer_address?: string;
   phone: string;
   room: string;
   department: string;
@@ -218,6 +220,7 @@ export interface SingleApplyPayload {
   executor_ids?: string;
   is_private?: boolean;
   verified_execution_job_id?: string;
+  ticket_run_id?: string;
 }
 
 export interface BulkApplyItemPayload {

@@ -17,6 +17,8 @@ assert spec and spec.loader
 worker_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worker_module)
 
+from executors.base import ActionResult
+
 
 @pytest.mark.asyncio
 async def test_message_is_not_acked_when_result_persistence_fails():
@@ -72,4 +74,114 @@ async def test_diagnose_host_has_a_real_worker_handler():
     assert ack is True
     cached_payload = worker.redis.set.await_args_list[-1].args[1]
     assert '"is_online": true' in cached_payload
+    await worker.api_client.close()
+
+
+@pytest.mark.asyncio
+async def test_verified_printer_failure_is_persisted_as_structured_result():
+    worker = worker_module.WindowsExecutionWorker()
+    worker.redis = AsyncMock()
+    worker.api_client.claim_command_v2 = AsyncMock(
+        return_value=(
+            200,
+            {
+                "claim_token": "claim-1",
+                "action": "install_printer",
+                "task_id": 42,
+                "target": {"pc_name": "PC-001"},
+                "parameters": {"printer_name": "Printer-1", "printer_ip": "10.0.0.5"},
+            },
+        )
+    )
+    worker.api_client.finish_command_v2 = AsyncMock(return_value=True)
+    worker._precheck_host_tcp = AsyncMock(return_value=True)
+    worker.printer_exec.install_printer = AsyncMock(
+        return_value=ActionResult(
+            success=False,
+            message="Принтер отсутствует после установки",
+            failure_kind="verified_failure",
+            failure_code="printer_not_found_after_install",
+            verified_failure=True,
+        )
+    )
+
+    ack = await worker._process_job(
+        worker_module.STREAM_EXECUTION_QUEUE_V2,
+        "4-0",
+        {"command_id": "00000000-0000-0000-0000-000000000042"},
+    )
+
+    assert ack is True
+    finish_call = worker.api_client.finish_command_v2.await_args
+    assert finish_call.args[3] == "failed"
+    result = finish_call.kwargs["result"]
+    assert result["verified_failure"] is True
+    assert result["failure_kind"] == "verified_failure"
+    assert result["failure_code"] == "printer_not_found_after_install"
+    await worker.api_client.close()
+
+
+@pytest.mark.asyncio
+async def test_printer_verification_distinguishes_absence_from_unavailable_check():
+    executor = worker_module.PrinterExecutor()
+    executor.run_remote_powershell = AsyncMock(
+        side_effect=[
+            {"success": True, "data": None},
+            {"success": True, "data": ["Other printer"]},
+        ]
+    )
+    absent = await executor.verify("PC-001", [], printer_name="Printer-1")
+    assert absent[0] is False
+    assert absent[2] is True
+    assert absent[3] == "printer_not_found_after_install"
+
+    executor.run_remote_powershell = AsyncMock(
+        side_effect=[
+            {"success": False, "error": "WinRM timeout"},
+            {"success": False, "error": "WinRM timeout"},
+        ]
+    )
+    unavailable = await executor.verify("PC-001", [], printer_name="Printer-1")
+    assert unavailable[0] is False
+    assert unavailable[2] is False
+    assert unavailable[3] == "printer_verification_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_running_claim_conflict_is_not_acked_until_result_is_resolved():
+    worker = worker_module.WindowsExecutionWorker()
+    worker.api_client.claim_command_v2 = AsyncMock(
+        return_value=(
+            409,
+            {"detail": {"command_status": "running", "reason": "claim_lease_active"}},
+        )
+    )
+
+    ack = await worker._process_job(
+        worker_module.STREAM_EXECUTION_QUEUE_V2,
+        "5-0",
+        {"command_id": "00000000-0000-0000-0000-000000000043"},
+    )
+
+    assert ack is False
+    await worker.api_client.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_claim_conflict_is_safe_to_ack():
+    worker = worker_module.WindowsExecutionWorker()
+    worker.api_client.claim_command_v2 = AsyncMock(
+        return_value=(
+            409,
+            {"detail": {"command_status": "needs_review", "reason": "lease_expired"}},
+        )
+    )
+
+    ack = await worker._process_job(
+        worker_module.STREAM_EXECUTION_QUEUE_V2,
+        "6-0",
+        {"command_id": "00000000-0000-0000-0000-000000000044"},
+    )
+
+    assert ack is True
     await worker.api_client.close()
