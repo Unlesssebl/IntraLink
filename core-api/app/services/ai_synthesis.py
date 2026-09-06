@@ -8,6 +8,7 @@ import logging
 import re
 from typing import Any
 
+from app.config import settings
 from app.services.ai.hub import ai_hub
 from app.services.ai.sanitizer import data_sanitizer
 from app.services.ai.schemas import DataCircuit, RoutingMetadata

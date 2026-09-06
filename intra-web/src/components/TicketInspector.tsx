@@ -22,7 +22,6 @@ import RagMatchesSection from './inspector/RagMatchesSection';
 import AttachmentsSection from './inspector/AttachmentsSection';
 import CommentsTimeline from './inspector/CommentsTimeline';
 import ReplyActionForm, { type MainActionConfig } from './inspector/ReplyActionForm';
-import TicketRunCard from './inspector/TicketRunCard';
 import { ensureManualTicketRun, type TicketRun } from '../lib/ticketRuns';
 
 interface Props {
@@ -426,7 +425,15 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         loadDetails();
       }
     } catch (err: any) {
-      onToast({ type: 'error', message: `Ошибка сохранения: ${err.message || err}` });
+      if ((err.message || '').includes('decision_stale')) {
+        onToast({
+          type: 'warning',
+          message: 'Заявка или рекомендация обновились на сервере. Контекст перегружен, введённый текст сохранён.',
+        });
+        loadDetails();
+      } else {
+        onToast({ type: 'error', message: `Ошибка сохранения: ${err.message || err}` });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -503,7 +510,15 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
       onClose();
     } catch (err: any) {
-      onToast({ type: 'error', message: `Ошибка выполнения: ${err.message || err}` });
+      if ((err.message || '').includes('decision_stale')) {
+        onToast({
+          type: 'warning',
+          message: 'Решение по заявке устарело (контекст изменился). Данные обновлены, введённый текст сохранён.',
+        });
+        loadDetails();
+      } else {
+        onToast({ type: 'error', message: `Ошибка выполнения: ${err.message || err}` });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -550,7 +565,15 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       setPendingConfirmation(null);
       onClose();
     } catch (err: any) {
-      onToast({ type: 'error', message: `Ошибка после подтверждения: ${err.message || err}` });
+      if ((err.message || '').includes('decision_stale')) {
+        onToast({
+          type: 'warning',
+          message: 'Контекст заявки обновился во время подтверждения. Решение обновлено, введённый текст сохранён.',
+        });
+        loadDetails();
+      } else {
+        onToast({ type: 'error', message: `Ошибка после подтверждения: ${err.message || err}` });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -603,6 +626,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           executor_ids: currentExecutorIds,
           verified_execution_job_id: job.job_id,
           ticket_run_id: run.id,
+          decision_id: details?.decision?.id,
+          decision_version: details?.decision?.version,
         });
         const firstRes = res?.results?.[0];
         if (firstRes && firstRes.update_ok === false) {
@@ -651,6 +676,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           executor_ids: currentExecutorIds,
           verified_execution_job_id: job.job_id,
           ticket_run_id: run.id,
+          decision_id: details?.decision?.id,
+          decision_version: details?.decision?.version,
         });
         if (res?.results?.[0]?.update_ok === false) {
           throw new Error(res.results[0].error || 'IntraService отклонил изменение заявки');
@@ -692,12 +719,22 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         is_private: true,
         executor_ids: currentExecutorIds,
         ticket_run_id: run.id,
+        decision_id: details?.decision?.id,
+        decision_version: details?.decision?.version,
       });
       onUpdateTicket(ticket.id, { status: 'in_progress', statusId: 27, statusName: 'В работе' });
       onToast({ type: 'success', message: `Заявка #${rawId} взята в работу` });
       loadDetails();
     } catch (err: any) {
-      onToast({ type: 'error', message: `Ошибка: ${err.message || err}` });
+      if ((err.message || '').includes('decision_stale')) {
+        onToast({
+          type: 'warning',
+          message: 'Заявка или рекомендация обновились на сервере. Контекст перегружен.',
+        });
+        loadDetails();
+      } else {
+        onToast({ type: 'error', message: `Ошибка: ${err.message || err}` });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -893,7 +930,6 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
       {/* 3. Consolidated Action Footer */}
       <div className="border-t border-neutral-200 dark:border-neutral-800 p-3.5 shrink-0 bg-white dark:bg-neutral-900 shadow-md space-y-3">
-        <TicketRunCard taskId={rawId} onToast={onToast} onRunChange={setTicketRun} />
         {pendingConfirmation && (
           <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-3 flex items-center justify-between gap-3">
             <div className="text-[12px] text-amber-950 dark:text-amber-100">
@@ -909,6 +945,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           ticket={ticket}
           details={details}
           ticketRun={ticketRun}
+          onRunChange={setTicketRun}
+          onToast={onToast}
           targetStatusId={mainAction.statusId}
           targetStatusName={getStatusNameById(mainAction.statusId)}
           selectedStatusOverride={selectedStatusOverride}

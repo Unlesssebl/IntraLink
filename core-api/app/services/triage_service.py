@@ -476,6 +476,7 @@ class TriageService:
         # Ключ зависит от фактического содержимого, а не только от количества
         # комментариев: редактирование описания/реплики не вернет устаревший ответ.
         ai_resolution = None
+        ai_metadata: dict[str, Any] = {}
         redis = tr.get_redis_client()
         cache_payload = json.dumps(
             {

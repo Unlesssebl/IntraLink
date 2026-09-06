@@ -175,6 +175,7 @@ class TicketRunRunner:
         task: dict[str, Any],
         comments: list[dict[str, Any]] | None = None,
         actor: str = "autopilot",
+        service_auth_b64: str | None = None,
     ) -> TicketRun:
         run = await self.db.get(TicketRun, run_id)
         if run is None:
@@ -185,7 +186,11 @@ class TicketRunRunner:
             return run
         if run.state == TicketRunState.WAITING_ANSWER.value:
             return await self._advance_waiting_answer(
-                run=run, task=task, comments=comments or [], actor=actor
+                run=run,
+                task=task,
+                comments=comments or [],
+                actor=actor,
+                service_auth_b64=service_auth_b64,
             )
 
         pc_name, printer_address = self.extract_printer_parameters(task)
@@ -230,6 +235,7 @@ class TicketRunRunner:
                     template_key="wrong_service",
                     context={"target_service": f"{target_name} — {target_url}"},
                     actor=actor,
+                    service_auth_b64=service_auth_b64,
                 )
             if not self.is_supported_printer_installation(task, pc_name, printer_address):
                 run.pause_reason = "unsupported_scenario"
@@ -503,7 +509,95 @@ class TicketRunRunner:
         template_key: str,
         context: dict[str, Any],
         actor: str,
+        service_auth_b64: str | None = None,
     ) -> TicketRun:
+        if service_auth_b64:
+            from app.services.worker import get_single_task, get_task_comments
+
+            try:
+                fresh_task = await get_single_task(service_auth_b64, run.task_id)
+            except Exception:
+                fresh_task = None
+
+            if isinstance(fresh_task, dict):
+                current_status = int(fresh_task.get("StatusId") or 0)
+                if current_status in {
+                    settings.STATUS_COMPLETED_ID,
+                    settings.STATUS_CANCELLED_ID,
+                    settings.STATUS_CLOSED_ID,
+                }:
+                    return await self.runs.finish_external(
+                        run_id=run.id,
+                        actor="poller",
+                        status_id=current_status,
+                    )
+
+                from app.services.vault import get_service_account_user_id
+
+                service_user_id = await get_service_account_user_id(self.db)
+                if service_user_id and service_user_id not in task_executor_ids(fresh_task):
+                    return await self.runs.pause_automatic(
+                        run_id=run.id,
+                        actor="poller",
+                        reason="assistant_removed",
+                    )
+
+                try:
+                    fresh_comments = await get_task_comments(service_auth_b64, run.task_id)
+                except Exception:
+                    fresh_comments = None
+
+                if isinstance(fresh_comments, list) and step.startswith("cancel_timeout"):
+                    creator_id = (
+                        str(fresh_task.get("CreatorId"))
+                        if fresh_task.get("CreatorId") is not None
+                        else None
+                    )
+                    assistant_id_str = str(service_user_id) if service_user_id else None
+                    waiting_started = (
+                        run.waiting_until - dt.timedelta(hours=72)
+                        if run.waiting_until
+                        else run.updated_at
+                    )
+                    if waiting_started and waiting_started.tzinfo is None:
+                        waiting_started = waiting_started.replace(tzinfo=dt.timezone.utc)
+
+                    new_applicant_comments = []
+                    for c in fresh_comments:
+                        raw_editor = c.get("EditorId") or c.get("UserId")
+                        editor = str(raw_editor) if raw_editor is not None else None
+                        if creator_id and editor != creator_id:
+                            continue
+                        if editor == assistant_id_str:
+                            continue
+                        raw_created = c.get("Created") or c.get("Date")
+                        try:
+                            created = dt.datetime.fromisoformat(str(raw_created).replace("Z", "+00:00"))
+                            if created.tzinfo is None:
+                                created = created.replace(tzinfo=dt.timezone.utc)
+                            if waiting_started and created > waiting_started:
+                                new_applicant_comments.append(c)
+                        except (TypeError, ValueError):
+                            continue
+
+                    if new_applicant_comments:
+                        run.waiting_reason = None
+                        run.waiting_until = None
+                        await self._record_step(
+                            run,
+                            step="wait_for_answer",
+                            state=TicketRunState.RUNNING.value,
+                            actor=actor,
+                            event_details={"cancellation_aborted": True, "reason": "applicant_replied"},
+                        )
+                        return await self._advance_waiting_answer(
+                            run=run,
+                            task=fresh_task,
+                            comments=fresh_comments,
+                            actor=actor,
+                            service_auth_b64=service_auth_b64,
+                        )
+
         try:
             rendered = await render_template_strict(
                 self.db,
@@ -555,6 +649,7 @@ class TicketRunRunner:
         task: dict[str, Any],
         comments: list[dict[str, Any]],
         actor: str,
+        service_auth_b64: str | None = None,
     ) -> TicketRun:
         pc_name, printer_address = self.extract_printer_parameters(task)
         collected = dict((run.trigger_snapshot_json or {}).get("collected_params", {}))
@@ -617,6 +712,7 @@ class TicketRunRunner:
                     template_key="ticket_not_relevant",
                     context={},
                     actor=actor,
+                    service_auth_b64=service_auth_b64,
                 )
             if intent and intent.intent.value == "provide_data":
                 if intent.extracted_pc:
@@ -673,5 +769,6 @@ class TicketRunRunner:
                 template_key="ticket_timeout_cancel",
                 context={},
                 actor=actor,
+                service_auth_b64=service_auth_b64,
             )
         return run

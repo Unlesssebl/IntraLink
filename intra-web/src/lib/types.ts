@@ -201,6 +201,7 @@ export interface DecisionRecord {
     complete: boolean;
     missing_data: string[];
     blocked_reasons: string[];
+    limitations?: string[];
     history_total?: number;
     history_used?: number;
     attachments_total?: number;
@@ -218,7 +219,46 @@ export interface DecisionRecord {
   };
   policy: Record<string, any>;
   steps?: DecisionStep[];
+  feedback?: DecisionFeedbackRecord[];
+  created_by?: string;
   created_at: string | null;
+}
+
+export type DecisionVerdict =
+  | 'accepted'
+  | 'modified'
+  | 'rejected'
+  | 'correct'
+  | 'partial'
+  | 'incorrect'
+  | 'insufficient_data';
+
+export type DecisionReasonCode =
+  | 'wrong_context'
+  | 'wrong_classification'
+  | 'wrong_rule'
+  | 'wrong_kb'
+  | 'wrong_ai_text'
+  | 'wrong_policy'
+  | 'execution_error'
+  | 'other';
+
+export interface DecisionFeedbackRecord {
+  id: string;
+  decision_id: string;
+  verdict: DecisionVerdict;
+  reason_code?: string | null;
+  comment?: string | null;
+  final_action?: Record<string, any>;
+  actor: string;
+  created_at: string | null;
+}
+
+export interface DecisionFeedbackPayload {
+  verdict: DecisionVerdict;
+  reason_code?: string | null;
+  comment?: string | null;
+  final_action?: Record<string, any>;
 }
 
 export interface AISuggestionState {

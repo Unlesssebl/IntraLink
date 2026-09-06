@@ -549,6 +549,7 @@ async def process_autonomous_lifecycle(service_auth_b64: str) -> None:
                             run_id=run.id,
                             task=task,
                             comments=comments if isinstance(comments, list) else [],
+                            service_auth_b64=service_auth_b64,
                         )
                 except Exception:
                     logger.exception(

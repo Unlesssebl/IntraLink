@@ -3,7 +3,9 @@ import datetime as dt
 from unittest.mock import patch
 from sqlalchemy import select
 
-from app.database.db import AsyncSessionLocal, AutopilotScenario, CommandRecord, SystemSetting, TriageTemplate
+from app.database.db import (
+    AsyncSessionLocal, AutopilotScenario, CommandRecord, SystemSetting, TicketRunEvent, TriageTemplate,
+)
 from app.services.command_service import CommandService
 from app.services.ticket_run_runner import TicketRunRunner
 from app.services.ticket_runs import REQUIRED_AUTOPILOT_TEMPLATES, TicketRunService
@@ -493,3 +495,162 @@ async def test_verified_install_failure_pauses_without_cancellation():
         assert cancellation is None
         assert run.state == "paused"
         assert run.pause_reason == "execution_failed"
+
+
+@pytest.mark.asyncio
+async def test_pre_cancellation_guard_aborts_on_applicant_reply():
+    async with AsyncSessionLocal() as db:
+        runs = await enable_autopilot(db)
+        task = {
+            "Id": 93007,
+            "StatusId": 31,
+            "ExecutorId": 10001,
+            "CreatorId": 501,
+            "Name": "Подключить принтер",
+            "ServiceId": 19,
+        }
+        registration = await runs.register_assignment(
+            task=task, assistant_user_id=10001, open_status_id=31
+        )
+        assert registration.run is not None
+        run = registration.run
+        runner = TicketRunRunner(db)
+
+        # 1. Start run and issue clarification
+        await runner.advance(run_id=run.id, task=task)
+        clarification = await db.scalar(
+            select(CommandRecord).where(
+                CommandRecord.ticket_run_id == run.id,
+                CommandRecord.action == "apply_triage",
+            )
+        )
+        assert clarification is not None
+        await CommandService(db).approve(
+            clarification.id, decision="approve", reason=None, operator="operator:test"
+        )
+        claim = await CommandService(db).claim(clarification.id, worker_id="test-backend")
+        await CommandService(db).finish(
+            clarification.id,
+            claim_token=claim.token,
+            outcome="succeeded",
+            result={"results": [{"update_ok": True}]},
+            error_message=None,
+            worker_id="test-backend",
+        )
+        waiting = await runner.advance(run_id=run.id, task=task)
+        assert waiting.state == "waiting_answer"
+
+        # Simulate timeout expired
+        now = dt.datetime.now(dt.timezone.utc)
+        waiting.waiting_until = now - dt.timedelta(seconds=1)
+        await db.commit()
+
+        # Mock fresh task and fresh comments from applicant
+        fresh_task = {
+            **task,
+            "StatusId": 35,
+            "CustomFields": [
+                {"CustomFieldId": 1112, "Value": "PC-93007"},
+                {"CustomFieldId": 1103, "Value": "10.20.30.77"},
+            ],
+        }
+        fresh_comments = [
+            {
+                "EditorId": 501,
+                "Created": (now - dt.timedelta(minutes=5)).isoformat(),
+                "Comment": "IP принтера 10.20.30.77, ПК PC-93007",
+            }
+        ]
+
+        with patch("app.services.worker.get_single_task", return_value=fresh_task), \
+             patch("app.services.worker.get_task_comments", return_value=fresh_comments):
+            resumed = await runner.advance(
+                run_id=run.id,
+                task=task,
+                service_auth_b64="test-service-auth",
+            )
+
+        # Verify cancellation was aborted and no cancel command exists
+        cancellation = await db.scalar(
+            select(CommandRecord).where(
+                CommandRecord.ticket_run_id == run.id,
+                CommandRecord.idempotency_key.like("%:cancel_timeout"),
+            )
+        )
+        assert cancellation is None
+        assert resumed.state != "waiting_answer"
+        assert resumed.waiting_reason is None
+        assert resumed.waiting_until is None
+
+        # Verify event details recorded cancellation_aborted
+        events = list(
+            (
+                await db.scalars(
+                    select(TicketRunEvent)
+                    .where(TicketRunEvent.ticket_run_id == run.id)
+                    .order_by(TicketRunEvent.sequence)
+                )
+            ).all()
+        )
+        abort_events = [e for e in events if (e.details_json or {}).get("cancellation_aborted")]
+        assert len(abort_events) >= 1
+        assert abort_events[0].details_json["reason"] == "applicant_replied"
+
+
+@pytest.mark.asyncio
+async def test_pre_cancellation_guard_completes_on_external_close():
+    async with AsyncSessionLocal() as db:
+        runs = await enable_autopilot(db)
+        task = {
+            "Id": 93008,
+            "StatusId": 31,
+            "ExecutorId": 10001,
+            "CreatorId": 501,
+            "Name": "Подключить принтер",
+            "ServiceId": 19,
+        }
+        registration = await runs.register_assignment(
+            task=task, assistant_user_id=10001, open_status_id=31
+        )
+        run = registration.run
+        runner = TicketRunRunner(db)
+
+        # Move to waiting_answer
+        await runner.advance(run_id=run.id, task=task)
+        clarification = await db.scalar(
+            select(CommandRecord).where(CommandRecord.ticket_run_id == run.id)
+        )
+        await CommandService(db).approve(clarification.id, decision="approve", reason=None, operator="operator:test")
+        claim = await CommandService(db).claim(clarification.id, worker_id="test-backend")
+        await CommandService(db).finish(
+            clarification.id,
+            claim_token=claim.token,
+            outcome="succeeded",
+            result={"results": [{"update_ok": True}]},
+            error_message=None,
+            worker_id="test-backend",
+        )
+        waiting = await runner.advance(run_id=run.id, task=task)
+        assert waiting.state == "waiting_answer"
+
+        waiting.waiting_until = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        await db.commit()
+
+        # Mock fresh task indicating ticket was completed externally (StatusId: 29)
+        with patch("app.services.worker.get_single_task", return_value={"StatusId": 29, "Id": 93008}), \
+             patch("app.services.worker.get_task_comments", return_value=[]):
+            finished = await runner.advance(
+                run_id=run.id,
+                task=task,
+                service_auth_b64="test-service-auth",
+            )
+
+        cancellation = await db.scalar(
+            select(CommandRecord).where(
+                CommandRecord.ticket_run_id == run.id,
+                CommandRecord.idempotency_key.like("%:cancel_timeout"),
+            )
+        )
+        assert cancellation is None
+        assert finished.state == "completed"
+

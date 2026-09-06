@@ -310,9 +310,9 @@ export default function QueuePage({
 
       const res = await smartBulkApplyTasks(payload);
 
-      const failedIds = new Set(res.errors.map(e => String(e.task_id)));
+      const failedIds = new Set(res.errors.map(e => Number(e.task_id)));
       activeItems.forEach(item => {
-        if (failedIds.has(String(item.ticket.rawId))) return;
+        if (failedIds.has(item.ticket.rawId)) return;
         const plan = item.ticket.aiPlan;
         const targetStatusId = plan?.targetStatusId || 27;
         const newStatus = targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : (targetStatusId === 35 || targetStatusId === 48 ? 'waiting' : 'in_progress');
@@ -323,12 +323,20 @@ export default function QueuePage({
         });
       });
 
-      onToast({
-        type: res.failed_count === 0 ? 'success' : 'warning',
-        message: `Пакетное выполнение: ${res.success_count} успешно${res.failed_count > 0 ? `, ${res.failed_count} ошибок` : ''}`,
-      });
-
-      setSelected(new Set());
+      if (res.failed_count > 0) {
+        const errorDetails = res.errors.map(e => `#${e.task_id}: ${e.error}`).join('; ');
+        onToast({
+          type: 'warning',
+          message: `Частичное выполнение: ${res.success_count} успешно, ${res.failed_count} ошибок (${errorDetails})`,
+        });
+        setSelected(new Set(res.errors.map(e => String(e.task_id))));
+      } else {
+        onToast({
+          type: 'success',
+          message: `Пакетное выполнение: ${res.success_count} успешно`,
+        });
+        setSelected(new Set());
+      }
       setSmartBatchModal(null);
     } catch (err: any) {
       onToast({ type: 'error', message: `Ошибка пакетного выполнения: ${err.message || err}` });
@@ -449,14 +457,29 @@ export default function QueuePage({
       });
 
       const res = await bulkApplyTasks(payload);
+      const appliedSet = new Set((res.applied || []).map(a => Number(a.task_id)));
       const newStatus = targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : (targetStatusId === 35 ? 'waiting' : 'in_progress');
-      selectedTickets.forEach(t => onUpdateTicket(t.id, { status: newStatus, statusId: targetStatusId, statusName: statusLabelName }));
 
-      onToast({
-        type: 'success',
-        message: `Успешно обработано: ${res.success_count} из ${payload.length} заявок`,
+      selectedTickets.forEach(t => {
+        if (appliedSet.has(t.rawId)) {
+          onUpdateTicket(t.id, { status: newStatus, statusId: targetStatusId, statusName: statusLabelName });
+        }
       });
-      setSelected(new Set());
+
+      if (res.failed_count > 0) {
+        const errorDetails = (res.failed || []).map(f => `#${f.task_id}: ${f.error}`).join('; ');
+        onToast({
+          type: 'warning',
+          message: `Частично выполнено: ${res.success_count} успешно, ${res.failed_count} с ошибкой (${errorDetails})`,
+        });
+        setSelected(new Set((res.failed || []).map(f => String(f.task_id))));
+      } else {
+        onToast({
+          type: 'success',
+          message: `Успешно обработано: ${res.success_count} из ${payload.length} заявок`,
+        });
+        setSelected(new Set());
+      }
       setBulkModal(null);
     } catch (err: any) {
       onToast({ type: 'error', message: `Ошибка пакетного действия: ${err.message || err}` });
