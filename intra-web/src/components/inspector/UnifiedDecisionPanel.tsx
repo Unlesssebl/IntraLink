@@ -190,15 +190,30 @@ export default function UnifiedDecisionPanel({
     ai: Boolean(details?.ai_suggested_resolution),
   };
 
-  // Предлагаемое действие
-  const actionTitle =
-    proposal?.action ||
-    details?.suggested_action?.name ||
-    (ticket.aiPlan?.actionType === 'duplicate'
-      ? 'Отмена дубликата'
-      : ticket.aiPlan?.actionType === 'redirect'
-      ? 'Редирект в другой отдел'
-      : 'Обработка 1-й линией');
+  // Оценка риска и обоснований
+  const riskLevel = proposal?.risk_level || details?.suggested_action?.risk_level || 'normal';
+  const riskWarning = proposal?.risk_warning || details?.suggested_action?.risk_warning || null;
+  const triggerMarkers: string[] = proposal?.trigger_markers || details?.suggested_action?.trigger_markers || [];
+  const ruleReason: string | undefined = details?.suggested_action?.reason;
+  const isCriticalRisk = riskLevel === 'critical' || Boolean(riskWarning);
+
+  // Хелпер человекочитаемого действия (устранение apply_triage)
+  const formatFriendlyAction = (
+    action?: string,
+    targetStatus?: string,
+    suggestedAction?: { name?: string; rule_type?: string }
+  ): string => {
+    if (suggestedAction?.name) return suggestedAction.name;
+    if (suggestedAction?.rule_type === 'duplicate_task') return 'Отмена дубликата';
+    if (suggestedAction?.rule_type === 'service_redirect') return 'Перенаправление в другой раздел';
+    if (action === 'grant_wlan') return 'Предоставление доступа к Wi-Fi';
+    if (action === 'create_user') return 'Создание учетной записи';
+    if (action === 'install_printer') return 'Установка принтера';
+    if (targetStatus === 'Отменена') return 'Отмена заявки (регламент)';
+    if (targetStatus === 'Выполнена') return 'Регламентное закрытие заявки';
+    if (targetStatus === 'В работе') return 'Взятие в работу 1-й линией';
+    return 'Обработка 1-й линией';
+  };
 
   const targetStatusId =
     selectedStatusOverride ||
@@ -216,6 +231,17 @@ export default function UnifiedDecisionPanel({
       : proposal?.status_name ||
         details?.suggested_action?.status_name ||
         'В работе';
+
+  // Предлагаемое действие
+  const actionTitle =
+    proposal?.title ||
+    details?.suggested_action?.name ||
+    formatFriendlyAction(proposal?.action, targetStatusName, details?.suggested_action);
+
+  const hasSnippets = Boolean(
+    details?.ai_suggested_resolution ||
+      (details?.kb_matches && details.kb_matches.length > 0 && details.kb_matches[0]?.solution)
+  );
 
   // Статус TicketRun
   const currentRunState = ticketRun?.state || 'pending';
@@ -360,12 +386,17 @@ export default function UnifiedDecisionPanel({
             </div>
           </div>
 
-          {/* Индикатор готовности (Ready) */}
+          {/* Индикатор готовности (Ready) / Риска */}
           <div className="shrink-0 text-right">
-            {isReady ? (
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-[11px] font-semibold">
-                <IconCheckCircle size={12} />
-                <span>Готово</span>
+            {isCriticalRisk ? (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-50 text-amber-900 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-300 dark:border-amber-800 text-[11px] font-semibold">
+                <IconAlertCircle size={12} className="text-amber-600 dark:text-amber-400" />
+                <span>Внимание: Простой</span>
+              </span>
+            ) : isReady ? (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-700 text-[11px] font-semibold">
+                <IconCheckCircle size={12} className="text-neutral-500 dark:text-neutral-400" />
+                <span>Сформировано</span>
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300 border border-rose-200 dark:border-rose-800 text-[11px] font-semibold">
@@ -385,6 +416,35 @@ export default function UnifiedDecisionPanel({
                 <li key={i}>{r}</li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {/* Предупреждение о риске простоя производства */}
+        {riskWarning && (
+          <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 space-y-1">
+            <div className="flex items-center gap-1.5 font-bold text-amber-800 dark:text-amber-300">
+              <IconAlertCircle size={14} className="text-amber-600 shrink-0" />
+              <span>Внимание: Риск производственного простоя</span>
+            </div>
+            <p className="text-[11.5px] leading-relaxed text-amber-900/90 dark:text-amber-200/90">
+              {riskWarning}
+            </p>
+          </div>
+        )}
+
+        {/* Безопасное действие при риске простоя, если целевой статус был ошибочно выбран "Отменена" */}
+        {isCriticalRisk && targetStatusId === 30 && (
+          <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 text-xs flex items-center justify-between gap-3">
+            <span className="text-[11.5px] font-medium text-rose-800 dark:text-rose-300">
+              Отмена инцидента с простоем заблокирована политикой безопасности.
+            </span>
+            <button
+              type="button"
+              onClick={handleTakeTicket}
+              className="px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 dark:bg-neutral-100 dark:hover:bg-neutral-200 text-white dark:text-neutral-900 rounded-lg font-bold text-xs shrink-0 transition-colors cursor-pointer"
+            >
+              Взять в работу 1-й линией
+            </button>
           </div>
         )}
 
@@ -571,31 +631,35 @@ export default function UnifiedDecisionPanel({
 
         {/* Строка быстрых сниппетов и списания минут */}
         <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[11px] text-neutral-400 font-medium">Вставка:</span>
-            {details?.ai_suggested_resolution && (
-              <button
-                type="button"
-                onClick={() => insertSnippet(details.ai_suggested_resolution!)}
-                className="px-2 py-0.5 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-900 rounded-md text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
-                title="Вставить сгенерированный AI-синтез"
-              >
-                <IconSparkles size={11} />
-                <span>+ AI-синтез</span>
-              </button>
-            )}
-            {details?.kb_matches && details.kb_matches.length > 0 && details.kb_matches[0]?.solution && (
-              <button
-                type="button"
-                onClick={() => insertSnippet(details.kb_matches![0].solution)}
-                className="px-2 py-0.5 bg-purple-50 dark:bg-purple-950/60 hover:bg-purple-100 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-900 rounded-md text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
-                title="Вставить решение из первого совпадения базы знаний"
-              >
-                <IconDatabase size={11} />
-                <span>+ Из RAG</span>
-              </button>
-            )}
-          </div>
+          {hasSnippets ? (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[11px] text-neutral-400 font-medium">Вставка:</span>
+              {details?.ai_suggested_resolution && (
+                <button
+                  type="button"
+                  onClick={() => insertSnippet(details.ai_suggested_resolution!)}
+                  className="px-2 py-0.5 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-900 rounded-md text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                  title="Вставить сгенерированный AI-синтез"
+                >
+                  <IconSparkles size={11} />
+                  <span>+ AI-синтез</span>
+                </button>
+              )}
+              {details?.kb_matches && details.kb_matches.length > 0 && details.kb_matches[0]?.solution && (
+                <button
+                  type="button"
+                  onClick={() => insertSnippet(details.kb_matches![0].solution)}
+                  className="px-2 py-0.5 bg-purple-50 dark:bg-purple-950/60 hover:bg-purple-100 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-900 rounded-md text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                  title="Вставить решение из первого совпадения базы знаний"
+                >
+                  <IconDatabase size={11} />
+                  <span>+ Из RAG</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <div />
+          )}
 
           <div className="flex items-center gap-2">
             <label className="text-[11px] text-neutral-500 flex items-center gap-1 font-medium">
@@ -684,21 +748,75 @@ export default function UnifiedDecisionPanel({
 
         {/* Содержимое активного таба */}
         <div className="text-xs text-neutral-700 dark:text-neutral-300 leading-relaxed min-h-[90px]">
-          {/* ТАБ 1: Правила регламента */}
+          {/* ТАБ 1: Правила регламента (Explainable Rules) */}
           {selectedTab === 'rules' && (
-            <div className="space-y-2 p-2 rounded-xl bg-neutral-50/60 dark:bg-neutral-950/30 border border-neutral-200 dark:border-neutral-800">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-neutral-900 dark:text-neutral-100">
+            <div className="space-y-2.5 p-3 rounded-xl bg-neutral-50/60 dark:bg-neutral-950/30 border border-neutral-200 dark:border-neutral-800">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="font-bold text-neutral-900 dark:text-neutral-100 text-xs">
                   {details?.suggested_action?.name || 'Стандартный регламент 1-й линии'}
                 </span>
                 <span className="text-[10.5px] font-mono px-2 py-0.5 rounded bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300">
                   {details?.suggested_action?.rule_type || 'standard_first_line'}
                 </span>
               </div>
-              <p className="text-[11.5px] text-neutral-600 dark:text-neutral-400">
-                {details?.suggested_action?.comment ||
-                  'Специфических автоматических правил не обнаружено. Применяется типовой регламент первичной обработки заявок технической поддержки.'}
-              </p>
+
+              {/* Маршрутизация раздела (если есть перенаправление) */}
+              {details?.suggested_action?.rule_type === 'service_redirect' && (
+                <div className="flex items-center gap-2 text-[11.5px] font-medium text-neutral-600 dark:text-neutral-400 bg-white dark:bg-neutral-900 p-2 rounded-lg border border-neutral-200 dark:border-neutral-800 flex-wrap">
+                  <span>Текущий:</span>
+                  <span className="px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 font-semibold">
+                    {ticket.serviceName || details?.service_name || 'Не указан'}
+                  </span>
+                  <span>➔</span>
+                  <span>Рекомендуемый:</span>
+                  <span className="px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-900 font-semibold">
+                    {details?.suggested_action?.target_service || details?.suggested_action?.name || 'Другой раздел'}
+                  </span>
+                </div>
+              )}
+
+              {/* Обоснование / Причина сработки */}
+              <div className="space-y-1">
+                <div className="text-[10.5px] font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
+                  Основание решения:
+                </div>
+                <p className="text-[11.5px] text-neutral-700 dark:text-neutral-300 leading-relaxed">
+                  {ruleReason ||
+                    (details?.suggested_action?.rule_type === 'service_redirect'
+                      ? 'Тематика инцидента не соответствует выбранному разделу каталога услуг.'
+                      : details?.suggested_action?.rule_type === 'duplicate_task'
+                      ? 'Обнаружен дубликат ранее созданной активной заявки.'
+                      : details?.suggested_action?.rule_type === 'downtime_priority'
+                      ? 'Обнаружен критический инцидент с признаками простоя производства: заявка передана в ускоренную обработку.'
+                      : 'Применяется базовый регламент диспетчеризации технической поддержки 1-й линии.')}
+                </p>
+              </div>
+
+              {/* Ключевые маркеры сработки */}
+              {triggerMarkers.length > 0 && (
+                <div className="space-y-1 pt-1 border-t border-neutral-200/60 dark:border-neutral-800">
+                  <div className="text-[10.5px] font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
+                    Обнаруженные маркеры в тексте:
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {triggerMarkers.map((m, idx) => (
+                      <span
+                        key={idx}
+                        className="px-2 py-0.5 rounded-md bg-neutral-200/80 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 text-[10.5px] font-mono border border-neutral-300/60 dark:border-neutral-700"
+                      >
+                        {m}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Предупреждение о риске (если есть) */}
+              {riskWarning && (
+                <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-[11px] text-amber-900 dark:text-amber-200 leading-snug">
+                  <strong>Внимание:</strong> {riskWarning}
+                </div>
+              )}
             </div>
           )}
 

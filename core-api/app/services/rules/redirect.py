@@ -9,6 +9,22 @@ except (ImportError, ValueError):
     from rules.catalog import get_root_name, get_root_number_for_service_id
 
 
+DOWNTIME_KEYWORDS: list[str] = [
+    "простой", "простоя", "простои", "остановка производства", "остановилось производство",
+    "тормозит производственный", "тормозит производство", "тормозит процесс", "срыв отгрузки",
+    "не можем взвешивать", "не можем отгружать", "весы", "весовая", "автовесовая",
+    "авария", "критическ", "блокирует работу", "остановка линии", "остановилась линия",
+]
+
+NETWORK_INFRA_KEYWORDS: list[str] = [
+    "коммутатор", "коммутатору", "коммутатора", "свитч", "switch", "роутер", "маршрутизатор",
+    "пинг", "ping", "потери пакетов", "потеря пакетов", "повышение пинга", "пиковые повышения",
+    "обрыв сети", "отключение камер", "отключаться камеры", "камеры", "камера", "видеонаблюдение", "видеокамер",
+    "сетевое оборудование", "сетевой сбой", "проблема на стороне сети", "работа сети", "работы сети",
+    "нет сети", "отваливается сеть", "падает сеть", "сетевой кабель", "патч-корд", "патчкорд",
+]
+
+
 def classify_target_service(text: str, current_service_id: int | None = None) -> tuple[str | None, str | None]:
     """
     Семантическая классификация текста инцидента в целевой раздел каталога IntraService.
@@ -21,6 +37,9 @@ def classify_target_service(text: str, current_service_id: int | None = None) ->
         return "05", "вопросы документооборота Directum / площадок B2B"
     if "контрагент" in t and any(w in t for w in ["договор", "прикрепи", "данные", "карточк"]):
         return "05", "данные контрагентов и карточек в Directum"
+
+    # Проверка на сетевые проблемы / инфраструктурные сбои (не проблема в конфигурации 1С)
+    is_network_infra_issue = any(w in t for w in NETWORK_INFRA_KEYWORDS)
 
     # Проверка на общие системные проблемы производительности ПК (1-я линия, не 1С)
     is_general_pc_lag = any(w in t for w in [
@@ -37,7 +56,9 @@ def classify_target_service(text: str, current_service_id: int | None = None) ->
     ]) or (any(w in t for w in ["принтер", "мфу", "сканер"]) and any(w in t for w in ["скан", "копи", "драйвер"]))
 
     # 2. Вопросы по 1С (06)
-    if not is_general_pc_lag and not is_mfu_printer_issue:
+    # Если зафиксирована сетевая/инфраструктурная проблема (камеры, коммутатор, пинг) — фраза "в том числе 1С"
+    # указывает на сопутствующий симптом сетевой деградации, а не на ошибку базы 1С!
+    if not is_general_pc_lag and not is_mfu_printer_issue and not is_network_infra_issue:
         if re.search(r"\b1[сc]\b|\bупп\b|\berp\b|\bзуп\b", t) or any(w in t for w in [
             "бухгалтери", "документооборот 1с", "база 1с", "кэш 1с",
             "не включается 1с", "вылетает 1с", "ошибка 1с", "заблокирована таблица", "база данных 1с",
@@ -64,12 +85,13 @@ def classify_target_service(text: str, current_service_id: int | None = None) ->
     if is_password_security:
         return "08", "сброс/восстановление пароля учетной записи или разблокировка входа (ИБ)"
 
-    if not is_file_lock and (
+    if not is_file_lock and not is_network_infra_issue and (
         any(w in t for w in [
             "доступ в папку", "доступ к папке", "доступ к обменник", "обменник", "папку брак", "папка брак",
             "папка отдела", "сетевая папка", "сетевой диск", "права на папку", "доступ на добавление файлов",
             "perco", "перко", "пропуск", "турникет",
-            "скуд", "видеонаблюдение", "камера", "внешний доступ", "удаленный доступ", "отчет по удаленке",
+            "скуд", "доступ к видеонаблюдению", "доступ к камерам", "права на камеры", "архив видеонаблюдения",
+            "внешний доступ", "удаленный доступ", "отчет по удаленке",
             "доступ к файлам уволенного", "антивирус", "kaspersky", "касперский", "обновление антивируса"
         ]) or is_usb_storage or (re.search(r"\bvpn\b|\bвпн\b", t))
     ):
@@ -131,11 +153,11 @@ def classify_target_service(text: str, current_service_id: int | None = None) ->
         return "03", "оргтехника, принтеры или обслуживание/производительность ПК"
 
     # 11. Проблемы с сетью и интернетом / Wi-Fi (04)
-    if any(w in t for w in [
+    if is_network_infra_issue or any(w in t for w in [
         "нет интернета", "не работает интернет", "сетевой кабель", "патч-корд", "обрыв сети", "монтаж сети",
         "wi-fi", "wifi", "вайфай", "вай-фай", "work-net", "пароль от wi-fi", "нет сети"
     ]):
-        return "04", "сетевые подключения, монтаж ЛВС или доступ к Wi-Fi"
+        return "04", "сетевые подключения, коммутаторы, камеры или доступ к Wi-Fi / ЛВС"
 
     # 12. Установка и настройка программ (02)
     is_remote_support_issue = any(w in t for w in ["нет соединения", "не подключается", "сбой anydesk", "ошибка anydesk", "не могу подключиться"])
@@ -185,6 +207,32 @@ class ServiceRedirectRule(BaseRule):
         name = task.get("Name") or ""
         desc = task.get("Description") or ""
         full_text = f"{name}. {desc}".strip()
+        full_text_lower = full_text.lower()
+
+        # Детекция риска производственного простоя (Downtime Risk)
+        downtime_markers = [kw for kw in DOWNTIME_KEYWORDS if kw in full_text_lower]
+        if downtime_markers:
+            # При угрозе простоя производства заявку ЗАПРЕЩЕНО отменять через статус 30!
+            # Назначается приоритетное взятие в работу 1-й линией.
+            return RuleDecision(
+                template_key="downtime_priority",
+                name="Приоритетная обработка (риск простоя)",
+                status_id=27,
+                status_name="В работе",
+                expenses=10,
+                comment=(
+                    "Ваша заявка принята в приоритетную обработку 1-й линией техподдержки.\n"
+                    "Зафиксирован риск влияния на производственный процесс. Инженеры приступают к диагностике."
+                ),
+                is_redirect=False,
+                current_root=current_root,
+                target_root=current_root or "04",
+                target_service_name=current_service_name,
+                reason=f"Обнаружен риск производственного простоя ({', '.join(downtime_markers)}). Авто-отмена запрещена регламентом.",
+                trigger_markers=downtime_markers,
+                risk_level="critical",
+                risk_warning=f"Внимание: обнаружен риск производственного простоя ({', '.join(downtime_markers)})! Заявка переведена в приоритетную работу 1-й линии без отмены.",
+            )
 
         target_root, reason = classify_target_service(full_text, service_id)
         if not target_root:
@@ -226,6 +274,19 @@ class ServiceRedirectRule(BaseRule):
             target_name = get_root_name(target_root)
             current_name = get_root_name(current_root) if current_root else current_service_name
 
+            # Сбор сработавших маркеров для прозрачности решения
+            matched_markers: list[str] = []
+            if target_root == "06":
+                matched_markers = [kw for kw in ["1с", "1c", "упп", "erp", "зуп", "бухгалтерия"] if kw in full_text_lower]
+            elif target_root == "05":
+                matched_markers = [kw for kw in ["directum", "директум", "договор", "b2b", "б2б"] if kw in full_text_lower]
+            elif target_root == "04":
+                matched_markers = [kw for kw in NETWORK_INFRA_KEYWORDS if kw in full_text_lower]
+            elif target_root == "08":
+                matched_markers = [kw for kw in ["пароль", "доступ", "папка", "usb", "perco", "впн", "vpn"] if kw in full_text_lower]
+            elif target_root == "03":
+                matched_markers = [kw for kw in ["принтер", "мфу", "картридж", "сканер", "замятие", "тонер"] if kw in full_text_lower]
+
             comment = (
                 f"Заявка отменена, т. к. создана не в подходящем разделе.\n"
                 f"Требуется оставить заявку в подходящем разделе: {target_name}.\n"
@@ -234,7 +295,7 @@ class ServiceRedirectRule(BaseRule):
 
             return RuleDecision(
                 template_key="wrong_service",
-                name="Неверный раздел каталога услуг",
+                name=f"Перенаправление в {target_name}",
                 status_id=30,
                 status_name="Отменена",
                 expenses=5,
@@ -244,6 +305,8 @@ class ServiceRedirectRule(BaseRule):
                 target_root=target_root,
                 target_service_name=target_name,
                 reason=reason,
+                trigger_markers=matched_markers,
+                risk_level="normal",
             )
 
         return None

@@ -216,6 +216,9 @@ export interface DecisionRecord {
     expenses?: number;
     consequences?: string;
     ready: boolean;
+    trigger_markers?: string[];
+    risk_level?: 'normal' | 'warning' | 'critical';
+    risk_warning?: string | null;
   };
   policy: Record<string, any>;
   steps?: DecisionStep[];

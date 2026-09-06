@@ -252,6 +252,9 @@ class DecisionJournalService:
                     "expenses": (decision or {}).get("expenses"),
                     "consequences": "Изменит заявку в IntraService" if decision else None,
                     "ready": bool(decision) and not missing_data and not rule_errors,
+                    "trigger_markers": (decision or {}).get("trigger_markers", []),
+                    "risk_level": (decision or {}).get("risk_level", "normal"),
+                    "risk_warning": (decision or {}).get("risk_warning"),
                 }
             ),
             policy_json=sanitize_payload(policy or {}),

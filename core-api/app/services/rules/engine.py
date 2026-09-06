@@ -80,6 +80,30 @@ class RuleEngine:
         context: dict[str, Any] | None = None,
     ) -> tuple[RuleDecision, list[dict[str, Any]]]:
         """Evaluate rules and return an audit-safe trace without model reasoning."""
+        def _apply_downtime_safety(dec: RuleDecision) -> RuleDecision:
+            name = task.get("Name") or ""
+            desc = task.get("Description") or ""
+            full_text = f"{name}. {desc}".lower()
+            from .redirect import DOWNTIME_KEYWORDS
+            found = [kw for kw in DOWNTIME_KEYWORDS if kw in full_text]
+            if found:
+                dec.risk_level = "critical"
+                dec.risk_warning = (
+                    f"Внимание: обнаружен риск производственного простоя ({', '.join(found)})! "
+                    "Автоматическая отмена запрещена регламентом безопасности."
+                )
+                if not dec.trigger_markers:
+                    dec.trigger_markers = found
+                else:
+                    for m in found:
+                        if m not in dec.trigger_markers:
+                            dec.trigger_markers.append(m)
+                if dec.status_id == 30:
+                    dec.status_id = 27
+                    dec.status_name = "В работе"
+                    dec.name = f"Приоритетная обработка ({', '.join(found[:2])})"
+            return dec
+
         trace: list[dict[str, Any]] = []
         for rule in self._rules:
             try:
@@ -91,6 +115,7 @@ class RuleEngine:
                     context=context,
                 )
                 if decision is not None:
+                    decision = _apply_downtime_safety(decision)
                     trace.append(
                         {
                             "rule": rule.name,
@@ -117,6 +142,7 @@ class RuleEngine:
 
         # Fallback по умолчанию, если ни одно правило не вернуло результат
         fallback = StandardInWorkRule().evaluate(task, diag, kb_matches, redirect_mode, context)
+        fallback = _apply_downtime_safety(fallback)
         trace.append(
             {
                 "rule": "StandardInWorkRule",
