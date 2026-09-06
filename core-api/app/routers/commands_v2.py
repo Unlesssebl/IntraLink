@@ -39,6 +39,8 @@ class CreateCommandRequest(BaseModel):
     priority: int = Field(5, ge=1, le=10)
     source: str = Field("api", max_length=32)
     ticket_run_id: uuid.UUID | None = None
+    decision_id: uuid.UUID | None = None
+    decision_version: int | None = Field(None, ge=1)
 
 
 class ApprovalRequest(BaseModel):
@@ -97,6 +99,8 @@ async def create_command(
         source=payload.source,
         priority=payload.priority,
         ticket_run_id=payload.ticket_run_id,
+        decision_id=payload.decision_id,
+        decision_version=payload.decision_version,
     )
     return {**serialize_command(command), "duplicate": duplicate}
 

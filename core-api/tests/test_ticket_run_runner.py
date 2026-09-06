@@ -1,8 +1,9 @@
 import pytest
 import datetime as dt
+from unittest.mock import patch
 from sqlalchemy import select
 
-from app.database.db import AsyncSessionLocal, CommandRecord, TriageTemplate
+from app.database.db import AsyncSessionLocal, AutopilotScenario, CommandRecord, SystemSetting, TriageTemplate
 from app.services.command_service import CommandService
 from app.services.ticket_run_runner import TicketRunRunner
 from app.services.ticket_runs import REQUIRED_AUTOPILOT_TEMPLATES, TicketRunService
@@ -14,12 +15,14 @@ async def seed_templates(db) -> None:
         "pc_offline": 35,
         "ticket_timeout_cancel": 30,
         "ticket_not_relevant": 30,
+        "wrong_service": 30,
         "autopilot_unsupported_cancel": 30,
         "autopilot_execution_failed_cancel": 30,
         "resolved_standard": 29,
     }
     texts = {
         "pc_offline": "ПК {pc_name} недоступен.",
+        "wrong_service": "Оставьте заявку в разделе: {target_service}",
         "autopilot_unsupported_cancel": "Не поддерживается: {reason}",
         "autopilot_execution_failed_cancel": "Ошибка установки: {reason}",
     }
@@ -45,11 +48,98 @@ async def seed_templates(db) -> None:
     await db.commit()
 
 
+async def seed_autopilot_prerequisites(db) -> None:
+    await seed_templates(db)
+    db.add(SystemSetting(
+        key="service_account_config",
+        value_json={"login": "assistant", "encrypted_password": "test", "user_id": 10001},
+        is_encrypted=True,
+    ))
+    db.add(AutopilotScenario(
+        service_id=19,
+        scenario_key="printer_installation",
+        enabled=True,
+        config_json={},
+        updated_by="test",
+    ))
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_redirect_requires_configured_target_link():
+    async with AsyncSessionLocal() as db:
+        runs = await enable_autopilot(db)
+        registration = await runs.register_assignment(
+            task=printer_task(93010), assistant_user_id=10001, open_status_id=31
+        )
+        assert registration.run is not None
+        redirect = {
+            "is_redirect": True,
+            "target_root": "04",
+            "target_service_name": "Служба поддержки",
+            "reason": "wrong_section",
+        }
+        with patch("app.services.ticket_run_runner.detect_service_redirect", return_value=redirect):
+            run = await TicketRunRunner(db).advance(
+                run_id=registration.run.id, task=printer_task(93010)
+            )
+        assert run.state == "paused"
+        assert run.pause_reason == "redirect_target_unavailable"
+        assert await db.scalar(
+            select(CommandRecord).where(CommandRecord.ticket_run_id == run.id)
+        ) is None
+
+
+@pytest.mark.asyncio
+async def test_unambiguous_redirect_with_link_uses_dedicated_template():
+    async with AsyncSessionLocal() as db:
+        runs = await enable_autopilot(db)
+        scenario = await db.scalar(
+            select(AutopilotScenario).where(AutopilotScenario.service_id == 19)
+        )
+        scenario.config_json = {
+            "redirect_targets": {
+                "04": {"name": "Служба поддержки", "url": "https://helpdesk.example/service/4"}
+            }
+        }
+        await db.commit()
+        registration = await runs.register_assignment(
+            task=printer_task(93011), assistant_user_id=10001, open_status_id=31
+        )
+        redirect = {
+            "is_redirect": True,
+            "target_root": "04",
+            "target_service_name": "Служба поддержки",
+            "reason": "wrong_section",
+        }
+        with patch("app.services.ticket_run_runner.detect_service_redirect", return_value=redirect):
+            await TicketRunRunner(db).advance(
+                run_id=registration.run.id, task=printer_task(93011)
+            )
+        command = await db.scalar(
+            select(CommandRecord).where(CommandRecord.ticket_run_id == registration.run.id)
+        )
+        assert command is not None
+        assert command.params_json["template_key"] == "wrong_service"
+        assert "https://helpdesk.example/service/4" in command.params_json["comment"]
+
+
+async def enable_autopilot(db) -> TicketRunService:
+    await seed_autopilot_prerequisites(db)
+    runs = TicketRunService(db)
+    setting = await runs.get_global_setting()
+    assert setting is not None
+    await db.commit()
+    await runs.set_global_enabled(enabled=True, actor="admin:test", expected_version=1)
+    return runs
+
+
 def printer_task(task_id: int) -> dict:
     return {
         "Id": task_id,
         "StatusId": 31,
         "ExecutorId": 10001,
+        "ServiceId": 19,
         "Name": "HP LaserJet 9100",
         "CustomFields": [
             {"CustomFieldId": 1112, "Value": "PC-93001"},
@@ -61,12 +151,7 @@ def printer_task(task_id: int) -> dict:
 @pytest.mark.asyncio
 async def test_printer_happy_path_uses_only_linked_v2_commands():
     async with AsyncSessionLocal() as db:
-        await seed_templates(db)
-        runs = TicketRunService(db)
-        setting = await runs.get_global_setting()
-        assert setting is not None
-        await db.commit()
-        await runs.set_global_enabled(enabled=True, actor="admin:test", expected_version=1)
+        runs = await enable_autopilot(db)
         registration = await runs.register_assignment(
             task=printer_task(93001), assistant_user_id=10001, open_status_id=31
         )
@@ -145,7 +230,7 @@ async def test_printer_happy_path_uses_only_linked_v2_commands():
 @pytest.mark.asyncio
 async def test_missing_required_template_stops_cycle_without_ticket_command():
     async with AsyncSessionLocal() as db:
-        await seed_templates(db)
+        await seed_autopilot_prerequisites(db)
         template = await db.scalar(
             select(TriageTemplate).where(TriageTemplate.key == "printer_ip_clarify")
         )
@@ -161,6 +246,7 @@ async def test_missing_required_template_stops_cycle_without_ticket_command():
             "Id": 93002,
             "StatusId": 31,
             "ExecutorId": 10001,
+            "ServiceId": 19,
             "Name": "Подключить принтер",
         }
         registration = await runs.register_assignment(
@@ -182,18 +268,14 @@ async def test_missing_required_template_stops_cycle_without_ticket_command():
 @pytest.mark.asyncio
 async def test_clarification_timeout_prepares_template_cancellation():
     async with AsyncSessionLocal() as db:
-        await seed_templates(db)
-        runs = TicketRunService(db)
-        setting = await runs.get_global_setting()
-        assert setting is not None
-        await db.commit()
-        await runs.set_global_enabled(enabled=True, actor="admin:test", expected_version=1)
+        runs = await enable_autopilot(db)
         task = {
             "Id": 93003,
             "StatusId": 31,
             "ExecutorId": 10001,
             "CreatorId": 501,
             "Name": "Подключить принтер",
+            "ServiceId": 19,
         }
         registration = await runs.register_assignment(
             task=task, assistant_user_id=10001, open_status_id=31
@@ -244,18 +326,14 @@ async def test_clarification_timeout_prepares_template_cancellation():
 
 
 @pytest.mark.asyncio
-async def test_unsupported_assignment_prepares_template_cancellation():
+async def test_unsupported_assignment_pauses_without_ticket_mutation():
     async with AsyncSessionLocal() as db:
-        await seed_templates(db)
-        runs = TicketRunService(db)
-        setting = await runs.get_global_setting()
-        assert setting is not None
-        await db.commit()
-        await runs.set_global_enabled(enabled=True, actor="admin:test", expected_version=1)
+        runs = await enable_autopilot(db)
         task = {
             "Id": 93004,
             "StatusId": 31,
             "ExecutorId": 10001,
+            "ServiceId": 19,
             "Name": "Не открывается Excel",
         }
         registration = await runs.register_assignment(
@@ -270,20 +348,16 @@ async def test_unsupported_assignment_prepares_template_cancellation():
                 CommandRecord.idempotency_key.like("%:cancel_unsupported"),
             )
         )
-        assert cancellation is not None
-        assert cancellation.params_json["status_id"] == 30
-        assert cancellation.params_json["template_key"] == "autopilot_unsupported_cancel"
+        await db.refresh(registration.run)
+        assert cancellation is None
+        assert registration.run.state == "paused"
+        assert registration.run.pause_reason == "unsupported_scenario"
 
 
 @pytest.mark.asyncio
 async def test_pc_offline_waits_for_new_applicant_comment():
     async with AsyncSessionLocal() as db:
-        await seed_templates(db)
-        runs = TicketRunService(db)
-        setting = await runs.get_global_setting()
-        assert setting is not None
-        await db.commit()
-        await runs.set_global_enabled(enabled=True, actor="admin:test", expected_version=1)
+        runs = await enable_autopilot(db)
         task = {**printer_task(93005), "CreatorId": 501}
         registration = await runs.register_assignment(
             task=task, assistant_user_id=10001, open_status_id=31
@@ -355,14 +429,9 @@ async def test_pc_offline_waits_for_new_applicant_comment():
 
 
 @pytest.mark.asyncio
-async def test_verified_install_failure_creates_template_cancellation():
+async def test_verified_install_failure_pauses_without_cancellation():
     async with AsyncSessionLocal() as db:
-        await seed_templates(db)
-        runs = TicketRunService(db)
-        setting = await runs.get_global_setting()
-        assert setting is not None
-        await db.commit()
-        await runs.set_global_enabled(enabled=True, actor="admin:test", expected_version=1)
+        runs = await enable_autopilot(db)
         task = printer_task(93006)
         registration = await runs.register_assignment(
             task=task, assistant_user_id=10001, open_status_id=31
@@ -420,6 +489,7 @@ async def test_verified_install_failure_creates_template_cancellation():
                 CommandRecord.idempotency_key.like("%:cancel_execution_failed"),
             )
         )
-        assert cancellation is not None
-        assert cancellation.params_json["template_key"] == "autopilot_execution_failed_cancel"
-        assert cancellation.params_json["status_id"] == 30
+        await db.refresh(run)
+        assert cancellation is None
+        assert run.state == "paused"
+        assert run.pause_reason == "execution_failed"

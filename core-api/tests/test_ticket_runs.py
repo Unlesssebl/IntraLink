@@ -6,8 +6,10 @@ from sqlalchemy import func, select
 
 from app.database.db import (
     AsyncSessionLocal,
+    AutopilotScenario,
     AutopilotSettingEvent,
     CommandRecord,
+    SystemSetting,
     TicketRun,
     TicketRunEvent,
     TriageTemplate,
@@ -22,6 +24,7 @@ def assistant_task(task_id: int = 91001) -> dict:
         "StatusId": 31,
         "ExecutorId": 10001,
         "ExecutorIds": "10001,42",
+        "ServiceId": 19,
     }
 
 
@@ -31,6 +34,7 @@ async def seed_autopilot_templates(db) -> None:
         "pc_offline": 35,
         "ticket_timeout_cancel": 30,
         "ticket_not_relevant": 30,
+        "wrong_service": 30,
         "autopilot_unsupported_cancel": 30,
         "autopilot_execution_failed_cancel": 30,
         "resolved_standard": 29,
@@ -56,8 +60,35 @@ async def seed_autopilot_templates(db) -> None:
     await db.commit()
 
 
+async def seed_autopilot_prerequisites(db) -> None:
+    await seed_autopilot_templates(db)
+    db.add(SystemSetting(
+        key="service_account_config",
+        value_json={"login": "assistant", "encrypted_password": "test", "user_id": 10001},
+        is_encrypted=True,
+    ))
+    db.add(AutopilotScenario(
+        service_id=19,
+        scenario_key="printer_installation",
+        enabled=True,
+        config_json={},
+        updated_by="test",
+    ))
+    await db.commit()
+
+
+async def enable_autopilot(db) -> TicketRunService:
+    await seed_autopilot_prerequisites(db)
+    service = TicketRunService(db)
+    setting = await service.get_global_setting()
+    assert setting is not None
+    await db.commit()
+    await service.set_global_enabled(enabled=True, actor="admin:test", expected_version=1)
+    return service
+
+
 @pytest.mark.asyncio
-async def test_assignment_is_persisted_pending_while_global_gate_is_off():
+async def test_assignment_is_not_registered_while_global_gate_is_off():
     async with AsyncSessionLocal() as db:
         result = await TicketRunService(db).register_assignment(
             task=assistant_task(),
@@ -65,28 +96,21 @@ async def test_assignment_is_persisted_pending_while_global_gate_is_off():
             open_status_id=31,
         )
 
-        assert result.created is True
-        assert result.run is not None
-        assert result.run.mode == "autopilot"
-        assert result.run.state == "pending"
-        assert result.run.pause_reason == "global_disabled"
+        assert result.created is False
+        assert result.run is None
+        assert result.reason == "autopilot_disabled"
 
     async with AsyncSessionLocal() as db:
         persisted = await db.scalar(select(TicketRun).where(TicketRun.task_id == 91001))
-        assert persisted is not None
-        assert persisted.current_step == "validate_request"
-        event_count = await db.scalar(
-            select(func.count()).select_from(TicketRunEvent).where(
-                TicketRunEvent.ticket_run_id == persisted.id
-            )
-        )
-        assert event_count == 1
+        assert persisted is None
+        event_count = await db.scalar(select(func.count()).select_from(TicketRunEvent))
+        assert event_count == 0
 
 
 @pytest.mark.asyncio
 async def test_repeated_poll_and_new_basis_do_not_create_second_active_run():
     async with AsyncSessionLocal() as db:
-        service = TicketRunService(db)
+        service = await enable_autopilot(db)
         first = await service.register_assignment(
             task=assistant_task(91002),
             assistant_user_id=10001,
@@ -119,7 +143,7 @@ async def test_repeated_poll_and_new_basis_do_not_create_second_active_run():
 @pytest.mark.asyncio
 async def test_reopen_does_not_reuse_initial_assignment_basis():
     async with AsyncSessionLocal() as db:
-        service = TicketRunService(db)
+        service = await enable_autopilot(db)
         first = await service.register_assignment(
             task=assistant_task(91003),
             assistant_user_id=10001,
@@ -163,7 +187,7 @@ async def test_global_gate_defaults_off_and_changes_are_audited():
         await db.commit()
 
     async with AsyncSessionLocal() as db:
-        await seed_autopilot_templates(db)
+        await seed_autopilot_prerequisites(db)
         updated = await TicketRunService(db).set_global_enabled(
             enabled=True,
             actor="admin:test",
@@ -186,17 +210,17 @@ async def test_global_gate_defaults_off_and_changes_are_audited():
 
 
 @pytest.mark.asyncio
-async def test_pending_assignment_resumes_only_after_assignment_is_revalidated():
+async def test_disabled_assignment_is_not_retroactively_started():
     async with AsyncSessionLocal() as db:
-        await seed_autopilot_templates(db)
+        await seed_autopilot_prerequisites(db)
         service = TicketRunService(db)
         first = await service.register_assignment(
             task=assistant_task(91006),
             assistant_user_id=10001,
             open_status_id=31,
         )
-        assert first.run is not None
-        assert first.run.state == "pending"
+        assert first.run is None
+        assert first.reason == "autopilot_disabled"
         await service.set_global_enabled(enabled=True, actor="admin:test", expected_version=1)
 
         wrong_status = await service.register_assignment(
@@ -204,17 +228,15 @@ async def test_pending_assignment_resumes_only_after_assignment_is_revalidated()
             assistant_user_id=10001,
             open_status_id=31,
         )
-        await db.refresh(first.run)
         assert wrong_status.reason == "status_not_open"
-        assert first.run.state == "pending"
 
         revalidated = await service.register_assignment(
             task=assistant_task(91006),
             assistant_user_id=10001,
             open_status_id=31,
         )
-        assert revalidated.created is False
-        assert revalidated.reason == "resumed"
+        assert revalidated.created is True
+        assert revalidated.reason == "created"
         assert revalidated.run is not None
         assert revalidated.run.state == "running"
         assert revalidated.run.pause_reason is None
@@ -241,14 +263,7 @@ async def test_registration_rejects_wrong_status_and_executor():
 @pytest.mark.asyncio
 async def test_command_can_be_durably_linked_to_ticket_run():
     async with AsyncSessionLocal() as db:
-        await seed_autopilot_templates(db)
-        run_service = TicketRunService(db)
-        setting = await run_service.get_global_setting()
-        assert setting is not None
-        await db.commit()
-        await run_service.set_global_enabled(
-            enabled=True, actor="admin:test", expected_version=1
-        )
+        run_service = await enable_autopilot(db)
         registration = await run_service.register_assignment(
             task=assistant_task(91007),
             assistant_user_id=10001,
@@ -261,7 +276,7 @@ async def test_command_can_be_durably_linked_to_ticket_run():
             parameters={},
             idempotency_key="ticket-run-test-91007",
             initiator="autopilot",
-            source="autopilot",
+            source="web",
             priority=5,
             ticket_run_id=registration.run.id,
         )
@@ -279,14 +294,7 @@ async def test_command_can_be_durably_linked_to_ticket_run():
 @pytest.mark.asyncio
 async def test_global_disable_pauses_run_and_cancels_unstarted_command():
     async with AsyncSessionLocal() as db:
-        await seed_autopilot_templates(db)
-        run_service = TicketRunService(db)
-        setting = await run_service.get_global_setting()
-        assert setting is not None
-        await db.commit()
-        await run_service.set_global_enabled(
-            enabled=True, actor="admin:test", expected_version=1
-        )
+        run_service = await enable_autopilot(db)
         registration = await run_service.register_assignment(
             task=assistant_task(91008),
             assistant_user_id=10001,
@@ -299,7 +307,7 @@ async def test_global_disable_pauses_run_and_cancels_unstarted_command():
             parameters={},
             idempotency_key="ticket-run-disable-91008",
             initiator="autopilot",
-            source="autopilot",
+            source="web",
             priority=5,
             ticket_run_id=registration.run.id,
         )
@@ -375,16 +383,9 @@ async def test_successful_manual_final_status_completes_linked_run():
 
 
 @pytest.mark.asyncio
-async def test_globally_paused_run_resumes_after_assignment_revalidation():
+async def test_globally_paused_run_requires_explicit_resume():
     async with AsyncSessionLocal() as db:
-        await seed_autopilot_templates(db)
-        service = TicketRunService(db)
-        setting = await service.get_global_setting()
-        assert setting is not None
-        await db.commit()
-        await service.set_global_enabled(
-            enabled=True, actor="admin:test", expected_version=1
-        )
+        service = await enable_autopilot(db)
         created = await service.register_assignment(
             task=assistant_task(91010),
             assistant_user_id=10001,
@@ -404,10 +405,10 @@ async def test_globally_paused_run_resumes_after_assignment_revalidation():
             open_status_id=31,
         )
         assert resumed.created is False
-        assert resumed.reason == "resumed"
+        assert resumed.reason == "duplicate_trigger"
         assert resumed.run is not None
-        assert resumed.run.state == "running"
-        assert resumed.run.pause_reason is None
+        assert resumed.run.state == "paused"
+        assert resumed.run.pause_reason == "global_disabled"
 
 
 @pytest.mark.asyncio
@@ -451,7 +452,7 @@ async def test_manual_write_waits_for_started_operation_to_finish():
 @pytest.mark.asyncio
 async def test_global_enable_rejects_active_but_misconfigured_template():
     async with AsyncSessionLocal() as db:
-        await seed_autopilot_templates(db)
+        await seed_autopilot_prerequisites(db)
         template = await db.scalar(
             select(TriageTemplate).where(TriageTemplate.key == "resolved_standard")
         )

@@ -915,17 +915,34 @@ async def synthesize_triage_resolution(
     force_deterministic: bool = False,
     rule_decision: dict[str, Any] | None = None,
     comments_history: list[dict[str, Any]] | None = None,
-) -> str:
+    return_metadata: bool = False,
+) -> str | tuple[str, dict[str, Any]]:
     """
     Синтезирует экспертный персонализированный ответ инженера Helpdesk
     с жестким заземлением на факты (Strict Grounding), детерминированными шлюзами,
     контекстом истории переписки (Thread-Aware) и соблюдением брендбука без эмодзи (Zero-Emoji Policy).
     """
+    def result(text: str, metadata: dict[str, Any]) -> str | tuple[str, dict[str, Any]]:
+        clean_text = strip_emojis(text)
+        return (clean_text, metadata) if return_metadata else clean_text
+
+    deterministic_meta = {
+        "model": None,
+        "backend": "deterministic",
+        "circuit": circuit.value if circuit else None,
+        "duration_ms": None,
+        "cached": False,
+        "fallback": True,
+        "ai_used": False,
+        "input_tokens": None,
+        "output_tokens": None,
+    }
     if force_deterministic:
-        return strip_emojis(
+        return result(
             _synthesize_deterministic_fallback(
                 task=task, kb_matches=kb_matches, telemetry=telemetry, rule_decision=rule_decision
-            )
+            ),
+            deterministic_meta,
         )
 
     task_id = task.get("Id") or 0
@@ -937,10 +954,11 @@ async def synthesize_triage_resolution(
     # 1. Детерминированный шлюз для не-IT заявок (АХО, канцелярия) — ZERO LLM.
     # Использует модульный SSOT-константу _NON_IT_KEYWORDS.
     if any(k in combined for k in _NON_IT_KEYWORDS):
-        return strip_emojis(
+        return result(
             _synthesize_deterministic_fallback(
                 task=task, kb_matches=kb_matches, telemetry=telemetry, rule_decision=rule_decision
-            )
+            ),
+            deterministic_meta,
         )
 
     # 2. Оценка контура безопасности
@@ -954,10 +972,11 @@ async def synthesize_triage_resolution(
 
     # 3. RED контур (пароли/учетки) — строго локальный детерминированный регламент (Zero Trust)
     if eval_circuit == DataCircuit.RED:
-        return strip_emojis(
+        return result(
             _synthesize_deterministic_fallback(
                 task=task, kb_matches=kb_matches, telemetry=telemetry, rule_decision=rule_decision
-            )
+            ),
+            {**deterministic_meta, "circuit": eval_circuit.value},
         )
 
     # 4. Анализ истории переписки (Thread-Aware)
@@ -1059,13 +1078,28 @@ async def synthesize_triage_resolution(
         res = await ai_hub.dispatch_routed_inference(req)
         output_text = getattr(res, "text", None) or getattr(res, "final_text", None)
         if output_text and len(output_text.strip()) > 15:
-            return strip_emojis(output_text.strip())
+            model = getattr(res, "model", None)
+            return result(
+                output_text.strip(),
+                {
+                    "model": model,
+                    "backend": "ollama" if model and settings.OLLAMA_MODEL in model else "litellm",
+                    "circuit": getattr(getattr(res, "circuit", None), "value", None),
+                    "duration_ms": getattr(res, "execution_time_ms", None),
+                    "cached": bool(getattr(res, "cached", False)),
+                    "fallback": bool(model and "fallback" in model.lower()),
+                    "ai_used": True,
+                    "input_tokens": None,
+                    "output_tokens": None,
+                },
+            )
     except Exception as e:
         logger.debug("AI Hub генерация не удалась, переход на fallback: %s", e)
 
     # Fallback
-    return strip_emojis(
+    return result(
         _synthesize_deterministic_fallback(
             task=task, kb_matches=kb_matches, telemetry=telemetry, rule_decision=rule_decision
-        )
+        ),
+        {**deterministic_meta, "circuit": eval_circuit.value if eval_circuit else None},
     )

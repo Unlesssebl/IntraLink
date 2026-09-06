@@ -5,7 +5,6 @@
 
 import asyncio
 import hashlib
-import inspect
 import json
 import logging
 import time
@@ -323,13 +322,11 @@ class TriageService:
                 else:
                     decision["decision_source"] = "rule_engine" if decision.get("rule_type") != "standard_in_work" else "standard_fallback"
 
-            # Флаг готовности решения AI
-            has_ai_solution = bool(
-                decision and (
-                    decision.get("rule_type") != "standard_in_work"
-                    or len(kb_matches) > 0
-                )
-            )
+            sources = {
+                "rule": bool(decision and decision.get("rule_type") != "standard_in_work"),
+                "rag": bool(kb_matches),
+                "ai": False,
+            }
 
             meta = t.get("_field_meta") or {}
             pc_name = meta.get("pc_name") or t.get("pc_name") or ""
@@ -382,7 +379,11 @@ class TriageService:
                 "circuit": circuit_dec.circuit.value,
                 "circuit_reason": circuit_dec.reason,
                 "requires_sanitization": circuit_dec.requires_sanitization,
-                "has_ai_solution": has_ai_solution,
+                "sources": sources,
+                "readiness": {
+                    "ready": bool(decision),
+                    "blocked_reasons": [],
+                },
                 "confidence_score": confidence,
                 "requires_human_review": bool(confidence < 0.80),
             })
@@ -509,13 +510,14 @@ class TriageService:
                 pass
 
         if ai_resolution is None and not is_redirect and decision.get("rule_type") != "duplicate_task":
-            ai_resolution = await tr.synthesize_triage_resolution(
+            ai_resolution, ai_metadata = await tr.synthesize_triage_resolution(
                 task=task,
                 kb_matches=kb_matches,
                 telemetry=telemetry,
                 circuit=circuit_dec.circuit,
                 rule_decision=decision,
                 comments_history=history,
+                return_metadata=True,
             )
             if ai_resolution:
                 try:
@@ -552,10 +554,16 @@ class TriageService:
             "telemetry": telemetry,
             "suggested_action": decision,
             "ai_suggested_resolution": ai_resolution,
+            "ai_metadata": ai_metadata,
             "circuit": circuit_dec.circuit.value,
             "circuit_reason": circuit_dec.reason,
             "requires_sanitization": circuit_dec.requires_sanitization,
-            "has_ai_solution": bool(len(kb_matches) > 0 or (decision and decision.get("rule_type") != "standard_in_work")),
+            "sources": {
+                "rule": bool(decision and decision.get("rule_type") != "standard_in_work"),
+                "rag": bool(kb_matches),
+                "ai": bool(ai_metadata.get("ai_used")),
+            },
+            "readiness": {"ready": bool(decision), "blocked_reasons": []},
             "confidence_score": card_confidence,
             "requires_human_review": bool(card_confidence < 0.80),
             "printer_address": printer_address,
@@ -725,28 +733,6 @@ class TriageService:
                         )
                 except Exception as e:
                     logger.error("Ошибка автоиндексации заявки #%d в RAG: %s", tid, e)
-
-            # 5. Сохранение записи аудита в TriageAuditLog (Feedback Loop)
-            if upd_ok and db:
-                try:
-                    from app.database.db import TriageAuditLog
-                    audit_entry = TriageAuditLog(
-                        task_id=tid,
-                        generated_comment=None,
-                        final_comment=clean_comment or f"Статус {status_id}",
-                        confidence_score=1.0,
-                        diff_ratio=0.0,
-                        operator_id=str(op_user_id) if op_user_id else None,
-                        status_id=status_id,
-                    )
-                    add_result = db.add(audit_entry)
-                    # AsyncSession.add синхронный; awaitable встречается только
-                    # у тестовых/адаптерных сессий и поддерживается без warning.
-                    if inspect.isawaitable(add_result):
-                        await add_result
-                    await db.commit()
-                except Exception as e:
-                    logger.debug("Ошибка сохранения TriageAuditLog для заявки #%d: %s", tid, e)
 
             results.append({
                 "task_id": tid,

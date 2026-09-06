@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.config import settings
-from app.database.db import CommandRecord, TicketRun, TicketRunEvent, get_db
+from app.database.db import AutopilotScenario, CommandRecord, TicketRun, TicketRunEvent, get_db
 from app.routers.deps import get_service_auth_b64, require_permission, verify_trusted_origin
 from app.services.identity import PrincipalContext
 from app.services.intraservice import get_single_task
@@ -38,6 +38,27 @@ class AutopilotSettingRequest(BaseModel):
     enabled: bool
     expected_version: int = Field(ge=1)
     reason: str = Field(min_length=3, max_length=500)
+
+
+class AutopilotScenarioRequest(BaseModel):
+    service_id: int = Field(gt=0)
+    scenario_key: Literal["printer_installation"]
+    enabled: bool = False
+    config: dict = Field(default_factory=dict)
+    expected_version: int | None = Field(None, ge=1)
+
+
+def serialize_scenario(item: AutopilotScenario) -> dict:
+    return {
+        "id": str(item.id),
+        "service_id": item.service_id,
+        "scenario_key": item.scenario_key,
+        "enabled": item.enabled,
+        "version": item.version,
+        "config": item.config_json,
+        "updated_by": item.updated_by,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+    }
 
 
 def serialize_run(run: TicketRun) -> dict:
@@ -171,7 +192,9 @@ async def start_task_run(
             global_setting = await service.get_global_setting()
             if global_setting is None or not global_setting.enabled:
                 raise ValueError("autopilot_disabled")
-            assistant_user_id = settings.INTRASERVICE_SERVICE_USER_ID
+            from app.services.vault import get_service_account_user_id
+
+            assistant_user_id = await get_service_account_user_id(db)
             if not assistant_user_id or assistant_user_id not in task_executor_ids(task):
                 raise ValueError("assistant_not_assigned")
             result = await service.register_assignment(
@@ -220,9 +243,14 @@ async def control_task_run(
             raise HTTPException(status.HTTP_409_CONFLICT, "ticket_status_terminal")
         effective_mode = target_mode or TicketRunMode(run.mode)
         if effective_mode == TicketRunMode.AUTOPILOT:
-            assistant_user_id = settings.INTRASERVICE_SERVICE_USER_ID
+            from app.services.vault import get_service_account_user_id
+
+            assistant_user_id = await get_service_account_user_id(db)
             if not assistant_user_id or assistant_user_id not in task_executor_ids(task):
                 raise HTTPException(status.HTTP_409_CONFLICT, "assistant_not_assigned")
+            service_id = int(task.get("ServiceId") or 0)
+            if await service.get_enabled_scenario(service_id) is None:
+                raise HTTPException(status.HTTP_409_CONFLICT, "unsupported_service")
 
     try:
         updated = await service.update_control(
@@ -245,6 +273,10 @@ async def get_autopilot_setting(
     setting = await TicketRunService(db).get_global_setting()
     assert setting is not None
     readiness = await TicketRunService(db).template_readiness()
+    from app.services.vault import get_service_account_user_id
+
+    service_user_id = await get_service_account_user_id(db)
+    scenarios = await TicketRunService(db).list_scenarios()
     await db.commit()
     return {
         "enabled": setting.enabled,
@@ -253,6 +285,9 @@ async def get_autopilot_setting(
         "updated_at": setting.updated_at.isoformat() if setting.updated_at else None,
         "templates_ready": readiness["ready"],
         "missing_templates": readiness["missing"],
+        "service_user_id": service_user_id,
+        "service_identity_ready": service_user_id is not None,
+        "scenarios": [serialize_scenario(item) for item in scenarios],
     }
 
 
@@ -263,6 +298,8 @@ async def update_autopilot_setting(
     _origin: None = Depends(verify_trusted_origin),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.services.vault import get_service_account_user_id
+
     try:
         setting = await TicketRunService(db).set_global_enabled(
             enabled=payload.enabled,
@@ -279,4 +316,35 @@ async def update_autopilot_setting(
         "updated_at": setting.updated_at.isoformat() if setting.updated_at else None,
         "templates_ready": True,
         "missing_templates": [],
+        "service_user_id": await get_service_account_user_id(db),
+        "scenarios": [serialize_scenario(item) for item in await TicketRunService(db).list_scenarios()],
     }
+
+
+@settings_router.get("/scenarios")
+async def list_autopilot_scenarios(
+    _context: PrincipalContext = Depends(require_permission("autopilot:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    return {"items": [serialize_scenario(item) for item in await TicketRunService(db).list_scenarios()]}
+
+
+@settings_router.put("/scenarios")
+async def upsert_autopilot_scenario(
+    payload: AutopilotScenarioRequest,
+    context: PrincipalContext = Depends(require_permission("autopilot:manage")),
+    _origin: None = Depends(verify_trusted_origin),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        item = await TicketRunService(db).upsert_scenario(
+            service_id=payload.service_id,
+            scenario_key=payload.scenario_key,
+            enabled=payload.enabled,
+            config=payload.config,
+            actor=context.subject,
+            expected_version=payload.expected_version,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return serialize_scenario(item)

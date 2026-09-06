@@ -71,6 +71,7 @@ def serialize_command(command: CommandRecord) -> dict[str, Any]:
         "source": command.source,
         "task_id": command.task_id,
         "ticket_run_id": str(command.ticket_run_id) if command.ticket_run_id else None,
+        "decision_id": str(command.decision_id) if command.decision_id else None,
         "result": command.result_json,
         "error_message": command.error_message,
         "created_at": command.created_at.isoformat() if command.created_at else None,
@@ -159,6 +160,8 @@ class CommandService:
         priority: int,
         initiator_principal_id: uuid.UUID | None = None,
         ticket_run_id: uuid.UUID | None = None,
+        decision_id: uuid.UUID | None = None,
+        decision_version: int | None = None,
     ) -> tuple[CommandRecord, bool]:
         action_def = self.registry.get(action)
         if action_def is None:
@@ -191,6 +194,37 @@ class CommandService:
         except (TypeError, ValueError):
             task_id = None
         await self._assert_ticket_run_allows_execution(ticket_run_id, task_id=task_id)
+        if decision_id is None and source == "web" and task_id is not None:
+            from app.services.decision_journal import DecisionJournalService
+
+            generated_decision = await DecisionJournalService(self.db).record_operational(
+                task_id=task_id,
+                ticket_run_id=ticket_run_id,
+                action=action,
+                target=target,
+                parameters=parameters,
+                actor=initiator,
+            )
+            decision_id = generated_decision.id
+            decision_version = generated_decision.version
+        if decision_id is not None:
+            if task_id is None or decision_version is None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "decision_version_and_task_id_required",
+                )
+            from app.services.decision_journal import DecisionJournalService
+
+            await DecisionJournalService(self.db).require_current(
+                decision_id=decision_id,
+                task_id=task_id,
+                version=decision_version,
+            )
+        elif source in {"autopilot", "triage", "assistant"}:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "decision_id_required",
+            )
 
         command = CommandRecord(
             idempotency_key=idempotency_key,
@@ -206,6 +240,7 @@ class CommandService:
             source=source,
             task_id=task_id,
             ticket_run_id=ticket_run_id,
+            decision_id=decision_id,
         )
         self.db.add(command)
         try:

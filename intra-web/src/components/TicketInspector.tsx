@@ -396,6 +396,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         is_private: replyMode === 'internal',
         executor_ids: currentExecutorIds,
         ticket_run_id: run.id,
+        decision_id: details?.decision?.id,
+        decision_version: details?.decision?.version,
       });
 
       const firstRes = res?.results?.[0];
@@ -461,6 +463,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           ticket_run_id: run.id,
           suggestion_task_id: suggestion?.task_id,
           suggestion_fingerprint: suggestion?.fingerprint,
+          decision_id: details?.decision?.id,
+          decision_version: details?.decision?.version,
         });
         setPendingConfirmation({ jobId: job.job_id, plan });
         onToast({ type: 'info', message: 'Команда подготовлена. Проверьте действие и подтвердите его отдельно.' });
@@ -474,6 +478,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         is_private: replyMode === 'internal',
         executor_ids: currentExecutorIds,
         ticket_run_id: run.id,
+        decision_id: details?.decision?.id,
+        decision_version: details?.decision?.version,
       });
 
       const firstRes = res?.results?.[0];
@@ -531,6 +537,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         verified_execution_job_id: job.job_id,
         executor_ids: currentExecutorIds,
         ticket_run_id: run.id,
+        decision_id: details?.decision?.id,
+        decision_version: details?.decision?.version,
       });
       if (res?.results?.[0]?.update_ok === false) throw new Error(res.results[0].error || 'IntraService отклонил изменение заявки');
       onUpdateTicket(ticket.id, {
@@ -900,6 +908,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         <AiTriageCard
           ticket={ticket}
           details={details}
+          ticketRun={ticketRun}
           targetStatusId={mainAction.statusId}
           targetStatusName={getStatusNameById(mainAction.statusId)}
           selectedStatusOverride={selectedStatusOverride}

@@ -32,7 +32,7 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
-CURRENT_SCHEMA_REVISION = "20260906_0004"
+CURRENT_SCHEMA_REVISION = "20260906_0005"
 
 
 
@@ -344,6 +344,33 @@ class AutopilotSettingEvent(Base):
     )
 
 
+class AutopilotScenario(Base):
+    """Explicit allowlist of IntraService services supported by autopilot."""
+
+    __tablename__ = "autopilot_scenarios"
+    __table_args__ = (
+        UniqueConstraint("service_id", "scenario_key", name="uq_autopilot_scenario_service"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    service_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    scenario_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    config_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class TicketRun(Base):
     """Durable manual or autopilot cycle for one IntraService ticket."""
 
@@ -411,6 +438,92 @@ class TicketRunEvent(Base):
     )
 
 
+class DecisionRecord(Base):
+    """Durable, versioned explanation for a triage or autopilot decision."""
+
+    __tablename__ = "decision_records"
+    __table_args__ = (
+        UniqueConstraint("task_id", "version", name="uq_decision_task_version"),
+        UniqueConstraint(
+            "task_id", "context_fingerprint", "analysis_kind", name="uq_decision_context"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    ticket_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("ticket_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    previous_decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_records.id", ondelete="SET NULL"), nullable=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    analysis_kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    context_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    context_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    completeness_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    proposal_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    policy_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    build_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    finalized_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class DecisionStep(Base):
+    """Append-only facts produced by one component while making a decision."""
+
+    __tablename__ = "decision_steps"
+    __table_args__ = (
+        UniqueConstraint("decision_id", "sequence", name="uq_decision_step_sequence"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    component: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    input_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    output_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    metadata_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class DecisionFeedback(Base):
+    """Operator review tied to the exact version of a decision."""
+
+    __tablename__ = "decision_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_action_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
 class CommandRecord(Base):
     """Authoritative v2 command state. Redis only transports its outbox events."""
 
@@ -434,6 +547,9 @@ class CommandRecord(Base):
     task_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     ticket_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID_TYPE, ForeignKey("ticket_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_records.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     result_json: Mapped[dict | None] = mapped_column(JSON_TYPE, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -653,31 +769,6 @@ class SystemSetting(Base):
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
-# Журнал аудита и обратной связи по решениям триажа (Feedback Loop)
-class TriageAuditLog(Base):
-    __tablename__ = "triage_audit_log"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID_TYPE, primary_key=True, default=uuid.uuid4
-    )
-    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    generated_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
-    final_comment: Mapped[str] = mapped_column(Text, nullable=False)
-    confidence_score: Mapped[float] = mapped_column(
-        Float, default=1.0, server_default="1.0"
-    )
-    diff_ratio: Mapped[float] = mapped_column(
-        Float, default=0.0, server_default="0.0"
-    )
-    operator_id: Mapped[str | None] = mapped_column(
-        String(100), nullable=True, index=True
-    )
-    status_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True
     )
 
 

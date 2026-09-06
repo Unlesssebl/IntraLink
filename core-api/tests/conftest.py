@@ -61,15 +61,18 @@ async def initialize_test_database():
     from app.main import app
     from sqlalchemy import delete
     from app.database.db import (
-        ActionPolicyRecord, ApprovalChallenge, AsyncSessionLocal, AuthSession, AutopilotSetting,
-        AutopilotSettingEvent, Principal, PrincipalRole, SecurityEvent,
-        ServiceCredential, TelegramLink, TelegramLinkCode, TicketRun,
+        ActionPolicyRecord, ApprovalChallenge, AsyncSessionLocal, AuthSession, AutopilotScenario,
+        AutopilotSetting, AutopilotSettingEvent, CommandOutbox, CommandRecord,
+        DecisionFeedback, DecisionStep, DecisionRecord, Principal, PrincipalRole, SecurityEvent,
+        ServiceCredential, SystemSetting, TelegramLink, TelegramLinkCode, TicketRun,
         TicketRunEvent, get_db,
     )
     app.dependency_overrides.pop(get_db, None)
     async with AsyncSessionLocal() as db:
         for model in (
-            TicketRunEvent, TicketRun, AutopilotSettingEvent, AutopilotSetting,
+            DecisionFeedback, DecisionStep, CommandOutbox, CommandRecord, DecisionRecord,
+            TicketRunEvent, TicketRun, AutopilotScenario, AutopilotSettingEvent, AutopilotSetting,
+            SystemSetting,
             ActionPolicyRecord,
             ApprovalChallenge, TelegramLinkCode, TelegramLink, AuthSession,
             ServiceCredential, SecurityEvent, PrincipalRole, Principal,

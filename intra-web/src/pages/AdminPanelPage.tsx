@@ -995,13 +995,18 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                   <div className="text-sm font-semibold truncate">
                     {vaultStatus?.service_account.login || 'Не настроен'}
                   </div>
+                  {vaultStatus?.service_account.user_id && (
+                    <div className="mt-1 font-mono text-[11px] text-neutral-500">
+                      User ID {vaultStatus.service_account.user_id}
+                    </div>
+                  )}
                 </div>
                 <div className="mt-3 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px]">
                   <span className="text-neutral-500">Redis кэш:</span>
                   <span className="inline-flex items-center gap-1.5 font-mono">
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${vaultStatus?.service_account.redis_synced ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-                    <span className={vaultStatus?.service_account.redis_synced ? 'text-emerald-400' : 'text-amber-400'}>
-                      {vaultStatus?.service_account.redis_synced ? 'Прогрет' : 'Ожидает'}
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${vaultStatus?.service_account.redis_synced && vaultStatus?.service_account.identity_synced ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                    <span className={vaultStatus?.service_account.redis_synced && vaultStatus?.service_account.identity_synced ? 'text-emerald-400' : 'text-amber-400'}>
+                      {vaultStatus?.service_account.redis_synced && vaultStatus?.service_account.identity_synced ? 'Прогрет' : 'Ожидает'}
                     </span>
                   </span>
                 </div>

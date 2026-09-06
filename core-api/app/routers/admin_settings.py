@@ -472,6 +472,7 @@ async def save_vault_service_account_endpoint(
     Сохранение сервисного аккаунта IntraService в PostgreSQL с шифрованием Fernet
     и авто-прогревом токена в Redis (worker:service_auth_b64).
     """
+    user_id: int | None = None
     if body.password and body.password.strip():
         auth_b64, user_id = await verify_credentials(body.login.strip(), body.password.strip())
         if not auth_b64:
@@ -479,12 +480,16 @@ async def save_vault_service_account_endpoint(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Не удалось авторизовать сервисный аккаунт в IntraService (неверный логин или пароль)",
             )
-    return await vault.save_service_account_credentials(
-        db,
-        login=body.login,
-        password=body.password,
-        base_url=body.base_url,
-    )
+    try:
+        return await vault.save_service_account_credentials(
+            db,
+            login=body.login,
+            password=body.password,
+            base_url=body.base_url,
+            user_id=int(user_id) if user_id is not None else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
 
 @router.post("/vault/domain")

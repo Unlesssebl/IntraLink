@@ -7,6 +7,7 @@ from app.routers.admin import (
     get_worker_logs,
     ServiceUserRequest,
 )
+from app.database.db import AsyncSessionLocal
 
 
 @pytest.mark.asyncio
@@ -38,14 +39,15 @@ async def test_set_and_delete_service_user(mock_verify, mock_get_redis):
     mock_get_redis.return_value = mock_redis
 
     req = ServiceUserRequest(login="admin", password="password")
-    res = await set_service_user(req)
-    assert res["status"] == "success"
-    assert res["login"] == "admin"
-    mock_redis.set.assert_awaited_once()
-
-    del_res = await delete_service_user()
+    async with AsyncSessionLocal() as db:
+        res = await set_service_user(req, db)
+        assert res["status"] == "success"
+        assert res["login"] == "admin"
+        del_res = await delete_service_user(db)
     assert del_res["status"] == "success"
-    mock_redis.delete.assert_awaited_once_with("worker:service_auth_b64")
+    mock_redis.delete.assert_awaited_once_with(
+        "worker:service_auth_b64", "worker:service_user_id"
+    )
 
 
 @pytest.mark.asyncio

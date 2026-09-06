@@ -1,12 +1,14 @@
-import React from 'react';
+import { useState } from 'react';
 import type { Ticket } from '../../data/mock';
 import { getStatusDotClass } from '../../data/mock';
 import type { TaskDetails } from '../../lib/types';
+import type { TicketRun } from '../../lib/ticketRuns';
 import { IconBolt, IconSparkles, IconClose } from '../Icons';
 
 interface AiTriageCardProps {
   ticket: Ticket;
   details: TaskDetails | null;
+  ticketRun?: TicketRun | null;
   targetStatusId: number;
   targetStatusName: string;
   selectedStatusOverride: number | null;
@@ -19,9 +21,26 @@ interface AiTriageCardProps {
   onChangeExpenses: (mins: number) => void;
 }
 
+const sourceLabels: Record<string, string> = {
+  rule: 'Регламент',
+  rag: 'База решений',
+  ai: 'AI-синтез',
+};
+
+const runLabels: Record<string, string> = {
+  pending: 'Ожидает запуска',
+  running: 'Выполняется',
+  waiting_answer: 'Ждёт ответа',
+  waiting_approval: 'Ждёт подтверждения',
+  paused: 'Нужно внимание',
+  system_error: 'Ошибка связи',
+  completed: 'Завершён',
+};
+
 export default function AiTriageCard({
   ticket,
   details,
+  ticketRun,
   targetStatusId,
   targetStatusName,
   selectedStatusOverride,
@@ -33,129 +52,109 @@ export default function AiTriageCard({
   expenses,
   onChangeExpenses,
 }: AiTriageCardProps) {
+  const [showEvidence, setShowEvidence] = useState(false);
+  const decision = details?.decision;
   const suggestion = details?.ai_suggestion;
-  const calculatedAt = suggestion?.calculated_at
-    ? new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(suggestion.calculated_at))
-    : null;
+  const readiness = details?.readiness;
+  const sources = decision?.sources || details?.sources || {
+    rule: ticket.hasRuleEngine,
+    rag: Boolean(details?.kb_matches?.length),
+    ai: Boolean(details?.ai_suggested_resolution),
+  };
+  const isStale = readiness?.stale || suggestion?.state === 'stale';
+  const isReady = Boolean(
+    decision?.proposal.ready ?? (!suggestion?.policy.blocked && !suggestion?.missing_data.length),
+  );
+  const blockedReasons = readiness?.blocked_reasons
+    || decision?.completeness.blocked_reasons
+    || suggestion?.missing_data
+    || [];
+
   return (
-    <div className="flex items-center justify-between gap-2 flex-wrap text-xs pb-1 border-b border-neutral-200/80 dark:border-neutral-800/80">
-      <div className="flex items-center gap-2 flex-wrap">
-        {/* Rule Engine & AI Solution Badges */}
-        {ticket.hasRuleEngine && (
-          <span className="px-2 py-0.5 rounded text-[11px] font-semibold border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 inline-flex items-center gap-1">
-            <IconBolt size={10} className="shrink-0" />
-            <span>Rule Engine</span>
-            {ticket.aiPlan?.actionBadge && <span className="opacity-75 font-normal">({ticket.aiPlan.actionBadge})</span>}
-          </span>
-        )}
-        {ticket.hasAiSolution && (
-          <span className="px-2 py-0.5 rounded text-[11px] font-semibold border border-purple-300 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/70 text-purple-700 dark:text-purple-300 inline-flex items-center gap-1">
-            <IconSparkles size={10} className="text-purple-600 dark:text-purple-400" />
-            <span>AI Решение</span>
-          </span>
-        )}
-
-        {suggestion && (
-          <span
-            className={`px-2 py-0.5 rounded text-[11px] font-semibold border inline-flex items-center gap-1 ${
-              suggestion.state === 'stale'
-                ? 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200'
-                : 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200'
-            }`}
-            title={suggestion.state === 'stale' ? suggestion.stale_reason : 'Рекомендация совпадает с текущим состоянием заявки'}
-          >
-            <span>{suggestion.state === 'stale' ? 'AI: неактуально' : 'AI: актуально'}</span>
-          </span>
-        )}
-
-        {/* Zero Trust DLP Circuit */}
-        <span
-          className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border inline-flex items-center gap-1 ${
-            details?.circuit === 'red'
-              ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30'
-              : details?.circuit === 'yellow'
-              ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30'
-              : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-          }`}
-          title={details?.circuit_reason ? `Контур безопасности: ${details.circuit_reason}` : `Контур данных: ${details?.circuit || 'green'}`}
-        >
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${details?.circuit === 'red' ? 'bg-rose-500' : details?.circuit === 'yellow' ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-          <span>{details?.circuit ? details.circuit.toUpperCase() : 'GREEN'}</span>
-        </span>
-
-        {/* Target Status Pill */}
-        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-md text-[11.5px] font-medium text-neutral-800 dark:text-neutral-200">
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${getStatusDotClass(targetStatusId)}`} />
-          <span>Целевой статус: <strong>{targetStatusName}</strong></span>
-          {selectedStatusOverride !== null && (
-            <button
-              type="button"
-              onClick={onResetStatusOverride}
-              className="hover:text-rose-600 font-bold ml-1 cursor-pointer p-0.5 inline-flex items-center"
-              title="Сбросить статус к стандартному"
-            >
-              <IconClose size={10} className="shrink-0" />
-            </button>
-          )}
+    <section className="overflow-hidden rounded-xl border border-neutral-200/80 bg-white shadow-xs dark:border-neutral-800 dark:bg-neutral-900">
+      <div className="flex items-start justify-between gap-4 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`h-2 w-2 shrink-0 rounded-full ${isStale ? 'bg-amber-500' : isReady ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+            <h3 className="text-sm font-semibold text-neutral-950 dark:text-neutral-50">
+              {decision?.proposal.title || ticket.aiPlan?.actionTitle || 'Предложение по заявке'}
+            </h3>
+            <span className={`rounded-md px-2 py-0.5 text-[10.5px] font-semibold ${isStale ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300' : isReady ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300' : 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300'}`}>
+              {isStale ? 'Требует перерасчёта' : isReady ? 'Готово к проверке' : 'Данных недостаточно'}
+            </span>
+          </div>
+          <p className="mt-1 text-[11.5px] text-neutral-500 dark:text-neutral-400">
+            {decision?.proposal.consequences || 'Перед выполнением проверьте ответ и целевой статус.'}
+            {decision && <span className="ml-1 font-mono">Решение v{decision.version}</span>}
+          </p>
         </div>
-      </div>
-
-      {suggestion && (
-        <div className="w-full flex items-center gap-x-3 gap-y-1 flex-wrap text-[10.5px] text-neutral-500 dark:text-neutral-400 -mt-0.5">
-          <span title="Источник рекомендации">Источник: {suggestion.source}</span>
-          {calculatedAt && <span>Расчёт: {calculatedAt}</span>}
-          <span className={suggestion.policy.blocked ? 'text-rose-600 dark:text-rose-400 font-semibold' : 'text-amber-700 dark:text-amber-300'}>
-            Policy: {suggestion.policy.blocked ? 'заблокировано' : suggestion.policy.mode === 'confirm' ? 'требуется подтверждение' : suggestion.policy.mode}
-          </span>
-          {suggestion.missing_data.length > 0 && (
-            <span className="text-rose-600 dark:text-rose-400 font-semibold">Не хватает: {suggestion.missing_data.join(', ')}</span>
-          )}
-          {suggestion.policy.blocked && <span className="text-rose-600 dark:text-rose-400">{suggestion.policy.reason}</span>}
-        </div>
-      )}
-
-      <div className="flex items-center gap-2">
-        {/* Кнопка ручного перезапуска анализа */}
-        <button
-          type="button"
-          onClick={onReanalyze}
-          disabled={reanalyzing}
-          className="text-[11.5px] text-neutral-600 dark:text-neutral-300 hover:text-blue-600 dark:hover:text-blue-400 font-medium cursor-pointer inline-flex items-center gap-1 shrink-0 px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-750 border border-neutral-200 dark:border-neutral-700 transition-colors disabled:opacity-50"
-          title="Принудительно сбросить кэш и перепрогнать правила и AI-синтез для этой заявки"
-        >
-          <svg className={`w-3 h-3 ${reanalyzing ? 'animate-spin text-blue-500' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
-          </svg>
-          <span>{reanalyzing ? 'Анализ...' : 'Переанализировать'}</span>
+        <button type="button" onClick={onReanalyze} disabled={reanalyzing} className="shrink-0 rounded-md border border-neutral-200 px-2.5 py-1.5 text-[11px] font-semibold text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+          {reanalyzing ? 'Перерасчёт…' : 'Пересчитать'}
         </button>
+      </div>
 
-        {/* If AI synthesized text is available and not applied */}
-        {details?.ai_suggested_resolution && details.ai_suggested_resolution !== replyText && (
-          <button
-            type="button"
-            onClick={() => onInsertAiSynthesis(details.ai_suggested_resolution!)}
-            className="text-[11.5px] text-purple-600 dark:text-purple-400 hover:underline font-semibold cursor-pointer inline-flex items-center gap-1 shrink-0"
-            title="Подставить ответ, сформированный AI"
-          >
-            <IconSparkles size={11} />
-            <span>Вставить ответ AI</span>
-          </button>
+      <div className="space-y-3 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          {Object.entries(sources).filter(([, active]) => active).map(([source]) => (
+            <span key={source} className="inline-flex items-center gap-1.5 rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 text-[11px] font-medium text-neutral-700 dark:border-neutral-700 dark:bg-neutral-850 dark:text-neutral-300">
+              {source === 'ai' ? <IconSparkles size={11} /> : <IconBolt size={11} />}
+              {sourceLabels[source] || source}
+            </span>
+          ))}
+          {ticketRun && (
+            <span className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-medium text-blue-700 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-300">
+              {ticketRun.mode === 'autopilot' ? 'Автопилот' : 'Ручной режим'} · {runLabels[ticketRun.state] || ticketRun.state}
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 text-[11px] font-medium text-neutral-700 dark:border-neutral-700 dark:bg-neutral-850 dark:text-neutral-300">
+            <span className={`h-1.5 w-1.5 rounded-full ${getStatusDotClass(targetStatusId)}`} />
+            {targetStatusName}
+            {selectedStatusOverride !== null && (
+              <button type="button" onClick={onResetStatusOverride} title="Вернуть предложенный статус" className="ml-0.5 hover:text-rose-600"><IconClose size={10} /></button>
+            )}
+          </span>
+        </div>
+
+        {blockedReasons.length > 0 && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2 text-[11.5px] text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            {blockedReasons.join(' · ')}
+          </div>
         )}
 
-        {/* Expenses Input */}
-        <div className="flex items-center gap-1 text-[12px] text-neutral-500 dark:text-neutral-400 font-medium">
-          <span>Списание:</span>
-          <input
-            type="number"
-            value={expenses}
-            onChange={e => onChangeExpenses(Number(e.target.value))}
-            min={0}
-            max={240}
-            className="w-12 h-6 px-1 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded text-neutral-900 dark:text-neutral-100 text-center font-mono font-bold text-[11.5px]"
-          />
-          <span>мин</span>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <button type="button" onClick={() => setShowEvidence(value => !value)} className="text-[11.5px] font-medium text-neutral-600 hover:text-neutral-950 dark:text-neutral-400 dark:hover:text-neutral-100">
+            {showEvidence ? 'Скрыть основания' : 'Показать основания'}
+          </button>
+          <div className="flex items-center gap-3">
+            {details?.ai_suggested_resolution && details.ai_suggested_resolution !== replyText && (
+              <button type="button" onClick={() => onInsertAiSynthesis(details.ai_suggested_resolution!)} className="text-[11.5px] font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400">Подставить AI-ответ</button>
+            )}
+            <label className="flex items-center gap-1.5 text-[11.5px] text-neutral-500">
+              <span>Минуты</span>
+              <input type="number" value={expenses} min={0} max={240} onChange={event => onChangeExpenses(Number(event.target.value))} className="h-7 w-14 rounded-md border border-neutral-200 bg-neutral-50 px-1.5 text-center font-mono text-xs font-semibold text-neutral-900 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100" />
+            </label>
+          </div>
         </div>
+
+        {showEvidence && (
+          <div className="grid gap-2 border-t border-neutral-100 pt-3 text-[11px] dark:border-neutral-800 sm:grid-cols-3">
+            {(decision?.steps || []).map(step => (
+              <div key={step.id} className="rounded-lg bg-neutral-50 p-2.5 dark:bg-neutral-850">
+                <div className="font-semibold text-neutral-800 dark:text-neutral-200">{sourceLabels[step.component] || step.component}</div>
+                <div className="mt-1 text-neutral-500 dark:text-neutral-400">{step.status}{step.error_code ? ` · ${step.error_code}` : ''}</div>
+              </div>
+            ))}
+            {decision?.completeness && (
+              <div className="rounded-lg bg-neutral-50 p-2.5 dark:bg-neutral-850">
+                <div className="font-semibold text-neutral-800 dark:text-neutral-200">Полнота контекста</div>
+                <div className="mt-1 text-neutral-500 dark:text-neutral-400">
+                  История: {decision.completeness.history_used ?? 0}/{decision.completeness.history_total ?? 0} · Вложения: {decision.completeness.attachments_read ?? 0}/{decision.completeness.attachments_total ?? 0}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
-    </div>
+    </section>
   );
 }

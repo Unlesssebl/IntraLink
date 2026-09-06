@@ -281,11 +281,14 @@ def auto_detect_template(
         "comments_history": comments_history or [],
     }
 
-    decision: RuleDecision = _default_engine.evaluate(
+    decision, trace = _default_engine.evaluate_with_trace(
         task=task,
         diag=diag,
         kb_matches=kb_matches,
         redirect_mode=redirect_mode,
         context=context,
     )
-    return decision.to_dict()
+    result = decision.to_dict()
+    result["_rule_trace"] = trace
+    result["_rule_trace_complete"] = not any(item["status"] == "error" for item in trace)
+    return result

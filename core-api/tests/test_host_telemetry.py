@@ -12,7 +12,6 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
-from app.database.db import get_db
 from app.main import app
 from app.routers.deps import get_service_auth_b64
 from app.services.host_telemetry import (
@@ -38,15 +37,7 @@ def override_deps():
     async def mock_get_service_auth_b64():
         return "bW9ja19hdXRoX2I2NA=="
 
-    async def mock_get_db():
-        session = AsyncMock()
-        session.execute = AsyncMock()
-        session.commit = AsyncMock()
-        session.rollback = AsyncMock()
-        yield session
-
     app.dependency_overrides[get_service_auth_b64] = mock_get_service_auth_b64
-    app.dependency_overrides[get_db] = mock_get_db
     yield
     app.dependency_overrides.clear()
 

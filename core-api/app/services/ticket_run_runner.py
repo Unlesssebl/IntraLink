@@ -10,10 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.db import CommandRecord, TicketRun
+from app.database.db import AutopilotScenario, CommandRecord, TicketRun
 from app.services.command_service import CommandService
+from app.services.decision_journal import DecisionJournalService
 from app.services.lifecycle.intent_analyzer import IntentAnalyzer
-from app.services.template_engine import render_template_strict
+from app.services.template_engine import detect_service_redirect, render_template_strict
 from app.services.ticket_runs import TicketRunService, TicketRunState, task_executor_ids
 
 
@@ -126,6 +127,14 @@ class TicketRunRunner:
         parameters: dict[str, Any],
         actor: str,
     ) -> CommandRecord:
+        decision = await DecisionJournalService(self.db).record_operational(
+            task_id=run.task_id,
+            ticket_run_id=run.id,
+            action=action,
+            target=target,
+            parameters=parameters,
+            actor=actor,
+        )
         command, _duplicate = await CommandService(self.db).create(
             action=action,
             target=target,
@@ -135,6 +144,8 @@ class TicketRunRunner:
             source="autopilot",
             priority=5,
             ticket_run_id=run.id,
+            decision_id=decision.id,
+            decision_version=decision.version,
         )
         await self._record_step(
             run,
@@ -185,22 +196,65 @@ class TicketRunRunner:
         step = run.current_step or "validate_request"
 
         if step == "validate_request":
-            if not self.is_supported_printer_installation(task, pc_name, printer_address):
+            redirect = detect_service_redirect(task)
+            if redirect:
+                scenario = await self.db.scalar(
+                    select(AutopilotScenario).where(
+                        AutopilotScenario.service_id == int(task.get("ServiceId") or 0),
+                        AutopilotScenario.scenario_key == "printer_installation",
+                        AutopilotScenario.enabled.is_(True),
+                    )
+                )
+                targets = (scenario.config_json or {}).get("redirect_targets", {}) if scenario else {}
+                target = targets.get(str(redirect.get("target_root"))) or {}
+                if isinstance(target, str):
+                    target = {"url": target}
+                target_url = str(target.get("url") or "").strip()
+                if not target_url:
+                    run.pause_reason = "redirect_target_unavailable"
+                    return await self._record_step(
+                        run,
+                        step="validate_request",
+                        state=TicketRunState.PAUSED.value,
+                        actor=actor,
+                        error_code="redirect_target_unavailable",
+                        error_message="Целевой сервис определён, но ссылка на него не настроена",
+                        event_details={"requires_attention": True, "redirect": redirect},
+                    )
+                target_name = str(
+                    target.get("name") or redirect.get("target_service_name") or "целевой сервис"
+                )
                 return await self._create_cancellation(
                     run,
-                    step="cancel_unsupported",
-                    template_key="autopilot_unsupported_cancel",
-                    context={"reason": "заявка не относится к поддерживаемому сценарию установки принтера"},
+                    step="cancel_redirect",
+                    template_key="wrong_service",
+                    context={"target_service": f"{target_name} — {target_url}"},
                     actor=actor,
+                )
+            if not self.is_supported_printer_installation(task, pc_name, printer_address):
+                run.pause_reason = "unsupported_scenario"
+                return await self._record_step(
+                    run,
+                    step="validate_request",
+                    state=TicketRunState.PAUSED.value,
+                    actor=actor,
+                    error_code="unsupported_scenario",
+                    error_message=(
+                        "Заявка не относится к поддерживаемому сценарию установки принтера"
+                    ),
+                    event_details={"requires_attention": True},
                 )
             if not pc_name or not printer_address:
                 if run.clarification_count >= 2:
-                    return await self._create_cancellation(
+                    run.pause_reason = "clarification_unresolved"
+                    return await self._record_step(
                         run,
-                        step="cancel_unsupported",
-                        template_key="autopilot_unsupported_cancel",
-                        context={"reason": "не удалось получить обязательные реквизиты"},
+                        step="validate_request",
+                        state=TicketRunState.PAUSED.value,
                         actor=actor,
+                        error_code="clarification_unresolved",
+                        error_message="Не удалось однозначно извлечь обязательные реквизиты",
+                        event_details={"requires_attention": True},
                     )
                 try:
                     rendered = await render_template_strict(
@@ -275,38 +329,19 @@ class TicketRunRunner:
                 actor=actor,
                 command=command,
             )
-        if (
-            step == "install_printer"
-            and command.status == "failed"
-            and bool(
-                (command.result_json or {}).get("verified_failure")
-                or (
-                    (command.result_json or {}).get("payload", {})
-                    if isinstance((command.result_json or {}).get("payload"), dict)
-                    else {}
-                ).get("verified_failure")
-            )
-        ):
-            result = command.result_json or {}
-            return await self._create_cancellation(
-                run,
-                step="cancel_execution_failed",
-                template_key="autopilot_execution_failed_cancel",
-                context={
-                    "reason": command.error_message
-                    or str(result.get("reason") or "установка отклонена исполнителем")
-                },
-                actor=actor,
-            )
         if command.status in {"failed", "needs_review"}:
+            run.pause_reason = (
+                "execution_failed" if command.status == "failed" else "result_needs_review"
+            )
             return await self._record_step(
                 run,
                 step=step,
-                state=TicketRunState.SYSTEM_ERROR.value,
+                state=TicketRunState.PAUSED.value,
                 actor=actor,
                 command=command,
-                error_code="command_result_unknown",
+                error_code=run.pause_reason,
                 error_message=command.error_message or "Command result requires review",
+                event_details={"requires_attention": True},
             )
 
         if (
@@ -539,11 +574,10 @@ class TicketRunRunner:
                 actor=actor,
             )
 
-        assistant_id = (
-            str(settings.INTRASERVICE_SERVICE_USER_ID)
-            if settings.INTRASERVICE_SERVICE_USER_ID is not None
-            else None
-        )
+        from app.services.vault import get_service_account_user_id
+
+        service_user_id = await get_service_account_user_id(self.db)
+        assistant_id = str(service_user_id) if service_user_id is not None else None
         creator_id = str(task.get("CreatorId")) if task.get("CreatorId") is not None else None
         eligible: list[dict[str, Any]] = []
         for comment in comments:
@@ -611,12 +645,15 @@ class TicketRunRunner:
                     actor=actor,
                 )
             if run.clarification_count >= 2:
-                return await self._create_cancellation(
+                run.pause_reason = "clarification_unresolved"
+                return await self._record_step(
                     run,
-                    step="cancel_unsupported",
-                    template_key="autopilot_unsupported_cancel",
-                    context={"reason": "ответ не содержит обязательные реквизиты"},
+                    step="wait_for_answer",
+                    state=TicketRunState.PAUSED.value,
                     actor=actor,
+                    error_code="clarification_unresolved",
+                    error_message="Получен ответ, но обязательные реквизиты не распознаны",
+                    event_details={"requires_attention": True},
                 )
             return await self._record_step(
                 run,

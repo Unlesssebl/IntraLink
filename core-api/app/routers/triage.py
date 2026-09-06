@@ -4,6 +4,7 @@
 """
 
 import logging
+import uuid
 from typing import Any, Literal
 import jwt
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, status
@@ -12,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.db import TicketRun, get_db
+from app.database.db import DecisionRecord, DecisionStep, TicketRun, get_db
 from app.routers.deps import (
     OperatorContext,
     get_operator_context,
@@ -45,6 +46,11 @@ from app.services.triage_service import TriageService
 from app.services.triage_session import TriageSessionManager
 from app.services.worker import get_redis_client
 from app.services.ai_suggestions import build_suggestion_state, invalidate_suggestion
+from app.services.decision_journal import (
+    DecisionJournalService,
+    serialize_decision,
+    ticket_snapshot_fingerprint,
+)
 
 logger = logging.getLogger("core_api.routers.triage")
 
@@ -89,6 +95,8 @@ class ApplyTriageRequest(BaseModel):
             "финализации заявок, требующих инфраструктурного действия."
         ),
     )
+    decision_id: str | None = Field(None, description="ID зафиксированного решения")
+    decision_version: int | None = Field(None, description="Версия зафиксированного решения")
 
 
 class SkipSessionRequest(BaseModel):
@@ -126,6 +134,52 @@ class RAGSyncRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Эндпоинты триажа очереди и карточки задач
 # ---------------------------------------------------------------------------
+
+
+async def attach_durable_decision(
+    *,
+    card: dict[str, Any],
+    task_id: int,
+    db: AsyncSession,
+    actor: str,
+    force: bool = False,
+) -> None:
+    suggestion = card.get("ai_suggestion") or {}
+    record = await DecisionJournalService(db).record_triage(
+        task_id=task_id,
+        task=card.get("task") or {},
+        history=card.get("history") or [],
+        decision=card.get("suggested_action"),
+        kb_matches=card.get("kb_matches") or [],
+        ai_text=card.get("ai_suggested_resolution"),
+            ai_metadata=card.get("ai_metadata") or {
+                "model": None,
+                "backend": None,
+                "circuit": card.get("circuit"),
+                "input_tokens": None,
+                "output_tokens": None,
+            },
+        policy=suggestion.get("policy") or {},
+        actor=actor,
+        force=force,
+    )
+    steps = list(
+        (
+            await db.scalars(
+                select(DecisionStep)
+                .where(DecisionStep.decision_id == record.id)
+                .order_by(DecisionStep.sequence)
+            )
+        ).all()
+    )
+    card["decision"] = serialize_decision(record, steps=steps)
+    card["sources"] = record.source_json
+    card["readiness"] = {
+        "ready": bool(record.proposal_json.get("ready")),
+        "missing_data": record.completeness_json.get("missing_data", []),
+        "blocked_reasons": record.completeness_json.get("blocked_reasons", []),
+        "stale": suggestion.get("state") == "stale",
+    }
 
 
 @router.get("/batch", status_code=status.HTTP_200_OK)
@@ -169,6 +223,7 @@ async def get_triage_batch(
 async def get_task_details_card(
     task_id: int,
     service_auth_b64: str = Depends(get_service_auth_b64),
+    operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """Возвращает расширенную карточку задачи с историей, RAG и AI-синтезом решения."""
@@ -188,6 +243,9 @@ async def get_task_details_card(
         task=card.get("task") or {},
         history=card.get("history"),
         decision=card.get("suggested_action"),
+    )
+    await attach_durable_decision(
+        card=card, task_id=task_id, db=db, actor=operator
     )
     return card
 
@@ -218,6 +276,9 @@ async def reanalyze_task_endpoint(
         history=card.get("history"),
         decision=card.get("suggested_action"),
         force_recalculate=True,
+    )
+    await attach_durable_decision(
+        card=card, task_id=task_id, db=db, actor=operator, force=True
     )
     return card
 
@@ -298,6 +359,62 @@ async def apply_triage_action(
             )
 
     op_user_id = extract_operator_user_id(authorization, admin_session)
+    decision_by_task: dict[int, DecisionRecord] = {}
+    if not payload.dry_run:
+        journal = DecisionJournalService(db)
+        if payload.decision_id is not None:
+            if len(payload.task_ids) != 1 or payload.decision_version is None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "decision_version_required_for_single_task",
+                )
+            try:
+                parsed_decision_id = uuid.UUID(payload.decision_id)
+            except ValueError as exc:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_decision_id"
+                ) from exc
+            decision_by_task[payload.task_ids[0]] = await journal.require_current(
+                decision_id=parsed_decision_id,
+                task_id=payload.task_ids[0],
+                version=payload.decision_version,
+            )
+            current_task = await intraservice.get_single_task(
+                service_auth_b64, payload.task_ids[0]
+            )
+            current_history_payload = await intraservice.get_task_lifetime(
+                service_auth_b64, payload.task_ids[0]
+            )
+            current_history = (
+                current_history_payload.get("TaskLifetimes", [])
+                if isinstance(current_history_payload, dict)
+                else (current_history_payload or [])
+            )
+            expected_fingerprint = decision_by_task[payload.task_ids[0]].context_json.get(
+                "ticket_fingerprint"
+            )
+            if (
+                not current_task
+                or expected_fingerprint
+                != ticket_snapshot_fingerprint(current_task, current_history)
+            ):
+                raise HTTPException(status.HTTP_409_CONFLICT, "decision_stale")
+        else:
+            for task_id in payload.task_ids:
+                decision_by_task[task_id] = await journal.record_operational(
+                    task_id=task_id,
+                    ticket_run_id=None,
+                    action="apply_triage",
+                    target={"task_id": task_id},
+                    parameters={
+                        "status_id": payload.status_id,
+                        "comment": payload.comment,
+                        "expenses": payload.expenses,
+                        "executor_ids": payload.executor_ids,
+                    },
+                    actor=str(op_user_id or "operator"),
+                )
+            await db.commit()
     results = await TriageService.apply_triage_resolution(
         service_auth_b64=service_auth_b64,
         db=db,
@@ -324,6 +441,30 @@ async def apply_triage_action(
         redis = get_redis_client()
         for result in results:
             if result.get("update_ok"):
+                decision = decision_by_task.get(int(result["task_id"]))
+                if decision is not None:
+                    proposal = decision.proposal_json or {}
+                    proposed_parameters = proposal.get("parameters") or proposal
+                    proposed_comment = proposed_parameters.get("comment")
+                    proposed_status = proposed_parameters.get("status_id")
+                    verdict = (
+                        "accepted"
+                        if proposed_comment == payload.comment
+                        and proposed_status == payload.status_id
+                        else "modified"
+                    )
+                    await DecisionJournalService(db).add_feedback(
+                        decision_id=decision.id,
+                        verdict=verdict,
+                        reason_code=None,
+                        comment=None,
+                        final_action={
+                            "status_id": payload.status_id,
+                            "comment": payload.comment,
+                            "expenses": payload.expenses,
+                        },
+                        actor=str(op_user_id or "operator"),
+                    )
                 await invalidate_suggestion(redis, int(result["task_id"]))
     return {"results": results}
 
@@ -506,37 +647,35 @@ async def purge_triage_cache_endpoint(
 @router.get("/feedback-review", status_code=status.HTTP_200_OK)
 async def get_feedback_review_endpoint(
     limit: int = Query(20, ge=1, le=100, description="Количество записей аудита"),
-    min_diff: float = Query(0.0, ge=0.0, le=1.0, description="Минимальный коэффициент расхождения"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Возвращает журнал аудита решений и расхождений для анализа качества (Feedback Loop)."""
+    """Compatibility view backed by the durable decision feedback journal."""
     from sqlalchemy import desc, select
-    from app.database.db import TriageAuditLog
+    from app.database.db import DecisionFeedback, DecisionRecord
 
     query = (
-        select(TriageAuditLog)
-        .where(TriageAuditLog.diff_ratio >= min_diff)
-        .order_by(desc(TriageAuditLog.created_at))
+        select(DecisionFeedback, DecisionRecord)
+        .join(DecisionRecord, DecisionRecord.id == DecisionFeedback.decision_id)
+        .order_by(desc(DecisionFeedback.created_at))
         .limit(limit)
     )
     res = await db.execute(query)
-    entries = res.scalars().all()
+    entries = res.all()
 
     return {
         "total": len(entries),
         "items": [
             {
-                "id": str(e.id),
-                "task_id": e.task_id,
-                "generated_comment": e.generated_comment,
-                "final_comment": e.final_comment,
-                "confidence_score": e.confidence_score,
-                "diff_ratio": e.diff_ratio,
-                "operator_id": e.operator_id,
-                "status_id": e.status_id,
-                "created_at": e.created_at.isoformat() if e.created_at else None,
+                "id": str(feedback.id),
+                "decision_id": str(decision.id),
+                "task_id": decision.task_id,
+                "verdict": feedback.verdict,
+                "reason_code": feedback.reason_code,
+                "final_action": feedback.final_action_json,
+                "operator_id": feedback.actor,
+                "created_at": feedback.created_at.isoformat() if feedback.created_at else None,
             }
-            for e in entries
+            for feedback, decision in entries
         ],
     }
 

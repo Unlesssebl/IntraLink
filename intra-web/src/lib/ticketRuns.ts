@@ -61,6 +61,20 @@ export interface AutopilotSetting {
   updated_at: string | null;
   templates_ready: boolean;
   missing_templates: string[];
+  service_user_id: number | null;
+  service_identity_ready: boolean;
+  scenarios: AutopilotScenario[];
+}
+
+export interface AutopilotScenario {
+  id: string;
+  service_id: number;
+  scenario_key: 'printer_installation';
+  enabled: boolean;
+  version: number;
+  config: Record<string, unknown>;
+  updated_by: string;
+  updated_at: string | null;
 }
 
 export const fetchTicketRun = (taskId: number) =>
@@ -114,4 +128,16 @@ export const updateAutopilotSetting = (
   apiFetch<AutopilotSetting>('/api/v2/autopilot', {
     method: 'PUT',
     body: JSON.stringify({ enabled, expected_version: expectedVersion, reason }),
+  });
+
+export const saveAutopilotScenario = (payload: {
+  service_id: number;
+  scenario_key: 'printer_installation';
+  enabled: boolean;
+  config?: Record<string, unknown>;
+  expected_version?: number;
+}) =>
+  apiFetch<AutopilotScenario>('/api/v2/autopilot/scenarios', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
   });

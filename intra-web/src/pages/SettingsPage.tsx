@@ -11,6 +11,7 @@ import { IconSun, IconMoon } from '../components/Icons';
 import { apiFetch } from '../lib/api';
 import {
   fetchAutopilotSetting,
+  saveAutopilotScenario,
   updateAutopilotSetting,
   type AutopilotSetting,
 } from '../lib/ticketRuns';
@@ -33,6 +34,8 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
   const [restartingWorker, setRestartingWorker] = useState(false);
   const [autopilot, setAutopilot] = useState<AutopilotSetting | null>(null);
   const [savingAutopilot, setSavingAutopilot] = useState(false);
+  const [scenarioServiceId, setScenarioServiceId] = useState('');
+  const [savingScenario, setSavingScenario] = useState(false);
 
   // Domain auth state
   const [domainAuth, setDomainAuth] = useState<{ is_configured: boolean; username: string | null }>({
@@ -165,6 +168,44 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
     }
   };
 
+  const handleAddScenario = async () => {
+    if (!autopilot || !scenarioServiceId.trim()) return;
+    setSavingScenario(true);
+    try {
+      await saveAutopilotScenario({
+        service_id: Number(scenarioServiceId),
+        scenario_key: 'printer_installation',
+        enabled: true,
+        config: {},
+      });
+      setScenarioServiceId('');
+      await loadAll();
+      onToast({ type: 'success', message: 'Сервис добавлен в область автопилота' });
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Не удалось сохранить сценарий: ${err.message || err}` });
+    } finally {
+      setSavingScenario(false);
+    }
+  };
+
+  const handleToggleScenario = async (serviceId: number, enabled: boolean, version: number, config: Record<string, unknown>) => {
+    setSavingScenario(true);
+    try {
+      await saveAutopilotScenario({
+        service_id: serviceId,
+        scenario_key: 'printer_installation',
+        enabled,
+        config,
+        expected_version: version,
+      });
+      await loadAll();
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Не удалось изменить сценарий: ${err.message || err}` });
+    } finally {
+      setSavingScenario(false);
+    }
+  };
+
   const handleDensityChange = (density: 'compact' | 'normal' | 'comfortable') => {
     setTableDensity(density);
     localStorage.setItem('intralink_table_density', density);
@@ -206,7 +247,7 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
             <div>
               <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Автопилот заявок</h2>
               <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-                Глобальный допуск автоматических циклов. Назначения assistant сохраняются и при выключенном режиме.
+                Цикл запускается только для настроенного сервиса после назначения проверенной сервисной учётной записи.
               </p>
             </div>
             <span className={`rounded px-2 py-1 text-[11px] font-semibold ${autopilot?.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}>
@@ -221,16 +262,53 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
                   Не настроены шаблоны: {autopilot.missing_templates.join(', ')}
                 </div>
               )}
+              {autopilot && !autopilot.service_identity_ready && (
+                <div className="mt-1 text-amber-600 dark:text-amber-300">Сервисная учётная запись не проверена</div>
+              )}
+              {autopilot?.service_user_id && (
+                <div className="mt-1 font-mono">IntraService user ID: {autopilot.service_user_id}</div>
+              )}
             </div>
             <button
               type="button"
-              disabled={!canManageAutopilot || !autopilot || savingAutopilot || (!autopilot.enabled && !autopilot.templates_ready)}
+              disabled={!canManageAutopilot || !autopilot || savingAutopilot || (!autopilot.enabled && (!autopilot.templates_ready || !autopilot.service_identity_ready || autopilot.scenarios.filter(item => item.enabled).length === 0))}
               onClick={handleToggleAutopilot}
               title={canManageAutopilot ? undefined : 'Требуется право autopilot:manage'}
               className={`rounded px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 ${autopilot?.enabled ? 'bg-rose-600 hover:bg-rose-500' : 'bg-blue-600 hover:bg-blue-500'}`}
             >
               {savingAutopilot ? 'Сохранение…' : autopilot?.enabled ? 'Выключить' : 'Включить'}
             </button>
+          </div>
+          <div className="space-y-2 border-t border-neutral-100 pt-3 dark:border-neutral-800">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs font-medium text-neutral-800 dark:text-neutral-200">Поддерживаемые сервисы</div>
+                <div className="text-[11px] text-neutral-500">Сценарий: установка принтера</div>
+              </div>
+              <span className="text-[11px] text-neutral-500">{autopilot?.scenarios.filter(item => item.enabled).length || 0} включено</span>
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="number"
+                min={1}
+                value={scenarioServiceId}
+                onChange={event => setScenarioServiceId(event.target.value)}
+                placeholder="ID сервиса IntraService"
+                className="min-w-0 flex-1 rounded border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-900 outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+              />
+              <button type="button" onClick={handleAddScenario} disabled={!canManageAutopilot || savingScenario || !scenarioServiceId.trim()} className="rounded bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900">Добавить</button>
+            </div>
+            {autopilot?.scenarios.map(item => (
+              <div key={item.id} className="flex items-center justify-between rounded border border-neutral-200/80 px-2.5 py-2 text-xs dark:border-neutral-800">
+                <div>
+                  <span className="font-mono font-semibold">#{item.service_id}</span>
+                  <span className="ml-2 text-neutral-500">Установка принтера</span>
+                </div>
+                <button type="button" disabled={!canManageAutopilot || savingScenario} onClick={() => handleToggleScenario(item.service_id, !item.enabled, item.version, item.config)} className={`rounded px-2 py-1 text-[11px] font-semibold ${item.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}>
+                  {item.enabled ? 'Включён' : 'Выключен'}
+                </button>
+              </div>
+            ))}
           </div>
         </div>
 

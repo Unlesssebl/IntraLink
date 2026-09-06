@@ -29,6 +29,7 @@ from app.routers import (
     auth,
     commands,
     commands_v2,
+    decisions,
     desktop,
     events,
     identity,
@@ -175,6 +176,7 @@ app.include_router(ai.router)
 app.include_router(commands.router)
 app.include_router(commands_v2.router)
 app.include_router(commands_v2.policy_router)
+app.include_router(decisions.router)
 app.include_router(ticket_runs.router)
 app.include_router(ticket_runs.settings_router)
 app.include_router(desktop.router)

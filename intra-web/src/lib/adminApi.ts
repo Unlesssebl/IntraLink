@@ -386,7 +386,9 @@ export interface VaultStatusResponse {
   service_account: {
     is_configured: boolean;
     login: string | null;
+    user_id: number | null;
     redis_synced: boolean;
+    identity_synced: boolean;
     base_url: string;
   };
   domain: {

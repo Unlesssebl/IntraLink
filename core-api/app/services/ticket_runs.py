@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.db import (
     AutopilotSetting,
     AutopilotSettingEvent,
+    AutopilotScenario,
     CommandEvent,
     CommandRecord,
     TicketRun,
@@ -34,8 +35,7 @@ REQUIRED_AUTOPILOT_TEMPLATES = frozenset(
         "pc_offline",
         "ticket_timeout_cancel",
         "ticket_not_relevant",
-        "autopilot_unsupported_cancel",
-        "autopilot_execution_failed_cancel",
+        "wrong_service",
         "resolved_standard",
     }
 )
@@ -45,13 +45,9 @@ AUTOPILOT_TEMPLATE_SPECS: dict[str, tuple[int, dict[str, Any]]] = {
     "pc_offline": (settings.STATUS_WAITING_ID, {"pc_name": "PC-TEST"}),
     "ticket_timeout_cancel": (settings.STATUS_CANCELLED_ID, {}),
     "ticket_not_relevant": (settings.STATUS_CANCELLED_ID, {}),
-    "autopilot_unsupported_cancel": (
+    "wrong_service": (
         settings.STATUS_CANCELLED_ID,
-        {"reason": "проверка"},
-    ),
-    "autopilot_execution_failed_cancel": (
-        settings.STATUS_CANCELLED_ID,
-        {"reason": "проверка"},
+        {"target_service": "Тестовый сервис — https://helpdesk.example/services/1"},
     ),
     "resolved_standard": (settings.STATUS_COMPLETED_ID, {}),
 }
@@ -158,6 +154,17 @@ class TicketRunService:
                 raise ValueError(
                     "autopilot_templates_not_ready:" + ",".join(readiness["missing"])
                 )
+            from app.services.vault import get_service_account_user_id
+
+            if await get_service_account_user_id(self.db) is None:
+                raise ValueError("service_identity_not_configured")
+            enabled_scenarios = await self.db.scalar(
+                select(func.count(AutopilotScenario.id)).where(
+                    AutopilotScenario.enabled.is_(True)
+                )
+            )
+            if not enabled_scenarios:
+                raise ValueError("autopilot_scenarios_not_configured")
         if setting.enabled == enabled:
             await self.db.commit()
             await self.db.refresh(setting)
@@ -221,6 +228,67 @@ class TicketRunService:
                 invalid.append(template_key)
         return {"ready": not invalid, "missing": sorted(invalid)}
 
+    async def list_scenarios(self) -> list[AutopilotScenario]:
+        return list(
+            (
+                await self.db.scalars(
+                    select(AutopilotScenario).order_by(
+                        AutopilotScenario.service_id, AutopilotScenario.scenario_key
+                    )
+                )
+            ).all()
+        )
+
+    async def get_enabled_scenario(self, service_id: int) -> AutopilotScenario | None:
+        return await self.db.scalar(
+            select(AutopilotScenario).where(
+                AutopilotScenario.service_id == service_id,
+                AutopilotScenario.enabled.is_(True),
+            )
+        )
+
+    async def upsert_scenario(
+        self,
+        *,
+        service_id: int,
+        scenario_key: str,
+        enabled: bool,
+        config: dict[str, Any],
+        actor: str,
+        expected_version: int | None,
+    ) -> AutopilotScenario:
+        if scenario_key != "printer_installation":
+            raise ValueError("unsupported_scenario_key")
+        record = await self.db.scalar(
+            select(AutopilotScenario)
+            .where(
+                AutopilotScenario.service_id == service_id,
+                AutopilotScenario.scenario_key == scenario_key,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            if expected_version is not None:
+                raise ValueError("scenario_version_conflict")
+            record = AutopilotScenario(
+                service_id=service_id,
+                scenario_key=scenario_key,
+                enabled=enabled,
+                config_json=config,
+                updated_by=actor,
+            )
+            self.db.add(record)
+        else:
+            if expected_version is not None and record.version != expected_version:
+                raise ValueError("scenario_version_conflict")
+            record.enabled = enabled
+            record.config_json = config
+            record.version += 1
+            record.updated_by = actor
+        await self.db.commit()
+        await self.db.refresh(record)
+        return record
+
     async def register_assignment(
         self,
         *,
@@ -244,6 +312,18 @@ class TicketRunService:
         if assistant_user_id not in task_executor_ids(task):
             return RegistrationResult(None, False, "assistant_not_assigned")
 
+        setting = await self.get_global_setting()
+        assert setting is not None
+        if not setting.enabled:
+            return RegistrationResult(None, False, "autopilot_disabled")
+        try:
+            service_id = int(task.get("ServiceId") or 0)
+        except (TypeError, ValueError):
+            service_id = 0
+        scenario = await self.get_enabled_scenario(service_id)
+        if scenario is None:
+            return RegistrationResult(None, False, "unsupported_service")
+
         basis = (trigger_key or f"initial-assignment:{task_id}").strip()
         if not basis or len(basis) > 160:
             return RegistrationResult(None, False, "invalid_trigger")
@@ -255,38 +335,6 @@ class TicketRunService:
             )
         )
         if existing is not None:
-            if (
-                existing.completed_at is None
-                and existing.state
-                in {TicketRunState.PENDING.value, TicketRunState.PAUSED.value}
-                and existing.pause_reason == "global_disabled"
-            ):
-                setting = await self.get_global_setting()
-                if setting is not None and setting.enabled:
-                    existing.state = TicketRunState.RUNNING.value
-                    existing.pause_reason = None
-                    existing.version += 1
-                    existing.updated_by = actor
-                    sequence = (
-                        await self.db.scalar(
-                            select(func.max(TicketRunEvent.sequence)).where(
-                                TicketRunEvent.ticket_run_id == existing.id
-                            )
-                        )
-                        or 0
-                    ) + 1
-                    self.db.add(
-                        TicketRunEvent(
-                            ticket_run_id=existing.id,
-                            sequence=sequence,
-                            event_type="run_resumed",
-                            actor=actor,
-                            details_json={"reason": "global_enabled_and_assignment_revalidated"},
-                        )
-                    )
-                    await self.db.commit()
-                    await self.db.refresh(existing)
-                    return RegistrationResult(existing, False, "resumed")
             return RegistrationResult(existing, False, "duplicate_trigger")
 
         active = await self.db.scalar(
@@ -298,14 +346,10 @@ class TicketRunService:
         if active is not None:
             return RegistrationResult(active, False, "active_run_exists")
 
-        setting = await self.get_global_setting()
-        assert setting is not None
-        state = TicketRunState.RUNNING if setting.enabled else TicketRunState.PENDING
-        pause_reason = None if setting.enabled else "global_disabled"
         run = TicketRun(
             task_id=task_id,
             mode=TicketRunMode.AUTOPILOT.value,
-            state=state.value,
+            state=TicketRunState.RUNNING.value,
             trigger_kind=trigger_kind,
             trigger_key=basis,
             trigger_snapshot_json={
@@ -313,9 +357,13 @@ class TicketRunService:
                 "status_id": status_id,
                 "assistant_user_id": assistant_user_id,
                 "executor_ids": sorted(task_executor_ids(task)),
+                "service_id": service_id,
+                "scenario_id": str(scenario.id),
+                "scenario_key": scenario.scenario_key,
+                "scenario_version": scenario.version,
             },
             current_step="validate_request",
-            pause_reason=pause_reason,
+            pause_reason=None,
             created_by=actor,
             updated_by=actor,
         )

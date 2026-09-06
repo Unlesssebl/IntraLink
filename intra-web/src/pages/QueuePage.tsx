@@ -99,6 +99,7 @@ export default function QueuePage({
   const [bulkModal, setBulkModal] = useState<BulkConfirmModalState | null>(null);
   const [smartBatchModal, setSmartBatchModal] = useState<SmartBatchModalState | null>(null);
   const [ticketRuns, setTicketRuns] = useState<Record<number, TicketRun>>({});
+  const [ticketRunsStaleAt, setTicketRunsStaleAt] = useState<Date | null>(null);
 
   const ticketIdsKey = tickets.map(ticket => ticket.rawId).join(',');
   useEffect(() => {
@@ -113,10 +114,11 @@ export default function QueuePage({
         .then(({ items }) => {
           if (!cancelled) {
             setTicketRuns(Object.fromEntries(items.map(run => [run.task_id, run])));
+            setTicketRunsStaleAt(null);
           }
         })
         .catch(() => {
-          if (!cancelled) setTicketRuns({});
+          if (!cancelled) setTicketRunsStaleAt(new Date());
         });
     };
     loadRuns();
@@ -545,6 +547,12 @@ export default function QueuePage({
 
             <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-800" />
 
+            {ticketRunsStaleAt && (
+              <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300" title={ticketRunsStaleAt.toLocaleString('ru-RU')}>
+                Состояния циклов временно недоступны · показаны последние данные
+              </span>
+            )}
+
             {/* Rule Engine Fast Toggle Button */}
             <button
               type="button"
@@ -733,8 +741,8 @@ export default function QueuePage({
                     running: 'выполняется',
                     waiting_answer: 'ждёт ответа',
                     waiting_approval: 'ждёт подтверждения',
-                    paused: 'пауза',
-                    system_error: 'ошибка',
+                              paused: 'нужно внимание',
+                              system_error: 'ошибка связи',
                     completed: 'завершён',
                   };
 

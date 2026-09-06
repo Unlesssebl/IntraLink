@@ -62,6 +62,25 @@ class RuleEngine:
         """
         Прогоняет контекст заявки через цепочку правил до первого совпадения.
         """
+        decision, _trace = self.evaluate_with_trace(
+            task=task,
+            diag=diag,
+            kb_matches=kb_matches,
+            redirect_mode=redirect_mode,
+            context=context,
+        )
+        return decision
+
+    def evaluate_with_trace(
+        self,
+        task: dict[str, Any],
+        diag: dict[str, Any] | None = None,
+        kb_matches: list[dict[str, Any]] | None = None,
+        redirect_mode: bool = False,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[RuleDecision, list[dict[str, Any]]]:
+        """Evaluate rules and return an audit-safe trace without model reasoning."""
+        trace: list[dict[str, Any]] = []
         for rule in self._rules:
             try:
                 decision = rule.evaluate(
@@ -72,10 +91,38 @@ class RuleEngine:
                     context=context,
                 )
                 if decision is not None:
+                    trace.append(
+                        {
+                            "rule": rule.name,
+                            "priority": rule.priority,
+                            "status": "matched",
+                            "template_key": decision.template_key,
+                        }
+                    )
                     logger.debug("Правило '%s' успешно сработало для заявки #%s", rule.name, task.get("Id") or task.get("id"))
-                    return decision
+                    return decision, trace
+                trace.append(
+                    {"rule": rule.name, "priority": rule.priority, "status": "not_matched"}
+                )
             except Exception as e:
+                trace.append(
+                    {
+                        "rule": rule.name,
+                        "priority": rule.priority,
+                        "status": "error",
+                        "error_type": type(e).__name__,
+                    }
+                )
                 logger.error("Ошибка при выполнении правила '%s': %s", rule.name, e)
 
         # Fallback по умолчанию, если ни одно правило не вернуло результат
-        return StandardInWorkRule().evaluate(task, diag, kb_matches, redirect_mode, context)
+        fallback = StandardInWorkRule().evaluate(task, diag, kb_matches, redirect_mode, context)
+        trace.append(
+            {
+                "rule": "StandardInWorkRule",
+                "priority": 999,
+                "status": "fallback",
+                "template_key": fallback.template_key,
+            }
+        )
+        return fallback, trace

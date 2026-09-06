@@ -287,9 +287,7 @@ export function mapTaskToTicket(task: TaskItem): Ticket {
       (task.template_key && task.template_key !== 'in_work_standard')
     ),
     hasAiSolution: Boolean(
-      (task as any).has_ai_solution ||
-      ((task as any).kb_matches && (task as any).kb_matches.length > 0) ||
-      Boolean((task as any).ai_suggested_resolution)
+      (task as any).sources?.ai
     ),
   };
 }
@@ -501,6 +499,8 @@ export async function applyTask(taskId: number, payload: SingleApplyPayload): Pr
       },
       source: 'web',
       ticket_run_id: ticketRunId,
+      decision_id: payload.decision_id,
+      decision_version: payload.decision_version,
     }),
   });
   if (command.status === 'awaiting_approval') {
@@ -596,6 +596,8 @@ export async function submitCommand(payload: {
   ticket_run_id?: string;
   suggestion_task_id?: number;
   suggestion_fingerprint?: string;
+  decision_id?: string;
+  decision_version?: number;
 }): Promise<{ status: string; job_id: string; command_type: string; task_id?: number }> {
   const result = await apiFetch<any>('/api/v2/commands', {
     method: 'POST',
@@ -607,6 +609,8 @@ export async function submitCommand(payload: {
       priority: payload.priority || 5,
       source: 'web',
       ticket_run_id: payload.ticket_run_id,
+      decision_id: payload.decision_id,
+      decision_version: payload.decision_version,
     }),
   });
   return { ...result, job_id: result.command_id, command_type: result.action };

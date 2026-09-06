@@ -286,8 +286,6 @@ async def get_service_auth_b64(
     1. Если запрос от авторизованного оператора (Authorization Header, Cookie admin_session или Query ?token=...) — берем его актуальный зашифрованный токен из Redis.
     2. Иначе используем глобальный сервисный аккаунт (из ENV или Redis).
     """
-    import base64
-    from app.services.crypto import encrypt_token
     from app.services.worker import get_redis_client
 
     redis = get_redis_client()
@@ -320,11 +318,6 @@ async def get_service_auth_b64(
             except Exception:
                 pass
 
-    if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
-        auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
-        plain_b64 = base64.b64encode(auth_str.encode()).decode()
-        return encrypt_token(plain_b64)
-
     try:
         service_auth_b64 = await redis.get("worker:service_auth_b64")
         if service_auth_b64:
@@ -347,8 +340,6 @@ async def get_operator_context(
     - Если передан валидный JWT токен оператора, извлекает его реальный user_id и токен IntraService из Redis.
     - Иначе возвращает контекст сервисного аккаунта с первичным исполнителем по умолчанию.
     """
-    import base64
-    from app.services.crypto import encrypt_token
     from app.services.worker import get_redis_client
 
     redis = get_redis_client()
@@ -382,13 +373,7 @@ async def get_operator_context(
                 pass
 
     # Fallback на системный аккаунт
-    service_auth = None
-    if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
-        auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
-        plain_b64 = base64.b64encode(auth_str.encode()).decode()
-        service_auth = encrypt_token(plain_b64)
-    else:
-        service_auth = await redis.get("worker:service_auth_b64")
+    service_auth = await redis.get("worker:service_auth_b64")
 
     if not service_auth:
         raise HTTPException(
@@ -396,9 +381,11 @@ async def get_operator_context(
             detail="Сервисный аккаунт IntraService не настроен.",
         )
 
+    from app.services.vault import get_service_account_user_id
+
     return OperatorContext(
         username="system_service",
-        user_id=settings.PRIMARY_EXECUTOR_ID,
+        user_id=await get_service_account_user_id(redis_client=redis),
         auth_b64=service_auth,
         is_service_account=True,
     )

@@ -5,7 +5,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
-from app.database.db import Base, get_db, TriageAuditLog
+from app.database.db import Base, get_db
 from app.main import app
 from app.services.ai_synthesis import (
     calculate_confidence_score,

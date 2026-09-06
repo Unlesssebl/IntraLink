@@ -458,7 +458,11 @@ async def process_user(
 
 async def process_autonomous_lifecycle(service_auth_b64: str) -> None:
     """Persist newly observed assistant assignments without executing legacy FSM steps."""
-    assistant_user_id = settings.INTRASERVICE_SERVICE_USER_ID
+    from app.database.db import AsyncSessionLocal
+    from app.services.vault import get_service_account_user_id
+
+    async with AsyncSessionLocal() as identity_db:
+        assistant_user_id = await get_service_account_user_id(identity_db)
     if not assistant_user_id:
         return
     try:
@@ -488,7 +492,6 @@ async def process_autonomous_lifecycle(service_auth_b64: str) -> None:
         if created:
             logger.info("Зарегистрировано новых циклов автопилота: %d", created)
 
-        from app.database.db import AsyncSessionLocal
         from app.services.ticket_run_runner import TicketRunRunner
         from app.services.ticket_runs import TicketRunService, task_executor_ids
 
@@ -671,16 +674,11 @@ async def check_waiting_printer_tasks(
         editor_id = last_comment_event.get("EditorId")
         editor_name = last_comment_event.get("Editor") or ""
 
+        from app.services.vault import get_service_account_user_id
+
+        service_user_id = await get_service_account_user_id(redis_client=redis)
         is_service_comment = False
-        if (
-            settings.INTRASERVICE_SERVICE_USER_ID
-            and editor_id == settings.INTRASERVICE_SERVICE_USER_ID
-        ):
-            is_service_comment = True
-        elif (
-            settings.INTRASERVICE_SERVICE_LOGIN
-            and settings.INTRASERVICE_SERVICE_LOGIN.lower() in editor_name.lower()
-        ):
+        if service_user_id and editor_id == service_user_id:
             is_service_comment = True
 
         if is_service_comment:
@@ -750,17 +748,7 @@ async def sync_service_catalog() -> None:
     logger.info("Синхронизация каталога услуг...")
     redis = get_redis_client()
 
-    # Получаем учетные данные сервисного аккаунта
-    import base64
-    from app.services.crypto import encrypt_token
-
-    raw_auth = None
-    if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
-        auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
-        plain_b64 = base64.b64encode(auth_str.encode()).decode()
-        raw_auth = encrypt_token(plain_b64)
-    else:
-        raw_auth = await redis.get("worker:service_auth_b64")
+    raw_auth = await redis.get("worker:service_auth_b64")
 
     if not raw_auth:
         logger.warning(
@@ -768,10 +756,10 @@ async def sync_service_catalog() -> None:
         )
         return
 
-    if isinstance(raw_auth, bytes):
-        service_auth_b64: str = raw_auth.decode()
-    else:
-        service_auth_b64: str = raw_auth
+    from app.services.crypto import decrypt_token
+
+    encrypted_auth = raw_auth.decode() if isinstance(raw_auth, bytes) else str(raw_auth)
+    service_auth_b64 = decrypt_token(encrypted_auth)
 
     try:
         services = await get_services(service_auth_b64)
@@ -837,34 +825,21 @@ async def check_updates():
     Использует выделенный сервисный аккаунт IntraService или учетные данные,
     сохраненные при авторизации в веб-панели.
     """
-    # Импорты внутри для избежания циклических зависимостей
-    import base64
-    from app.services.crypto import encrypt_token
-
     redis = get_redis_client()
 
-    # Сначала пытаемся взять данные из настроек (переменных окружения)
-    raw_auth = None
-    if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
-        auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
-        plain_b64 = base64.b64encode(auth_str.encode()).decode()
-        raw_auth = encrypt_token(plain_b64)
-    else:
-        # Пытаемся получить сохраненные учетные данные администратора из Redis
-        raw_auth = await redis.get("worker:service_auth_b64")
+    raw_auth = await redis.get("worker:service_auth_b64")
 
     if not raw_auth:
         logger.warning(
             "Сервисный аккаунт IntraService не настроен! "
-            "Пожалуйста, авторизуйтесь в веб-панели или задайте "
-            "INTRASERVICE_SERVICE_LOGIN и INTRASERVICE_SERVICE_PASSWORD в .env."
+            "Сохраните и проверьте его в административной Web-панели."
         )
         return
 
-    if isinstance(raw_auth, bytes):
-        service_auth_b64: str = raw_auth.decode()
-    else:
-        service_auth_b64: str = raw_auth
+    from app.services.crypto import decrypt_token
+
+    encrypted_auth = raw_auth.decode() if isinstance(raw_auth, bytes) else str(raw_auth)
+    service_auth_b64 = decrypt_token(encrypted_auth)
 
     base_web_url = settings.INTRASERVICE_URL.replace("/api/", "")
 
@@ -911,8 +886,12 @@ async def check_updates():
                 str(u.is_user_id): u for u in users if u.is_user_id
             }
 
+            from app.services.vault import get_raw_setting, get_service_account_user_id, KEY_SERVICE_ACCOUNT
+
             service_user = None
-            if settings.INTRASERVICE_SERVICE_USER_ID:
+            service_user_id = await get_service_account_user_id(db, redis_client=redis)
+            if service_user_id:
+                service_config = await get_raw_setting(db, KEY_SERVICE_ACCOUNT) or {}
                 service_last_task_id_str = await redis.get(
                     "worker:service_last_task_id"
                 )
@@ -924,11 +903,11 @@ async def check_updates():
                     service_last_task_id = 0
 
                 service_user = VirtualServiceUser(
-                    is_user_id=settings.INTRASERVICE_SERVICE_USER_ID,
-                    is_login=settings.INTRASERVICE_SERVICE_LOGIN or "service",
+                    is_user_id=service_user_id,
+                    is_login=str(service_config.get("login") or "service"),
                     last_task_id=service_last_task_id,
                 )
-                users_by_is_id[str(settings.INTRASERVICE_SERVICE_USER_ID)] = (
+                users_by_is_id[str(service_user_id)] = (
                     service_user
                 )
 

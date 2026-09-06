@@ -4,7 +4,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from app.database.db import AsyncSessionLocal, Principal, PrincipalRole, TriageTemplate
+from app.database.db import (
+    AsyncSessionLocal, AutopilotScenario, Principal, PrincipalRole, SystemSetting, TriageTemplate,
+)
 from app.main import app
 from app.routers.deps import get_service_auth_b64
 from app.services.identity import ensure_rbac_catalog, issue_session
@@ -40,6 +42,7 @@ async def seed_autopilot_templates() -> None:
             "pc_offline": 35,
             "ticket_timeout_cancel": 30,
             "ticket_not_relevant": 30,
+            "wrong_service": 30,
             "autopilot_unsupported_cancel": 30,
             "autopilot_execution_failed_cancel": 30,
             "resolved_standard": 29,
@@ -62,6 +65,18 @@ async def seed_autopilot_templates() -> None:
                     is_active=True,
                 )
             )
+        db.add(SystemSetting(
+            key="service_account_config",
+            value_json={"login": "assistant", "encrypted_password": "test", "user_id": 10001},
+            is_encrypted=True,
+        ))
+        db.add(AutopilotScenario(
+            service_id=19,
+            scenario_key="printer_installation",
+            enabled=True,
+            config_json={},
+            updated_by="test",
+        ))
         await db.commit()
 
 

@@ -1,5 +1,7 @@
 # План редизайна и модульного рефакторинга Web UI (intra-web)
 
+> Исторический план визуальных изменений. Для текущего этапа приоритет имеют [концепция продукта](../../web-autopilot/product-concept.md) и [карта доведения](../../web-autopilot/concept-alignment.md). Пункты ниже не определяют роли AI, поддержку автопилота или бизнес-допуск действий.
+
 > Документ сформирован по итогам архитектурного интервью (`/grill-me`) на основе задач из [`marks2.md`](../../../marks2.md).  
 > Стандарт реализации: **Linear / Vercel Design Standard** ([`.agents/skills/frontend-design/SKILL.md`](../../../.agents/skills/frontend-design/SKILL.md)).
 

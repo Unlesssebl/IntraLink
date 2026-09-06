@@ -64,7 +64,7 @@ export interface TaskClassification {
   category_label: string;
   target_service_name: string;
   is_redirect: boolean;
-  has_ai_solution?: boolean;
+  sources?: { rule: boolean; rag: boolean; ai: boolean };
   score: number;
   target_status_id: number;
   target_status_name: string;
@@ -88,7 +88,8 @@ export interface TaskItem {
   service_path?: string;
   target_service_name: string;
   is_redirect: boolean;
-  has_ai_solution?: boolean;
+  sources?: { rule: boolean; rag: boolean; ai: boolean };
+  readiness?: { ready: boolean; blocked_reasons?: string[] };
   status_id: number;
   status_name: string;
   pc_name: string;
@@ -153,6 +154,71 @@ export interface TaskDetails {
   circuit_reason?: string;
   requires_sanitization?: boolean;
   ai_suggestion?: AISuggestionState;
+  decision?: DecisionRecord;
+  sources?: DecisionSources;
+  readiness?: DecisionReadiness;
+}
+
+export interface DecisionSources {
+  rule: boolean;
+  rag: boolean;
+  ai: boolean;
+}
+
+export interface DecisionReadiness {
+  ready: boolean;
+  missing_data: string[];
+  blocked_reasons: string[];
+  stale: boolean;
+}
+
+export interface DecisionStep {
+  id: string;
+  sequence: number;
+  component: 'rule' | 'rag' | 'ai' | 'policy' | string;
+  status: string;
+  input: Record<string, any>;
+  output: Record<string, any>;
+  metadata: Record<string, any>;
+  error_code?: string | null;
+  duration_ms?: number | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+}
+
+export interface DecisionRecord {
+  id: string;
+  task_id: number;
+  ticket_run_id?: string | null;
+  version: number;
+  analysis_kind: string;
+  status: string;
+  outcome: string;
+  fingerprint: string;
+  sources: DecisionSources;
+  context: Record<string, any>;
+  completeness: {
+    complete: boolean;
+    missing_data: string[];
+    blocked_reasons: string[];
+    history_total?: number;
+    history_used?: number;
+    attachments_total?: number;
+    attachments_read?: number;
+  };
+  proposal: {
+    action?: string;
+    title?: string;
+    comment?: string;
+    status_id?: number;
+    status_name?: string;
+    expenses?: number;
+    consequences?: string;
+    ready: boolean;
+  };
+  policy: Record<string, any>;
+  steps?: DecisionStep[];
+  created_at: string | null;
 }
 
 export interface AISuggestionState {
@@ -221,6 +287,8 @@ export interface SingleApplyPayload {
   is_private?: boolean;
   verified_execution_job_id?: string;
   ticket_run_id?: string;
+  decision_id?: string;
+  decision_version?: number;
 }
 
 export interface BulkApplyItemPayload {
