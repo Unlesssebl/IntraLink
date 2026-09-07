@@ -1,7 +1,7 @@
 # Web UI — Задачи и план реализации (marks2.md)
 
 > **Статус:** Согласовано через `/grill-me`.  
-> **Детальный архитектурный план:** [`docs/services/intra-web/redesign_plan.md`](docs/services/intra-web/redesign_plan.md)  
+> **Действующие требования к интерфейсу:** [`docs/web-autopilot/product-concept.md`](docs/web-autopilot/product-concept.md) и [`docs/brandbook.md`](docs/brandbook.md)
 > **Дизайн-стандарт:** Linear / Vercel monochrome standard ([`.agents/skills/frontend-design/SKILL.md`](.agents/skills/frontend-design/SKILL.md))
 
 ---
