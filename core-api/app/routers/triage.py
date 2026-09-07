@@ -51,6 +51,11 @@ router = APIRouter(
 
 # Экспорт для обратной совместимости с тестами
 get_skipped_task_ids = TriageSessionManager.get_skipped_task_ids
+from app.services.host_telemetry import (  # noqa: F401
+    get_task_telemetry,
+    prefetch_task_telemetry,
+)
+from app.services.ai_synthesis import synthesize_triage_resolution  # noqa: F401
 
 
 # ---------------------------------------------------------------------------

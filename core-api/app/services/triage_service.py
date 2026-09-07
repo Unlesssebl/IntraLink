@@ -24,6 +24,17 @@ from app.services.rules.catalog import (
     ROOT_SERVICES,
     get_root_number_for_service_id,
 )
+from app.services.host_telemetry import (
+    get_task_telemetry,
+    prefetch_task_telemetry,
+)
+from app.services.template_engine import (
+    auto_detect_template,
+    detect_service_redirect,
+)
+from app.services.rag import search_knowledge_base
+from app.services.triage_session import TriageSessionManager
+from app.services.worker import get_redis_client
 
 logger = logging.getLogger("core_api.services.triage_service")
 
@@ -91,7 +102,6 @@ class TriageService:
             return True, None
         try:
             import app.routers.triage as tr
-
             raw = await tr.get_redis_client().get(f"execution_job:{job_id}")
             if not raw:
                 return False, f"Команда исполнения '{job_id}' не найдена."
@@ -183,7 +193,6 @@ class TriageService:
         Возвращает подготовленную пачку заявок с авто-подбором шаблонов Rule Engine,
         детекцией дубликатов, семантическим RAG контекстом и телеметрией 0ms.
         """
-        import app.routers.triage as tr
 
         # IntraService не возвращает total после нормализации ответа, поэтому
         # забираем максимально допустимую страницу. Иначе page > 8 при
@@ -210,7 +219,7 @@ class TriageService:
         skipped_ids = (
             set()
             if include_skipped
-            else await tr.get_skipped_task_ids(operator_id)
+            else await TriageSessionManager.get_skipped_task_ids(operator_id)
         )
         active_tasks = [
             t
@@ -245,7 +254,7 @@ class TriageService:
 
         # Фильтрация только редиректов
         if redirect_only:
-            active_tasks = [t for t in active_tasks if tr.detect_service_redirect(t)]
+            active_tasks = [t for t in active_tasks if detect_service_redirect(t)]
 
         # Пагинация
         start_idx = (page - 1) * limit
@@ -267,6 +276,7 @@ class TriageService:
 
             # Решение использует уже закэшированную телеметрию. Если кэша нет,
             # запускаем prefetch; результат войдет в решение при следующем чтении.
+            import app.routers.triage as tr
             telemetry = await tr.get_task_telemetry(t_id)
             if telemetry is None:
                 asyncio.create_task(tr.prefetch_task_telemetry(t))
@@ -295,7 +305,7 @@ class TriageService:
                 }
             else:
                 # 2. Быстрый прогон через модульный RuleEngine (Wi-Fi, Ремонт, Редирект, Принтер)
-                decision = tr.auto_detect_template(
+                decision = auto_detect_template(
                     task=t,
                     diag=rule_diag,
                     kb_matches=None,
@@ -305,7 +315,7 @@ class TriageService:
 
                 # 3. Если правило общее/стандартное и запрошен RAG — ищем семантическое решение в pgvector RAG
                 if include_rag and decision.get("rule_type") in ("standard_in_work", None) and not decision.get("is_redirect"):
-                    kb_matches = await tr.search_knowledge_base(
+                    kb_matches = await search_knowledge_base(
                         db=db,
                         query_text=query_text,
                         limit=2,
@@ -314,7 +324,7 @@ class TriageService:
                         metadata=routing_metadata,
                     )
                     if kb_matches:
-                        decision = tr.auto_detect_template(
+                        decision = auto_detect_template(
                             task=t,
                             diag=rule_diag,
                             kb_matches=kb_matches,
@@ -419,7 +429,6 @@ class TriageService:
         Возвращает расширенную карточку задачи с нормализацией, историей переписки,
         RAG-совпадениями, телеметрией и AI-синтезом решения.
         """
-        import app.routers.triage as tr
 
         task = await intraservice.get_single_task(service_auth_b64, task_id)
         if not task:
@@ -445,6 +454,7 @@ class TriageService:
         else:
             history = []
 
+        import app.routers.triage as tr
         telemetry = await tr.get_task_telemetry(task_id)
         if telemetry is None:
             telemetry = await tr.prefetch_task_telemetry(task)
@@ -461,10 +471,10 @@ class TriageService:
         )
 
         # Проверяем редирект в другой отдел
-        is_redirect = bool(tr.detect_service_redirect(task))
+        is_redirect = bool(detect_service_redirect(task))
         kb_matches = []
         if not is_redirect:
-            kb_matches = await tr.search_knowledge_base(
+            kb_matches = await search_knowledge_base(
                 db=db,
                 query_text=query_text,
                 limit=3,
@@ -473,7 +483,7 @@ class TriageService:
                 metadata=routing_metadata,
             )
 
-        decision = tr.auto_detect_template(
+        decision = auto_detect_template(
             task=task,
             diag=rule_diag,
             kb_matches=kb_matches,
@@ -600,7 +610,6 @@ class TriageService:
         3. Списание трудозатрат от имени авторизованного оператора.
         4. Автообучение pgvector RAG при подтвержденном закрытии.
         """
-        import app.routers.triage as tr
 
         op_user_id = operator_user_id or settings.PRIMARY_EXECUTOR_ID
         exec_ids = executor_ids or (str(op_user_id) if op_user_id else settings.DEFAULT_EXECUTOR_IDS)
