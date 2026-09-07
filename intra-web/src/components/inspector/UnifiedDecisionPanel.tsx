@@ -41,7 +41,6 @@ interface UnifiedDecisionPanelProps {
   onClose?: () => void;
   onRefreshDetails?: () => Promise<void>;
   diagStatus?: Record<string, 'idle' | 'checking' | 'ok' | 'fail'>;
-  onRunDiag?: (host?: string) => Promise<void>;
 }
 
 const runStateConfig: Record<
@@ -55,25 +54,25 @@ const runStateConfig: Record<
     textClass: 'text-blue-700 dark:text-blue-300',
   },
   waiting_approval: {
-    label: 'Ждёт подтверждения',
+    label: 'Ожидает согласования',
     dotClass: 'bg-amber-500 animate-pulse',
     bgClass: 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900',
     textClass: 'text-amber-700 dark:text-amber-300',
   },
   waiting_answer: {
-    label: 'Ждёт ответа',
+    label: 'Ожидает ответа',
     dotClass: 'bg-sky-500',
     bgClass: 'bg-sky-50 dark:bg-sky-950/40 border-sky-200 dark:border-sky-900',
     textClass: 'text-sky-700 dark:text-sky-300',
   },
   paused: {
-    label: 'Нужно внимание',
+    label: 'Приостановлен',
     dotClass: 'bg-amber-600',
     bgClass: 'bg-amber-50/80 dark:bg-amber-950/30 border-amber-300 dark:border-amber-800',
     textClass: 'text-amber-800 dark:text-amber-200',
   },
   system_error: {
-    label: 'Ошибка связи',
+    label: 'Системная ошибка',
     dotClass: 'bg-rose-500',
     bgClass: 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900',
     textClass: 'text-rose-700 dark:text-rose-300',
@@ -105,7 +104,6 @@ export default function UnifiedDecisionPanel({
   onClose,
   onRefreshDetails,
   diagStatus,
-  onRunDiag,
 }: UnifiedDecisionPanelProps) {
   const {
     replyText,
@@ -128,7 +126,6 @@ export default function UnifiedDecisionPanel({
     reanalyzing,
     feedbackSubmitted,
     handleApplyDecision,
-    handleCancelTicket,
     handleTakeTicket,
     handleReanalyze,
     handleHitlApprove,
@@ -182,8 +179,10 @@ export default function UnifiedDecisionPanel({
           stale: false,
         }
       : undefined);
-  const isReady = readiness?.ready ?? true;
+  const readinessIsCurrent = !(readiness?.stale || isStale);
+  const isReady = (readiness?.ready ?? true) && readinessIsCurrent;
   const blockedReasons: string[] = readiness?.blocked_reasons || [];
+  const missingData: string[] = readiness?.missing_data || [];
   const sources = details?.sources || decision?.sources || {
     rule: Boolean(details?.suggested_action),
     rag: Boolean(details?.kb_matches && details.kb_matches.length > 0),
@@ -226,11 +225,18 @@ export default function UnifiedDecisionPanel({
       ? 'В работе'
       : selectedStatusOverride === 29
       ? 'Выполнена'
+      : selectedStatusOverride === 35
+      ? 'Требует уточнения'
       : selectedStatusOverride === 30
       ? 'Отменена'
       : proposal?.status_name ||
         details?.suggested_action?.status_name ||
         'В работе';
+
+  const actionPolicy = details?.ai_suggestion?.policy || decision?.policy;
+  const policyBlocked = Boolean(
+    (actionPolicy as any)?.blocked || (actionPolicy as any)?.allowed === false
+  );
 
   // Предлагаемое действие
   const actionTitle =
@@ -238,10 +244,66 @@ export default function UnifiedDecisionPanel({
     details?.suggested_action?.name ||
     formatFriendlyAction(proposal?.action, targetStatusName, details?.suggested_action);
 
+  const primaryActionLabel =
+    pendingCommand
+      ? 'Подтвердить команду'
+      : targetStatusId === 27
+      ? 'Перевести в статус «В работе»'
+      : targetStatusId === 29
+      ? 'Отметить заявку выполненной'
+      : targetStatusId === 30
+      ? 'Отменить заявку'
+      : targetStatusId === 35
+      ? 'Запросить уточнение'
+      : `Перевести в статус «${targetStatusName}»`;
+
+  const requiresComment = [29, 30, 35].includes(targetStatusId);
+  const commentMissing = requiresComment && !replyText.trim();
+  const actionUnavailable = !pendingCommand && (!isReady || policyBlocked || commentMissing);
+  const commandLabel = pendingCommand?.action || proposal?.action || null;
+  const consequences =
+    proposal?.consequences ||
+    `Статус заявки изменится на «${targetStatusName}»${
+      replyText.trim() ? `, комментарий будет ${replyMode === 'internal' ? 'служебным' : 'доступен заявителю'}` : ''
+    }.`;
+  const successCriterion =
+    targetStatusId === 29
+      ? 'Результат работ подтверждён до перевода заявки в выполненные.'
+      : pendingCommand
+      ? 'Команда завершилась с проверенным результатом, отражённым в истории цикла.'
+      : 'Изменения подтверждены IntraService и появились в истории заявки.';
+
   const hasSnippets = Boolean(
     details?.ai_suggested_resolution ||
       (details?.kb_matches && details.kb_matches.length > 0 && details.kb_matches[0]?.solution)
   );
+
+  const diagnosticItems = [
+    { key: 'ping', label: 'PING', success: 'ONLINE', failure: 'OFFLINE' },
+    { key: 'smb', label: 'SMB:445', success: 'OPEN', failure: 'CLOSED' },
+    { key: 'winrm', label: 'WINRM:5985', success: 'OPEN', failure: 'CLOSED' },
+  ].map((item) => {
+    const status = diagStatus?.[item.key] || 'idle';
+    return {
+      ...item,
+      value:
+        status === 'ok'
+          ? item.success
+          : status === 'fail'
+          ? item.failure
+          : status === 'checking'
+          ? 'CHECKING'
+          : 'NOT CHECKED',
+      valueClass:
+        status === 'ok'
+          ? 'text-emerald-600 dark:text-emerald-400'
+          : status === 'fail'
+          ? 'text-rose-600 dark:text-rose-400'
+          : status === 'checking'
+          ? 'text-blue-600 dark:text-blue-400'
+          : 'text-neutral-400 dark:text-neutral-500',
+    };
+  });
 
   // Статус TicketRun
   const currentRunState = ticketRun?.state || 'pending';
@@ -272,18 +334,18 @@ export default function UnifiedDecisionPanel({
               <button
                 type="button"
                 onClick={() => handleSwitchRunMode('manual')}
-                className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                className={`min-h-9 px-2.5 rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 ${
                   ticketRun?.mode !== 'autopilot'
                     ? 'bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-2xs'
                     : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
                 }`}
               >
-                Ручной
+                Помощник оператора
               </button>
               <button
                 type="button"
                 onClick={() => handleSwitchRunMode('autopilot')}
-                className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer flex items-center gap-1 ${
+                className={`min-h-9 px-2.5 rounded-md outline-none transition-colors flex items-center gap-1 focus-visible:ring-2 focus-visible:ring-blue-500 ${
                   ticketRun?.mode === 'autopilot'
                     ? 'bg-blue-600 text-white shadow-2xs'
                     : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
@@ -297,9 +359,10 @@ export default function UnifiedDecisionPanel({
             {/* Статус-бейдж TicketRun */}
             <div
               className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11.5px] font-medium ${runCfg.bgClass} ${runCfg.textClass}`}
+              title={`Состояние цикла: ${runCfg.label}`}
             >
               <span className={`w-2 h-2 rounded-full shrink-0 ${runCfg.dotClass}`} />
-              <span>{runCfg.label}</span>
+              <span>Цикл: {runCfg.label}</span>
             </div>
           </div>
 
@@ -308,18 +371,18 @@ export default function UnifiedDecisionPanel({
             <button
               type="button"
               onClick={handleTogglePauseRun}
-              className="inline-flex items-center gap-1 px-2.5 py-1 text-[11.5px] font-medium text-neutral-600 dark:text-neutral-300 bg-neutral-50 dark:bg-neutral-800/80 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 transition-colors cursor-pointer"
+              className="inline-flex min-h-9 items-center gap-1 px-2.5 text-[11.5px] font-medium text-neutral-600 dark:text-neutral-300 bg-neutral-50 dark:bg-neutral-800/80 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500"
               title={ticketRun.state === 'paused' ? 'Возобновить цикл' : 'Приостановить цикл'}
             >
               {ticketRun.state === 'paused' ? (
                 <>
                   <IconPlay size={12} />
-                  <span>Продолжить</span>
+                  <span>Возобновить</span>
                 </>
               ) : (
                 <>
                   <IconPause size={12} />
-                  <span>Пауза</span>
+                  <span>Приостановить</span>
                 </>
               )}
             </button>
@@ -341,21 +404,16 @@ export default function UnifiedDecisionPanel({
             <p className="text-[12px] text-amber-800 dark:text-amber-300 leading-snug">
               Автопилот подготовил команду для выполнения на рабочей станции. Подтвердите выполнение или отклоните действие.
             </p>
-            <div className="flex items-center gap-2 pt-1">
-              <button
-                type="button"
-                onClick={handleHitlApprove}
-                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-              >
-                <IconCheckCircle size={13} />
-                <span>Подтвердить действие</span>
-              </button>
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <span className="text-[11px] font-medium text-amber-800 dark:text-amber-300">
+                Параметры команды показаны перед основной кнопкой.
+              </span>
               <button
                 type="button"
                 onClick={handleHitlReject}
-                className="px-3 py-1.5 bg-neutral-200 hover:bg-neutral-300 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                className="min-h-9 rounded-lg bg-neutral-200 px-3 text-xs font-semibold text-neutral-800 outline-none transition-colors hover:bg-neutral-300 focus-visible:ring-2 focus-visible:ring-amber-500 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
               >
-                Отклонить
+                Отклонить команду
               </button>
             </div>
           </div>
@@ -365,23 +423,23 @@ export default function UnifiedDecisionPanel({
         <div className="flex items-start justify-between gap-3 pt-1">
           <div className="space-y-1">
             <div className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
-              Рекомендация триажа
+              Предложение помощника
             </div>
             <div className="text-sm font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-2 flex-wrap">
               <span>{actionTitle}</span>
-              <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 border border-blue-200 dark:border-blue-900 font-mono">
-                ➔ {targetStatusName}
+              <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 border border-blue-200 dark:border-blue-900">
+                Статус после действия: {targetStatusName}
               </span>
             </div>
-            <div className="text-[11.5px] text-neutral-500 dark:text-neutral-400 flex items-center gap-3">
-              <span>Списание: <strong>{expenses} мин</strong></span>
+            <div className="text-[11.5px] text-neutral-600 dark:text-neutral-400 flex items-center gap-3 flex-wrap">
+              <span>Трудозатраты: <strong>{expenses} мин</strong></span>
               <span>•</span>
               <span className="flex items-center gap-1">
                 Основания:
-                {sources.rule && <span className="font-semibold text-neutral-700 dark:text-neutral-300">Регламент</span>}
-                {sources.rag && <span className="font-semibold text-purple-600 dark:text-purple-400">RAG</span>}
-                {sources.ai && <span className="font-semibold text-blue-600 dark:text-blue-400">AI</span>}
-                {!sources.rule && !sources.rag && !sources.ai && <span>Стандартные</span>}
+                {sources.rule && <span className="font-semibold text-neutral-700 dark:text-neutral-300">Правило</span>}
+                {sources.rag && <span className="font-semibold text-purple-600 dark:text-purple-400">База знаний</span>}
+                {sources.ai && <span className="font-semibold text-blue-600 dark:text-blue-400">AI-анализ</span>}
+                {!sources.rule && !sources.rag && !sources.ai && <span>Не указаны</span>}
               </span>
             </div>
           </div>
@@ -391,17 +449,17 @@ export default function UnifiedDecisionPanel({
             {isCriticalRisk ? (
               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-50 text-amber-900 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-300 dark:border-amber-800 text-[11px] font-semibold">
                 <IconAlertCircle size={12} className="text-amber-600 dark:text-amber-400" />
-                <span>Внимание: Простой</span>
+                <span>Риск простоя</span>
               </span>
-            ) : isReady ? (
+            ) : isReady && !policyBlocked ? (
               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-700 text-[11px] font-semibold">
                 <IconCheckCircle size={12} className="text-neutral-500 dark:text-neutral-400" />
-                <span>Сформировано</span>
+                <span>Готово к действию</span>
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300 border border-rose-200 dark:border-rose-800 text-[11px] font-semibold">
                 <IconAlertCircle size={12} />
-                <span>Заблокировано</span>
+                <span>Действие недоступно</span>
               </span>
             )}
           </div>
@@ -410,12 +468,27 @@ export default function UnifiedDecisionPanel({
         {/* Причины блокировки (если есть) */}
         {!isReady && blockedReasons.length > 0 && (
           <div className="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 text-xs text-rose-800 dark:text-rose-300 space-y-1">
-            <div className="font-semibold">Причины блокировки автоматического действия:</div>
+            <div className="font-semibold">Почему действие недоступно:</div>
             <ul className="list-disc list-inside space-y-0.5">
               {blockedReasons.map((r, i) => (
                 <li key={i}>{r}</li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {missingData.length > 0 && (
+          <div className="rounded-lg bg-amber-50 px-3 py-2.5 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            <div className="font-semibold">Не хватает данных:</div>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {missingData.map((item, index) => <li key={index}>{item}</li>)}
+            </ul>
+          </div>
+        )}
+
+        {policyBlocked && (
+          <div className="rounded-lg bg-rose-50 px-3 py-2.5 text-xs font-medium text-rose-800 dark:bg-rose-950/30 dark:text-rose-300">
+            Действие запрещено действующей политикой. Подробности доступны в технических данных.
           </div>
         )}
 
@@ -443,113 +516,17 @@ export default function UnifiedDecisionPanel({
               onClick={handleTakeTicket}
               className="px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 dark:bg-neutral-100 dark:hover:bg-neutral-200 text-white dark:text-neutral-900 rounded-lg font-bold text-xs shrink-0 transition-colors cursor-pointer"
             >
-              Взять в работу 1-й линией
+              Перевести в статус «В работе»
             </button>
           </div>
         )}
 
-        {/* ГЛАВНАЯ КНОПКА ВЫПОЛНЕНИЯ И АЛЬТЕРНАТИВЫ */}
-        <div className="flex items-center gap-2 pt-1 relative" ref={alternativesMenuRef}>
-          <button
-            type="button"
-            onClick={handleApplyDecision}
-            disabled={submitting}
-            className="flex-1 py-2 px-4 bg-neutral-900 hover:bg-neutral-800 dark:bg-neutral-100 dark:hover:bg-neutral-200 text-white dark:text-neutral-900 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {submitting ? (
-              <>
-                <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-                </svg>
-                <span>Применение...</span>
-              </>
-            ) : (
-              <>
-                <IconCheckCircle size={14} />
-                <span>Применить решение ({targetStatusName})</span>
-              </>
-            )}
-          </button>
-
-          {/* Меню альтернативных действий */}
-          <button
-            type="button"
-            onClick={() => setIsAlternativesOpen((prev) => !prev)}
-            className="p-2 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200 rounded-xl border border-neutral-200 dark:border-neutral-700 transition-colors cursor-pointer"
-            title="Альтернативные действия"
-          >
-            <IconChevronDown
-              size={15}
-              className={`transition-transform duration-150 ${isAlternativesOpen ? 'rotate-180' : ''}`}
-            />
-          </button>
-
-          {isAlternativesOpen && (
-            <div className="absolute right-0 top-full mt-1.5 w-56 bg-white dark:bg-neutral-900 rounded-xl shadow-xl border border-neutral-200 dark:border-neutral-800 py-1.5 z-50 text-xs font-medium space-y-0.5 animate-in fade-in zoom-in-95 duration-100">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsAlternativesOpen(false);
-                  handleTakeTicket();
-                }}
-                className="w-full px-3.5 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-2 text-neutral-800 dark:text-neutral-200 cursor-pointer"
-              >
-                <span>Взять заявку в работу</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsAlternativesOpen(false);
-                  handleCancelTicket();
-                }}
-                className="w-full px-3.5 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800 flex items-center gap-2 text-rose-600 dark:text-rose-400 cursor-pointer"
-              >
-                <span>Отменить заявку</span>
-              </button>
-              <div className="my-1 border-t border-neutral-100 dark:border-neutral-800" />
-              <div className="px-3.5 py-1 text-[10.5px] font-bold text-neutral-400 uppercase tracking-wider">
-                Сменить статус:
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedStatusOverride(27);
-                  setIsAlternativesOpen(false);
-                }}
-                className="w-full px-3.5 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 cursor-pointer"
-              >
-                ➔ В работе (27)
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedStatusOverride(29);
-                  setIsAlternativesOpen(false);
-                }}
-                className="w-full px-3.5 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 cursor-pointer"
-              >
-                ➔ Выполнена (29)
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedStatusOverride(35);
-                  setIsAlternativesOpen(false);
-                }}
-                className="w-full px-3.5 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 cursor-pointer"
-              >
-                ➔ Ожидание пользователя (35)
-              </button>
-            </div>
-          )}
-        </div>
       </div>
 
       {/* ========================================================================= */}
       {/* 2. STALENESS BANNER (появляется только при изменении заявки на сервере)    */}
       {/* ========================================================================= */}
-      {isStale && (
+      {!readinessIsCurrent && (
         <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 flex items-center justify-between gap-3 text-xs text-amber-900 dark:text-amber-200">
           <div className="flex items-center gap-2">
             <IconAlertCircle size={15} className="text-amber-600 shrink-0" />
@@ -561,7 +538,7 @@ export default function UnifiedDecisionPanel({
             disabled={reanalyzing}
             className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-semibold text-[11px] shrink-0 transition-colors cursor-pointer shadow-xs disabled:opacity-50"
           >
-            {reanalyzing ? 'Пересчёт...' : 'Пересчитать'}
+            {reanalyzing ? 'Обновление...' : 'Обновить предложение'}
           </button>
         </div>
       )}
@@ -572,28 +549,28 @@ export default function UnifiedDecisionPanel({
       <div className="space-y-2.5">
         {/* Панель управления формой: режим получателя и выбор шаблона */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex bg-neutral-100 dark:bg-neutral-800 p-0.5 rounded-lg border border-neutral-200 dark:border-neutral-700 text-xs font-semibold">
+            <div className="flex bg-neutral-100 dark:bg-neutral-800 p-0.5 rounded-lg border border-neutral-200 dark:border-neutral-700 text-xs font-semibold" aria-label="Видимость комментария">
             <button
               type="button"
               onClick={() => setReplyMode('reply')}
-              className={`px-3 py-1 rounded-md transition-colors cursor-pointer ${
+                className={`min-h-9 px-3 rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 ${
                 replyMode === 'reply'
                   ? 'bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-2xs'
                   : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
               }`}
             >
-              Ответ пользователю
+              Комментарий заявителю
             </button>
             <button
               type="button"
               onClick={() => setReplyMode('internal')}
-              className={`px-3 py-1 rounded-md transition-colors cursor-pointer ${
+                className={`min-h-9 px-3 rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 ${
                 replyMode === 'internal'
                   ? 'bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-2xs'
                   : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
               }`}
             >
-              Внутренний комментарий
+              Служебный комментарий
             </button>
           </div>
 
@@ -602,9 +579,10 @@ export default function UnifiedDecisionPanel({
             <select
               value={selectedTemplateKey}
               onChange={(e) => handleSelectTemplate(e.target.value)}
-              className="text-xs font-medium py-1 px-2.5 rounded-lg bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 cursor-pointer focus:outline-none"
+              aria-label="Шаблон комментария"
+              className="min-h-9 text-xs font-medium px-2.5 rounded-lg bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             >
-              <option value="">Шаблоны регламента...</option>
+              <option value="">Шаблоны комментариев...</option>
               {templates.map((t) => (
                 <option key={t.key} value={t.key}>
                   {t.name}
@@ -614,6 +592,12 @@ export default function UnifiedDecisionPanel({
           )}
         </div>
 
+        <p className="text-[11px] leading-4 text-neutral-500 dark:text-neutral-400">
+          {replyMode === 'reply'
+            ? 'Комментарий будет виден заявителю в истории заявки.'
+            : 'Комментарий увидят только сотрудники поддержки.'}
+        </p>
+
         {/* Поле ввода текста ответа */}
         <div className="relative">
           <textarea
@@ -622,11 +606,15 @@ export default function UnifiedDecisionPanel({
             placeholder={
               replyMode === 'reply'
                 ? 'Введите текст сообщения заявителю или используйте быструю вставку ниже...'
-                : 'Внутренний технический комментарий для коллег по отделу...'
+                : 'Служебный комментарий, недоступный заявителю...'
             }
             rows={4}
-            className="w-full text-xs p-3 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/40 text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-neutral-400 transition-all resize-y font-sans leading-relaxed"
+            aria-label={replyMode === 'reply' ? 'Комментарий заявителю' : 'Служебный комментарий'}
+            className="w-full text-xs p-3 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/40 text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 outline-none focus-visible:ring-2 focus-visible:ring-blue-500 transition-all resize-y font-sans leading-relaxed"
           />
+          <span className="absolute bottom-2 right-2 rounded bg-white/90 px-1.5 py-0.5 font-mono text-[10px] text-neutral-500 dark:bg-neutral-900/90 dark:text-neutral-400">
+            {replyText.length}
+          </span>
         </div>
 
         {/* Строка быстрых сниппетов и списания минут */}
@@ -639,10 +627,10 @@ export default function UnifiedDecisionPanel({
                   type="button"
                   onClick={() => insertSnippet(details.ai_suggested_resolution!)}
                   className="px-2 py-0.5 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-900 rounded-md text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
-                  title="Вставить сгенерированный AI-синтез"
+                  title="Вставить подготовленный AI-черновик"
                 >
                   <IconSparkles size={11} />
-                  <span>+ AI-синтез</span>
+                  <span>+ AI-черновик</span>
                 </button>
               )}
               {details?.kb_matches && details.kb_matches.length > 0 && details.kb_matches[0]?.solution && (
@@ -663,7 +651,7 @@ export default function UnifiedDecisionPanel({
 
           <div className="flex items-center gap-2">
             <label className="text-[11px] text-neutral-500 flex items-center gap-1 font-medium">
-              <span>Списание:</span>
+              <span>Трудозатраты:</span>
               <input
                 type="number"
                 min={0}
@@ -676,54 +664,119 @@ export default function UnifiedDecisionPanel({
             </label>
           </div>
         </div>
+
+        <div className="space-y-3 rounded-xl bg-neutral-50 p-3 dark:bg-neutral-950/40" id="decision-impact">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[11.5px] sm:grid-cols-4">
+            <div>
+              <div className="text-[9.5px] font-bold uppercase tracking-wider text-neutral-500">Новый статус</div>
+              <div className="mt-0.5 font-semibold text-neutral-900 dark:text-neutral-100">{targetStatusName}</div>
+            </div>
+            <div>
+              <div className="text-[9.5px] font-bold uppercase tracking-wider text-neutral-500">Комментарий</div>
+              <div className="mt-0.5 font-semibold text-neutral-900 dark:text-neutral-100">
+                {replyMode === 'internal' ? 'Служебный' : 'Заявителю'}
+              </div>
+            </div>
+            <div>
+              <div className="text-[9.5px] font-bold uppercase tracking-wider text-neutral-500">Трудозатраты</div>
+              <div className="mt-0.5 font-mono font-semibold text-neutral-900 dark:text-neutral-100">{expenses} мин</div>
+            </div>
+            {commandLabel && (
+              <div>
+                <div className="text-[9.5px] font-bold uppercase tracking-wider text-neutral-500">Команда</div>
+                <div className="mt-0.5 truncate font-mono font-semibold text-neutral-900 dark:text-neutral-100" title={commandLabel}>
+                  {commandLabel}
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="border-t border-neutral-200 pt-2 text-[11.5px] leading-relaxed text-neutral-600 dark:border-neutral-800 dark:text-neutral-400">
+            <p><span className="font-semibold text-neutral-800 dark:text-neutral-200">Что изменится:</span> {consequences}</p>
+            <p className="mt-1"><span className="font-semibold text-neutral-800 dark:text-neutral-200">Критерий результата:</span> {successCriterion}</p>
+          </div>
+        </div>
+
+        {commentMissing && (
+          <p className="text-xs font-medium text-rose-700 dark:text-rose-300" role="alert">
+            Для выбранного статуса требуется комментарий.
+          </p>
+        )}
+
+        <div className="relative flex items-center gap-2" ref={alternativesMenuRef}>
+          <button
+            type="button"
+            onClick={pendingCommand ? handleHitlApprove : handleApplyDecision}
+            disabled={submitting || actionUnavailable}
+            aria-describedby="decision-impact"
+            className="flex min-h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-neutral-900 px-4 text-xs font-bold text-white shadow-sm outline-none transition-colors hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:focus-visible:ring-offset-neutral-900"
+          >
+            {submitting ? (
+              <>
+                <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+                <span>Сохранение...</span>
+              </>
+            ) : (
+              <>
+                <IconCheckCircle size={14} />
+                <span>{primaryActionLabel}</span>
+              </>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsAlternativesOpen((prev) => !prev)}
+            aria-expanded={isAlternativesOpen}
+            aria-label="Выбрать другой статус"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-neutral-200 bg-white text-neutral-700 outline-none transition-colors hover:bg-neutral-100 focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
+          >
+            <IconChevronDown size={15} className={`transition-transform ${isAlternativesOpen ? 'rotate-180' : ''}`} />
+          </button>
+
+          {isAlternativesOpen && (
+            <div className="absolute right-0 top-full z-50 mt-1.5 w-56 space-y-0.5 rounded-xl border border-neutral-200 bg-white py-1.5 text-xs font-medium shadow-xl dark:border-neutral-800 dark:bg-neutral-900">
+              <div className="px-3.5 py-1 text-[10px] font-bold uppercase tracking-wider text-neutral-500">Другой статус</div>
+              {targetStatusId !== 27 && (
+                <button type="button" onClick={() => { setSelectedStatusOverride(27); setIsAlternativesOpen(false); }} className="min-h-9 w-full px-3.5 text-left hover:bg-neutral-50 focus-visible:bg-neutral-100 dark:hover:bg-neutral-800">В работе</button>
+              )}
+              {targetStatusId !== 29 && (
+                <button type="button" onClick={() => { setSelectedStatusOverride(29); setIsAlternativesOpen(false); }} className="min-h-9 w-full px-3.5 text-left hover:bg-neutral-50 focus-visible:bg-neutral-100 dark:hover:bg-neutral-800">Выполнена</button>
+              )}
+              {targetStatusId !== 35 && (
+                <button type="button" onClick={() => { setSelectedStatusOverride(35); setIsAlternativesOpen(false); }} className="min-h-9 w-full px-3.5 text-left hover:bg-neutral-50 focus-visible:bg-neutral-100 dark:hover:bg-neutral-800">Требует уточнения</button>
+              )}
+              {targetStatusId !== 30 && (
+                <button type="button" onClick={() => { setSelectedStatusOverride(30); setIsAlternativesOpen(false); }} className="min-h-9 w-full px-3.5 text-left text-rose-600 hover:bg-rose-50 focus-visible:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950/30">Отменена</button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ========================================================================= */}
-      {/* 4. ОСНОВАНИЯ РЕШЕНИЯ (ТАБЫ: rules, rag, ai, diagnostics, completeness)     */}
+      {/* 4. ОСНОВАНИЯ, ДИАГНОСТИКА И ИСТОРИЯ ЦИКЛА */}
       {/* ========================================================================= */}
       <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 space-y-2.5">
         {/* Таб-бар с векторными иконками */}
-        <div className="flex items-center gap-1 border-b border-neutral-200 dark:border-neutral-800 pb-1 flex-wrap text-xs">
+        <div className="flex flex-nowrap items-center gap-1 overflow-x-auto border-b border-neutral-200 pb-1 text-xs dark:border-neutral-800">
           <button
             type="button"
             onClick={() => setSelectedTab('rules')}
-            className={`px-3 py-1.5 rounded-lg font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+            className={`flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg px-3 font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 ${
               selectedTab === 'rules'
                 ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100'
                 : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
             }`}
           >
             <IconFileCode size={13} />
-            <span>Регламент</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelectedTab('rag')}
-            className={`px-3 py-1.5 rounded-lg font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
-              selectedTab === 'rag'
-                ? 'bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300'
-                : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
-            }`}
-          >
-            <IconDatabase size={13} />
-            <span>База знаний ({details?.kb_matches?.length || 0})</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelectedTab('ai')}
-            className={`px-3 py-1.5 rounded-lg font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
-              selectedTab === 'ai'
-                ? 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300'
-                : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
-            }`}
-          >
-            <IconSparkles size={13} />
-            <span>AI-синтез</span>
+            <span>Основания</span>
           </button>
           <button
             type="button"
             onClick={() => setSelectedTab('diagnostics')}
-            className={`px-3 py-1.5 rounded-lg font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+            className={`flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg px-3 font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 ${
               selectedTab === 'diagnostics'
                 ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100'
                 : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
@@ -735,14 +788,14 @@ export default function UnifiedDecisionPanel({
           <button
             type="button"
             onClick={() => setSelectedTab('completeness')}
-            className={`px-3 py-1.5 rounded-lg font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+            className={`flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg px-3 font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 ${
               selectedTab === 'completeness'
                 ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100'
                 : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
             }`}
           >
             <IconCheckCircle size={13} />
-            <span>Хроника ({runEvents.length})</span>
+            <span>История цикла ({runEvents.length})</span>
           </button>
         </div>
 
@@ -753,7 +806,7 @@ export default function UnifiedDecisionPanel({
             <div className="space-y-2.5 p-3 rounded-xl bg-neutral-50/60 dark:bg-neutral-950/30 border border-neutral-200 dark:border-neutral-800">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <span className="font-bold text-neutral-900 dark:text-neutral-100 text-xs">
-                  {details?.suggested_action?.name || 'Стандартный регламент 1-й линии'}
+                  {details?.suggested_action?.name || 'Стандартное правило 1-й линии'}
                 </span>
                 <span className="text-[10.5px] font-mono px-2 py-0.5 rounded bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300">
                   {details?.suggested_action?.rule_type || 'standard_first_line'}
@@ -778,7 +831,7 @@ export default function UnifiedDecisionPanel({
               {/* Обоснование / Причина сработки */}
               <div className="space-y-1">
                 <div className="text-[10.5px] font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
-                  Основание решения:
+                  Основание предложения:
                 </div>
                 <p className="text-[11.5px] text-neutral-700 dark:text-neutral-300 leading-relaxed">
                   {ruleReason ||
@@ -788,7 +841,7 @@ export default function UnifiedDecisionPanel({
                       ? 'Обнаружен дубликат ранее созданной активной заявки.'
                       : details?.suggested_action?.rule_type === 'downtime_priority'
                       ? 'Обнаружен критический инцидент с признаками простоя производства: заявка передана в ускоренную обработку.'
-                      : 'Применяется базовый регламент диспетчеризации технической поддержки 1-й линии.')}
+                      : 'Применяется базовое правило диспетчеризации технической поддержки 1-й линии.')}
                 </p>
               </div>
 
@@ -821,7 +874,7 @@ export default function UnifiedDecisionPanel({
           )}
 
           {/* ТАБ 2: База знаний (RAG) */}
-          {selectedTab === 'rag' && (
+          {selectedTab === 'rules' && (
             <div className="space-y-2">
               {details?.kb_matches && details.kb_matches.length > 0 ? (
                 details.kb_matches.map((m: RAGMatchItem, i: number) => (
@@ -834,7 +887,7 @@ export default function UnifiedDecisionPanel({
                         #{m.task_id} {m.name || m.problem}
                       </span>
                       <span className="text-[10.5px] font-mono px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 font-bold shrink-0">
-                        {Math.round((1 - (m.distance || 0.3)) * 100)}% совпадение
+                        {Math.round(m.similarity_pct || (1 - (m.distance || 0.3)) * 100)}% сходство
                       </span>
                     </div>
                     <div className="text-[11.5px] text-neutral-600 dark:text-neutral-400 line-clamp-2">
@@ -859,15 +912,15 @@ export default function UnifiedDecisionPanel({
             </div>
           )}
 
-          {/* ТАБ 3: AI-синтез и сводка переписки */}
-          {selectedTab === 'ai' && (
+          {/* ТАБ 3: AI-анализ, черновик и сводка комментариев */}
+          {selectedTab === 'rules' && (
             <div className="space-y-2.5">
               {details?.ai_suggested_resolution ? (
                 <div className="p-2.5 rounded-xl border border-blue-200 dark:border-blue-900 bg-blue-50/40 dark:bg-blue-950/20 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-blue-900 dark:text-blue-200 flex items-center gap-1.5">
                       <IconSparkles size={13} />
-                      <span>Strict Grounding Synthesis</span>
+                      <span>AI-черновик с проверкой источников</span>
                     </span>
                     <span className="text-[10.5px] font-mono px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 font-semibold">
                       Circuit: {details?.circuit?.toUpperCase() || 'GREEN'}
@@ -879,13 +932,13 @@ export default function UnifiedDecisionPanel({
                 </div>
               ) : (
                 <div className="py-2 text-neutral-400">
-                  AI-синтез не привлекался (заявка обработана по детерминированному регламенту)
+                  AI-анализ не использовался: предложение подготовлено по формализованному правилу
                 </div>
               )}
 
               {/* AI-сводка переписки (TL;DR) */}
               <div className="pt-1 border-t border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
-                <span className="text-[11px] text-neutral-500 font-medium">Сводка переписки (TL;DR):</span>
+                <span className="text-[11px] text-neutral-500 font-medium">Сводка комментариев:</span>
                 {!aiSummary && !loadingAiSummary && (
                   <button
                     type="button"
@@ -906,7 +959,7 @@ export default function UnifiedDecisionPanel({
                   <div className="font-medium text-neutral-900 dark:text-neutral-100">{aiSummary.core_problem}</div>
                   {aiSummary.recommended_next_step && (
                     <div className="text-neutral-500 dark:text-neutral-400 text-[11px]">
-                      Рекомендация: {aiSummary.recommended_next_step}
+                      Следующий шаг: {aiSummary.recommended_next_step}
                     </div>
                   )}
                 </div>
@@ -917,46 +970,28 @@ export default function UnifiedDecisionPanel({
           {/* ТАБ 4: Диагностика хоста */}
           {selectedTab === 'diagnostics' && (
             <div className="space-y-2 p-2 rounded-xl bg-neutral-50/60 dark:bg-neutral-950/30 border border-neutral-200 dark:border-neutral-800">
-              <div className="flex items-center justify-between">
-                <div className="font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
-                  <IconServer size={14} />
-                  <span>Хост: {ticket.host || details?.pc_name || 'Не указан'}</span>
-                </div>
-                {onRunDiag && (
-                  <button
-                    type="button"
-                    onClick={() => onRunDiag(ticket.host || details?.pc_name)}
-                    className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline font-semibold cursor-pointer"
-                  >
-                    Перепроверить
-                  </button>
-                )}
+              <div className="font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
+                <IconServer size={14} />
+                <span>Результаты для <span className="font-mono">{ticket.host || details?.pc_name || 'хост не указан'}</span></span>
               </div>
 
               <div className="grid grid-cols-3 gap-2 pt-1 text-center font-mono text-[11px]">
-                <div className="p-2 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800">
-                  <div className="text-neutral-400 text-[10px]">PING</div>
-                  <div className="font-bold text-emerald-600 dark:text-emerald-400">
-                    {diagStatus?.ping === 'ok' ? 'ONLINE' : diagStatus?.ping === 'fail' ? 'OFFLINE' : 'OK'}
+                {diagnosticItems.map((item) => (
+                  <div key={item.key} className="min-w-0 rounded-lg border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900">
+                    <div className="text-[10px] text-neutral-400">{item.label}</div>
+                    <div className={`truncate font-bold ${item.valueClass}`} title={item.value}>
+                      {item.value}
+                    </div>
                   </div>
-                </div>
-                <div className="p-2 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800">
-                  <div className="text-neutral-400 text-[10px]">SMB:445</div>
-                  <div className="font-bold text-neutral-700 dark:text-neutral-300">
-                    {diagStatus?.smb === 'ok' ? 'OPEN' : 'OPEN'}
-                  </div>
-                </div>
-                <div className="p-2 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800">
-                  <div className="text-neutral-400 text-[10px]">WINRM:5985</div>
-                  <div className="font-bold text-neutral-500">
-                    {diagStatus?.winrm === 'ok' ? 'OPEN' : 'BOOTSTRAP'}
-                  </div>
-                </div>
+                ))}
               </div>
+              <p className="text-[10.5px] text-neutral-500 dark:text-neutral-400">
+                Запуск проверки доступен в блоке рабочей станции в контексте заявки.
+              </p>
             </div>
           )}
 
-          {/* ТАБ 5: Хроника и аудит */}
+          {/* ТАБ 5: История внутреннего цикла и аудит */}
           {selectedTab === 'completeness' && (
             <div className="space-y-2">
               {runEvents.length > 0 ? (
@@ -982,7 +1017,7 @@ export default function UnifiedDecisionPanel({
                 </div>
               ) : (
                 <div className="py-3 text-center text-neutral-400 text-xs">
-                  События жизненного цикла автопилота отсутствуют
+                  События внутреннего цикла отсутствуют
                 </div>
               )}
 
@@ -997,7 +1032,7 @@ export default function UnifiedDecisionPanel({
                     size={12}
                     className={`transition-transform duration-150 ${showTechnicalAudit ? 'rotate-90' : ''}`}
                   />
-                  <span>Технические данные (JSON Payload)</span>
+                  <span>Технические данные (JSON)</span>
                 </button>
                 {showTechnicalAudit && (
                   <pre className="mt-1 p-2 rounded-lg bg-neutral-900 text-neutral-200 text-[10px] font-mono overflow-x-auto max-h-36">
@@ -1024,7 +1059,7 @@ export default function UnifiedDecisionPanel({
       {/* 5. ОЦЕНКА РЕШЕНИЯ ОПЕРАТОРОМ (FEEDBACK)                                   */}
       {/* ========================================================================= */}
       <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-2 flex-wrap text-xs">
-        <div className="text-[11px] text-neutral-400 font-medium">Оценка точности:</div>
+        <div className="text-[11px] text-neutral-400 font-medium">Оценка предложения:</div>
         {feedbackSubmitted ? (
           <div className="inline-flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
             <IconCheck size={12} />

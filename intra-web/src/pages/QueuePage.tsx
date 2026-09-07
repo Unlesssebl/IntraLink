@@ -845,7 +845,7 @@ export default function QueuePage({
         {/* Table View (Matching style and layout from image-2.png) */}
         {view === 'table' && (
           <div className="flex-1 overflow-auto bg-white dark:bg-neutral-950">
-            <table className="w-full min-w-[1040px] text-[14px] border-collapse table-fixed">
+            <table className="w-full min-w-[1360px] text-[14px] border-collapse table-fixed">
               <thead className="sticky top-0 z-10 bg-white dark:bg-neutral-950 border-b border-neutral-200 dark:border-neutral-800">
                 <tr>
                   <th className="w-12 px-3.5 py-3 text-center">
@@ -862,7 +862,7 @@ export default function QueuePage({
                   <th className="w-44 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     РЕШЕНИЕ AI
                   </th>
-                  <th className="w-auto px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-[360px] px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     ЗАЯВКА
                   </th>
                   <th className="w-48 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
@@ -938,11 +938,11 @@ export default function QueuePage({
                         <div className="relative inline-block">
                           <button
                             type="button"
-                            className="group h-7.5 inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
+                            className="group h-7.5 max-w-full inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
                             title="Нажмите для изменения статуса"
                           >
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${statusConfig[ticket.status].dotClass}`} />
-                            <span>{ticket.statusName || statusConfig[ticket.status].label}</span>
+                            <span className="truncate">{ticket.statusName || statusConfig[ticket.status].label}</span>
                             <IconChevronDown size={10} className="opacity-40 group-hover:opacity-100 transition-opacity ml-0.5" />
                           </button>
 
@@ -993,10 +993,10 @@ export default function QueuePage({
                       </td>
 
                       {/* Unified Smart AI Solution & Action Button */}
-                      <td className="w-44 px-3.5 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                      <td className="w-44 overflow-hidden px-3.5 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
                         {ticket.statusId === 27 ? (
                           <div
-                            className="h-7.5 inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 shadow-2xs"
+                            className="h-7.5 max-w-full inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 shadow-2xs"
                             title="Заявка уже переведена в статус «В работе»"
                           >
                             <span className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse shrink-0" />
@@ -1005,7 +1005,7 @@ export default function QueuePage({
                         ) : (
                           <button
                             onClick={() => handleApplyTicketPlan(ticket)}
-                            className="group h-7.5 inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
+                            className="group h-7.5 max-w-full inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
                             title={ticket.aiPlan ? `${ticket.aiPlan.actionTitle}\nОтвет: «${ticket.aiPlan.comment}»\nСписание: ${ticket.aiPlan.expensesMinutes} мин` : 'Принять заявку в работу'}
                           >
                             <span
@@ -1013,16 +1013,16 @@ export default function QueuePage({
                                 ticket.aiPlan?.targetStatusId ?? (ticket.ruleType === 'hardware_repair' ? 48 : 27)
                               )}`}
                             />
-                            <span>{ticket.aiPlan?.targetStatusName || (ticket.ruleType === 'hardware_repair' ? 'Ожидание устройства' : 'В работе')}</span>
+                            <span className="truncate">{ticket.aiPlan?.targetStatusName || (ticket.ruleType === 'hardware_repair' ? 'Ожидание устройства' : 'В работе')}</span>
                             <IconArrowRight size={10} className="text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-colors ml-0.5" />
                           </button>
                         )}
                       </td>
 
                       {/* Ticket Title (Top) & Requester Info (Bottom), Tags next to Description */}
-                      <td className="w-auto px-3.5 py-3 min-w-0">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-neutral-900 dark:text-neutral-100 font-bold text-[15px] truncate max-w-lg">
+                      <td className="w-[360px] min-w-0 overflow-hidden px-3.5 py-3">
+                        <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                          <span className="min-w-0 flex-1 truncate text-[15px] font-bold text-neutral-900 dark:text-neutral-100">
                             {ticket.title}
                           </span>
 
@@ -1124,7 +1124,7 @@ export default function QueuePage({
                           )}
                         </div>
 
-                        <div className="text-[13px] text-neutral-500 dark:text-neutral-400 mt-1 flex items-center gap-1.5 font-normal">
+                        <div className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden text-[13px] font-normal text-neutral-500 dark:text-neutral-400">
                           <a
                             href={`/admin/api/tasks/${ticket.rawId}/open`}
                             target="_blank"
@@ -1136,9 +1136,9 @@ export default function QueuePage({
                             #{ticket.rawId}
                           </a>
                           <span>·</span>
-                          <span>{ticket.requesterName}</span>
-                          {ticket.room && <span>· каб. {ticket.room}</span>}
-                          {ticket.department && <span className="truncate max-w-[200px]">· {ticket.department}</span>}
+                          <span className="min-w-0 truncate">{ticket.requesterName}</span>
+                          {ticket.room && <span className="shrink-0">· каб. {ticket.room}</span>}
+                          {ticket.department && <span className="min-w-0 truncate">· {ticket.department}</span>}
                         </div>
                       </td>
 
@@ -1159,7 +1159,7 @@ export default function QueuePage({
                                 navigator.clipboard.writeText(primaryHost);
                                 onToast({ type: 'info', message: `Хост ${primaryHost} скопирован в буфер` });
                               }}
-                              className="font-mono font-semibold text-[12px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200/80 dark:border-neutral-700/80 px-2 py-0.5 rounded cursor-pointer hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors"
+                              className="max-w-[105px] truncate font-mono font-semibold text-[12px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200/80 dark:border-neutral-700/80 px-2 py-0.5 rounded cursor-pointer hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors"
                               title="Нажмите, чтобы скопировать хост"
                             >
                               {primaryHost}

@@ -176,3 +176,7 @@ intra-web/dist/
 
 # Codegraph / Agent artifacts
 .codegraph/
+
+# Backups and database dumps
+backups/
+*.dump

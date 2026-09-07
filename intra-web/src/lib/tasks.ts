@@ -17,16 +17,16 @@ import type {
 import { ensureManualTicketRun } from './ticketRuns';
 
 export function mapStatusIdToStatus(statusId: number, statusName?: string): Status {
-  if (statusId === 1 || (statusName && /новая/i.test(statusName))) return 'new';
-  if (statusId === 2 || statusId === 27 || (statusName && /работе|выполнен/i.test(statusName))) return 'in_progress';
+  if (statusId === 1 || statusId === 31 || (statusName && /новая|открыта/i.test(statusName))) return 'new';
+  if (statusId === 4 || statusId === 5 || statusId === 28 || statusId === 29 || statusId === 30 || (statusName && /выполнен|решен|закрыт|отменен/i.test(statusName))) return 'resolved';
+  if (statusId === 2 || statusId === 27 || (statusName && /работе/i.test(statusName))) return 'in_progress';
   if (statusId === 3 || statusId === 10 || statusId === 35 || statusId === 48 || (statusName && /ожидан|отложен|уточнен/i.test(statusName))) return 'waiting';
-  if (statusId === 4 || statusId === 5 || statusId === 29 || statusId === 30 || (statusName && /решен|закрыт|отменен/i.test(statusName))) return 'resolved';
   return 'new';
 }
 
 export function mapStatusToStatusId(status: Status): number {
   switch (status) {
-    case 'new': return 1;
+    case 'new': return 31;
     case 'in_progress': return 27;
     case 'waiting': return 35;
     case 'resolved': return 29;
@@ -188,8 +188,8 @@ export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
     };
   }
 
-  const rawTargetName = task.target_status_name || 'В работу';
-  const cleanTargetName = rawTargetName.replace(/\s*\(\d+\)/g, '').replace(/\s*[→—–-]\s*\d+/g, '').trim() || 'В работу';
+  const rawTargetName = task.target_status_name || 'В работе';
+  const cleanTargetName = rawTargetName.replace(/\s*\(\d+\)/g, '').replace(/\s*[→—–-]\s*\d+/g, '').trim() || 'В работе';
 
   return {
     actionType: 'standard',
@@ -316,8 +316,8 @@ export async function fetchQueue(filterId = 984, limit = 50, includeRag = false)
         pc_name: item.pc_name || '',
         room: item.room || '',
         department: t.Department || '',
-        status_id: item.status_id || t.StatusId || 26,
-        status_name: item.status_name || t.StatusName || 'Новая',
+        status_id: item.status_id || t.StatusId || 31,
+        status_name: item.status_name || t.StatusName || 'Открыта',
         service_id: item.service_id || t.ServiceId || 0,
         service_name: item.service_name || t.ServiceName || '',
         target_status_id: action.target_status_id || 27,

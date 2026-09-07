@@ -32,7 +32,7 @@ export default function InspectorHeader({
         <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={onClose}
-            className="w-7 h-7 flex items-center justify-center text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-md transition-colors cursor-pointer"
+            className="flex h-9 w-9 items-center justify-center rounded-md text-neutral-500 outline-none transition-colors hover:bg-neutral-100 hover:text-neutral-800 focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
             title="Закрыть панель (Esc)"
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -42,15 +42,18 @@ export default function InspectorHeader({
 
           <button
             onClick={copyId}
-            className="font-mono text-[14px] font-bold text-neutral-800 dark:text-neutral-200 hover:text-blue-600 dark:hover:text-blue-400 transition-colors inline-flex items-center gap-1 cursor-pointer"
+            className="inline-flex min-h-9 items-center gap-1 rounded-md font-mono text-[14px] font-bold text-neutral-800 outline-none transition-colors hover:text-blue-600 focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-neutral-200 dark:hover:text-blue-400"
             title="Нажмите, чтобы скопировать ID"
           >
             <span>#{rawId}</span>
             <IconCopy size={12} className="opacity-60" />
           </button>
 
-          <span className={`h-6 px-2.5 rounded-full font-semibold text-[11.5px] inline-flex items-center gap-1.5 ${statusConfig[ticket.status].className}`}>
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${statusConfig[ticket.status].dotClass}`} />
+          <span
+            className={`h-6 px-2.5 rounded-full font-semibold text-[11.5px] inline-flex items-center gap-1.5 ${statusConfig[ticket.status].className}`}
+            title={`Статус заявки: ${ticket.statusName || statusConfig[ticket.status].label}`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusConfig[ticket.status].dotClass}`} />
             <span>{ticket.statusName || statusConfig[ticket.status].label}</span>
           </span>
 
@@ -73,7 +76,7 @@ export default function InspectorHeader({
             href={`/admin/api/tasks/${rawId}/open`}
             target="_blank"
             rel="noreferrer"
-            className="h-6.5 px-2.5 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700 rounded-md text-[12px] font-medium transition-colors inline-flex items-center gap-1 cursor-pointer"
+            className="inline-flex min-h-9 items-center gap-1 rounded-md border border-neutral-200 bg-neutral-100 px-2.5 text-[12px] font-medium text-neutral-700 outline-none transition-colors hover:bg-neutral-200 focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
             title="Открыть заявку в IntraService"
           >
             <span>IntraService</span>
@@ -81,7 +84,7 @@ export default function InspectorHeader({
           </a>
           <button
             onClick={onToggleExpanded}
-            className="w-6.5 h-6.5 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer border border-neutral-200 dark:border-neutral-700"
+            className="flex h-9 w-9 items-center justify-center rounded-md border border-neutral-200 text-neutral-500 outline-none transition-colors hover:bg-neutral-100 hover:text-neutral-800 focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
             title={expanded ? 'Свернуть' : 'Развернуть'}
           >
             {expanded ? (

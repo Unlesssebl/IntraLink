@@ -72,14 +72,16 @@ export interface ToastMessage {
 export const getStatusDotClass = (statusIdOrName: number | Status | string): string => {
   if (typeof statusIdOrName === 'number') {
     switch (statusIdOrName) {
-      case 26: return 'bg-blue-500'; // Открыта (Синий)
+      case 31: return 'bg-blue-500'; // Открыта (начальный статус IntraService)
+      case 26: return 'bg-blue-500'; // Совместимость со старыми данными
       case 27: return 'bg-cyan-500'; // В работе (Бирюзовый/Cyan)
       case 35:
       case 36:
       case 37:
       case 48: return 'bg-amber-500'; // Ожидание (Оранжевый)
       case 29: return 'bg-emerald-500'; // Выполнена (Зеленый)
-      case 30: return 'bg-neutral-500 dark:bg-neutral-400'; // Отменена (Тёмно-серый)
+      case 28:
+      case 30: return 'bg-neutral-500 dark:bg-neutral-400'; // Закрыта / Отменена
       default: return 'bg-blue-500';
     }
   }

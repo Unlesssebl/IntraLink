@@ -114,7 +114,7 @@ export function useUnifiedDecision({
     }
   }, [rawId, getDraftKey]);
 
-  // Подстановка AI-синтеза только если черновик был пуст
+  // Подстановка AI-черновика только если редактор был пуст
   useEffect(() => {
     if (details?.ai_suggested_resolution && !replyText.trim()) {
       const text = details.ai_suggested_resolution;
@@ -227,14 +227,14 @@ export function useUnifiedDecision({
 
       onToast({
         type: 'success',
-        message: `Решение успешно применено к заявке #${rawId}`,
+        message: `Изменения по заявке #${rawId} сохранены`,
       });
 
       if (onClose) onClose();
     } catch (err: any) {
       onToast({
         type: 'error',
-        message: `Ошибка применения решения: ${err.message || err}`,
+        message: `Не удалось сохранить изменения: ${err.message || err}`,
       });
     } finally {
       setSubmitting(false);
@@ -334,12 +334,12 @@ export function useUnifiedDecision({
       initialDecisionVersionRef.current = updated.decision?.version || null;
       onToast({
         type: 'success',
-        message: `Заявка #${rawId} успешно переанализирована по актуальным правилам`,
+        message: `Предложение по заявке #${rawId} обновлено по актуальным данным`,
       });
     } catch (err: any) {
       onToast({
         type: 'error',
-        message: `Ошибка переанализа: ${err.message || err}`,
+        message: `Не удалось обновить предложение: ${err.message || err}`,
       });
     } finally {
       setReanalyzing(false);
@@ -390,7 +390,7 @@ export function useUnifiedDecision({
         setTicketRun(updated);
         onToast({
           type: 'info',
-          message: `Режим цикла переключен на «${mode === 'autopilot' ? 'Автопилот' : 'Ручной'}»`,
+          message: `Режим цикла переключён на «${mode === 'autopilot' ? 'Автопилот' : 'Помощник оператора'}»`,
         });
       } catch (err: any) {
         onToast({

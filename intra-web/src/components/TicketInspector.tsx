@@ -8,10 +8,10 @@ import {
 } from '../lib/tasks';
 import type { TaskDetails, TicketSummaryResult } from '../lib/types';
 import InspectorHeader from './inspector/InspectorHeader';
-import RequesterCard from './inspector/RequesterCard';
 import AttachmentsSection from './inspector/AttachmentsSection';
 import CommentsTimeline from './inspector/CommentsTimeline';
 import UnifiedDecisionPanel from './inspector/UnifiedDecisionPanel';
+import TicketContextSummary from './inspector/TicketContextSummary';
 import { type DiagStatus } from './inspector/DiagnosticsSection';
 
 interface Props {
@@ -42,19 +42,6 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     smb: 'idle',
     winrm: 'idle',
   });
-  const [multiHostDiag, setMultiHostDiag] = useState<
-    Record<
-      string,
-      {
-        ping: DiagStatus;
-        smb: DiagStatus;
-        winrm: DiagStatus;
-        rtt?: string | null;
-        isOnline?: boolean;
-      }
-    >
-  >({});
-
   // AI Summary State
   const [aiSummary, setAiSummary] = useState<TicketSummaryResult | null>(null);
   const [loadingAiSummary, setLoadingAiSummary] = useState(false);
@@ -201,12 +188,6 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     }
 
     setDiagStatus({ ping: 'checking', smb: 'checking', winrm: 'checking' });
-    const initialMulti: typeof multiHostDiag = {};
-    hostList.forEach((h) => {
-      initialMulti[h] = { ping: 'checking', smb: 'checking', winrm: 'checking' };
-    });
-    setMultiHostDiag(initialMulti);
-
     try {
       const res = await fetchDiagnostics(hostToTest);
       setDiagStatus({
@@ -214,20 +195,6 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         smb: res.smb_ok ? 'ok' : 'fail',
         winrm: res.winrm_ok ? 'ok' : 'fail',
       });
-
-      if (res.hosts && res.hosts.length > 0) {
-        const nextMulti: typeof multiHostDiag = {};
-        res.hosts.forEach((h) => {
-          nextMulti[h.host] = {
-            ping: h.is_online ? 'ok' : 'fail',
-            smb: h.smb_ok ? 'ok' : 'fail',
-            winrm: h.winrm_ok ? 'ok' : 'fail',
-            rtt: h.avg_rtt,
-            isOnline: !!h.is_online,
-          };
-        });
-        setMultiHostDiag(nextMulti);
-      }
 
       onToast({
         type: 'info',
@@ -243,24 +210,6 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       onToast({ type: 'error', message: `Ошибка диагностики хоста ${hostToTest}` });
     }
   };
-
-  const renderDescription = () => (
-    <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl p-3.5 shadow-xs space-y-2">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
-          Описание проблемы
-        </span>
-        {ticket.serviceName && (
-          <span className="text-[11px] px-2 py-0.5 rounded-md bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 font-medium">
-            {ticket.serviceName}
-          </span>
-        )}
-      </div>
-      <div className="text-xs text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap leading-relaxed">
-        {ticket.description || details?.description || 'Описание отсутствует'}
-      </div>
-    </div>
-  );
 
   const panelClass = expanded
     ? 'fixed inset-0 z-50 bg-neutral-50 dark:bg-neutral-950 flex flex-col overflow-hidden animate-in fade-in duration-200'
@@ -305,21 +254,17 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       {expanded ? (
         <div className="flex-1 min-h-0 overflow-hidden">
           <div className="max-w-7xl mx-auto w-full h-full p-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Left pane: Context, Requester, Description, Attachments, Timeline */}
+            {/* Left pane: Context, Attachments, Comments */}
             <div className="space-y-3.5 overflow-y-auto pr-1">
-              <RequesterCard
+              <TicketContextSummary
                 ticket={ticket}
                 details={details}
-                effectiveHost={effectiveHost}
+                commentsList={commentsList}
+                attachmentsCount={attachmentsList.length}
                 hostList={hostList}
-                rawId={rawId}
                 diagStatus={diagStatus}
-                multiHostDiag={multiHostDiag}
-                showWinRMAssistant={false}
                 onRunDiag={runDiag}
-                onToast={onToast}
               />
-              {renderDescription()}
               <AttachmentsSection attachments={attachmentsList} rawId={rawId} />
               <CommentsTimeline
                 commentsList={commentsList}
@@ -332,6 +277,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
             {/* Right pane: Unified Decision & Action Platform */}
             <div className="overflow-y-auto pr-1">
+              <div className="lg:sticky lg:top-0">
               <UnifiedDecisionPanel
                 ticket={ticket}
                 details={details}
@@ -345,15 +291,25 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                 onClose={onClose}
                 onRefreshDetails={loadDetails}
                 diagStatus={diagStatus}
-                onRunDiag={runDiag}
               />
+              </div>
             </div>
           </div>
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto">
           <div className="p-4 space-y-3.5">
-            {/* Единая монолитная панель управления решением наверху карточки */}
+            <TicketContextSummary
+              ticket={ticket}
+              details={details}
+              commentsList={commentsList}
+              attachmentsCount={attachmentsList.length}
+              hostList={hostList}
+              diagStatus={diagStatus}
+              onRunDiag={runDiag}
+            />
+            <AttachmentsSection attachments={attachmentsList} rawId={rawId} />
+
             <UnifiedDecisionPanel
               ticket={ticket}
               details={details}
@@ -367,25 +323,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
               onClose={onClose}
               onRefreshDetails={loadDetails}
               diagStatus={diagStatus}
-              onRunDiag={runDiag}
             />
-
-            {/* Контекстные секции заявки */}
-            <RequesterCard
-              ticket={ticket}
-              details={details}
-              effectiveHost={effectiveHost}
-              hostList={hostList}
-              rawId={rawId}
-              diagStatus={diagStatus}
-              multiHostDiag={multiHostDiag}
-              showWinRMAssistant={false}
-              onRunDiag={runDiag}
-              onToast={onToast}
-            />
-
-            {renderDescription()}
-            <AttachmentsSection attachments={attachmentsList} rawId={rawId} />
 
             <CommentsTimeline
               commentsList={commentsList}
