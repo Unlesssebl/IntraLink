@@ -229,6 +229,8 @@ export default function UnifiedDecisionPanel({
       ? 'Требует уточнения'
       : selectedStatusOverride === 30
       ? 'Отменена'
+      : selectedStatusOverride === 48
+      ? 'Ожидание поставки'
       : proposal?.status_name ||
         details?.suggested_action?.status_name ||
         'В работе';
@@ -255,6 +257,8 @@ export default function UnifiedDecisionPanel({
       ? 'Отменить заявку'
       : targetStatusId === 35
       ? 'Запросить уточнение'
+      : targetStatusId === 48
+      ? 'Перевести в «Ожидание поставки»'
       : `Перевести в статус «${targetStatusName}»`;
 
   const requiresComment = [29, 30, 35].includes(targetStatusId);
@@ -747,6 +751,9 @@ export default function UnifiedDecisionPanel({
               {targetStatusId !== 35 && (
                 <button type="button" onClick={() => { setSelectedStatusOverride(35); setIsAlternativesOpen(false); }} className="min-h-9 w-full px-3.5 text-left hover:bg-neutral-50 focus-visible:bg-neutral-100 dark:hover:bg-neutral-800">Требует уточнения</button>
               )}
+              {targetStatusId !== 48 && (
+                <button type="button" onClick={() => { setSelectedStatusOverride(48); setIsAlternativesOpen(false); }} className="min-h-9 w-full px-3.5 text-left hover:bg-neutral-50 focus-visible:bg-neutral-100 dark:hover:bg-neutral-800">Ожидание поставки (ремонт)</button>
+              )}
               {targetStatusId !== 30 && (
                 <button type="button" onClick={() => { setSelectedStatusOverride(30); setIsAlternativesOpen(false); }} className="min-h-9 w-full px-3.5 text-left text-rose-600 hover:bg-rose-50 focus-visible:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950/30">Отменена</button>
               )}
@@ -876,7 +883,7 @@ export default function UnifiedDecisionPanel({
           )}
 
           {/* ТАБ 2: База знаний (RAG) */}
-          {selectedTab === 'rules' && (
+          {selectedTab === 'rag' && (
             <div className="space-y-2">
               {details?.kb_matches && details.kb_matches.length > 0 ? (
                 details.kb_matches.map((m: RAGMatchItem, i: number) => (
@@ -915,8 +922,42 @@ export default function UnifiedDecisionPanel({
           )}
 
           {/* ТАБ 3: AI-анализ, черновик и сводка комментариев */}
-          {selectedTab === 'rules' && (
+          {selectedTab === 'ai' && (
             <div className="space-y-2.5">
+              {/* Факты, извлеченные LLM-сенсором с подтверждением (Grounding Evidence) */}
+              {(details?.task?._llm_fact_extraction || details?.task?._extracted_pc_name || details?.task?._extracted_printer_address || details?.task?._extracted_file_path) && (
+                <div className="p-2.5 rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50/40 dark:bg-emerald-950/20 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-emerald-900 dark:text-emerald-200 flex items-center gap-1.5 text-xs">
+                      <IconSparkles size={13} className="text-emerald-600 dark:text-emerald-400" />
+                      <span>Подтвержденные факты (LLM Sensor)</span>
+                    </span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200 font-semibold">
+                      Grounded
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
+                    {details?.task?._extracted_pc_name && (
+                      <div className="rounded bg-white/70 dark:bg-neutral-900/60 p-1.5 border border-emerald-100 dark:border-emerald-950">
+                        <span className="text-[10px] text-neutral-500 block">ПК:</span>
+                        <span className="font-mono font-bold text-neutral-900 dark:text-neutral-100">{details.task._extracted_pc_name}</span>
+                      </div>
+                    )}
+                    {details?.task?._extracted_printer_address && (
+                      <div className="rounded bg-white/70 dark:bg-neutral-900/60 p-1.5 border border-emerald-100 dark:border-emerald-950">
+                        <span className="text-[10px] text-neutral-500 block">Принтер:</span>
+                        <span className="font-mono font-bold text-neutral-900 dark:text-neutral-100">{details.task._extracted_printer_address}</span>
+                      </div>
+                    )}
+                    {details?.task?._extracted_file_path && (
+                      <div className="col-span-2 rounded bg-white/70 dark:bg-neutral-900/60 p-1.5 border border-emerald-100 dark:border-emerald-950">
+                        <span className="text-[10px] text-neutral-500 block">Путь к файлу:</span>
+                        <span className="font-mono text-[10.5px] break-all font-semibold text-neutral-900 dark:text-neutral-100">{details.task._extracted_file_path}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
               {details?.ai_suggested_resolution ? (
                 <div className="p-2.5 rounded-xl border border-blue-200 dark:border-blue-900 bg-blue-50/40 dark:bg-blue-950/20 space-y-2">
                   <div className="flex items-center justify-between">
