@@ -2,7 +2,7 @@ import datetime
 import uuid
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, Uuid, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, Uuid, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -32,7 +32,7 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
-CURRENT_SCHEMA_REVISION = "20260906_0005"
+CURRENT_SCHEMA_REVISION = "20260907_0007"
 
 
 
@@ -576,6 +576,26 @@ class CommandEvent(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class CommandSecretArtifact(Base):
+    """Encrypted, short-lived, one-time material produced by a command."""
+
+    __tablename__ = "command_secret_artifacts"
+    __table_args__ = (UniqueConstraint("command_id", "name", name="uq_command_secret_name"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    encrypted_value: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(String(100), nullable=False, default="text/plain")
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    consumed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class CommandOutbox(Base):
     __tablename__ = "command_outbox"
 
@@ -719,27 +739,66 @@ class TriageTemplate(Base):
     )
 
 
-# Модель детерминированных правил триажа (Rule Engine)
-class TriageRule(Base):
-    __tablename__ = "triage_rules"
+class ResponseTemplate(Base):
+    """Versioned response text. Keys are immutable; versions are append-only."""
+
+    __tablename__ = "response_templates"
+    __table_args__ = (
+        UniqueConstraint("key", "version", name="uq_response_template_key_version"),
+        Index(
+            "uq_response_template_active_key",
+            "key",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+            sqlite_where=text("is_active = 1"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    priority: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=100, server_default="100", index=True
+    template_text: Mapped[str] = mapped_column(Text, nullable=False)
+    required_variables: Mapped[list] = mapped_column(JSON_TYPE, nullable=False, default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False, default="system:migration", server_default="system:migration")
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class ResolutionPolicy(Base):
+    """Versioned mapping from a domain outcome to presentation/action policy."""
+
+    __tablename__ = "resolution_policies"
+    __table_args__ = (
+        UniqueConstraint("outcome_key", "version", name="uq_resolution_policy_key_version"),
+        CheckConstraint("outcome_kind IN ('clarification','action','manual_review','resolution')", name="ck_resolution_policy_kind"),
+        CheckConstraint("risk_level BETWEEN 0 AND 3", name="ck_resolution_policy_risk"),
+        CheckConstraint("target_status_id IS NULL OR target_status_id IN (27,29,30,35,48)", name="ck_resolution_policy_status"),
+        Index(
+            "uq_resolution_policy_active_key",
+            "outcome_key",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+            sqlite_where=text("is_active = 1"),
+        ),
     )
-    conditions_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
-    target_template_key: Mapped[str] = mapped_column(String(64), nullable=False)
-    actions_override_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, default=True, server_default="true"
-    )
-    created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    outcome_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    outcome_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    template_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("response_templates.id", ondelete="RESTRICT"), nullable=True)
+    target_status_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    expenses: Mapped[int] = mapped_column(Integer, nullable=False, default=10, server_default="10")
+    action_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    risk_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False, default="system:migration", server_default="system:migration")
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
 # Журнал аудита изменений правил и шаблонов

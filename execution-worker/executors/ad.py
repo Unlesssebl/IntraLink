@@ -3,7 +3,6 @@ import json
 import logging
 import re
 import secrets
-import string
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -117,6 +116,8 @@ class ADUserProfile:
     found: bool
     sam_account_name: Optional[str] = None
     display_name: Optional[str] = None
+    user_principal_name: Optional[str] = None
+    distinguished_name: Optional[str] = None
     enabled: bool = False
     locked_out: bool = False
     password_expired: bool = False
@@ -139,10 +140,13 @@ class ADUserStatus:
     found: bool
     sam_account_name: Optional[str] = None
     display_name: Optional[str] = None
+    user_principal_name: Optional[str] = None
+    distinguished_name: Optional[str] = None
     enabled: bool = False
     is_wlan_member: bool = False
     department: Optional[str] = None
     mail: Optional[str] = None
+    groups: list[str] = field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -256,11 +260,9 @@ class ActiveDirectoryExecutor:
             safe_id = clean_identity.replace('"', '`"').replace("$", "`$")
             filter_expr = f"SamAccountName -eq '{safe_id}' -or UserPrincipalName -like '{safe_id}*' -or Name -like '*{safe_id}*'"
 
-        safe_comp = (company or "").strip().replace('"', '`"').replace("$", "`$")
-
         script = f"""
         Import-Module ActiveDirectory -ErrorAction Stop
-        $users = Get-ADUser -Filter "{filter_expr}" -Properties Title, Department, Company, telephoneNumber, physicalDeliveryOfficeName, Manager, LockedOut, PasswordExpired, AccountExpirationDate, LastLogonDate, MemberOf, Enabled, Mail -ErrorAction SilentlyContinue
+        $users = Get-ADUser -Filter "{filter_expr}" -Properties UserPrincipalName, DistinguishedName, Title, Department, Company, telephoneNumber, physicalDeliveryOfficeName, Manager, LockedOut, PasswordExpired, AccountExpirationDate, LastLogonDate, MemberOf, Enabled, Mail -ErrorAction SilentlyContinue
         
         if (-not $users) {{
             Write-Output (ConvertTo-Json @{{ found = $false; error = "Пользователь '$([string]'{clean_identity}')' не найден в Active Directory" }})
@@ -286,6 +288,8 @@ class ActiveDirectoryExecutor:
                 found = $true
                 sam_account_name = [string]$u.SamAccountName
                 display_name = [string]$u.Name
+                user_principal_name = [string]$u.UserPrincipalName
+                distinguished_name = [string]$u.DistinguishedName
                 enabled = [bool]$u.Enabled
                 locked_out = [bool]$u.LockedOut
                 password_expired = [bool]$u.PasswordExpired
@@ -332,6 +336,8 @@ class ActiveDirectoryExecutor:
                     found=raw.get("found", True),
                     sam_account_name=raw.get("sam_account_name"),
                     display_name=raw.get("display_name"),
+                    user_principal_name=raw.get("user_principal_name"),
+                    distinguished_name=raw.get("distinguished_name"),
                     enabled=raw.get("enabled", False),
                     locked_out=raw.get("locked_out", False),
                     password_expired=raw.get("password_expired", False),
@@ -370,10 +376,13 @@ class ActiveDirectoryExecutor:
             found=True,
             sam_account_name=p.sam_account_name,
             display_name=p.display_name,
+            user_principal_name=p.user_principal_name,
+            distinguished_name=p.distinguished_name,
             enabled=p.enabled,
             is_wlan_member=p.is_wlan_member,
             department=p.department,
             mail=p.mail,
+            groups=p.groups,
             error=p.error,
         )
 
@@ -866,6 +875,44 @@ class ActiveDirectoryExecutor:
             password=gen_password,
             error=err_msg,
         )
+
+    def preflight_user_creation(self, company: str, department: str) -> dict[str, Any]:
+        """Resolve DC, organization OU, department OU and mandatory service group."""
+        safe_company = company.strip().replace("'", "''").replace('"', '`"').replace("$", "`$")
+        expanded = DEPARTMENT_ABBREVIATIONS.get(department.strip().upper(), department.strip())
+        safe_department = expanded.replace("'", "''").replace('"', '`"').replace("$", "`$")
+        script = """
+        Import-Module ActiveDirectory -ErrorAction Stop
+        try {
+            $dc = (Get-ADDomainController -Discover -ErrorAction Stop).HostName
+            $root = "OU=CORPORATE_USERS,DC=corporate,DC=loc"
+            $company = Get-ADOrganizationalUnit -Server $dc -Filter * -SearchBase $root -SearchScope OneLevel -ErrorAction Stop |
+                Where-Object { $_.Name -like "*__COMPANY__*" } | Select-Object -First 1
+            if (-not $company) { throw "organization_ou_not_found" }
+            $department = Get-ADOrganizationalUnit -Server $dc -Filter * -SearchBase $company.DistinguishedName -ErrorAction Stop |
+                Where-Object { $_.Name -like "*__DEPARTMENT__*" } | Select-Object -First 1
+            if (-not $department) { throw "department_ou_not_found" }
+            $groupName = "HLP_$($company.Name)"
+            $group = Get-ADGroup -Server $dc -Filter "Name -eq '$groupName' -or SamAccountName -eq '$groupName'" -ErrorAction Stop |
+                Select-Object -First 1
+            if (-not $group) { throw "service_group_not_found" }
+            Write-Output (ConvertTo-Json @{
+                success = $true
+                dc = [string]$dc
+                company_ou = [string]$company.DistinguishedName
+                department_ou = [string]$department.DistinguishedName
+                required_group = [string]$group.SamAccountName
+            })
+        } catch {
+            Write-Output (ConvertTo-Json @{ success = $false; error = $_.Exception.Message })
+        }
+        """.replace("__COMPANY__", safe_company).replace("__DEPARTMENT__", safe_department)
+        return self._run_ps_command(script, timeout=20)
+
+    async def preflight_user_creation_async(
+        self, company: str, department: str
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(self.preflight_user_creation, company, department)
 
     async def search_user_profiles_async(
         self, identity: str, company: Optional[str] = None

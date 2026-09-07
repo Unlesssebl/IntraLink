@@ -194,6 +194,7 @@ class DecisionJournalService:
         rag_source = bool(kb_matches or (decision or {}).get("rag_applied"))
         ai_source = bool(ai_text)
         action = action_for_decision(decision)
+        typed_outcome = (decision or {}).get("typed_outcome")
         missing_data = missing_data_for_decision(task, decision, action)
         blocked_reasons = list(missing_data)
         limitations: list[str] = []
@@ -213,7 +214,14 @@ class DecisionJournalService:
             status="finalized",
             outcome=outcome,
             context_fingerprint=fingerprint,
-            source_json={"rule": rule_source, "rag": rag_source, "ai": ai_source},
+            source_json={
+                "rule": rule_source,
+                "rag": rag_source,
+                "ai": ai_source,
+                "typed_outcome_schema": (typed_outcome or {}).get("schema_version"),
+                "rule_key": (typed_outcome or {}).get("rule_key"),
+                "rule_version": (typed_outcome or {}).get("rule_version"),
+            },
             context_json=sanitize_payload(
                 {
                     "task": task,
@@ -255,6 +263,8 @@ class DecisionJournalService:
                     "trigger_markers": (decision or {}).get("trigger_markers", []),
                     "risk_level": (decision or {}).get("risk_level", "normal"),
                     "risk_warning": (decision or {}).get("risk_warning"),
+                    "typed_outcome": typed_outcome,
+                    "action_parameters": (decision or {}).get("action_parameters"),
                 }
             ),
             policy_json=sanitize_payload(policy or {}),

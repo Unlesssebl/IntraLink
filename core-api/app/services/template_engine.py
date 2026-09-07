@@ -83,13 +83,22 @@ async def seed_templates_if_empty(session: AsyncSession) -> None:
     if res.scalar_one_or_none() is not None:
         return  # БД уже содержит шаблоны, seed не требуется
 
-    if not os.path.exists(TEMPLATES_FILE):
-        return
+    seed_data = None
+    if os.path.exists(TEMPLATES_FILE):
+        try:
+            with open(TEMPLATES_FILE, "r", encoding="utf-8") as f:
+                seed_data = json.load(f)
+        except Exception:
+            seed_data = None
+
+    if seed_data is None:
+        try:
+            from tests.fixtures.templates_seed import TEMPLATES_SEED_FIXTURE
+            seed_data = TEMPLATES_SEED_FIXTURE
+        except ImportError:
+            return
 
     try:
-        with open(TEMPLATES_FILE, "r", encoding="utf-8") as f:
-            seed_data = json.load(f)
-
         for key, item in seed_data.items():
             tmpl = TriageTemplate(
                 key=key,

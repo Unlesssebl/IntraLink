@@ -1,5 +1,7 @@
 from typing import Any
 
+from shared.domain import DecisionOutcome, Evidence, NoMatch, ResolutionProposed
+
 from .base import BaseRule, RuleDecision
 
 
@@ -168,3 +170,108 @@ class PhysicalDeliveryRule(BaseRule):
             pass
 
         return None
+
+    def evaluate_typed(
+        self,
+        task: dict[str, Any],
+        diag: dict[str, Any] | None = None,
+        kb_matches: list[dict[str, Any]] | None = None,
+        redirect_mode: bool = False,
+        context: dict[str, Any] | None = None,
+    ) -> DecisionOutcome:
+        name = (task.get("Name") or "").lower()
+        desc = (task.get("Description") or "").lower()
+        user_text = f"{name} {desc}".strip()
+
+        comments_history = (context or {}).get("comments_history") or []
+        comments_text = " ".join(
+            (c.get("Comments") or c.get("Comment") or c.get("Text") or "")
+            for c in comments_history
+        ).lower()
+        full_text = f"{user_text} {comments_text}".strip()
+
+        is_already_delivered = any(w in full_text for w in [
+            "находится в 112", "находится в каб. 112", "в 112 кабинете", "в 112 каб",
+            "принес в 112", "принесла в 112", "принесли в 112", "занес в 112", "занесла в 112",
+            "оставил в 112", "оставила в 112", "оставили в 112", "у вас в 112", "уже в 112",
+            "передал в 112", "передала в 112", "принес пк", "принесла пк", "принес системник",
+            "принесла системник", "принес компьютер", "принесла компьютер", "принес ноутбук",
+            "принесла ноутбук", "стоит в 112", "лежит в 112", "пк в 112", "компьютер в 112"
+        ])
+        if is_already_delivered:
+            is_notebook = any(w in full_text for w in ["ноутбук", "ноутах", "laptop"])
+            device_name = "ноутбук" if is_notebook else "системный блок"
+            return ResolutionProposed(
+                rule_key="device.delivery",
+                rule_version="2",
+                outcome_key="device_delivered_in_work",
+                target_status_id=27,
+                context={"device_name": device_name},
+            )
+
+        is_direct_delivery = any(w in user_text for w in [
+            "принесу к вам", "привезем", "принесем", "принесу компьютер", "принести компьютер",
+            "принести системный", "принести в 112", "принести устройство", "принесу ноутбук"
+        ])
+        if is_direct_delivery:
+            is_pc = any(w in user_text for w in ["пк", "компьютер", "комп", "системн", "системник", "блок", "ноутбук", "моноблок"])
+            return ResolutionProposed(
+                rule_key="device.delivery",
+                rule_version="2",
+                outcome_key="bring_pc_112" if is_pc else "bring_device_112",
+                target_status_id=48,
+            )
+
+        is_hardware_issue = any(w in user_text for w in [
+            "диагностика пк", "диагностика компьютера", "новый процессор", "новый системный",
+            "замена диска", "замена hdd", "замена ssd", "черный экран", "пищит компьютер",
+            "замена памяти", "аппаратный ремонт", "сгорел", "задымился", "второй монитор",
+            "видеокарт", "материнск", "блок питания", "кулер", "замена термопасты",
+            "разбит экран", "треснул", "уронили", "не загорается экран", "разбит", "поврежден корпус",
+        ])
+        if is_hardware_issue:
+            is_pc = any(w in user_text for w in ["пк", "компьютер", "комп", "системн", "системник", "блок", "ноутбук", "моноблок", "экран"])
+            device_name = "ноутбук" if any(w in user_text for w in ["ноутбук", "ноутах", "laptop"]) else "системный блок"
+            return ResolutionProposed(
+                rule_key="device.delivery",
+                rule_version="2",
+                outcome_key="hardware_repair" if is_pc else "bring_device_112",
+                target_status_id=48,
+                context={"device_name": device_name},
+            )
+
+        is_generic_delivery_keyword = any(w in user_text for w in [
+            "починить компьютер", "починить пк", "ремонт компьютера", "ремонт пк", "настройка пк",
+            "не работает компьютер", "не работает пк", "сломался компьютер", "сломался пк",
+            "глючит компьютер", "тормозит пк", "зависает пк", "проверить пк", "проверить компьютер",
+        ])
+        is_office_app = any(w in user_text for w in ["1с", "1c", "почта", "интернет", "сеть", "пароль", "принтер", "печать", "сканер", "excel", "word"])
+        if is_generic_delivery_keyword and not is_office_app:
+            is_notebook = any(w in user_text for w in ["ноутбук", "ноутах", "laptop"])
+            device_name = "ноутбук" if is_notebook else "системный блок"
+            return ResolutionProposed(
+                rule_key="device.delivery",
+                rule_version="2",
+                outcome_key="hardware_repair",
+                target_status_id=48,
+                context={"device_name": device_name},
+            )
+
+        try:
+            from .semantic_classifier import classify_semantic_intent
+            intent, score = classify_semantic_intent(user_text, threshold=0.75)
+            if intent in ("hardware_repair", "bring_device_112"):
+                is_notebook = any(w in user_text for w in ["ноутбук", "ноутах", "laptop"])
+                device_name = "ноутбук" if is_notebook else "системный блок"
+                return ResolutionProposed(
+                    rule_key="device.delivery",
+                    rule_version="2",
+                    outcome_key="hardware_repair" if intent == "hardware_repair" else "bring_device_112",
+                    target_status_id=48,
+                    context={"device_name": device_name},
+                )
+        except Exception:
+            pass
+
+        return NoMatch(rule_key="device.delivery", rule_version="2")
+

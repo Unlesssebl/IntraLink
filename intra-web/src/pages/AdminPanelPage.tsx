@@ -33,6 +33,7 @@ import SkillsHub from '../components/SkillsHub';
 import { IconShield } from '../components/Icons';
 import { fetchAIHealth, fetchSanitizePreview, purgeTriageCache } from '../lib/tasks';
 import type { AIHealthData, SanitizePreviewResult } from '../lib/types';
+import { fetchActiveExecution, type ActiveExecutionStatus } from '../lib/ticketRuns';
 
 interface AdminPanelPageProps {
   theme?: 'light' | 'dark';
@@ -116,7 +117,17 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [vaultLocalAdminPassword, setVaultLocalAdminPassword] = useState('');
   const [savingVaultLocal, setSavingVaultLocal] = useState(false);
 
+  const [activeWorkerExec, setActiveWorkerExec] = useState<ActiveExecutionStatus | null>(null);
   const [showSecurityInfo, setShowSecurityInfo] = useState(false);
+
+  const loadActiveWorkerExec = useCallback(async () => {
+    try {
+      const data = await fetchActiveExecution();
+      setActiveWorkerExec(data);
+    } catch {
+      // Игнорируем ошибки сети
+    }
+  }, []);
 
   // Knowledge Base State
   const [kbStats, setKbStats] = useState<KBStatsResponse | null>(null);
@@ -569,8 +580,19 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     if (token) {
       loadSettings(token);
       loadVault(token);
+      loadActiveWorkerExec();
     }
-  }, [token, loadSettings, loadVault]);
+  }, [token, loadSettings, loadVault, loadActiveWorkerExec]);
+
+  useEffect(() => {
+    if (!token) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        loadActiveWorkerExec();
+      }
+    }, 8000);
+    return () => clearInterval(timer);
+  }, [token, loadActiveWorkerExec]);
 
   // Test LDAPS
   const handleTestLdaps = async () => {
@@ -1058,16 +1080,43 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                 <div>
                   <div className="flex items-center justify-between text-xs text-neutral-400 mb-1">
                     <span>Execution Worker</span>
-                    <span className={`w-2 h-2 rounded-full ${vaultStatus?.execution_worker.online ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-600'}`}></span>
+                    <span className={`w-2 h-2 rounded-full ${
+                      activeWorkerExec?.has_active
+                        ? (activeWorkerExec.state === 'waiting_approval' ? 'bg-amber-400 animate-pulse' : 'bg-blue-400 animate-pulse')
+                        : (vaultStatus?.execution_worker.online || activeWorkerExec?.worker_online ? 'bg-emerald-400' : 'bg-neutral-600')
+                    }`}></span>
                   </div>
                   <div className="text-sm font-semibold truncate flex items-center gap-1.5">
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${vaultStatus?.execution_worker.online ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-500'}`} />
-                    <span>{vaultStatus?.execution_worker.online ? 'Онлайн' : 'Ожидание воркера'}</span>
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${
+                      activeWorkerExec?.has_active
+                        ? (activeWorkerExec.state === 'waiting_approval' ? 'bg-amber-400 animate-pulse' : 'bg-blue-400 animate-pulse')
+                        : (vaultStatus?.execution_worker.online || activeWorkerExec?.worker_online ? 'bg-emerald-400' : 'bg-neutral-500')
+                    }`} />
+                    <span className="truncate">
+                      {activeWorkerExec?.has_active
+                        ? (activeWorkerExec.state === 'waiting_approval' ? `Ожидает одобрения #${activeWorkerExec.task_id}` : `В работе #${activeWorkerExec.task_id}`)
+                        : (vaultStatus?.execution_worker.online || activeWorkerExec?.worker_online ? 'Онлайн (свободен)' : 'Ожидание воркера')}
+                    </span>
                   </div>
+
+                  {activeWorkerExec?.has_active && (
+                    <div className="mt-2 text-[11.5px] text-neutral-300 leading-tight">
+                      <div className="font-medium text-neutral-200 truncate">
+                        {activeWorkerExec.action_title}
+                        {activeWorkerExec.target_host ? ` → ${activeWorkerExec.target_host}` : ''}
+                      </div>
+                      <div className="text-[10.5px] text-neutral-400 mt-0.5 truncate">
+                        Фаза: {activeWorkerExec.phase_title || 'Выполнение'}
+                        {activeWorkerExec.progress_pct !== null ? ` (${activeWorkerExec.progress_pct}%)` : ''}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="mt-3 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px]">
-                  <span className="text-neutral-500">Heartbeat:</span>
-                  <span className="font-mono text-neutral-400 text-[10px]">win_daemon</span>
+                  <span className="text-neutral-500">Узлы воркера:</span>
+                  <span className="font-mono text-neutral-400 text-[10px]">
+                    {activeWorkerExec?.active_nodes_count ? `${activeWorkerExec.active_nodes_count} узел(а)` : 'win_daemon'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -1914,8 +1963,13 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                         onChange={e => setAiQualityEval(e.target.checked)}
                         className="rounded border-neutral-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-0 bg-neutral-950 w-3.5 h-3.5 cursor-pointer"
                       />
-                      <span className="flex items-center gap-1">
-                        <span>🤖 AI-валидация качества решений</span>
+                      <span className="flex items-center gap-1.5">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-purple-400 shrink-0">
+                          <rect x="4" y="4" width="16" height="16" rx="2" />
+                          <rect x="9" y="9" width="6" height="6" />
+                          <path d="M9 2v2M15 2v2M9 20v2M15 20v2M20 9h2M20 14h2M2 9h2M2 14h2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        <span>AI-валидация качества решений</span>
                         <span className="text-[10px] px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-mono">Qwen 2.5</span>
                       </span>
                     </label>
@@ -2055,7 +2109,9 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                       </>
                     ) : (
                       <>
-                        <span>🌙</span>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-indigo-400 shrink-0">
+                          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
                         <span>Глубокий аудит (19:00)</span>
                       </>
                     )}
@@ -2072,7 +2128,9 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                     <div className="flex items-center gap-2">
                       <span className={`w-2 h-2 rounded-full ${nightlyAuditProgress.is_running ? 'bg-indigo-500 animate-ping' : 'bg-emerald-500'}`}></span>
                       <span className="font-semibold text-indigo-300 flex items-center gap-1.5">
-                        <span>🌙</span>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-indigo-400 shrink-0">
+                          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
                         <span>{nightlyAuditProgress.is_running ? 'Выполняется глубокий ночной аудит (Qwen 2.5)...' : 'Глубокий ночной аудит завершен'}</span>
                       </span>
                       <span className="text-[10px] px-1.5 py-0.2 bg-neutral-900 text-neutral-400 rounded border border-neutral-800">
@@ -2209,9 +2267,12 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                         <button
                           type="button"
                           onClick={() => setShowSyncConsole(!showSyncConsole)}
-                          className="text-[10px] text-neutral-500 hover:text-neutral-400 font-mono cursor-pointer"
+                          className="text-[10px] text-neutral-500 hover:text-neutral-400 font-mono cursor-pointer inline-flex items-center gap-1"
                         >
-                          {showSyncConsole ? 'свернуть ▲' : 'развернуть ▼'}
+                          <span>{showSyncConsole ? 'свернуть' : 'развернуть'}</span>
+                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5">
+                            {showSyncConsole ? <path d="M2 6.5l3-3 3 3" strokeLinecap="round" strokeLinejoin="round" /> : <path d="M2 3.5l3 3 3-3" strokeLinecap="round" strokeLinejoin="round" />}
+                          </svg>
                         </button>
                       </div>
 
@@ -2462,7 +2523,12 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                                 }`}
                                 title={`Скоринг ценности решения для Helpdesk: ${(item.quality_score * 100).toFixed(0)}%`}
                               >
-                                <span>{item.quality_score >= 0.8 ? '⭐ ' : ''}Ценность: {(item.quality_score * 100).toFixed(0)}%</span>
+                                {item.quality_score >= 0.8 && (
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="text-emerald-400 shrink-0">
+                                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                                  </svg>
+                                )}
+                                <span>Ценность: {(item.quality_score * 100).toFixed(0)}%</span>
                               </span>
                             )}
                           </div>

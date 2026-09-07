@@ -141,3 +141,27 @@ export const saveAutopilotScenario = (payload: {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
+
+export interface ActiveExecutionStatus {
+  has_active: boolean;
+  state: 'running' | 'waiting_approval' | 'waiting_answer' | 'queued' | 'paused' | 'idle';
+  mode: TicketRunMode | null;
+  task_id: number | null;
+  command_id: string | null;
+  ticket_run_id: string | null;
+  action: string | null;
+  action_title: string | null;
+  target_host: string | null;
+  target_printer: string | null;
+  phase: string | null;
+  phase_title: string | null;
+  progress_pct: number | null;
+  status_text: string;
+  worker_online: boolean;
+  active_nodes_count: number;
+  updated_at: string | null;
+}
+
+export const fetchActiveExecution = () =>
+  apiFetch<ActiveExecutionStatus>('/api/v2/workers/active-execution');
+

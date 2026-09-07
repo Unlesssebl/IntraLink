@@ -1,7 +1,7 @@
 """Тесты точности классификации ServiceRedirectRule и защиты от ложной отмены аварийных инцидентов."""
 
 import pytest
-from app.services.rules.redirect import ServiceRedirectRule, classify_target_service, DOWNTIME_KEYWORDS, NETWORK_INFRA_KEYWORDS
+from app.services.rules.redirect import ServiceRedirectRule, classify_target_service
 from app.services.rules.engine import RuleEngine
 
 

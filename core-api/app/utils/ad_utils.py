@@ -5,6 +5,8 @@
 import re
 from typing import Any
 
+from shared.domain import PersonCandidate, validate_person_candidate
+
 # Таблица транслитерации ГОСТ 7.79-2000 (система Б)
 TRANSLIT_TABLE = {
     "а": "a",
@@ -98,8 +100,6 @@ def extract_user_creation_details_from_task(
     department = (raw_fields.get("1064") or raw_fields.get("1078") or "").strip()
     pc_name = (raw_fields.get("1068") or raw_fields.get("1120") or "").strip()
     company = raw_fields.get("1074", "").strip()
-    email = (raw_fields.get("1523") or raw_fields.get("1494") or "").strip()
-
     # Fallback из текста описания
     if not surname or not name:
         desc = f"{task.get('Name', '')} {task.get('Description', '')}"
@@ -118,8 +118,18 @@ def extract_user_creation_details_from_task(
         "name": name,
         "patronymic": patronymic,
         "title": title,
-        "phone": phone or meta.get("phone"),
-        "department": department or meta.get("department"),
-        "pc_name": pc_name or meta.get("pc_name"),
+        "phone": phone or meta.get("phone") or "",
+        "department": department or meta.get("department") or "",
+        "pc_name": pc_name or meta.get("pc_name") or "",
         "company": company,
     }
+
+
+def extract_person_candidate_from_task(task: dict[str, Any]) -> PersonCandidate:
+    """Return the shared domain representation used by decisioning and workers."""
+    return PersonCandidate.model_validate(extract_user_creation_details_from_task(task))
+
+
+def validate_user_creation_details(task: dict[str, Any]):
+    """Validate ticket identity fields without inferring whether a person exists."""
+    return validate_person_candidate(extract_person_candidate_from_task(task))

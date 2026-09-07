@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from shared.domain import DecisionOutcome, NoMatch
+
 
 @dataclass
 class RuleDecision:
@@ -88,3 +90,17 @@ class BaseRule(ABC):
         иначе None (передавая управление следующему правилу в пайплайне).
         """
         pass
+
+    def evaluate_typed(
+        self,
+        task: dict[str, Any],
+        diag: dict[str, Any] | None = None,
+        kb_matches: list[dict[str, Any]] | None = None,
+        redirect_mode: bool = False,
+        context: dict[str, Any] | None = None,
+    ) -> DecisionOutcome:
+        """
+        Оценивает контекст заявки в терминах типизированных алгебраических исходов (DecisionOutcome).
+        """
+        return NoMatch(rule_key=self.name, rule_version="1")
+

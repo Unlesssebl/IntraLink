@@ -26,7 +26,7 @@ import {
 
 import SmartBatchModal, { type SmartBatchItem } from '../components/queue/SmartBatchModal';
 import BulkConfirmModal, { type BulkConfirmModalState } from '../components/queue/BulkConfirmModal';
-import { fetchTicketRuns, type TicketRun } from '../lib/ticketRuns';
+import { fetchTicketRuns, type TicketRun, type ActiveExecutionStatus } from '../lib/ticketRuns';
 
 interface Props {
   tickets: Ticket[];
@@ -38,6 +38,8 @@ interface Props {
   selectedService: ServiceSelection;
   onResetService: () => void;
   searchQuery?: string;
+  activeExecution?: ActiveExecutionStatus | null;
+  onSelectActiveTask?: (taskId: number) => void;
 }
 
 type ViewMode = 'table' | 'kanban';
@@ -145,6 +147,8 @@ export default function QueuePage({
   selectedService,
   onResetService,
   searchQuery = '',
+  activeExecution,
+  onSelectActiveTask,
 }: Props) {
   const [view, setView] = useState<ViewMode>('table');
   const [filterTab, setFilterTab] = useState<FilterTab>('all');
@@ -842,6 +846,47 @@ export default function QueuePage({
           </div>
         </div>
 
+        {/* Active Assistant Live Execution Banner (Zero-Emoji, Linear Standard) */}
+        {activeExecution?.has_active && activeExecution.task_id && (
+          <div className={`shrink-0 px-4 py-2 border-b flex items-center justify-between gap-3 text-xs transition-colors ${
+            activeExecution.state === 'waiting_approval'
+              ? 'bg-amber-50/90 dark:bg-amber-950/40 border-amber-200/80 dark:border-amber-900/60 text-amber-900 dark:text-amber-200'
+              : 'bg-blue-50/90 dark:bg-blue-950/40 border-blue-200/80 dark:border-blue-900/60 text-blue-900 dark:text-blue-200'
+          }`}>
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                  activeExecution.state === 'waiting_approval' ? 'bg-amber-400' : 'bg-blue-400'
+                }`}></span>
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${
+                  activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
+                }`}></span>
+              </span>
+              <div className="flex items-center gap-2 min-w-0 font-medium">
+                <span className="text-neutral-500 dark:text-neutral-400 shrink-0">Ассистент:</span>
+                <span className="font-mono font-bold shrink-0">
+                  #{activeExecution.task_id}
+                </span>
+                <span className="opacity-40 shrink-0">·</span>
+                <span className="truncate">
+                  {activeExecution.status_text}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onSelectActiveTask ? onSelectActiveTask(activeExecution.task_id!) : onSelectTicket(String(activeExecution.task_id))}
+              className={`shrink-0 px-3 py-1 rounded-md text-[11.5px] font-semibold transition-colors cursor-pointer border ${
+                activeExecution.state === 'waiting_approval'
+                  ? 'bg-amber-600 hover:bg-amber-500 text-white border-amber-500 shadow-2xs'
+                  : 'bg-white dark:bg-neutral-900 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950/60'
+              }`}
+            >
+              {activeExecution.state === 'waiting_approval' ? 'Подтвердить действие →' : 'Открыть карточку →'}
+            </button>
+          </div>
+        )}
+
         {/* Table View (Matching style and layout from image-2.png) */}
         {view === 'table' && (
           <div className="flex-1 overflow-auto bg-white dark:bg-neutral-950">
@@ -946,11 +991,29 @@ export default function QueuePage({
                             <IconChevronDown size={10} className="opacity-40 group-hover:opacity-100 transition-opacity ml-0.5" />
                           </button>
 
-                          {ticketRun && (
+                          {activeExecution?.has_active && activeExecution.task_id === ticket.rawId ? (
+                            <div className="mt-1.5">
+                              <span
+                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border ${
+                                  activeExecution.state === 'waiting_approval'
+                                    ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-800'
+                                    : 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 border-blue-300 dark:border-blue-800'
+                                }`}
+                                title={activeExecution.status_text}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-ping ${
+                                  activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
+                                }`} />
+                                <span className="truncate max-w-[130px]">
+                                  {activeExecution.phase_title || (activeExecution.state === 'waiting_approval' ? 'Ожидает одобрения' : 'Выполняется')}
+                                </span>
+                              </span>
+                            </div>
+                          ) : ticketRun ? (
                             <div className="mt-1.5">
                               {renderTicketRunPill(ticketRun)}
                             </div>
-                          )}
+                          ) : null}
 
                           {inlineStatusTicketId === ticket.id && (
                             <div className="absolute left-0 top-8 z-30 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-xl shadow-xl py-1.5 min-w-[170px] animate-in fade-in zoom-in-95 duration-100">
@@ -1321,11 +1384,29 @@ export default function QueuePage({
                             </span>
                           </div>
 
-                          {ticketRuns[t.rawId] && (
+                          {activeExecution?.has_active && activeExecution.task_id === t.rawId ? (
+                            <div className="mt-2 pt-1.5 border-t border-neutral-100 dark:border-neutral-700/60">
+                              <span
+                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border ${
+                                  activeExecution.state === 'waiting_approval'
+                                    ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-800'
+                                    : 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 border-blue-300 dark:border-blue-800'
+                                }`}
+                                title={activeExecution.status_text}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-ping ${
+                                  activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
+                                }`} />
+                                <span className="truncate max-w-[150px]">
+                                  {activeExecution.phase_title || (activeExecution.state === 'waiting_approval' ? 'Ожидает одобрения' : 'Выполняется')}
+                                </span>
+                              </span>
+                            </div>
+                          ) : ticketRuns[t.rawId] ? (
                             <div className="mt-2 pt-1.5 border-t border-neutral-100 dark:border-neutral-700/60">
                               {renderTicketRunPill(ticketRuns[t.rawId])}
                             </div>
-                          )}
+                          ) : null}
                         </div>
                       ))}
 

@@ -820,7 +820,9 @@ export default function UnifiedDecisionPanel({
                   <span className="px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 font-semibold">
                     {ticket.serviceName || details?.service_name || 'Не указан'}
                   </span>
-                  <span>➔</span>
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-neutral-400 shrink-0">
+                    <path d="M2.5 6h7M6.5 3l3 3-3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
                   <span>Рекомендуемый:</span>
                   <span className="px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-900 font-semibold">
                     {details?.suggested_action?.target_service || details?.suggested_action?.name || 'Другой раздел'}

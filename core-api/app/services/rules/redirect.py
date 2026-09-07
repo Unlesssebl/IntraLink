@@ -1,6 +1,8 @@
 import re
 from typing import Any
 
+from shared.domain import DecisionOutcome, Evidence, NoMatch, ResolutionProposed
+
 try:
     from .base import BaseRule, RuleDecision
     from .catalog import get_root_name, get_root_number_for_service_id
@@ -310,3 +312,39 @@ class ServiceRedirectRule(BaseRule):
             )
 
         return None
+
+    def evaluate_typed(
+        self,
+        task: dict[str, Any],
+        diag: dict[str, Any] | None = None,
+        kb_matches: list[dict[str, Any]] | None = None,
+        redirect_mode: bool = False,
+        context: dict[str, Any] | None = None,
+    ) -> DecisionOutcome:
+        dec = self.evaluate(task, diag, kb_matches, redirect_mode, context)
+        if dec is not None and dec.is_redirect:
+            return ResolutionProposed(
+                rule_key="service.redirect",
+                rule_version="2",
+                outcome_key=dec.template_key,
+                target_status_id=dec.status_id,
+                context={"target_service": dec.target_service_name},
+                evidence=[
+                    Evidence(
+                        source="rule",
+                        field="service_id",
+                        code="wrong_catalog_root",
+                        detail=dec.reason or f"Redirected to {dec.target_service_name}",
+                    )
+                ],
+                metadata={
+                    "is_redirect": True,
+                    "current_root": dec.current_root,
+                    "target_root": dec.target_root,
+                    "target_service_name": dec.target_service_name,
+                    "reason": dec.reason,
+                    "trigger_markers": dec.trigger_markers,
+                },
+            )
+        return NoMatch(rule_key="service.redirect", rule_version="2")
+

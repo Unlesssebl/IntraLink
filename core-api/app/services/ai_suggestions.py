@@ -27,6 +27,9 @@ def _decode(raw: Any) -> dict[str, Any] | None:
 
 def action_for_decision(decision: dict[str, Any] | None) -> str:
     """Map a rule outcome to the action whose policy the operator must see."""
+    explicit_action = (decision or {}).get("action")
+    if explicit_action:
+        return str(explicit_action)
     rule_type = (decision or {}).get("rule_type")
     return {
         "wlan_access": "grant_wlan",
@@ -48,10 +51,11 @@ def missing_data_for_decision(
         )
         return [] if identity else ["логин или UPN заявителя"]
     if action_id == "create_user":
+        parameters = (decision or {}).get("action_parameters") or {}
         required = {
-            "фамилия": (decision or {}).get("surname"),
-            "имя": (decision or {}).get("first_name") or (decision or {}).get("name"),
-            "подразделение": (decision or {}).get("department"),
+            "фамилия": parameters.get("surname") or (decision or {}).get("surname"),
+            "имя": parameters.get("name") or (decision or {}).get("first_name") or (decision or {}).get("name"),
+            "подразделение": parameters.get("department") or (decision or {}).get("department"),
         }
         return [label for label, value in required.items() if not value]
     if action_id == "install_printer" and not (meta.get("pc_name") or task.get("PcName")):

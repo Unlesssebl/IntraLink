@@ -58,3 +58,20 @@ def decrypt_token(encrypted_token: str | bytes) -> str:
         if isinstance(encrypted_token, bytes):
             return encrypted_token.decode("utf-8")
         return encrypted_token
+
+
+def encrypt_secret(value: str) -> str:
+    """Encrypt ephemeral command material and fail closed without a key."""
+    if not value:
+        raise ValueError("Secret value must not be empty")
+    if not _fernet:
+        raise RuntimeError("ENCRYPTION_KEY is required for secret artifacts")
+    return _fernet.encrypt(value.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_secret(value: str | bytes) -> str:
+    """Decrypt an ephemeral secret; unlike legacy tokens, never return ciphertext."""
+    if not _fernet:
+        raise RuntimeError("ENCRYPTION_KEY is required for secret artifacts")
+    token = value.encode("utf-8") if isinstance(value, str) else value
+    return _fernet.decrypt(token).decode("utf-8")

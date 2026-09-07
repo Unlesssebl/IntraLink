@@ -8,7 +8,6 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import time
 from typing import Any
 import redis.asyncio as aioredis
@@ -46,9 +45,11 @@ class WindowsExecutionWorker:
 
         from sdk.registry import get_handler_registry
         from handlers.install_printer import InstallPrinterHandler
+        from handlers.create_user import CreateUserHandler
 
         self.registry = get_handler_registry()
         self.registry.register(InstallPrinterHandler())
+        self.registry.register(CreateUserHandler(self.ad_exec))
 
         self.subscribed_streams = [STREAM_EXECUTION_QUEUE, STREAM_EXECUTION_QUEUE_V2]
         if "printers" in self.capabilities:
@@ -550,7 +551,72 @@ class WindowsExecutionWorker:
                             "expenses": 15,
                         }
 
-            # 2. Установка / Диагностика принтера
+            # 2. Создание пользователя AD через строгий v2 pipeline
+            elif action == "create_user":
+                handler = self.registry.get("create_user")
+                if not is_v2 or handler is None:
+                    result_message = "create_user разрешен только через v2 Worker SDK"
+                    failure_kind = "configuration"
+                    failure_code = "create_user_v2_required"
+                else:
+                    from sdk.models import HandlerContext
+                    from sdk.lease_renewer import LeaseRenewer
+
+                    ctx = HandlerContext(
+                        command_id=job_id,
+                        task_id=task_id,
+                        redis_client=self.redis,
+                        core_api_client=self.api_client,
+                        claim_token=claim_token,
+                        node_name=CONSUMER_NAME,
+                    )
+                    renewer = LeaseRenewer(
+                        command_id=job_id,
+                        worker_id=CONSUMER_NAME,
+                        claim_token=claim_token or "",
+                        cancellation_token=ctx.cancellation_token,
+                        api_client=self.api_client,
+                        redis=self.redis,
+                        lease_seconds=120,
+                        interval_seconds=15,
+                    )
+                    async with renewer:
+                        res = await handler.run_pipeline(ctx, params)
+                    result_status = "success" if res.success else "failed"
+                    result_message = res.message
+                    result_payload = {**(res.payload or {}), "verified": res.success}
+                    failure_kind = res.failure_kind
+                    failure_code = res.failure_code
+                    verified_failure = res.verified_failure
+                    temporary_password = str(ctx.state.pop("temporary_password", ""))
+                    if res.success:
+                        artifact = None
+                        if temporary_password:
+                            artifact = await self.api_client.store_command_secret_v2(
+                                job_id,
+                                CONSUMER_NAME,
+                                claim_token or "",
+                                "temporary_password",
+                                temporary_password,
+                            )
+                        if artifact is None:
+                            result_status = "needs_review"
+                            result_message = "Учетная запись создана, но защищенная доставка пароля не подтверждена"
+                            failure_kind = "verification"
+                            failure_code = "secret_artifact_persist_failed"
+                            verified_failure = True
+                            result_payload["verified"] = False
+                            result_payload["requires_manual_recovery"] = True
+                        else:
+                            result_payload["secret_artifact"] = {
+                                "id": artifact.get("id"),
+                                "name": artifact.get("name"),
+                                "expires_at": artifact.get("expires_at"),
+                            }
+                    # Plaintext exists only in handler context and this local variable.
+                    temporary_password = ""
+
+            # 3. Установка / Диагностика принтера
             elif action in ("install_printer", "printer"):
                 handler = self.registry.get("install_printer")
                 if is_v2 and handler is not None:
@@ -744,7 +810,10 @@ class WindowsExecutionWorker:
             )
 
             if is_v2 and claim_token:
-                outcome = "succeeded" if result_status == "success" else "failed"
+                outcome = {
+                    "success": "succeeded",
+                    "needs_review": "needs_review",
+                }.get(result_status, "failed")
                 persisted = await self.api_client.finish_command_v2(
                     job_id,
                     CONSUMER_NAME,

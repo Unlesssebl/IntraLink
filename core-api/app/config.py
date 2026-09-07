@@ -142,6 +142,16 @@ class Settings(BaseSettings):
     OLLAMA_NUM_PARALLEL: int = Field(
         2, description="Лимит параллельных сессий инференса Ollama"
     )
+    LLM_FACT_EXTRACTION_MODE: str = Field(
+        "off", description="Извлечение фактов: off | shadow | enabled"
+    )
+    LLM_PROVIDER_PREFERENCE: str = Field(
+        "gemini_first",
+        description="Приоритет LLM провайдера: gemini_first | ollama_only | disabled",
+    )
+    LLM_FACT_EXTRACTION_TIMEOUT: float = Field(
+        5.0, ge=0.5, le=30.0, description="Жесткий timeout extraction fallback"
+    )
     FASTEMBED_MODEL: str = Field(
         "BAAI/bge-m3",
         description="Имя локальной модели FastEmbed для векторных эмбеддингов",

@@ -15,18 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.db import DecisionRecord, DecisionStep, TicketRun, get_db
 from app.routers.deps import (
-    OperatorContext,
-    get_operator_context,
     get_service_auth_b64,
     principal_subject,
     require_permission,
 )
 from app.services import intraservice
-from app.services.ai_synthesis import synthesize_triage_resolution
-from app.services.host_telemetry import (
-    get_task_telemetry,
-    prefetch_task_telemetry,
-)
 from app.services.rag import (
     index_task_knowledge,
     search_knowledge_base,
@@ -37,11 +30,7 @@ from app.services.safety import (
     DeadMansSwitchError,
     enforce_triage_apply_rate_limit,
 )
-from app.services.template_engine import (
-    auto_detect_template,
-    detect_service_redirect,
-    load_templates,
-)
+from app.services.template_engine import load_templates
 from app.services.triage_service import TriageService
 from app.services.triage_session import TriageSessionManager
 from app.services.worker import get_redis_client
@@ -159,7 +148,9 @@ async def attach_durable_decision(
                 "input_tokens": None,
                 "output_tokens": None,
             },
-        policy=suggestion.get("policy") or {},
+        policy=(card.get("suggested_action") or {}).get("_resolution_policy")
+        or suggestion.get("policy")
+        or {},
         actor=actor,
         force=force,
     )

@@ -864,3 +864,82 @@ async def test_api_v2_preflight_and_phase_endpoints():
         assert data_pf["preflight_evidence"] == {"dns": True, "ping": True}
         assert data_pf["plan_hash"] is not None
 
+
+@pytest.mark.asyncio
+async def test_get_active_worker_execution_endpoint():
+    """Проверка эндпоинта GET /api/v2/workers/active-execution: возврат выполняемой задачи и понятного статуса."""
+    async with AsyncSessionLocal() as db:
+        _p, cred, secret = await create_service_credential(
+            db,
+            subject="service-active-exec-reader",
+            display_name="Execution Reader",
+            scopes={"command:read"},
+        )
+        headers = {
+            "X-Service-Key-Id": cred.key_id,
+            "X-Service-Secret": secret,
+        }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # 1. Когда активных задач нет -> idle
+        resp_idle = await client.get("/api/v2/workers/active-execution", headers=headers)
+        assert resp_idle.status_code == 200
+        data_idle = resp_idle.json()
+        assert data_idle["has_active"] is False
+        assert data_idle["state"] == "idle"
+        assert "Ассистент свободен" in data_idle["status_text"] or "Воркер" in data_idle["status_text"]
+
+        # 2. Создаем команду, которая ожидает подтверждения
+        async with AsyncSessionLocal() as db:
+            service = CommandService(db)
+            cmd, _ = await service.create(
+                action="install_printer",
+                target={"pc_name": "PC-042"},
+                parameters={"printer_name": "HP LaserJet M404"},
+                idempotency_key=f"active-exec-test-{uuid.uuid4()}",
+                initiator="operator",
+                source="api",
+                priority=5,
+            )
+            cmd.task_id = 105423
+            await db.commit()
+            cmd_id = cmd.id
+
+        resp_active = await client.get("/api/v2/workers/active-execution", headers=headers)
+        assert resp_active.status_code == 200
+        data_active = resp_active.json()
+        assert data_active["has_active"] is True
+        assert data_active["task_id"] == 105423
+        assert data_active["action"] == "install_printer"
+        assert data_active["action_title"] == "Установка принтера"
+        assert data_active["target_host"] == "PC-042"
+        assert data_active["target_printer"] == "HP LaserJet M404"
+        assert "Ожидает подтверждения: Установка принтера HP LaserJet M404 на PC-042" in data_active["status_text"]
+
+        # 3. Переводим в running и добавляем фазовое событие
+        async with AsyncSessionLocal() as db:
+            service = CommandService(db)
+            c = await db.get(CommandRecord, cmd_id)
+            c.status = "running"
+            seq = await service._next_sequence(cmd_id)
+            db.add(CommandEvent(
+                command_id=cmd_id,
+                sequence=seq,
+                event_type="phase_driver_copy",
+                details_json={
+                    "phase": "driver_copy",
+                    "details": {"pct": 60, "detail": "Копирование драйвера печати"},
+                },
+                actor="worker-win-01",
+            ))
+            await db.commit()
+
+            resp_running = await client.get("/api/v2/workers/active-execution", headers=headers)
+            assert resp_running.status_code == 200
+            data_running = resp_running.json()
+            assert data_running["has_active"] is True
+            assert data_running["state"] == "running"
+            assert data_running["progress_pct"] == 60
+            assert data_running["phase_title"] == "Копирование драйвера печати"
+            assert "Копирование драйвера печати (60%)" in data_running["status_text"]
+            assert "HP LaserJet M404 на PC-042" in data_running["status_text"]

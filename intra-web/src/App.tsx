@@ -11,6 +11,7 @@ import CommandPalette from './components/CommandPalette';
 import ToastContainer from './components/Toast';
 import { AuthProvider, useAuth } from './lib/auth';
 import { fetchQueue } from './lib/tasks';
+import { fetchActiveExecution, type ActiveExecutionStatus } from './lib/ticketRuns';
 
 function MainApp() {
   const { isLoggedIn, user, loading: authLoading, logout } = useAuth();
@@ -24,6 +25,7 @@ function MainApp() {
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [activeExecution, setActiveExecution] = useState<ActiveExecutionStatus | null>(null);
   const [rootServices, setRootServices] = useState<Array<{ id: number; name: string }>>([]);
   const [subservicesByRoot, setSubservicesByRoot] = useState<Record<number, Array<{ id: number; name: string; parent_id?: number }>>>({});
   const [selectedService, setSelectedService] = useState<ServiceSelection>({
@@ -77,11 +79,33 @@ function MainApp() {
     }
   }, [isLoggedIn]);
 
+  const loadActiveExecution = useCallback(async () => {
+    if (!isLoggedIn) return;
+    try {
+      const data = await fetchActiveExecution();
+      setActiveExecution(data);
+    } catch {
+      // Игнорируем фоновые ошибки сети
+    }
+  }, [isLoggedIn]);
+
   useEffect(() => {
     if (isLoggedIn) {
       loadQueue();
+      loadActiveExecution();
     }
-  }, [isLoggedIn, loadQueue]);
+  }, [isLoggedIn, loadQueue, loadActiveExecution]);
+
+  // Фоновый опрос активной задачи ассистента (раз в 6 секунд)
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        loadActiveExecution();
+      }
+    }, 6000);
+    return () => clearInterval(timer);
+  }, [isLoggedIn, loadActiveExecution]);
 
   // Smart background polling (every 60s when logged in & page visible)
   useEffect(() => {
@@ -91,11 +115,22 @@ function MainApp() {
       const isAutoRefresh = localStorage.getItem('intralink_auto_refresh') !== 'false';
       if (isAutoRefresh && document.visibilityState === 'visible') {
         loadQueue(true);
+        loadActiveExecution();
       }
     }, 60000);
 
     return () => clearInterval(interval);
-  }, [isLoggedIn, loadQueue]);
+  }, [isLoggedIn, loadQueue, loadActiveExecution]);
+
+  const handleSelectActiveTask = useCallback((taskId: number) => {
+    setCurrentPage('queue');
+    const matched = tickets.find(t => t.rawId === taskId);
+    if (matched) {
+      setSelectedTicketId(matched.id);
+    } else {
+      setSelectedTicketId(String(taskId));
+    }
+  }, [tickets]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -178,11 +213,16 @@ function MainApp() {
           sidebarMode={sidebarMode}
           onCycleSidebarMode={handleCycleSidebarMode}
           onOpenCmdPalette={() => setCmdPaletteOpen(true)}
-          onRefresh={() => loadQueue()}
+          onRefresh={() => {
+            loadQueue();
+            loadActiveExecution();
+          }}
           selectedService={selectedService}
           onResetService={() => setSelectedService({ rootId: null, serviceId: null, name: null })}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
+          activeExecution={activeExecution}
+          onSelectActiveTask={handleSelectActiveTask}
         />
 
         <main className="flex-1 overflow-hidden relative">
@@ -208,7 +248,10 @@ function MainApp() {
                 <span>{queueError}</span>
               </div>
               <button
-                onClick={() => loadQueue()}
+                onClick={() => {
+                  loadQueue();
+                  loadActiveExecution();
+                }}
                 className="px-3 py-1 bg-red-800 dark:bg-red-200 text-white dark:text-red-950 rounded text-xs font-semibold hover:bg-red-700 transition-colors cursor-pointer"
               >
                 Повторить
@@ -228,11 +271,16 @@ function MainApp() {
               selectedTicketId={selectedTicketId}
               onSelectTicket={setSelectedTicketId}
               onUpdateTicket={updateTicket}
-              onRefresh={() => loadQueue()}
+              onRefresh={() => {
+                loadQueue();
+                loadActiveExecution();
+              }}
               onToast={addToast}
               selectedService={selectedService}
               onResetService={() => setSelectedService({ rootId: null, serviceId: null, name: null })}
               searchQuery={searchQuery}
+              activeExecution={activeExecution}
+              onSelectActiveTask={handleSelectActiveTask}
             />
           )}
         </main>

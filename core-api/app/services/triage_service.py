@@ -17,6 +17,8 @@ from app.services import intraservice
 from app.services.ai import RoutingMetadata, data_sanitizer
 from app.services.ai_synthesis import calculate_confidence_score
 from app.services.deduplication import DuplicateDetector
+from app.services.fact_extractor import enrich_task_with_extracted_facts
+from app.services.typed_decision_adapter import materialize_typed_decision
 from app.services.rules.credentials import CredentialsRule
 from app.services.rules.catalog import (
     ROOT_SERVICES,
@@ -251,6 +253,7 @@ class TriageService:
 
         result_items = []
         for t in page_tasks:
+            t = await enrich_task_with_extracted_facts(t)
             t_id = t.get("Id")
             t_name = t.get("Name") or ""
             t_desc = t.get("Description") or ""
@@ -298,6 +301,7 @@ class TriageService:
                     kb_matches=None,
                     redirect_mode=redirect_only,
                 )
+                decision = await materialize_typed_decision(db, decision)
 
                 # 3. Если правило общее/стандартное и запрошен RAG — ищем семантическое решение в pgvector RAG
                 if include_rag and decision.get("rule_type") in ("standard_in_work", None) and not decision.get("is_redirect"):
@@ -316,6 +320,7 @@ class TriageService:
                             kb_matches=kb_matches,
                             redirect_mode=redirect_only,
                         )
+                        decision = await materialize_typed_decision(db, decision)
                         decision["decision_source"] = "rag_consensus"
                     else:
                         decision["decision_source"] = "standard_fallback"
@@ -430,6 +435,8 @@ class TriageService:
             task["RootServiceId"] = s_info.get("root_id")
             task["RootServiceName"] = s_info.get("root_name")
 
+        task = await enrich_task_with_extracted_facts(task)
+
         raw_history = await intraservice.get_task_lifetime(service_auth_b64, task_id) or []
         if isinstance(raw_history, dict):
             history = raw_history.get("TaskLifetimes") or []
@@ -472,6 +479,7 @@ class TriageService:
             kb_matches=kb_matches,
             comments_history=history,
         )
+        decision = await materialize_typed_decision(db, decision)
 
         # Ключ зависит от фактического содержимого, а не только от количества
         # комментариев: редактирование описания/реплики не вернет устаревший ответ.

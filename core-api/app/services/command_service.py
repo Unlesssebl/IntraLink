@@ -689,22 +689,26 @@ class CommandService:
                         },
                     )
 
+        from app.services.decision_journal import sanitize_payload
+
+        safe_result = sanitize_payload(result)
+        safe_error_message = sanitize_payload(error_message)
         retry_delay: int | None = None
         if outcome == "failed" and command.action in AUTO_RETRY_ELIGIBLE_ACTIONS and attempt:
             retry_delay = {1: 5, 2: 30}.get(attempt.attempt_no)
 
         command.status = "queued" if retry_delay is not None else outcome
         command.version += 1
-        command.result_json = result
-        command.error_message = error_message
+        command.result_json = safe_result
+        command.error_message = safe_error_message
         finished_at = dt.datetime.now(dt.timezone.utc)
         command.completed_at = None if retry_delay is not None else finished_at
         command.lease_token_hash = None
         command.lease_expires_at = None
         if attempt:
             attempt.status = outcome
-            attempt.result_json = result
-            attempt.error_message = error_message
+            attempt.result_json = safe_result
+            attempt.error_message = safe_error_message
             attempt.completed_at = finished_at
         if retry_delay is not None:
             self._enqueue(command, delay_seconds=retry_delay)
@@ -714,7 +718,7 @@ class CommandService:
             event_type="retry_scheduled" if retry_delay is not None else outcome,
             details_json={
                 "worker_id": worker_id,
-                "error": error_message,
+                "error": safe_error_message,
                 "retry_in_seconds": retry_delay,
             },
             actor=worker_id,

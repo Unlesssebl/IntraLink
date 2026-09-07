@@ -176,6 +176,33 @@ class CoreApiClient:
             logger.debug("Сбой фиксации результата команды %s: %s", command_id, e)
             return False
 
+    async def store_command_secret_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        claim_token: str,
+        name: str,
+        value: str,
+        ttl_seconds: int = 900,
+    ) -> dict[str, Any] | None:
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/secret-artifacts"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "claim_token": claim_token,
+                    "name": name,
+                    "value": value,
+                    "ttl_seconds": ttl_seconds,
+                },
+            ) as resp:
+                return await resp.json() if resp.status == 201 else None
+        except Exception as e:
+            logger.debug("Сбой сохранения secret artifact команды %s: %s", command_id, e)
+            return None
+
     async def renew_command_lease_v2(
         self,
         command_id: str,

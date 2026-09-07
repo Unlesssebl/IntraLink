@@ -17,10 +17,8 @@ from app.services.ai.schemas import (
     AIAnalysisResult,
     AIHealthResponse,
     DataCircuit,
-    RouteDecision,
     RoutedInferenceRequest,
     RoutedInferenceResponse,
-    SanitizationResult,
     TicketSummaryResult,
 )
 from app.services.worker import get_redis_client
@@ -386,6 +384,7 @@ class AIHub:
         system_prompt: Optional[str] = None,
         max_tokens: int = 512,
         temperature: float = 0.0,
+        response_schema: dict[str, Any] | None = None,
     ) -> Optional[str]:
         """Прямой инференс через локальную Ollama (Закрытый контур RED)."""
         if not await self.is_ollama_available():
@@ -407,6 +406,8 @@ class AIHub:
                 "num_predict": max_tokens,
             },
         }
+        if response_schema is not None:
+            payload["format"] = response_schema
 
         async with self._semaphore:
             try:
@@ -427,6 +428,7 @@ class AIHub:
         system_prompt: Optional[str] = None,
         max_tokens: int = 512,
         temperature: float = 0.0,
+        response_schema: dict[str, Any] | None = None,
     ) -> Optional[str]:
         """Инференс строго через LiteLLM Proxy (Открытый контур GREEN/YELLOW с ротацией ключей)."""
         messages = []
@@ -439,12 +441,20 @@ class AIHub:
             "Authorization": f"Bearer {settings.LITELLM_API_KEY}",
             "Content-Type": "application/json",
         }
-        payload = {
+        payload: dict[str, Any] = {
             "model": settings.GEMINI_MODEL,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        if response_schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_response",
+                    "schema": response_schema,
+                },
+            }
 
         try:
             session = await self._get_session()

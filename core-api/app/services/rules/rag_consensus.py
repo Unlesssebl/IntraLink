@@ -1,5 +1,7 @@
 from typing import Any
 
+from shared.domain import DecisionOutcome, Evidence, NoMatch, ResolutionProposed
+
 from .base import BaseRule, RuleDecision
 
 
@@ -59,3 +61,38 @@ class RAGConsensusRule(BaseRule):
                 )
 
         return None
+
+    def evaluate_typed(
+        self,
+        task: dict[str, Any],
+        diag: dict[str, Any] | None = None,
+        kb_matches: list[dict[str, Any]] | None = None,
+        redirect_mode: bool = False,
+        context: dict[str, Any] | None = None,
+    ) -> DecisionOutcome:
+        dec = self.evaluate(task, diag, kb_matches, redirect_mode, context)
+        if dec is not None and dec.rag_applied:
+            top_kb = (kb_matches or [{}])[0]
+            sol = (top_kb.get("solution") or "").strip()
+            return ResolutionProposed(
+                rule_key="rag.consensus",
+                rule_version="2",
+                outcome_key="rag_historical_solution",
+                target_status_id=27,
+                context={"solution": sol},
+                evidence=[
+                    Evidence(
+                        source="rule",
+                        field="rag_consensus",
+                        code="historical_match",
+                        detail=f"Historical ticket #{dec.rag_task_id} similarity {dec.rag_similarity}%",
+                    )
+                ],
+                metadata={
+                    "rag_applied": True,
+                    "rag_task_id": dec.rag_task_id,
+                    "rag_similarity": dec.rag_similarity,
+                },
+            )
+        return NoMatch(rule_key="rag.consensus", rule_version="2")
+

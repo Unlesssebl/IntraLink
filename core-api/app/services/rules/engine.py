@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+from shared.domain import DecisionOutcome, Evidence, NoMatch, ResolutionProposed
 from .base import BaseRule, RuleDecision
 from .credentials import CredentialsRule
 from .file_locks import FileLockRule
@@ -152,3 +153,60 @@ class RuleEngine:
             }
         )
         return fallback, trace
+
+    def evaluate_typed(
+        self,
+        task: dict[str, Any],
+        diag: dict[str, Any] | None = None,
+        kb_matches: list[dict[str, Any]] | None = None,
+        redirect_mode: bool = False,
+        context: dict[str, Any] | None = None,
+    ) -> DecisionOutcome:
+        """
+        Ordered typed pipeline execution with upfront Downtime Safety Guard.
+        """
+        name = task.get("Name") or ""
+        desc = task.get("Description") or ""
+        full_text = f"{name}. {desc}".lower()
+        from .redirect import DOWNTIME_KEYWORDS
+        found = [kw for kw in DOWNTIME_KEYWORDS if kw in full_text]
+        if found:
+            return ResolutionProposed(
+                rule_key="safety.downtime_priority",
+                rule_version="2",
+                outcome_key="downtime_priority",
+                target_status_id=27,
+                evidence=[
+                    Evidence(
+                        source="rule",
+                        field="description",
+                        code="downtime_risk",
+                        span=kw,
+                    )
+                    for kw in found
+                ],
+                metadata={
+                    "risk_level": "critical",
+                    "trigger_markers": found,
+                    "risk_warning": (
+                        f"Внимание: обнаружен риск производственного простоя ({', '.join(found)})! "
+                        "Автоматическая отмена запрещена регламентом безопасности."
+                    ),
+                },
+            )
+
+        for rule in self._rules:
+            try:
+                outcome = rule.evaluate_typed(
+                    task=task,
+                    diag=diag,
+                    kb_matches=kb_matches,
+                    redirect_mode=redirect_mode,
+                    context=context,
+                )
+                if outcome is not None and not isinstance(outcome, NoMatch):
+                    return outcome
+            except Exception as e:
+                logger.error("Ошибка при выполнении типизированного правила '%s': %s", rule.name, e)
+
+        return StandardInWorkRule().evaluate_typed(task, diag, kb_matches, redirect_mode, context)

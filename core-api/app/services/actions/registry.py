@@ -130,16 +130,20 @@ class ActionRegistry:
                 target_type="user",
                 executor="windows",
                 risk_level=2,
-                implemented=False,
+                implemented=True,
                 parameters_schema={
                     "type": "object",
                     "properties": {
-                        "username": {"type": "string"},
-                        "first_name": {"type": "string"},
-                        "last_name": {"type": "string"},
+                        "surname": {"type": "string"},
+                        "name": {"type": "string"},
+                        "patronymic": {"type": "string"},
+                        "company": {"type": "string"},
                         "department": {"type": "string"},
+                        "title": {"type": "string"},
+                        "phone": {"type": "string"},
+                        "pc_name": {"type": "string"},
                     },
-                    "required": ["username", "first_name", "last_name"],
+                    "required": ["surname", "name", "company", "department", "title"],
                 },
             )
         )

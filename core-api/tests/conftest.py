@@ -63,14 +63,16 @@ async def initialize_test_database():
     from app.database.db import (
         ActionPolicyRecord, ApprovalChallenge, AsyncSessionLocal, AuthSession, AutopilotScenario,
         AutopilotSetting, AutopilotSettingEvent, CommandOutbox, CommandRecord,
-        DecisionFeedback, DecisionStep, DecisionRecord, Principal, PrincipalRole, SecurityEvent,
+        CommandSecretArtifact, DecisionFeedback, DecisionStep, DecisionRecord, Principal, PrincipalRole, SecurityEvent,
+        ResolutionPolicy, ResponseTemplate,
         ServiceCredential, SystemSetting, TelegramLink, TelegramLinkCode, TicketRun,
         TicketRunEvent, get_db,
     )
     app.dependency_overrides.pop(get_db, None)
     async with AsyncSessionLocal() as db:
         for model in (
-            DecisionFeedback, DecisionStep, CommandOutbox, CommandRecord, DecisionRecord,
+            DecisionFeedback, DecisionStep, CommandSecretArtifact, CommandOutbox,
+            ResolutionPolicy, ResponseTemplate, CommandRecord, DecisionRecord,
             TicketRunEvent, TicketRun, AutopilotScenario, AutopilotSettingEvent, AutopilotSetting,
             SystemSetting,
             ActionPolicyRecord,

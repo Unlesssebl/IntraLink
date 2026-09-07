@@ -1,6 +1,7 @@
 """Version 2 command API backed exclusively by PostgreSQL state."""
 
 import asyncio
+import datetime
 import json
 import uuid
 from typing import Any, Literal
@@ -16,6 +17,7 @@ from app.database.db import (
     AsyncSessionLocal,
     CommandEvent,
     CommandRecord,
+    TicketRun,
     get_db,
 )
 from app.routers.deps import (
@@ -25,6 +27,8 @@ from app.routers.deps import (
     verify_trusted_origin,
 )
 from app.services.command_service import CommandService, serialize_command
+from app.services.command_secrets import CommandSecretService
+from app.services.command_delivery import CommandDeliveryService
 from app.services.identity import PrincipalContext, require_context_permission
 from app.services.identity import create_approval_challenge, consume_approval_challenge
 from app.services.worker import get_redis_client
@@ -93,6 +97,14 @@ class HeartbeatRequest(BaseModel):
     worker_id: str = Field(min_length=1, max_length=100)
     claim_token: str = Field(min_length=20)
     lease_seconds: int = Field(120, ge=30, le=900)
+
+
+class SecretArtifactRequest(BaseModel):
+    worker_id: str = Field(min_length=1, max_length=100)
+    claim_token: str = Field(min_length=20)
+    name: Literal["temporary_password"]
+    value: str = Field(min_length=1, max_length=1024)
+    ttl_seconds: int = Field(900, ge=60, le=3600)
 
 
 class QuarantineRequest(BaseModel):
@@ -295,8 +307,47 @@ async def finish_command(
         worker_id=payload.worker_id,
     )
     return serialize_command(command)
- 
- 
+
+
+@router.post("/{command_id}/secret-artifacts", status_code=status.HTTP_201_CREATED)
+async def store_secret_artifact(
+    command_id: uuid.UUID,
+    payload: SecretArtifactRequest,
+    context: PrincipalContext = Depends(require_object_permission("command:finish:executor")),
+    db: AsyncSession = Depends(get_db),
+):
+    current = await CommandService(db).get(command_id)
+    if context.principal_type != "service":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Service identity required")
+    require_context_permission(context, f"command:finish:{current.executor}")
+    artifact = await CommandSecretService(db).store(
+        command_id,
+        claim_token=payload.claim_token,
+        name=payload.name,
+        value=payload.value,
+        ttl_seconds=payload.ttl_seconds,
+    )
+    return {
+        "id": str(artifact.id),
+        "name": artifact.name,
+        "expires_at": artifact.expires_at.isoformat(),
+    }
+
+
+@router.post("/{command_id}/deliver")
+async def deliver_command(
+    command_id: uuid.UUID,
+    context: PrincipalContext = Depends(require_permission("command:create")),
+    _origin: None = Depends(verify_trusted_origin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deliver the verified command resolution to the external ticketing system."""
+    return await CommandDeliveryService(db).deliver_create_user(
+        command_id,
+        actor=context.subject,
+    )
+
+
 @router.post("/{command_id}/heartbeat")
 async def heartbeat_command(
     command_id: uuid.UUID,
@@ -547,3 +598,204 @@ async def get_worker_readiness():
         "available_capabilities": sorted(list(available_capabilities)),
         "missing_critical_capabilities": missing_critical,
     }
+
+
+ACTION_TITLES: dict[str, str] = {
+    "install_printer": "Установка принтера",
+    "wlan_access": "Предоставление доступа к Wi-Fi",
+    "printer_diagnostics": "Диагностика принтера",
+    "host_diagnostics": "Диагностика рабочей станции",
+}
+
+PHASE_TITLES: dict[str, str] = {
+    "validate": "Валидация параметров задачи",
+    "preflight": "Проверка доступности ПК и сетевых портов",
+    "prepare": "Подготовка окружения и драйверов",
+    "execute": "Установка и настройка оборудования",
+    "verify": "Верификация установленного принтера",
+    "reconcile": "Сверка и устранение расхождений",
+    "cleanup": "Очистка временных файлов",
+    "driver_copy": "Копирование драйвера печати",
+    "printer_port": "Создание TCP/IP порта печати (RAW 9100)",
+    "printer_queue": "Регистрация очереди печати Windows",
+    "diagnostics": "Сетевая экспресс-диагностика",
+    "ad_execution": "Добавление в доменную группу AD",
+    "closing_ticket": "Формирование отчёта и закрытие заявки",
+    "searching_user": "Поиск учётной записи в Active Directory",
+    "host_ping": "Проверка сетевого отклика хоста",
+    "installing": "Установка компонентов",
+}
+
+
+@workers_router.get("/active-execution")
+async def get_active_worker_execution(
+    _context: PrincipalContext = Depends(require_permission("command:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Возвращает текущую выполняемую ассистентом/воркером заявку и понятный человекочитаемый статус."""
+    worker_online = False
+    active_nodes_count = 0
+    try:
+        redis = get_redis_client()
+        node_ids = await redis.smembers("worker:nodes")
+        worker_online = len(node_ids) > 0
+        active_nodes_count = len(node_ids)
+    except Exception:
+        pass
+
+    # 1. Проверяем активную команду в commands
+    cmd_stmt = (
+        select(CommandRecord)
+        .where(CommandRecord.status.in_(["running", "awaiting_approval", "queued"]))
+        .order_by(desc(CommandRecord.updated_at))
+        .limit(1)
+    )
+    active_cmd = (await db.scalars(cmd_stmt)).first()
+
+    if active_cmd is not None:
+        evt_stmt = (
+            select(CommandEvent)
+            .where(
+                CommandEvent.command_id == active_cmd.id,
+                CommandEvent.event_type.like("phase_%"),
+            )
+            .order_by(desc(CommandEvent.sequence))
+            .limit(1)
+        )
+        last_phase_evt = (await db.scalars(evt_stmt)).first()
+
+        ticket_run = None
+        if active_cmd.ticket_run_id:
+            ticket_run = await db.get(TicketRun, active_cmd.ticket_run_id)
+        elif active_cmd.task_id:
+            ticket_run = (
+                await db.scalars(
+                    select(TicketRun)
+                    .where(TicketRun.task_id == active_cmd.task_id)
+                    .order_by(desc(TicketRun.created_at))
+                    .limit(1)
+                )
+            ).first()
+
+        target = active_cmd.target_json or {}
+        target_host = target.get("pc_name") or target.get("host") or target.get("ip") or ""
+        params = active_cmd.params_json or {}
+        target_printer = params.get("printer_name") or params.get("model") or ""
+
+        action_title = ACTION_TITLES.get(active_cmd.action, active_cmd.action)
+        phase_raw = ""
+        progress_pct = None
+        phase_detail = ""
+
+        if last_phase_evt:
+            evt_details = last_phase_evt.details_json or {}
+            phase_raw = evt_details.get("phase") or last_phase_evt.event_type.removeprefix("phase_")
+            details_inner = evt_details.get("details") or {}
+            progress_pct = details_inner.get("pct") or details_inner.get("progress")
+            phase_detail = details_inner.get("detail") or details_inner.get("step") or ""
+
+        phase_title = phase_detail or PHASE_TITLES.get(
+            phase_raw, phase_raw.replace("_", " ").capitalize() if phase_raw else "Выполнение"
+        )
+        if progress_pct is not None:
+            phase_display = f"{phase_title} ({progress_pct}%)"
+        else:
+            phase_display = phase_title
+
+        target_display = f" на {target_host}" if target_host else ""
+        printer_display = f" {target_printer}" if target_printer else ""
+
+        if active_cmd.status == "awaiting_approval":
+            status_text = f"Ожидает подтверждения: {action_title}{printer_display}{target_display}".strip()
+            state = "waiting_approval"
+        elif active_cmd.status == "queued":
+            status_text = f"В очереди исполнения: {action_title}{printer_display}{target_display}".strip()
+            state = "queued"
+        else:
+            status_text = f"{action_title}{printer_display}{target_display} — {phase_display}".strip()
+            state = "running"
+
+        return {
+            "has_active": True,
+            "state": state,
+            "mode": ticket_run.mode if ticket_run else "manual",
+            "task_id": active_cmd.task_id,
+            "command_id": str(active_cmd.id),
+            "ticket_run_id": str(active_cmd.ticket_run_id) if active_cmd.ticket_run_id else None,
+            "action": active_cmd.action,
+            "action_title": action_title,
+            "target_host": target_host or None,
+            "target_printer": target_printer or None,
+            "phase": phase_raw or None,
+            "phase_title": phase_title,
+            "progress_pct": progress_pct,
+            "status_text": status_text,
+            "worker_online": worker_online,
+            "active_nodes_count": active_nodes_count,
+            "updated_at": active_cmd.updated_at.isoformat() if active_cmd.updated_at else None,
+        }
+
+    # 2. Проверяем активный TicketRun без запущенной команды
+    run_stmt = (
+        select(TicketRun)
+        .where(
+            TicketRun.completed_at.is_(None),
+            TicketRun.state.in_(["running", "waiting_approval", "waiting_answer", "pending", "paused"]),
+        )
+        .order_by(desc(TicketRun.updated_at))
+        .limit(1)
+    )
+    active_run = (await db.scalars(run_stmt)).first()
+
+    if active_run is not None:
+        step_title = active_run.current_step or "Анализ заявки"
+        if active_run.state == "waiting_approval":
+            status_text = f"Заявка #{active_run.task_id}: Ожидает подтверждения оператора"
+        elif active_run.state == "waiting_answer":
+            status_text = f"Заявка #{active_run.task_id}: Ожидание ответа заявителя"
+        elif active_run.state == "paused":
+            status_text = f"Заявка #{active_run.task_id}: Приостановлена оператором"
+        else:
+            status_text = f"Заявка #{active_run.task_id}: {step_title}"
+
+        return {
+            "has_active": True,
+            "state": active_run.state,
+            "mode": active_run.mode,
+            "task_id": active_run.task_id,
+            "command_id": None,
+            "ticket_run_id": str(active_run.id),
+            "action": "autopilot_cycle",
+            "action_title": "Автопилот",
+            "target_host": None,
+            "target_printer": None,
+            "phase": active_run.current_step,
+            "phase_title": step_title,
+            "progress_pct": None,
+            "status_text": status_text,
+            "worker_online": worker_online,
+            "active_nodes_count": active_nodes_count,
+            "updated_at": active_run.updated_at.isoformat() if active_run.updated_at else None,
+        }
+
+    # 3. Никаких активных задач нет
+    return {
+        "has_active": False,
+        "state": "idle",
+        "mode": None,
+        "task_id": None,
+        "command_id": None,
+        "ticket_run_id": None,
+        "action": None,
+        "action_title": None,
+        "target_host": None,
+        "target_printer": None,
+        "phase": None,
+        "phase_title": None,
+        "progress_pct": None,
+        "status_text": "Ассистент свободен (готов к приёму задач)" if worker_online else "Воркер не подключен",
+        "worker_online": worker_online,
+        "active_nodes_count": active_nodes_count,
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+

@@ -1,6 +1,8 @@
 import re
 from typing import Any
 
+from shared.domain import ClarificationRequired, DecisionOutcome, Evidence, NoMatch
+
 from .base import BaseRule, RuleDecision
 
 
@@ -82,3 +84,72 @@ class PrinterRule(BaseRule):
                 )
 
         return None
+
+    def evaluate_typed(
+        self,
+        task: dict[str, Any],
+        diag: dict[str, Any] | None = None,
+        kb_matches: list[dict[str, Any]] | None = None,
+        redirect_mode: bool = False,
+        context: dict[str, Any] | None = None,
+    ) -> DecisionOutcome:
+        name = (task.get("Name") or "").lower()
+        desc = (task.get("Description") or "").lower()
+        user_text = f"{name} {desc}".strip()
+
+        is_printer_topic = any(w in user_text for w in [
+            "принтер", "мфу", "kyocera", "ecosys", "hp laserjet", "canon", "xerox",
+            "pantum", "пантум", "этикеточный", "печать", "картридж"
+        ])
+
+        if not is_printer_topic:
+            return NoMatch(rule_key="printer.management", rule_version="2")
+
+        # 1. Если диагностика проверяла МФУ и оно офлайн
+        target_name = (diag.get("target") if diag else "") or ""
+        is_mfu_target = "P" in target_name.upper() or any(w in target_name.upper() for w in ["MFU", "PRN"])
+
+        if diag and not diag.get("is_online", False) and is_mfu_target:
+            return ClarificationRequired(
+                rule_key="printer.management",
+                rule_version="2",
+                outcome_key="printer_offline",
+                missing_fields=["printer_availability"],
+                evidence=[
+                    Evidence(
+                        source="rule",
+                        field="diag.is_online",
+                        code="device_offline",
+                        detail=f"Target {target_name} is offline",
+                    )
+                ],
+            )
+
+        # 2. Если требуется уточнение параметров подключения принтера
+        if any(w in user_text for w in ["не печатает", "подключить принтер", "настроить принтер", "ip принтера"]):
+            raw_fields = (
+                str(task.get("_parsed_fields") or "") + " " +
+                str(task.get("Data") or "") + " " +
+                desc + " " + name + " " +
+                str(task.get("_extracted_printer_address") or "")
+            )
+            has_ip = bool(re.search(r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", raw_fields))
+
+            if diag and diag.get("is_online", False) and not has_ip:
+                return ClarificationRequired(
+                    rule_key="printer.management",
+                    rule_version="2",
+                    outcome_key="printer_ip_clarify",
+                    missing_fields=["printer_ip"],
+                    evidence=[
+                        Evidence(
+                            source="rule",
+                            field="printer_address",
+                            code="ip_missing",
+                            detail="Workstation is online but printer IP address is not specified",
+                        )
+                    ],
+                )
+
+        return NoMatch(rule_key="printer.management", rule_version="2")
+
