@@ -1,6 +1,6 @@
 # Инкремент 1: Контракт и Core API Safety
 
-Статус: к реализации  
+Статус: выполнен  
 Зависимости: отсутствуют  
 Целевые компоненты: `docs/adr/0002-modular-worker-platform.md`, `core-api/app/services/command_outbox.py`, `core-api/app/services/actions/policy.py`, `core-api/app/routers/commands_v2.py`, `core-api/app/services/command_service.py`
 

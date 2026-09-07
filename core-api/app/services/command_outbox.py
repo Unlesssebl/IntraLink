@@ -16,8 +16,8 @@ from app.database.db import (
     CommandOutbox,
     CommandRecord,
 )
-from app.services.actions.policy import AUTO_ELIGIBLE_ACTIONS
-from app.services.command_service import BACKEND_STREAM, WINDOWS_STREAM
+from app.services.actions.policy import AUTO_RETRY_ELIGIBLE_ACTIONS
+from app.services.command_service import BACKEND_STREAM, WINDOWS_STREAM, resolve_command_stream
 from app.services.worker import get_redis_client
 
 logger = logging.getLogger(__name__)
@@ -93,9 +93,9 @@ async def reconcile_expired_leases(limit: int = 100) -> int:
             command.lease_token_hash = None
             command.lease_expires_at = None
             retry_delay = {1: 5, 2: 30}.get(attempt_no)
-            if command.action in AUTO_ELIGIBLE_ACTIONS and retry_delay is not None:
+            if command.action in AUTO_RETRY_ELIGIBLE_ACTIONS and retry_delay is not None:
                 command.status = "queued"
-                stream = WINDOWS_STREAM if command.executor == "windows" else BACKEND_STREAM
+                stream, routing_key = resolve_command_stream(command)
                 db.add(CommandOutbox(
                     command_id=command.id,
                     stream=stream,
@@ -103,6 +103,7 @@ async def reconcile_expired_leases(limit: int = 100) -> int:
                         "command_id": str(command.id),
                         "action": command.action,
                         "executor": command.executor,
+                        "routing_key": routing_key,
                         "version": command.version,
                     },
                     available_at=now + dt.timedelta(seconds=retry_delay),

@@ -25,11 +25,11 @@
 
 | Инкремент | Файл плана | Фокус реализации | Ключевые компоненты | Статус |
 |---|---|---|---|---|
-| **Инкремент 1** | [`01-contract-and-core-safety.md`](01-contract-and-core-safety.md) | Контракт и Core API Safety | ADR 0002, `command_outbox.py`, `policy.py`, `/heartbeat` | ⏳ К реализации |
-| **Инкремент 2** | [`02-worker-sdk-and-runner.md`](02-worker-sdk-and-runner.md) | Worker SDK и доверенный PowerShell Runner | `ActionHandler` (7 фаз), runner stdin/tempfile, `LeaseRenewer` | 📋 Запланирован |
-| **Инкремент 3** | [`03-durable-workflow-and-plan-hash.md`](03-durable-workflow-and-plan-hash.md) | Durable Workflow & Approval с `plan_hash` | preflight evidence, `plan_hash`, `CommandApproval`, phase transitions | 📋 Запланирован |
-| **Инкремент 4** | [`04-printer-pilot-and-staging.md`](04-printer-pilot-and-staging.md) | Эталонный `InstallPrinterHandler` (Пилот) | CIM/WMI Spooler, SMB Staging, SHA-256, WMI bootstrap, cleanup | 📋 Запланирован |
-| **Инкремент 5** | [`05-fleet-routing-and-resilience.md`](05-fleet-routing-and-resilience.md) | Worker Fleet, Routing Quarantine & Тесты | Fleet registry, routing quarantine, fault injection tests | 📋 Запланирован |
+| **Инкремент 1** | [`01-contract-and-core-safety.md`](01-contract-and-core-safety.md) | Контракт и Core API Safety | ADR 0002, `command_outbox.py`, `policy.py`, `/heartbeat` | ✅ Завершен |
+| **Инкремент 2** | [`02-worker-sdk-and-runner.md`](02-worker-sdk-and-runner.md) | Worker SDK и доверенный PowerShell Runner | `ActionHandler` (7 фаз), runner stdin/tempfile, `LeaseRenewer` | ✅ Завершен |
+| **Инкремент 3** | [`03-durable-workflow-and-plan-hash.md`](03-durable-workflow-and-plan-hash.md) | Durable Workflow & Approval с `plan_hash` | preflight evidence, `plan_hash`, `CommandApproval`, phase transitions | ✅ Завершен |
+| **Инкремент 4** | [`04-printer-pilot-and-staging.md`](04-printer-pilot-and-staging.md) | Эталонный `InstallPrinterHandler` (Пилот) | CIM/WMI Spooler, SMB Staging, SHA-256, WMI bootstrap, cleanup | ✅ Завершен |
+| **Инкремент 5** | [`05-fleet-routing-and-resilience.md`](05-fleet-routing-and-resilience.md) | Worker Fleet, Routing Quarantine & Тесты | Fleet registry, routing quarantine, fault injection tests | ✅ Завершен |
 
 ---
 

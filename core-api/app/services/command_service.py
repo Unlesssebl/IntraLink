@@ -37,6 +37,27 @@ WINDOWS_STREAM = "stream:execution_commands:v2"
 BACKEND_STREAM = "stream:backend_commands:v2"
 
 
+def resolve_command_stream(
+    command_or_action: CommandRecord | str, executor: str = "windows"
+) -> tuple[str, str]:
+    """Определяет целевой stream pool и routing_key для команды на основе executor и action."""
+    if isinstance(command_or_action, str):
+        action = command_or_action
+    else:
+        action = command_or_action.action
+        executor = command_or_action.executor
+
+    if executor == "windows":
+        if action in ("grant_wlan", "ad_sync", "user_access", "wifi_access") or action.startswith("ad_"):
+            return f"{WINDOWS_STREAM}:ad", "ad"
+        elif action in ("install_printer", "printer") or action.startswith("printer"):
+            return f"{WINDOWS_STREAM}:printer", "printer"
+        elif action.startswith("winrm") or action in ("run_winrm_script", "winrm"):
+            return f"{WINDOWS_STREAM}:winrm", "winrm"
+        return WINDOWS_STREAM, "default"
+    return BACKEND_STREAM, "backend"
+
+
 def canonical_hash(action: str, target: dict[str, Any], parameters: dict[str, Any]) -> str:
     raw = json.dumps(
         {"action": action, "target": target, "parameters": parameters},
@@ -44,6 +65,31 @@ def canonical_hash(action: str, target: dict[str, Any], parameters: dict[str, An
         sort_keys=True,
         separators=(",", ":"),
     )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def canonical_plan_hash(
+    action: str,
+    version: int,
+    target: dict[str, Any],
+    parameters: dict[str, Any],
+    preflight_evidence: dict[str, Any] | None = None,
+    expires_at: dt.datetime | str | None = None,
+) -> str:
+    expires_str = ""
+    if isinstance(expires_at, dt.datetime):
+        expires_str = expires_at.isoformat()
+    elif expires_at:
+        expires_str = str(expires_at)
+    plan = {
+        "action": action,
+        "version": version,
+        "target": target,
+        "parameters": parameters,
+        "preflight_evidence": preflight_evidence or {},
+        "expires_at": expires_str,
+    }
+    raw = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -74,6 +120,9 @@ def serialize_command(command: CommandRecord) -> dict[str, Any]:
         "decision_id": str(command.decision_id) if command.decision_id else None,
         "result": command.result_json,
         "error_message": command.error_message,
+        "plan_hash": command.plan_hash,
+        "preflight_evidence": command.preflight_evidence_json,
+        "plan_expires_at": command.plan_expires_at.isoformat() if command.plan_expires_at else None,
         "created_at": command.created_at.isoformat() if command.created_at else None,
         "updated_at": command.updated_at.isoformat() if command.updated_at else None,
         "completed_at": command.completed_at.isoformat() if command.completed_at else None,
@@ -226,6 +275,17 @@ class CommandService:
                 "decision_id_required",
             )
 
+        now = dt.datetime.now(dt.timezone.utc)
+        plan_expires_at = now + dt.timedelta(hours=2)
+        initial_plan_hash = canonical_plan_hash(
+            action=action,
+            version=1,
+            target=target,
+            parameters=parameters,
+            preflight_evidence={},
+            expires_at=plan_expires_at,
+        )
+
         command = CommandRecord(
             idempotency_key=idempotency_key,
             request_hash=request_hash,
@@ -241,6 +301,9 @@ class CommandService:
             task_id=task_id,
             ticket_run_id=ticket_run_id,
             decision_id=decision_id,
+            plan_hash=initial_plan_hash,
+            preflight_evidence_json={},
+            plan_expires_at=plan_expires_at,
         )
         self.db.add(command)
         try:
@@ -249,7 +312,18 @@ class CommandService:
                 command_id=command.id,
                 sequence=1,
                 event_type="created",
-                details_json={"status": command_status},
+                details_json={"status": command_status, "plan_hash": initial_plan_hash},
+                actor=initiator,
+            ))
+            self.db.add(CommandEvent(
+                command_id=command.id,
+                sequence=2,
+                event_type="plan_frozen",
+                details_json={
+                    "plan_hash": initial_plan_hash,
+                    "version": 1,
+                    "expires_at": plan_expires_at.isoformat(),
+                },
                 actor=initiator,
             ))
             if command_status == "queued":
@@ -267,7 +341,7 @@ class CommandService:
         return command, False
 
     def _enqueue(self, command: CommandRecord, *, delay_seconds: int = 0) -> None:
-        stream = WINDOWS_STREAM if command.executor == "windows" else BACKEND_STREAM
+        stream, routing_key = resolve_command_stream(command)
         self.db.add(CommandOutbox(
             command_id=command.id,
             stream=stream,
@@ -275,6 +349,7 @@ class CommandService:
                 "command_id": str(command.id),
                 "action": command.action,
                 "executor": command.executor,
+                "routing_key": routing_key,
                 "version": command.version,
             },
             available_at=dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=delay_seconds),
@@ -296,6 +371,8 @@ class CommandService:
         decision: str,
         reason: str | None,
         operator: str,
+        expected_plan_hash: str | None = None,
+        expected_version: int | None = None,
         approver_principal_id: uuid.UUID | None = None,
         approver_roles: frozenset[str] = frozenset(),
         approver_permissions: frozenset[str] | None = None,
@@ -307,6 +384,37 @@ class CommandService:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid decision")
         if decision == "reject" and not (reason or "").strip():
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Reason is required for rejection")
+
+        if expected_version is not None and command.version != expected_version:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {
+                    "detail": "plan_drift_detected",
+                    "reason": f"Expected command version {expected_version}, but current version is {command.version}",
+                },
+            )
+        if expected_plan_hash is not None and command.plan_hash != expected_plan_hash:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {
+                    "detail": "plan_drift_detected",
+                    "reason": f"Expected plan hash {expected_plan_hash}, but current plan hash is {command.plan_hash}",
+                },
+            )
+
+        now = dt.datetime.now(dt.timezone.utc)
+        plan_expires = command.plan_expires_at
+        if plan_expires is not None:
+            if plan_expires.tzinfo is None:
+                plan_expires = plan_expires.replace(tzinfo=dt.timezone.utc)
+            if plan_expires <= now:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    {
+                        "detail": "plan_expired",
+                        "reason": "Preflight evidence and execution plan have expired. Re-run preflight.",
+                    },
+                )
 
         action_def = self.registry.get(command.action)
         risk_level = action_def.risk_level if action_def else 3
@@ -333,6 +441,9 @@ class CommandService:
             operator=operator,
             approver_principal_id=approver_principal_id,
             request_hash=command.request_hash,
+            command_version=command.version,
+            plan_hash=command.plan_hash,
+            expires_at=command.plan_expires_at,
         ))
         self.db.add(SecurityEvent(
             event_type="command.approval",
@@ -352,7 +463,11 @@ class CommandService:
             command_id=command.id,
             sequence=sequence,
             event_type="approved" if decision == "approve" else "rejected",
-            details_json={"reason": reason},
+            details_json={
+                "reason": reason,
+                "plan_hash": command.plan_hash,
+                "version": command.version,
+            },
             actor=operator,
         ))
         if decision == "approve":
@@ -543,6 +658,37 @@ class CommandService:
             .where(CommandAttempt.command_id == command.id, CommandAttempt.status == "running")
             .order_by(CommandAttempt.attempt_no.desc())
         )
+        if outcome == "succeeded" and command.action not in AUTO_RETRY_ELIGIBLE_ACTIONS:
+            verified_in_result = False
+            if isinstance(result, dict):
+                if result.get("verified") is True:
+                    verified_in_result = True
+                elif isinstance(result.get("payload"), dict) and result["payload"].get("verified") is True:
+                    verified_in_result = True
+                elif command.action == "apply_triage":
+                    results = result.get("results")
+                    if isinstance(results, list) and len(results) > 0:
+                        verified_in_result = all(
+                            isinstance(item, dict) and item.get("update_ok") is True
+                            for item in results
+                        )
+
+            if not verified_in_result:
+                has_verified_event = await self.db.scalar(
+                    select(func.count(CommandEvent.id)).where(
+                        CommandEvent.command_id == command.id,
+                        CommandEvent.event_type.in_(["phase_verified", "verified"]),
+                    )
+                )
+                if not has_verified_event:
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        {
+                            "detail": "missing_execution_evidence",
+                            "reason": "Mutating command succeeded outcome requires verified execution evidence",
+                        },
+                    )
+
         retry_delay: int | None = None
         if outcome == "failed" and command.action in AUTO_RETRY_ELIGIBLE_ACTIONS and attempt:
             retry_delay = {1: 5, 2: 30}.get(attempt.attempt_no)
@@ -630,6 +776,123 @@ class CommandService:
         await self.db.refresh(command)
         return command
 
+    async def renew_lease(
+        self,
+        command_id: uuid.UUID,
+        *,
+        worker_id: str,
+        claim_token: str,
+        lease_seconds: int = 120,
+    ) -> tuple[CommandRecord, int]:
+        command = await self.get(command_id, for_update=True)
+        if command.status in TERMINAL_STATES or command.status != "running":
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {"command_status": command.status, "reason": "command_not_running"},
+            )
+        token_hash = hashlib.sha256(claim_token.encode()).hexdigest()
+        if not secrets.compare_digest(command.lease_token_hash or "", token_hash):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {"command_status": command.status, "reason": "stale_or_invalid_claim_token"},
+            )
+        now = dt.datetime.now(dt.timezone.utc)
+        lease_expires_at = command.lease_expires_at
+        if lease_expires_at is not None and lease_expires_at.tzinfo is None:
+            lease_expires_at = lease_expires_at.replace(tzinfo=dt.timezone.utc)
+        if lease_expires_at is not None and lease_expires_at <= now:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {"command_status": command.status, "reason": "claim_lease_expired"},
+            )
+        command.lease_expires_at = now + dt.timedelta(seconds=lease_seconds)
+        await self.db.commit()
+        await self.db.refresh(command)
+        return command, lease_seconds
+
+    async def record_preflight(
+        self,
+        command_id: uuid.UUID,
+        *,
+        worker_id: str,
+        claim_token: str,
+        evidence: dict[str, Any],
+        ttl_seconds: int = 7200,
+    ) -> CommandRecord:
+        command = await self.get(command_id, for_update=True)
+        if command.status not in {"running", "awaiting_approval"}:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {"command_status": command.status, "reason": "command_not_in_preflight_state"},
+            )
+        token_hash = hashlib.sha256(claim_token.encode()).hexdigest()
+        if command.status == "running" and not secrets.compare_digest(command.lease_token_hash or "", token_hash):
+            raise HTTPException(status.HTTP_409_CONFLICT, "Stale or invalid claim")
+
+        now = dt.datetime.now(dt.timezone.utc)
+        expires_at = now + dt.timedelta(seconds=ttl_seconds)
+        command.version += 1
+        command.preflight_evidence_json = evidence
+        command.plan_expires_at = expires_at
+        command.plan_hash = canonical_plan_hash(
+            action=command.action,
+            version=command.version,
+            target=command.target_json,
+            parameters=command.params_json,
+            preflight_evidence=evidence,
+            expires_at=expires_at,
+        )
+        seq = await self._next_sequence(command.id)
+        self.db.add(CommandEvent(
+            command_id=command.id,
+            sequence=seq,
+            event_type="preflight_recorded",
+            details_json={
+                "plan_hash": command.plan_hash,
+                "version": command.version,
+                "expires_at": expires_at.isoformat(),
+                "evidence": evidence,
+            },
+            actor=worker_id,
+        ))
+        await self.db.commit()
+        await self.db.refresh(command)
+        return command
+
+    async def record_phase(
+        self,
+        command_id: uuid.UUID,
+        *,
+        worker_id: str,
+        claim_token: str,
+        phase: str,
+        details: dict[str, Any] | None = None,
+    ) -> CommandRecord:
+        command = await self.get(command_id, for_update=True)
+        if command.status != "running":
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {"command_status": command.status, "reason": "command_not_running"},
+            )
+        token_hash = hashlib.sha256(claim_token.encode()).hexdigest()
+        if not secrets.compare_digest(command.lease_token_hash or "", token_hash):
+            raise HTTPException(status.HTTP_409_CONFLICT, "Stale or invalid claim")
+
+        seq = await self._next_sequence(command.id)
+        self.db.add(CommandEvent(
+            command_id=command.id,
+            sequence=seq,
+            event_type=f"phase_{phase}",
+            details_json={
+                "phase": phase,
+                "details": details or {},
+            },
+            actor=worker_id,
+        ))
+        await self.db.commit()
+        await self.db.refresh(command)
+        return command
+
     async def cancel(self, command_id: uuid.UUID, *, reason: str, actor: str) -> CommandRecord:
         command = await self.get(command_id, for_update=True)
         if command.status not in {"awaiting_approval", "queued"}:
@@ -677,6 +940,53 @@ class CommandService:
             event_type="review_resolved",
             details_json={"decision": decision, "reason": reason},
             actor=actor,
+        ))
+        await self.db.commit()
+        await self.db.refresh(command)
+        return command
+
+    async def quarantine(
+        self,
+        command_id: uuid.UUID,
+        *,
+        worker_id: str,
+        missing_capability: str,
+        message_id: str,
+        reason: str | None = None,
+    ) -> CommandRecord:
+        """
+        Изолирует команду в Routing Quarantine при отсутствии необходимых capabilities у воркера.
+        Исключает зависание сообщений в PEL и бесконечные циклы перепосылки.
+        """
+        command = await self.get(command_id, for_update=True)
+        if command.status in TERMINAL_STATES:
+            return command
+
+        command.version += 1
+        command.lease_token_hash = None
+        command.lease_expires_at = None
+        command.status = "needs_review"
+        command.failure_kind = "routing_quarantine"
+        command.failure_code = "missing_capability"
+        quarantine_msg = (
+            f"Команда изолирована (Routing Quarantine): узел {worker_id} не поддерживает "
+            f"возможность '{missing_capability}'"
+        )
+        if reason:
+            quarantine_msg += f". Причина: {reason}"
+        command.error_message = quarantine_msg
+
+        self.db.add(CommandEvent(
+            command_id=command.id,
+            sequence=await self._next_sequence(command.id),
+            event_type="routing_quarantined",
+            details_json={
+                "worker_id": worker_id,
+                "missing_capability": missing_capability,
+                "message_id": message_id,
+                "reason": reason,
+            },
+            actor=worker_id,
         ))
         await self.db.commit()
         await self.db.refresh(command)

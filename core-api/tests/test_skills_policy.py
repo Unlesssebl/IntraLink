@@ -78,7 +78,7 @@ async def test_policy_engine_default_and_override():
 
 
 @pytest.mark.asyncio
-async def test_printer_policy_defaults_to_confirm_but_admin_can_enable_auto():
+async def test_printer_policy_defaults_to_confirm_and_rejects_auto():
     engine = PolicyEngine()
 
     mode, allowed, _ = await engine.evaluate_execution_mode(
@@ -87,12 +87,17 @@ async def test_printer_policy_defaults_to_confirm_but_admin_can_enable_auto():
     assert allowed is True
     assert mode == "confirm"
 
-    await engine.set_action_policy("install_printer", PolicyMode.AUTO, actor="test-admin")
+    # На время пилота mutating-действие install_printer запрещено переводить в AUTO
+    with pytest.raises(ValueError):
+        await engine.set_action_policy("install_printer", PolicyMode.AUTO, actor="test-admin")
+
+    # Но администратор может включить аварийный killswitch (DISABLED) или подтвердить CONFIRM
+    await engine.set_action_policy("install_printer", PolicyMode.CONFIRM, actor="test-admin")
     mode, allowed, _ = await engine.evaluate_execution_mode(
         "install_printer", requested_mode="auto"
     )
     assert allowed is True
-    assert mode == "auto"
+    assert mode == "confirm"
 
 
 @pytest.mark.asyncio
@@ -115,16 +120,24 @@ async def test_skills_admin_api():
             assert detail_resp.status_code == 200
             assert detail_resp.json()["id"] == "install_printer"
 
-            # 3. Администратор может явно разрешить AUTO для первого сценария.
+            # 3. На время пилота попытка перевести mutating-действие в AUTO блокируется (409)
             patch_resp = await client.patch(
                 "/api/v1/skills/install_printer/policy",
                 headers=HEADERS,
                 json={"mode": "auto"},
             )
-            assert patch_resp.status_code == 200
-            assert patch_resp.json()["effective_mode"] == "auto"
+            assert patch_resp.status_code == 409
 
-            # 4. Безопасная диагностика может быть автономной.
+            # 4. Администратор может установить CONFIRM или DISABLED
+            patch_resp = await client.patch(
+                "/api/v1/skills/install_printer/policy",
+                headers=HEADERS,
+                json={"mode": "confirm"},
+            )
+            assert patch_resp.status_code == 200
+            assert patch_resp.json()["effective_mode"] == "confirm"
+
+            # 5. Безопасная диагностика (read-only) может быть автономной.
             patch_resp = await client.patch(
                 "/api/v1/skills/diagnose_host/policy",
                 headers=HEADERS,

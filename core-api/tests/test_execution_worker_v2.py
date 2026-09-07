@@ -80,6 +80,7 @@ async def test_diagnose_host_has_a_real_worker_handler():
 @pytest.mark.asyncio
 async def test_verified_printer_failure_is_persisted_as_structured_result():
     worker = worker_module.WindowsExecutionWorker()
+    worker.registry._handlers.pop("install_printer", None)
     worker.redis = AsyncMock()
     worker.api_client.claim_command_v2 = AsyncMock(
         return_value=(
@@ -184,4 +185,48 @@ async def test_terminal_claim_conflict_is_safe_to_ack():
     )
 
     assert ack is True
+    await worker.api_client.close()
+
+
+@pytest.mark.asyncio
+async def test_install_printer_dispatches_via_v2_action_handler():
+    worker = worker_module.WindowsExecutionWorker()
+    worker.redis = AsyncMock()
+    worker.api_client.claim_command_v2 = AsyncMock(
+        return_value=(
+            200,
+            {
+                "claim_token": "claim-v2",
+                "action": "install_printer",
+                "task_id": 99,
+                "target": {"pc_name": "WS-01"},
+                "parameters": {"pc_name": "WS-01", "printer_name": "HP LaserJet M402dn"},
+            },
+        )
+    )
+    worker.api_client.finish_command_v2 = AsyncMock(return_value=True)
+
+    mock_handler = AsyncMock()
+    mock_handler.run_pipeline = AsyncMock(
+        return_value=ActionResult(
+            success=True,
+            message="Принтер успешно установлен и верифицирован",
+            payload={"verified": True, "installed": True},
+        )
+    )
+    worker.registry._handlers["install_printer"] = mock_handler
+
+    ack = await worker._process_job(
+        worker_module.STREAM_EXECUTION_QUEUE_V2,
+        "7-0",
+        {"command_id": "00000000-0000-0000-0000-000000000099"},
+    )
+
+    assert ack is True
+    mock_handler.run_pipeline.assert_awaited_once()
+    finish_call = worker.api_client.finish_command_v2.await_args
+    assert finish_call.args[3] == "succeeded"
+    result = finish_call.kwargs["result"]
+    assert result["status"] == "success"
+    assert result["payload"]["verified"] is True
     await worker.api_client.close()

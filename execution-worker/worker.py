@@ -41,12 +41,80 @@ class WindowsExecutionWorker:
         self._running = False
         self._heartbeat_task: asyncio.Task | None = None
 
+        caps_env = os.getenv("WORKER_CAPABILITIES", "windows,winrm,wmi,printers,smb_staging,ad")
+        self.capabilities: list[str] = [c.strip() for c in caps_env.split(",") if c.strip()]
+
+        from sdk.registry import get_handler_registry
+        from handlers.install_printer import InstallPrinterHandler
+
+        self.registry = get_handler_registry()
+        self.registry.register(InstallPrinterHandler())
+
+        self.subscribed_streams = [STREAM_EXECUTION_QUEUE, STREAM_EXECUTION_QUEUE_V2]
+        if "printers" in self.capabilities:
+            self.subscribed_streams.append("stream:execution_commands:v2:printer")
+        if "ad" in self.capabilities:
+            self.subscribed_streams.append("stream:execution_commands:v2:ad")
+        if "winrm" in self.capabilities:
+            self.subscribed_streams.append("stream:execution_commands:v2:winrm")
+
+    def _can_execute_action(self, action: str) -> tuple[bool, str]:
+        """
+        Проверяет, может ли данный узел исполнить действие.
+        Возвращает (True, "") при полной поддержке, иначе (False, missing_capability).
+        """
+        if not action:
+            return True, ""
+
+        handler = self.registry.get(action)
+        if handler is not None:
+            for cap in handler.capabilities:
+                if cap not in self.capabilities and cap not in self.registry.list_capabilities():
+                    return False, cap
+            return True, ""
+
+        if action == "diagnose_host":
+            if "windows" not in self.capabilities:
+                return False, "windows"
+            return True, ""
+        elif action in ("user_access", "wifi_access"):
+            if "ad" not in self.capabilities:
+                return False, "ad"
+            return True, ""
+        elif action in ("install_printer", "printer"):
+            if "printers" not in self.capabilities:
+                return False, "printers"
+            return True, ""
+
+        return False, f"handler:{action}"
+
     async def _heartbeat_loop(self) -> None:
-        """Регулярный Heartbeat в Redis для отображения статуса воркера в Web SPA / Admin."""
+        """Регулярный Heartbeat в Redis для отображения статуса воркера и регистрации в Worker Fleet."""
         while self._running:
             try:
                 if self.redis:
+                    # Обратная совместимость для существующего мониторинга
                     await self.redis.set("worker:health:win_daemon", "online", ex=25)
+                    # Регистрация карточки узла во флоте
+                    all_caps = sorted(list(set(self.capabilities) | self.registry.list_capabilities()))
+                    supported_actions = sorted(
+                        list(set(list(self.registry.list_actions().keys()) + ["diagnose_host", "user_access", "wifi_access"]))
+                    )
+                    card = {
+                        "node_id": CONSUMER_NAME,
+                        "hostname": os.getenv("COMPUTERNAME", "host"),
+                        "status": "online",
+                        "capabilities": all_caps,
+                        "supported_actions": supported_actions,
+                        "last_heartbeat": time.time(),
+                        "version": "2.0.0",
+                    }
+                    await self.redis.set(
+                        f"worker:node:{CONSUMER_NAME}",
+                        json.dumps(card, ensure_ascii=False),
+                        ex=30,
+                    )
+                    await self.redis.sadd("worker:nodes", CONSUMER_NAME)
             except Exception as e:
                 logger.debug("Ошибка отправки heartbeat: %s", e)
             await asyncio.sleep(10.0)
@@ -76,8 +144,8 @@ class WindowsExecutionWorker:
         self._running = True
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
-        # Отдельная consumer group создаётся для каждого stream.
-        for stream in (STREAM_EXECUTION_QUEUE, STREAM_EXECUTION_QUEUE_V2):
+        # Создаем Consumer Group для всех подписанных потоков
+        for stream in self.subscribed_streams:
             try:
                 await self.redis.xgroup_create(
                     stream, STREAM_GROUP_NAME, id="0", mkstream=True
@@ -88,7 +156,7 @@ class WindowsExecutionWorker:
                     logger.debug("xgroup_create info: %s", e)
 
         print(
-            f"🚀 [Windows Execution Worker] Запущен. Ожидание задач из Redis Streams ({STREAM_EXECUTION_QUEUE})..."
+            f"🚀 [Windows Execution Worker] Запущен. Ожидание задач из Redis Streams ({', '.join(self.subscribed_streams)})..."
         )
         print(f"   • Consumer: {CONSUMER_NAME} | Node: {os.name} (Windows)")
 
@@ -97,13 +165,11 @@ class WindowsExecutionWorker:
         while self._running:
             try:
                 # Чтение задач для Consumer Group
+                streams_dict = {stream: ">" for stream in self.subscribed_streams}
                 events = await self.redis.xreadgroup(
                     groupname=STREAM_GROUP_NAME,
                     consumername=CONSUMER_NAME,
-                    streams={
-                        STREAM_EXECUTION_QUEUE: ">",
-                        STREAM_EXECUTION_QUEUE_V2: ">",
-                    },
+                    streams=streams_dict,
                     count=5,
                     block=3000,
                 )
@@ -128,7 +194,7 @@ class WindowsExecutionWorker:
         """Claim messages abandoned by a dead consumer."""
         if not self.redis:
             return
-        for stream in (STREAM_EXECUTION_QUEUE, STREAM_EXECUTION_QUEUE_V2):
+        for stream in self.subscribed_streams:
             try:
                 result = await self.redis.xautoclaim(
                     stream,
@@ -182,7 +248,12 @@ class WindowsExecutionWorker:
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
         if self.redis:
-            await self.redis.delete("worker:health:win_daemon")
+            try:
+                await self.redis.srem("worker:nodes", CONSUMER_NAME)
+                await self.redis.delete(f"worker:node:{CONSUMER_NAME}")
+                await self.redis.delete("worker:health:win_daemon")
+            except Exception as e:
+                logger.debug("Ошибка очистки ключей при остановке: %s", e)
             await self.redis.close()
         await self.api_client.close()
         print("🛑 [Windows Execution Worker] Остановлен.")
@@ -282,12 +353,35 @@ class WindowsExecutionWorker:
     async def _process_job(
         self, stream_name: str, msg_id: str, data: dict[str, Any]
     ) -> bool:
-        is_v2 = stream_name == STREAM_EXECUTION_QUEUE_V2
+        is_v2 = stream_name.startswith(STREAM_EXECUTION_QUEUE_V2)
         claim_token: str | None = None
         if is_v2:
             command_id = str(data.get("command_id") or "")
             if not command_id:
                 return True
+
+            # Предварительная проверка capabilities по подсказке действия
+            action_hint = str(data.get("action") or data.get("command_type") or "")
+            if action_hint:
+                can_exec, missing_cap = self._can_execute_action(action_hint)
+                if not can_exec:
+                    logger.warning(
+                        "Узел %s не поддерживает действие '%s' (отсутствует capability '%s'). Перевод команды %s в Routing Quarantine.",
+                        CONSUMER_NAME,
+                        action_hint,
+                        missing_cap,
+                        command_id,
+                    )
+                    quarantine_ok = await self.api_client.quarantine_command_v2(
+                        command_id=command_id,
+                        worker_id=CONSUMER_NAME,
+                        missing_capability=missing_cap,
+                        message_id=msg_id,
+                        reason=f"Узел {CONSUMER_NAME} не имеет возможности '{missing_cap}' для '{action_hint}'",
+                    )
+                    # При успешном карантине подтверждаем XACK, чтобы задача не зависала в PEL
+                    return True if quarantine_ok else False
+
             claim_status, claim = await self.api_client.claim_command_v2(
                 command_id,
                 CONSUMER_NAME,
@@ -308,13 +402,33 @@ class WindowsExecutionWorker:
                 }
             if claim_status != 200 or not claim:
                 return False
+
+            action_claimed = claim.get("action", "")
+            can_exec_claimed, missing_cap_claimed = self._can_execute_action(action_claimed)
+            if not can_exec_claimed:
+                logger.warning(
+                    "Узел %s залеймил команду %s, но не поддерживает действие '%s' (отсутствует capability '%s'). Перевод в Routing Quarantine.",
+                    CONSUMER_NAME,
+                    command_id,
+                    action_claimed,
+                    missing_cap_claimed,
+                )
+                quarantine_ok = await self.api_client.quarantine_command_v2(
+                    command_id=command_id,
+                    worker_id=CONSUMER_NAME,
+                    missing_capability=missing_cap_claimed,
+                    message_id=msg_id,
+                    reason=f"Узел {CONSUMER_NAME} не имеет возможности '{missing_cap_claimed}' для '{action_claimed}'",
+                )
+                return True if quarantine_ok else False
+
             claim_token = str(claim["claim_token"])
             merged_params = dict(claim.get("target") or {})
             merged_params.update(claim.get("parameters") or {})
             data = {
                 **data,
                 "job_id": command_id,
-                "action": claim.get("action", ""),
+                "action": action_claimed,
                 "task_id": str(claim.get("task_id") or 0),
                 "payload": json.dumps(merged_params, ensure_ascii=False),
                 "mode": "auto",
@@ -438,78 +552,134 @@ class WindowsExecutionWorker:
 
             # 2. Установка / Диагностика принтера
             elif action in ("install_printer", "printer"):
-                pc_name = params.get("pc_name") or params.get("target")
-                printer_name = params.get("printer_name") or params.get(
-                    "printer_address"
-                )
+                handler = self.registry.get("install_printer")
+                if is_v2 and handler is not None:
+                    from sdk.models import HandlerContext
+                    from sdk.lease_renewer import LeaseRenewer
 
-                if not pc_name or not printer_name:
-                    result_message = "Не указаны обязательные параметры (pc_name или printer_name)."
-                    failure_kind = "configuration"
-                    failure_code = "printer_parameters_missing"
-                else:
-                    # Fail-Fast проверка доступности ПК по сети перед WinRM
+                    ctx = HandlerContext(
+                        command_id=job_id,
+                        task_id=task_id,
+                        target_node=str(params.get("pc_name") or params.get("target") or ""),
+                        redis_client=self.redis,
+                        core_api_client=self.api_client,
+                        claim_token=claim_token,
+                        node_name=CONSUMER_NAME,
+                    )
+                    host_lock_key = f"lock:host:{ctx.target_node}" if ctx.target_node else None
+                    renewer = LeaseRenewer(
+                        command_id=job_id,
+                        worker_id=CONSUMER_NAME,
+                        claim_token=claim_token or "",
+                        cancellation_token=ctx.cancellation_token,
+                        api_client=self.api_client,
+                        redis=self.redis,
+                        host_lock_key=host_lock_key,
+                        lease_seconds=120,
+                        interval_seconds=15,
+                    )
                     await self._publish_event(
                         job_id,
                         "progress",
                         {
-                            "phase": "host_ping",
-                            "pct": 10,
-                            "detail": f"Проверка доступности {pc_name}...",
+                            "phase": "installing",
+                            "pct": 20,
+                            "detail": f"Исполнение InstallPrinterHandler на {ctx.target_node}",
                         },
                     )
-                    is_online = await self._precheck_host_tcp(pc_name, 5985, 1.5)
-                    if not is_online:
-                        result_status = "failed"
-                        result_message = f"Рабочая станция {pc_name} недоступна по сети (WinRM порт 5985 закрыт/выключен)."
-                        failure_kind = "infrastructure"
-                        failure_code = "host_unreachable"
-                    else:
-                        if mode == "confirm":
-                            approved = await self._wait_for_confirmation(
-                                job_id,
-                                prompt=f"Установить принтер '{printer_name}' на ПК '{pc_name}'?",
-                                details={
-                                    "pc_name": pc_name,
-                                    "printer_name": printer_name,
-                                },
-                            )
-                            if not approved:
-                                result_status = "rejected"
-                                result_message = "Операция отклонена оператором."
-                                return
+                    async with renewer:
+                        res = await handler.run_pipeline(ctx, params)
 
+                    result_status = "success" if res.success else "failed"
+                    result_message = res.message
+                    result_payload = {
+                        "log": res.log,
+                        "installed": res.success,
+                        "verified": res.success,
+                        **(res.payload or {}),
+                    }
+                    failure_kind = res.failure_kind
+                    failure_code = res.failure_code
+                    verified_failure = res.verified_failure
+                    if res.success and task_id > 0 and auto_close:
+                        close_ticket_payload = {
+                            "comment": f"Добрый день! Принтер {params.get('printer_name')} успешно подключен на вашем компьютере {params.get('pc_name')}.",
+                            "status_id": 29,
+                            "expenses": 15,
+                        }
+                else:
+                    pc_name = params.get("pc_name") or params.get("target")
+                    printer_name = params.get("printer_name") or params.get(
+                        "printer_address"
+                    )
+
+                    if not pc_name or not printer_name:
+                        result_message = "Не указаны обязательные параметры (pc_name или printer_name)."
+                        failure_kind = "configuration"
+                        failure_code = "printer_parameters_missing"
+                    else:
+                        # Fail-Fast проверка доступности ПК по сети перед WinRM
                         await self._publish_event(
                             job_id,
                             "progress",
                             {
-                                "phase": "installing",
-                                "pct": 50,
-                                "detail": f"Установка принтера {printer_name} на {pc_name}",
+                                "phase": "host_ping",
+                                "pct": 10,
+                                "detail": f"Проверка доступности {pc_name}...",
                             },
                         )
-                        res = await self.printer_exec.install_printer(
-                            pc_name,
-                            printer_name,
-                            printer_ip=params.get("printer_ip") or params.get("printer_address"),
-                        )
-                        result_status = "success" if res.success else "failed"
-                        result_message = res.message
-                        result_payload = {
-                            "log": res.log,
-                            "installed": res.success,
-                            "verified": res.success,
-                        }
-                        failure_kind = res.failure_kind
-                        failure_code = res.failure_code
-                        verified_failure = res.verified_failure
+                        is_online = await self._precheck_host_tcp(pc_name, 5985, 1.5)
+                        if not is_online:
+                            result_status = "failed"
+                            result_message = f"Рабочая станция {pc_name} недоступна по сети (WinRM порт 5985 закрыт/выключен)."
+                            failure_kind = "infrastructure"
+                            failure_code = "host_unreachable"
+                        else:
+                            if mode == "confirm":
+                                approved = await self._wait_for_confirmation(
+                                    job_id,
+                                    prompt=f"Установить принтер '{printer_name}' на ПК '{pc_name}'?",
+                                    details={
+                                        "pc_name": pc_name,
+                                        "printer_name": printer_name,
+                                    },
+                                )
+                                if not approved:
+                                    result_status = "rejected"
+                                    result_message = "Операция отклонена оператором."
+                                    return
 
-                        if res.success and task_id > 0 and auto_close:
-                            close_ticket_payload = {
-                                "comment": f"Добрый день! Принтер {printer_name} успешно подключен на вашем компьютере {pc_name}.",
-                                "status_id": 29,
-                                "expenses": 15,
+                            await self._publish_event(
+                                job_id,
+                                "progress",
+                                {
+                                    "phase": "installing",
+                                    "pct": 50,
+                                    "detail": f"Установка принтера {printer_name} на {pc_name}",
+                                },
+                            )
+                            res = await self.printer_exec.install_printer(
+                                pc_name,
+                                printer_name,
+                                printer_ip=params.get("printer_ip") or params.get("printer_address"),
+                            )
+                            result_status = "success" if res.success else "failed"
+                            result_message = res.message
+                            result_payload = {
+                                "log": res.log,
+                                "installed": res.success,
+                                "verified": res.success,
                             }
+                            failure_kind = res.failure_kind
+                            failure_code = res.failure_code
+                            verified_failure = res.verified_failure
+
+                            if res.success and task_id > 0 and auto_close:
+                                close_ticket_payload = {
+                                    "comment": f"Добрый день! Принтер {printer_name} успешно подключен на вашем компьютере {pc_name}.",
+                                    "status_id": 29,
+                                    "expenses": 15,
+                                }
 
             else:
                 result_message = f"Неизвестное действие: '{action}'"

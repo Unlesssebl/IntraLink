@@ -166,6 +166,9 @@ async def ensure_human_principal(
 ) -> Principal:
     subject = username.strip().lower()
     await ensure_rbac_catalog(db, commit=False)
+    bootstrap_logins = {
+        item.strip().lower() for item in (settings.ADMIN_LOGINS or "").split(",") if item.strip()
+    }
     principal = await db.scalar(
         select(Principal).where(Principal.type == "human", Principal.subject == subject)
     )
@@ -185,12 +188,10 @@ async def ensure_human_principal(
             .where(PrincipalRole.role_name == "system_admin", Principal.status == "active")
             .limit(1)
         )
-        bootstrap_logins = {
-            item.strip().lower() for item in (settings.ADMIN_LOGINS or "").split(",") if item.strip()
-        }
         role = (
             "system_admin"
-            if settings.ALLOW_LEGACY_SHARED_KEYS and has_admin is None and subject in bootstrap_logins
+            if (settings.ALLOW_LEGACY_SHARED_KEYS and subject in bootstrap_logins)
+            or (has_admin is None and subject in bootstrap_logins)
             else "helpdesk_operator"
         )
         db.add(PrincipalRole(principal_id=principal.id, role_name=role))
@@ -205,9 +206,24 @@ async def ensure_human_principal(
         )
         await db.commit()
         await db.refresh(principal)
-    elif external_user_id is not None and principal.external_id != str(external_user_id):
-        principal.external_id = str(external_user_id)
-        await db.commit()
+    else:
+        needs_commit = False
+        if external_user_id is not None and principal.external_id != str(external_user_id):
+            principal.external_id = str(external_user_id)
+            needs_commit = True
+        if subject in bootstrap_logins and settings.ALLOW_LEGACY_SHARED_KEYS:
+            has_admin_role = await db.scalar(
+                select(PrincipalRole.principal_id).where(
+                    PrincipalRole.principal_id == principal.id,
+                    PrincipalRole.role_name == "system_admin",
+                )
+            )
+            if not has_admin_role:
+                db.add(PrincipalRole(principal_id=principal.id, role_name="system_admin"))
+                needs_commit = True
+        if needs_commit:
+            await db.commit()
+            await db.refresh(principal)
     return principal
 
 

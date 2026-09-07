@@ -175,3 +175,109 @@ class CoreApiClient:
         except Exception as e:
             logger.debug("Сбой фиксации результата команды %s: %s", command_id, e)
             return False
+
+    async def renew_command_lease_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        claim_token: str,
+        lease_seconds: int = 120,
+    ) -> tuple[int, dict[str, Any] | None]:
+        """Продлевает lease команды в Core API через POST /api/v2/commands/{id}/heartbeat."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/heartbeat"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "claim_token": claim_token,
+                    "lease_seconds": lease_seconds,
+                },
+            ) as resp:
+                data = await resp.json() if resp.content_type == "application/json" else None
+                return resp.status, data
+        except Exception as e:
+            logger.debug("Сбой продления lease команды %s: %s", command_id, e)
+            return 0, None
+
+    async def record_command_preflight_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        claim_token: str,
+        evidence: dict[str, Any],
+        ttl_seconds: int = 7200,
+    ) -> tuple[int, dict[str, Any] | None]:
+        """Фиксирует preflight evidence команды в Core API через POST /api/v2/commands/{id}/preflight."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/preflight"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "claim_token": claim_token,
+                    "evidence": evidence,
+                    "ttl_seconds": ttl_seconds,
+                },
+            ) as resp:
+                data = await resp.json() if resp.content_type == "application/json" else None
+                return resp.status, data
+        except Exception as e:
+            logger.debug("Сбой фиксации preflight команды %s: %s", command_id, e)
+            return 0, None
+
+    async def record_command_phase_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        claim_token: str,
+        phase: str,
+        details: dict[str, Any] | None = None,
+    ) -> tuple[int, dict[str, Any] | None]:
+        """Фиксирует фазу исполнения команды в Core API через POST /api/v2/commands/{id}/phase."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/phase"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "claim_token": claim_token,
+                    "phase": phase,
+                    "details": details or {},
+                },
+            ) as resp:
+                data = await resp.json() if resp.content_type == "application/json" else None
+                return resp.status, data
+        except Exception as e:
+            logger.debug("Сбой фиксации фазы команды %s: %s", command_id, e)
+            return 0, None
+
+    async def quarantine_command_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        missing_capability: str,
+        message_id: str,
+        reason: str | None = None,
+    ) -> bool:
+        """Изолирует команду в Routing Quarantine через POST /api/v2/commands/{id}/quarantine."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/quarantine"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "missing_capability": missing_capability,
+                    "message_id": message_id,
+                    "reason": reason,
+                },
+            ) as resp:
+                return resp.status == 200
+        except Exception as e:
+            logger.warning("Сбой отправки команды %s в карантин: %s", command_id, e)
+            return False
+

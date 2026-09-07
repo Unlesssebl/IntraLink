@@ -27,9 +27,11 @@ from app.routers.deps import (
 from app.services.command_service import CommandService, serialize_command
 from app.services.identity import PrincipalContext, require_context_permission
 from app.services.identity import create_approval_challenge, consume_approval_challenge
+from app.services.worker import get_redis_client
 
 router = APIRouter(prefix="/api/v2/commands", tags=["Commands v2"])
 policy_router = APIRouter(prefix="/api/v2/action-policies", tags=["Action policies v2"])
+workers_router = APIRouter(prefix="/api/v2/workers", tags=["Workers v2"])
 
 
 class CreateCommandRequest(BaseModel):
@@ -46,6 +48,22 @@ class CreateCommandRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     decision: Literal["approve", "reject"]
     reason: str | None = None
+    expected_plan_hash: str | None = None
+    expected_version: int | None = Field(None, ge=1)
+
+
+class PreflightReportRequest(BaseModel):
+    worker_id: str = Field(min_length=1, max_length=100)
+    claim_token: str = Field(min_length=20)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    ttl_seconds: int = Field(7200, ge=60, le=86400)
+
+
+class PhaseReportRequest(BaseModel):
+    worker_id: str = Field(min_length=1, max_length=100)
+    claim_token: str = Field(min_length=20)
+    phase: str = Field(min_length=2, max_length=50)
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class TelegramApprovalRequest(ApprovalRequest):
@@ -69,6 +87,20 @@ class FinishRequest(BaseModel):
     outcome: Literal["succeeded", "failed", "needs_review"]
     result: dict[str, Any] = Field(default_factory=dict)
     error_message: str | None = None
+
+
+class HeartbeatRequest(BaseModel):
+    worker_id: str = Field(min_length=1, max_length=100)
+    claim_token: str = Field(min_length=20)
+    lease_seconds: int = Field(120, ge=30, le=900)
+
+
+class QuarantineRequest(BaseModel):
+    worker_id: str = Field(min_length=1, max_length=100)
+    missing_capability: str = Field(min_length=1, max_length=100)
+    message_id: str = Field(min_length=3, max_length=100)
+    reason: str | None = None
+
 
 
 class ReviewRequest(BaseModel):
@@ -147,6 +179,8 @@ async def approve_command(
         decision=payload.decision,
         reason=payload.reason,
         operator=context.subject,
+        expected_plan_hash=payload.expected_plan_hash,
+        expected_version=payload.expected_version,
         approver_principal_id=context.principal_id,
         approver_roles=context.roles,
         approver_permissions=context.permissions,
@@ -175,6 +209,8 @@ async def approve_command_from_telegram(
         decision=payload.decision,
         reason=payload.reason,
         operator=f"telegram:{approver.subject}",
+        expected_plan_hash=payload.expected_plan_hash,
+        expected_version=payload.expected_version,
         approver_principal_id=approver.principal_id,
         approver_roles=approver.roles,
         approver_permissions=approver.permissions,
@@ -259,6 +295,98 @@ async def finish_command(
         worker_id=payload.worker_id,
     )
     return serialize_command(command)
+ 
+ 
+@router.post("/{command_id}/heartbeat")
+async def heartbeat_command(
+    command_id: uuid.UUID,
+    payload: HeartbeatRequest,
+    context: PrincipalContext = Depends(require_object_permission("command:heartbeat:executor")),
+    db: AsyncSession = Depends(get_db),
+):
+    current = await CommandService(db).get(command_id)
+    if context.principal_type != "service":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Service identity required")
+    require_context_permission(context, f"command:claim:{current.executor}")
+    command, lease_ttl_seconds = await CommandService(db).renew_lease(
+        command_id,
+        worker_id=payload.worker_id,
+        claim_token=payload.claim_token,
+        lease_seconds=payload.lease_seconds,
+    )
+    return {
+        "command_id": str(command.id),
+        "status": command.status,
+        "lease_ttl_seconds": lease_ttl_seconds,
+        "lease_expires_at": command.lease_expires_at.isoformat() if command.lease_expires_at else None,
+    }
+
+
+@router.post("/{command_id}/preflight")
+async def record_command_preflight(
+    command_id: uuid.UUID,
+    payload: PreflightReportRequest,
+    context: PrincipalContext = Depends(require_object_permission("command:claim:executor")),
+    db: AsyncSession = Depends(get_db),
+):
+    current = await CommandService(db).get(command_id)
+    if context.principal_type != "service":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Service identity required")
+    require_context_permission(context, f"command:claim:{current.executor}")
+    command = await CommandService(db).record_preflight(
+        command_id,
+        worker_id=payload.worker_id,
+        claim_token=payload.claim_token,
+        evidence=payload.evidence,
+        ttl_seconds=payload.ttl_seconds,
+    )
+    return serialize_command(command)
+
+
+@router.post("/{command_id}/phase")
+async def record_command_phase(
+    command_id: uuid.UUID,
+    payload: PhaseReportRequest,
+    context: PrincipalContext = Depends(require_object_permission("command:claim:executor")),
+    db: AsyncSession = Depends(get_db),
+):
+    current = await CommandService(db).get(command_id)
+    if context.principal_type != "service":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Service identity required")
+    require_context_permission(context, f"command:claim:{current.executor}")
+    command = await CommandService(db).record_phase(
+        command_id,
+        worker_id=payload.worker_id,
+        claim_token=payload.claim_token,
+        phase=payload.phase,
+        details=payload.details,
+    )
+    return serialize_command(command)
+
+
+@router.post("/{command_id}/quarantine")
+async def quarantine_command(
+    command_id: uuid.UUID,
+    payload: QuarantineRequest,
+    context: PrincipalContext = Depends(require_object_permission("command:claim:executor")),
+    db: AsyncSession = Depends(get_db),
+):
+    current = await CommandService(db).get(command_id)
+    if context.principal_type != "service":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Service identity required")
+    require_context_permission(context, f"command:claim:{current.executor}")
+    command = await CommandService(db).quarantine(
+        command_id,
+        worker_id=payload.worker_id,
+        missing_capability=payload.missing_capability,
+        message_id=payload.message_id,
+        reason=payload.reason,
+    )
+    return {
+        **serialize_command(command),
+        "quarantined": True,
+        "missing_capability": payload.missing_capability,
+    }
 
 
 @router.post("/{command_id}/review")
@@ -350,3 +478,72 @@ async def update_action_policy(
         principal_id=context.principal_id,
     )
     return {"action": item.action, "mode": item.mode, "updated_by": item.updated_by}
+
+
+@workers_router.get("/fleet")
+async def get_worker_fleet(
+    _context: PrincipalContext = Depends(require_permission("command:read")),
+):
+    """Возвращает список зарегистрированных узлов Worker Fleet из Redis."""
+    redis = get_redis_client()
+    node_ids = await redis.smembers("worker:nodes")
+    nodes: list[dict[str, Any]] = []
+    stale_nodes: list[str] = []
+
+    for raw_node in node_ids:
+        node_id = raw_node.decode("utf-8") if isinstance(raw_node, bytes) else str(raw_node)
+        card_raw = await redis.get(f"worker:node:{node_id}")
+        if not card_raw:
+            stale_nodes.append(node_id)
+            continue
+        try:
+            card = json.loads(card_raw)
+            nodes.append(card)
+        except Exception:
+            stale_nodes.append(node_id)
+
+    if stale_nodes:
+        await redis.srem("worker:nodes", *stale_nodes)
+
+    return {
+        "nodes": sorted(nodes, key=lambda n: str(n.get("node_id", ""))),
+        "total_active": len(nodes),
+    }
+
+
+@workers_router.get("/readiness")
+async def get_worker_readiness():
+    """Проверяет доступность флота воркеров и критических возможностей."""
+    redis = get_redis_client()
+    node_ids = await redis.smembers("worker:nodes")
+    available_capabilities: set[str] = set()
+    active_count = 0
+    stale_nodes: list[str] = []
+
+    for raw_node in node_ids:
+        node_id = raw_node.decode("utf-8") if isinstance(raw_node, bytes) else str(raw_node)
+        card_raw = await redis.get(f"worker:node:{node_id}")
+        if not card_raw:
+            stale_nodes.append(node_id)
+            continue
+        try:
+            card = json.loads(card_raw)
+            active_count += 1
+            for cap in card.get("capabilities", []):
+                available_capabilities.add(cap)
+        except Exception:
+            stale_nodes.append(node_id)
+
+    if stale_nodes:
+        await redis.srem("worker:nodes", *stale_nodes)
+
+    critical_capabilities = {"windows", "printers", "winrm"}
+    missing_critical = sorted(list(critical_capabilities - available_capabilities))
+    is_ready = (active_count > 0) and (len(missing_critical) == 0)
+
+    return {
+        "ready": is_ready,
+        "active_nodes_count": active_count,
+        "available_capabilities": sorted(list(available_capabilities)),
+        "missing_critical_capabilities": missing_critical,
+    }

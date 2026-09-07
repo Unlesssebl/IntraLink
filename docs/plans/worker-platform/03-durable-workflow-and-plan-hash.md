@@ -1,6 +1,6 @@
 # Инкремент 3: Durable Workflow & Approval с plan_hash
 
-Статус: запланирован  
+Статус: ✅ Завершен  
 Зависимости: [Инкремент 1](01-contract-and-core-safety.md), [Инкремент 2](02-worker-sdk-and-runner.md)  
 Целевые компоненты: `core-api/app/services/command_service.py`, `core-api/app/database/db.py`, `core-api/app/routers/commands_v2.py`
 

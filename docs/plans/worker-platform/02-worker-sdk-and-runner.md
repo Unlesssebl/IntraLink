@@ -1,6 +1,6 @@
 # Инкремент 2: Worker SDK и доверенный PowerShell Runner
 
-Статус: запланирован  
+Статус: выполнен  
 Зависимости: [Инкремент 1](01-contract-and-core-safety.md)  
 Целевые компоненты: `execution-worker/sdk/`, `execution-worker/core_api_client.py`
 

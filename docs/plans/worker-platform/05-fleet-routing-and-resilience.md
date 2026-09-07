@@ -1,6 +1,7 @@
 # Инкремент 5: Worker Fleet, Routing Quarantine и Отказоустойчивость
 
-Статус: запланирован  
+Статус: ✅ Завершен  
+Дата завершения: 2026-09-07  
 Зависимости: [Инкремент 1](01-contract-and-core-safety.md), [Инкремент 2](02-worker-sdk-and-runner.md), [Инкремент 4](04-printer-pilot-and-staging.md)  
 Целевые компоненты: `execution-worker/worker.py`, `core-api/app/routers/commands_v2.py`, `core-api/app/services/command_outbox.py`, `core-api/tests/`
 

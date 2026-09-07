@@ -1,6 +1,6 @@
 # Инкремент 4: Эталонный InstallPrinterHandler и SMB Staging
 
-Статус: запланирован  
+Статус: ✅ Завершен  
 Зависимости: [Инкремент 2](02-worker-sdk-and-runner.md), [Инкремент 3](03-durable-workflow-and-plan-hash.md)  
 Целевые компоненты: `execution-worker/handlers/install_printer.py`, `shared/printers.py`, `execution-worker/worker.py`
 
