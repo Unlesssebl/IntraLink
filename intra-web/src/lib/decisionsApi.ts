@@ -1,5 +1,11 @@
 import { apiFetch } from './api';
-import type { DecisionFeedbackPayload, DecisionFeedbackRecord, DecisionRecord } from './types';
+import type {
+  DecisionFeedbackPayload,
+  DecisionFeedbackRecord,
+  DecisionRecord,
+  FactOverridePayload,
+  FactOverrideResponse,
+} from './types';
 
 export interface TaskDecisionsResponse {
   items: DecisionRecord[];
@@ -27,6 +33,16 @@ export async function submitDecisionFeedback(
   payload: DecisionFeedbackPayload
 ): Promise<DecisionFeedbackRecord> {
   return apiFetch<DecisionFeedbackRecord>(`/api/v2/decisions/${decisionId}/feedback`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function overrideTaskFacts(
+  taskId: number,
+  payload: FactOverridePayload
+): Promise<FactOverrideResponse> {
+  return apiFetch<FactOverrideResponse>(`/api/v2/tasks/${taskId}/override-facts`, {
     method: 'POST',
     body: JSON.stringify(payload),
   });

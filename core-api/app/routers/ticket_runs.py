@@ -40,6 +40,12 @@ class AutopilotSettingRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class AutopilotRollbackRequest(BaseModel):
+    service_id: int | None = None
+    target_mode: Literal["legacy", "shadow"] = "shadow"
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class AutopilotScenarioRequest(BaseModel):
     service_id: int = Field(gt=0)
     scenario_key: Literal[
@@ -56,20 +62,23 @@ class AutopilotScenarioRequest(BaseModel):
         "consultation",
     ]
     enabled: bool = False
-    rollout_mode: Literal["legacy", "shadow", "canary", "active"] = "legacy"
+    rollout_mode: Literal["legacy", "shadow", "canary", "active"] = "active"
     config: dict = Field(default_factory=dict)
+    canary_percent: int | None = Field(default=None, ge=1, le=100)
     expected_version: int | None = Field(None, ge=1)
 
 
 def serialize_scenario(item: AutopilotScenario) -> dict:
+    config = item.config_json or {}
     return {
         "id": str(item.id),
         "service_id": item.service_id,
         "scenario_key": item.scenario_key,
         "enabled": item.enabled,
         "rollout_mode": item.rollout_mode,
+        "canary_percent": int(config.get("canary_percent", 10)),
         "version": item.version,
-        "config": item.config_json,
+        "config": config,
         "updated_by": item.updated_by,
         "updated_at": item.updated_at.isoformat() if item.updated_at else None,
     }
@@ -356,16 +365,57 @@ async def upsert_autopilot_scenario(
     _origin: None = Depends(verify_trusted_origin),
     db: AsyncSession = Depends(get_db),
 ):
+    config = dict(payload.config or {})
+    if payload.canary_percent is not None:
+        config["canary_percent"] = payload.canary_percent
     try:
         item = await TicketRunService(db).upsert_scenario(
             service_id=payload.service_id,
             scenario_key=payload.scenario_key,
             enabled=payload.enabled,
             rollout_mode=payload.rollout_mode,
-            config=payload.config,
+            config=config,
             actor=context.subject,
             expected_version=payload.expected_version,
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     return serialize_scenario(item)
+
+
+@settings_router.post("/scenarios/rollback")
+async def rollback_autopilot_scenarios(
+    payload: AutopilotRollbackRequest,
+    context: PrincipalContext = Depends(require_permission("autopilot:manage")),
+    _origin: None = Depends(verify_trusted_origin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Emergency rollback of active or canary scenarios to legacy or shadow."""
+    try:
+        updated = await TicketRunService(db).rollback_scenarios(
+            service_id=payload.service_id,
+            target_mode=payload.target_mode,
+            actor=context.subject,
+            reason=payload.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return {
+        "status": "rolled_back",
+        "target_mode": payload.target_mode,
+        "count": len(updated),
+        "items": [serialize_scenario(item) for item in updated],
+    }
+
+
+@settings_router.get("/shadow/metrics")
+async def get_shadow_metrics(
+    days: int = Query(default=7, ge=1, le=90),
+    scenario_key: str | None = Query(default=None),
+    _context: PrincipalContext = Depends(require_permission("autopilot:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregated shadow execution divergence metrics for scenario orchestrator."""
+    return await TicketRunService(db).get_shadow_metrics(
+        days=days, scenario_key=scenario_key
+    )

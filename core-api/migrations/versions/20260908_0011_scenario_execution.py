@@ -125,7 +125,10 @@ def upgrade() -> None:
                      '[]'::jsonb, true, 'system:migration'),
                     ('grant_wlan_proposed', 1, 'Подготовка доступа WLAN',
                      'Учётная запись определена. Предоставление доступа WLAN требует подтверждения оператора.',
-                     '[]'::jsonb, true, 'system:migration')
+                     '[]'::jsonb, true, 'system:migration'),
+                    ('resolved_standard', 1, 'Заявка успешно выполнена',
+                     'Добрый день! Заявка успешно выполнена. Проверьте, пожалуйста, работоспособность.',
+                     '[]'::jsonb, true, 'system:migration:0011')
                 ON CONFLICT (key, version) DO NOTHING
                 """
             )
@@ -137,13 +140,14 @@ def upgrade() -> None:
                     (outcome_key, version, outcome_kind, template_id,
                      target_status_id, status_name, expenses, action_id,
                      risk_level, requires_approval, is_active, created_by)
-                SELECT spec.outcome_key, 1, 'action', template.id,
-                       NULL, NULL, 0, spec.action_id,
-                       spec.risk_level, true, true, 'system:migration'
+                SELECT spec.outcome_key, 1, spec.outcome_kind, template.id,
+                       spec.target_status_id, spec.status_name, spec.expenses, spec.action_id,
+                       spec.risk_level, spec.requires_approval, true, spec.created_by
                 FROM (VALUES
-                    ('install_printer_proposed', 'install_printer', 1),
-                    ('grant_wlan_proposed', 'grant_wlan', 2)
-                ) AS spec(outcome_key, action_id, risk_level)
+                    ('install_printer_proposed', 'action', NULL, NULL, 0, 'install_printer', 1, true, 'system:migration'),
+                    ('grant_wlan_proposed', 'action', NULL, NULL, 0, 'grant_wlan', 2, true, 'system:migration'),
+                    ('resolved_standard', 'resolution', 29, 'Выполнена', 15, NULL, 0, false, 'system:migration:0011')
+                ) AS spec(outcome_key, outcome_kind, target_status_id, status_name, expenses, action_id, risk_level, requires_approval, created_by)
                 JOIN response_templates AS template
                   ON template.key = spec.outcome_key AND template.is_active = true
                 ON CONFLICT (outcome_key, version) DO NOTHING
@@ -157,16 +161,16 @@ def downgrade() -> None:
     if bind.dialect.name == "postgresql":
         op.execute(
             sa.text(
-                "DELETE FROM resolution_policies WHERE outcome_key IN "
-                "('install_printer_proposed', 'grant_wlan_proposed') "
-                "AND created_by = 'system:migration'"
+                "DELETE FROM resolution_policies WHERE "
+                "(outcome_key IN ('install_printer_proposed', 'grant_wlan_proposed') AND created_by = 'system:migration') "
+                "OR (outcome_key = 'resolved_standard' AND created_by = 'system:migration:0011')"
             )
         )
         op.execute(
             sa.text(
-                "DELETE FROM response_templates WHERE key IN "
-                "('install_printer_proposed', 'grant_wlan_proposed') "
-                "AND created_by = 'system:migration'"
+                "DELETE FROM response_templates WHERE "
+                "(key IN ('install_printer_proposed', 'grant_wlan_proposed') AND created_by = 'system:migration') "
+                "OR (key = 'resolved_standard' AND created_by = 'system:migration:0011')"
             )
         )
     op.drop_table("ticket_fact_observations")

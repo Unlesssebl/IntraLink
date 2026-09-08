@@ -14,11 +14,14 @@ import {
   IconChevronRight,
   IconBolt,
   IconCheck,
+  IconPencil,
 } from '../Icons';
 import {
   useUnifiedDecision,
   type UseUnifiedDecisionReturn,
 } from './useUnifiedDecision';
+import FactBagSection from './FactBagSection';
+import FactOverrideModal from './FactOverrideModal';
 
 interface TemplateItem {
   key: string;
@@ -128,6 +131,7 @@ export default function UnifiedDecisionPanel({
     handleApplyDecision,
     handleTakeTicket,
     handleReanalyze,
+    handleOverrideFacts,
     handleHitlApprove,
     handleHitlReject,
     handleTogglePauseRun,
@@ -145,6 +149,7 @@ export default function UnifiedDecisionPanel({
   });
 
   const [isAlternativesOpen, setIsAlternativesOpen] = useState(false);
+  const [isOverrideModalOpen, setIsOverrideModalOpen] = useState(false);
   const [selectedVerdict, setSelectedVerdict] = useState<
     'correct' | 'partial' | 'incorrect' | 'insufficient_data' | null
   >(null);
@@ -413,23 +418,35 @@ export default function UnifiedDecisionPanel({
         </div>
 
         {envelope && (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-            <span className="font-mono text-neutral-700 dark:text-neutral-300">
-              {envelope.scenario_key}@{envelope.scenario_version}
-            </span>
-            <span>Facts revision: {envelope.facts_revision}</span>
-            <span>Evidence: {envelope.evidence_refs.length}</span>
-            <span>Confidence: {Math.round(envelope.confidence * 100)}%</span>
-            {Object.entries(envelope.facts_summary)
-              .filter(([, fact]) => fact.state !== 'valid')
-              .map(([key, fact]) => (
-                <span
-                  key={key}
-                  className="rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
-                >
-                  {key}: {fact.state}
-                </span>
-              ))}
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span className="font-mono text-neutral-700 dark:text-neutral-300">
+                {envelope.scenario_key}@{envelope.scenario_version}
+              </span>
+              <span>Факты: #{envelope.facts_revision}</span>
+              <span>Доказательств: {envelope.evidence_refs.length}</span>
+              <span>Уверенность: {Math.round(envelope.confidence * 100)}%</span>
+              {Object.entries(envelope.facts_summary)
+                .filter(([, fact]) => fact.state !== 'valid')
+                .map(([key, fact]) => (
+                  <span
+                    key={key}
+                    className="rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+                  >
+                    {key}: {fact.state}
+                  </span>
+                ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsOverrideModalOpen(true)}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-500 dark:text-blue-400 cursor-pointer"
+              title="Скорректировать факты сценария вручную"
+            >
+              <IconPencil size={11} />
+              <span>Скорректировать факты</span>
+            </button>
           </div>
         )}
 
@@ -593,11 +610,11 @@ export default function UnifiedDecisionPanel({
       <div className="space-y-2.5">
         {/* Панель управления формой: режим получателя и выбор шаблона */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex bg-neutral-100 dark:bg-neutral-800 p-0.5 rounded-lg border border-neutral-200 dark:border-neutral-700 text-xs font-semibold" aria-label="Видимость комментария">
+          <div className="flex bg-neutral-100 dark:bg-neutral-800 p-0.5 rounded-lg border border-neutral-200 dark:border-neutral-700 text-xs font-semibold" aria-label="Видимость комментария">
             <button
               type="button"
               onClick={() => setReplyMode('reply')}
-                className={`min-h-9 px-3 rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 ${
+              className={`min-h-9 px-3 rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 ${
                 replyMode === 'reply'
                   ? 'bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-2xs'
                   : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
@@ -608,7 +625,7 @@ export default function UnifiedDecisionPanel({
             <button
               type="button"
               onClick={() => setReplyMode('internal')}
-                className={`min-h-9 px-3 rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 ${
+              className={`min-h-9 px-3 rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 ${
                 replyMode === 'internal'
                   ? 'bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-2xs'
                   : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
@@ -803,11 +820,23 @@ export default function UnifiedDecisionPanel({
       </div>
 
       {/* ========================================================================= */}
-      {/* 4. ОСНОВАНИЯ, ДИАГНОСТИКА И ИСТОРИЯ ЦИКЛА */}
+      {/* 4. ДОКАЗАТЕЛЬНАЯ БАЗА, ОСНОВАНИЯ, ДИАГНОСТИКА И ИСТОРИЯ ЦИКЛА             */}
       {/* ========================================================================= */}
       <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 space-y-2.5">
         {/* Таб-бар с векторными иконками */}
         <div className="flex flex-nowrap items-center gap-1 overflow-x-auto border-b border-neutral-200 pb-1 text-xs dark:border-neutral-800">
+          <button
+            type="button"
+            onClick={() => setSelectedTab('facts')}
+            className={`flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg px-3 font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 ${
+              selectedTab === 'facts'
+                ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100'
+                : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+            }`}
+          >
+            <IconDatabase size={13} />
+            <span>Факты ({Object.keys(envelope?.facts_summary || {}).length})</span>
+          </button>
           <button
             type="button"
             onClick={() => setSelectedTab('rules')}
@@ -848,6 +877,14 @@ export default function UnifiedDecisionPanel({
 
         {/* Содержимое активного таба */}
         <div className="text-xs text-neutral-700 dark:text-neutral-300 leading-relaxed min-h-[90px]">
+          {/* ТАБ 0: Факты сценария (FactBag) */}
+          {selectedTab === 'facts' && (
+            <FactBagSection
+              envelope={envelope}
+              onOpenOverride={() => setIsOverrideModalOpen(true)}
+            />
+          )}
+
           {/* ТАБ 1: Правила регламента (Explainable Rules) */}
           {selectedTab === 'rules' && (
             <div className="space-y-2.5 p-3 rounded-xl bg-neutral-50/60 dark:bg-neutral-950/30 border border-neutral-200 dark:border-neutral-800">
@@ -1193,6 +1230,15 @@ export default function UnifiedDecisionPanel({
           </div>
         )}
       </div>
+
+      {/* Модальное окно Fact-Override */}
+      <FactOverrideModal
+        isOpen={isOverrideModalOpen}
+        onClose={() => setIsOverrideModalOpen(false)}
+        envelope={envelope}
+        onSubmit={handleOverrideFacts}
+        isSubmitting={submitting}
+      />
     </div>
   );
 }

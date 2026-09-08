@@ -58,6 +58,11 @@ class ScenarioDecisionService:
             observations = await self.fact_planner.collect(
                 task, comments=comments, diagnostics=diagnostics
             )
+        else:
+            fresh = await self.fact_planner.collect(
+                task, comments=comments, diagnostics=diagnostics
+            )
+            observations = [*fresh, *observations]
         facts = merge_observations(observations, revision=fact_revision)
         scenario_task = deepcopy(task)
         person_keys = (

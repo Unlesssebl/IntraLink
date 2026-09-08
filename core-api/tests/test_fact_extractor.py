@@ -102,6 +102,7 @@ async def test_gemini_first_with_ollama_fallback():
         patch.object(settings, "LLM_PROVIDER_PREFERENCE", "gemini_first"),
         patch.object(ai_hub, "generate_cloud_completion", new=gemini_mock),
         patch.object(ai_hub, "generate_ollama_completion", new=ollama_mock),
+        patch("app.services.ai.sanitizer.data_sanitizer.save_vault", new=AsyncMock(return_value=True)),
         patch("app.services.fact_extractor._fetch_from_cache", new=AsyncMock(return_value=None)),
         patch("app.services.fact_extractor._save_to_cache", new=AsyncMock()),
     ):
@@ -144,6 +145,7 @@ async def test_extract_facts_from_comments_history():
         patch.object(settings, "LLM_FACT_EXTRACTION_MODE", "enabled"),
         patch.object(settings, "LLM_PROVIDER_PREFERENCE", "gemini_first"),
         patch.object(ai_hub, "generate_cloud_completion", new=AsyncMock(return_value=json.dumps(extracted))),
+        patch("app.services.ai.sanitizer.data_sanitizer.save_vault", new=AsyncMock(return_value=True)),
         patch("app.services.fact_extractor._fetch_from_cache", new=AsyncMock(return_value=None)),
         patch("app.services.fact_extractor._save_to_cache", new=AsyncMock()),
     ):
@@ -152,4 +154,5 @@ async def test_extract_facts_from_comments_history():
     assert enriched["_extracted_pc_name"] == "NTEMW0999"
     assert enriched["_extracted_clarification_answer"] == "Мой комп NTEMW0999, включил его в сеть"
     assert enriched["_llm_fact_extraction"]["comments_count_analyzed"] == 2
+
 

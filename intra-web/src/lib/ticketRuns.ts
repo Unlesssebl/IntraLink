@@ -60,6 +60,19 @@ export interface TicketRunCommand {
   error_message: string | null;
 }
 
+export interface AutopilotScenario {
+  id: string;
+  service_id: number;
+  scenario_key: AutopilotScenarioKey;
+  enabled: boolean;
+  rollout_mode: 'legacy' | 'shadow' | 'canary' | 'active';
+  canary_percent?: number;
+  version: number;
+  config: Record<string, unknown>;
+  updated_by: string;
+  updated_at: string | null;
+}
+
 export interface AutopilotSetting {
   enabled: boolean;
   rollout_mode: 'legacy' | 'shadow' | 'canary' | 'active';
@@ -71,18 +84,6 @@ export interface AutopilotSetting {
   service_user_id: number | null;
   service_identity_ready: boolean;
   scenarios: AutopilotScenario[];
-}
-
-export interface AutopilotScenario {
-  id: string;
-  service_id: number;
-  scenario_key: AutopilotScenarioKey;
-  enabled: boolean;
-  rollout_mode: 'legacy' | 'shadow' | 'canary' | 'active';
-  version: number;
-  config: Record<string, unknown>;
-  updated_by: string;
-  updated_at: string | null;
 }
 
 export type AutopilotScenarioKey =
@@ -97,6 +98,31 @@ export type AutopilotScenarioKey =
   | 'physical_device'
   | 'rag_consultation'
   | 'consultation';
+
+export interface ShadowMetricsScenarioStats {
+  total: number;
+  diverged: number;
+  divergence_rate_percent: number;
+  avg_confidence: number | null;
+}
+
+export interface ShadowDivergenceItem {
+  ticket_run_id: string;
+  scenario_key: string;
+  divergence_reasons: string[];
+  confidence: number | null;
+  created_at: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface ShadowMetricsResponse {
+  period_days: number;
+  total_shadow_evaluations: number;
+  total_diverged: number;
+  overall_divergence_rate_percent: number;
+  by_scenario: Record<string, ShadowMetricsScenarioStats>;
+  recent_divergences: ShadowDivergenceItem[];
+}
 
 export const fetchTicketRun = (taskId: number) =>
   apiFetch<TicketRunView>(`/api/v2/ticket-runs/by-task/${taskId}`);
@@ -156,6 +182,7 @@ export const saveAutopilotScenario = (payload: {
   scenario_key: AutopilotScenarioKey;
   enabled: boolean;
   rollout_mode?: AutopilotScenario['rollout_mode'];
+  canary_percent?: number;
   config?: Record<string, unknown>;
   expected_version?: number;
 }) =>
@@ -163,6 +190,21 @@ export const saveAutopilotScenario = (payload: {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
+
+export const fetchShadowMetrics = (days: number = 7) =>
+  apiFetch<ShadowMetricsResponse>(`/api/v2/autopilot/shadow/metrics?days=${days}`);
+
+export const rollbackAutopilotScenarios = (payload: {
+  target_mode?: 'legacy' | 'shadow';
+  reason?: string;
+}) =>
+  apiFetch<{ rolled_back_count: number; target_mode: string; message: string }>(
+    '/api/v2/autopilot/scenarios/rollback',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
 
 export interface ActiveExecutionStatus {
   has_active: boolean;
@@ -186,4 +228,3 @@ export interface ActiveExecutionStatus {
 
 export const fetchActiveExecution = () =>
   apiFetch<ActiveExecutionStatus>('/api/v2/workers/active-execution');
-

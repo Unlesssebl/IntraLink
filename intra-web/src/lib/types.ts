@@ -191,6 +191,22 @@ export interface DecisionEnvelope {
   status: string;
 }
 
+export interface FactOverridePayload {
+  expected_decision_version?: number | null;
+  facts: Record<string, any>;
+  current_draft_text?: string | null;
+}
+
+export interface FactOverrideResponse {
+  success: boolean;
+  task_id: number;
+  decision_envelope: DecisionEnvelope;
+  run?: Record<string, any>;
+  facts_summary: Record<string, DecisionFactSummary>;
+  outcome: Record<string, any>;
+  confidence: number;
+}
+
 export interface DecisionSources {
   rule: boolean;
   rag: boolean;

@@ -46,10 +46,12 @@ class WindowsExecutionWorker:
         from sdk.registry import get_handler_registry
         from handlers.install_printer import InstallPrinterHandler
         from handlers.create_user import CreateUserHandler
+        from handlers.grant_wlan import GrantWlanHandler
 
         self.registry = get_handler_registry()
         self.registry.register(InstallPrinterHandler())
         self.registry.register(CreateUserHandler(self.ad_exec))
+        self.registry.register(GrantWlanHandler(self.ad_exec))
 
         self.subscribed_streams = [STREAM_EXECUTION_QUEUE, STREAM_EXECUTION_QUEUE_V2]
         if "printers" in self.capabilities:
@@ -78,7 +80,7 @@ class WindowsExecutionWorker:
             if "windows" not in self.capabilities:
                 return False, "windows"
             return True, ""
-        elif action in ("user_access", "wifi_access"):
+        elif action in ("user_access", "wifi_access", "grant_wlan", "wifi"):
             if "ad" not in self.capabilities:
                 return False, "ad"
             return True, ""
@@ -99,7 +101,7 @@ class WindowsExecutionWorker:
                     # Регистрация карточки узла во флоте
                     all_caps = sorted(list(set(self.capabilities) | self.registry.list_capabilities()))
                     supported_actions = sorted(
-                        list(set(list(self.registry.list_actions().keys()) + ["diagnose_host", "user_access", "wifi_access"]))
+                        list(set(list(self.registry.list_actions().keys()) + ["diagnose_host", "user_access", "wifi_access", "grant_wlan"]))
                     )
                     card = {
                         "node_id": CONSUMER_NAME,
@@ -467,7 +469,6 @@ class WindowsExecutionWorker:
         failure_kind: str | None = None
         failure_code: str | None = None
         verified_failure = False
-        close_ticket_payload: dict[str, Any] | None = None
 
         try:
             if action == "diagnose_host":
@@ -490,66 +491,41 @@ class WindowsExecutionWorker:
 
             # 1. Выдача доступа Wi-Fi в AD (WLAN-WORKNET)
             elif action in ("grant_wlan", "wifi"):
-                await self._publish_event(
-                    job_id,
-                    "progress",
-                    {
-                        "phase": "searching_user",
-                        "pct": 20,
-                        "detail": "Определение пользователя",
-                    },
-                )
-                identity = params.get("identity") or params.get("login")
-                if not identity and task_id > 0:
-                    task = await self.api_client.get_task_details(task_id)
-                    if task:
-                        identity = self.ad_exec.extract_identity_from_task(task)
-
-                if not identity:
-                    result_message = "Не удалось определить пользователя для выдачи доступа Wi-Fi."
+                handler = self.registry.get("grant_wlan")
+                if not is_v2 or handler is None:
+                    result_message = "grant_wlan разрешен только через v2 Worker SDK"
+                    failure_kind = "configuration"
+                    failure_code = "grant_wlan_v2_required"
                 else:
-                    if mode == "confirm":
-                        approved = await self._wait_for_confirmation(
-                            job_id,
-                            prompt=f"Предоставить доступ Wi-Fi сотруднику '{identity}'?",
-                            details={"identity": identity, "group": "WLAN-WORKNET"},
-                        )
-                        if not approved:
-                            result_status = "rejected"
-                            result_message = (
-                                "Операция отклонена оператором Helpdesk."
-                            )
-                            return
+                    from sdk.models import HandlerContext
+                    from sdk.lease_renewer import LeaseRenewer
 
-                    await self._publish_event(
-                        job_id,
-                        "progress",
-                        {
-                            "phase": "ad_execution",
-                            "pct": 60,
-                            "detail": f"Добавление {identity} в группу WLAN-WORKNET",
-                        },
+                    ctx = HandlerContext(
+                        command_id=job_id,
+                        task_id=task_id,
+                        redis_client=self.redis,
+                        core_api_client=self.api_client,
+                        claim_token=claim_token,
+                        node_name=CONSUMER_NAME,
                     )
-                    res = await self.ad_exec.grant_wlan_access(identity)
+                    renewer = LeaseRenewer(
+                        command_id=job_id,
+                        worker_id=CONSUMER_NAME,
+                        claim_token=claim_token or "",
+                        cancellation_token=ctx.cancellation_token,
+                        api_client=self.api_client,
+                        redis=self.redis,
+                        lease_seconds=120,
+                        interval_seconds=15,
+                    )
+                    async with renewer:
+                        res = await handler.run_pipeline(ctx, params)
                     result_status = "success" if res.success else "failed"
                     result_message = res.message
-                    result_payload = {"log": res.log}
-
-                    if res.success and task_id > 0 and auto_close:
-                        await self._publish_event(
-                            job_id,
-                            "progress",
-                            {
-                                "phase": "closing_ticket",
-                                "pct": 90,
-                                "detail": "Закрытие заявки",
-                            },
-                        )
-                        close_ticket_payload = {
-                            "comment": f"Добрый день! Доступ к сети Wi-Fi успешно предоставлен для учетной записи {identity}.",
-                            "status_id": 29,
-                            "expenses": 15,
-                        }
+                    result_payload = {**(res.payload or {}), "verified": res.success}
+                    failure_kind = res.failure_kind
+                    failure_code = res.failure_code
+                    verified_failure = res.verified_failure
 
             # 2. Создание пользователя AD через строгий v2 pipeline
             elif action == "create_user":
@@ -619,7 +595,11 @@ class WindowsExecutionWorker:
             # 3. Установка / Диагностика принтера
             elif action in ("install_printer", "printer"):
                 handler = self.registry.get("install_printer")
-                if is_v2 and handler is not None:
+                if not is_v2 or handler is None:
+                    result_message = "install_printer разрешен только через v2 Worker SDK"
+                    failure_kind = "configuration"
+                    failure_code = "install_printer_v2_required"
+                else:
                     from sdk.models import HandlerContext
                     from sdk.lease_renewer import LeaseRenewer
 
@@ -667,85 +647,6 @@ class WindowsExecutionWorker:
                     failure_kind = res.failure_kind
                     failure_code = res.failure_code
                     verified_failure = res.verified_failure
-                    if res.success and task_id > 0 and auto_close:
-                        close_ticket_payload = {
-                            "comment": f"Добрый день! Принтер {params.get('printer_name')} успешно подключен на вашем компьютере {params.get('pc_name')}.",
-                            "status_id": 29,
-                            "expenses": 15,
-                        }
-                else:
-                    pc_name = params.get("pc_name") or params.get("target")
-                    printer_name = params.get("printer_name") or params.get(
-                        "printer_address"
-                    )
-
-                    if not pc_name or not printer_name:
-                        result_message = "Не указаны обязательные параметры (pc_name или printer_name)."
-                        failure_kind = "configuration"
-                        failure_code = "printer_parameters_missing"
-                    else:
-                        # Fail-Fast проверка доступности ПК по сети перед WinRM
-                        await self._publish_event(
-                            job_id,
-                            "progress",
-                            {
-                                "phase": "host_ping",
-                                "pct": 10,
-                                "detail": f"Проверка доступности {pc_name}...",
-                            },
-                        )
-                        is_online = await self._precheck_host_tcp(pc_name, 5985, 1.5)
-                        if not is_online:
-                            result_status = "failed"
-                            result_message = f"Рабочая станция {pc_name} недоступна по сети (WinRM порт 5985 закрыт/выключен)."
-                            failure_kind = "infrastructure"
-                            failure_code = "host_unreachable"
-                        else:
-                            if mode == "confirm":
-                                approved = await self._wait_for_confirmation(
-                                    job_id,
-                                    prompt=f"Установить принтер '{printer_name}' на ПК '{pc_name}'?",
-                                    details={
-                                        "pc_name": pc_name,
-                                        "printer_name": printer_name,
-                                    },
-                                )
-                                if not approved:
-                                    result_status = "rejected"
-                                    result_message = "Операция отклонена оператором."
-                                    return
-
-                            await self._publish_event(
-                                job_id,
-                                "progress",
-                                {
-                                    "phase": "installing",
-                                    "pct": 50,
-                                    "detail": f"Установка принтера {printer_name} на {pc_name}",
-                                },
-                            )
-                            res = await self.printer_exec.install_printer(
-                                pc_name,
-                                printer_name,
-                                printer_ip=params.get("printer_ip") or params.get("printer_address"),
-                            )
-                            result_status = "success" if res.success else "failed"
-                            result_message = res.message
-                            result_payload = {
-                                "log": res.log,
-                                "installed": res.success,
-                                "verified": res.success,
-                            }
-                            failure_kind = res.failure_kind
-                            failure_code = res.failure_code
-                            verified_failure = res.verified_failure
-
-                            if res.success and task_id > 0 and auto_close:
-                                close_ticket_payload = {
-                                    "comment": f"Добрый день! Принтер {printer_name} успешно подключен на вашем компьютере {pc_name}.",
-                                    "status_id": 29,
-                                    "expenses": 15,
-                                }
 
             else:
                 result_message = f"Неизвестное действие: '{action}'"
@@ -781,28 +682,6 @@ class WindowsExecutionWorker:
                     json.dumps(final_data, ensure_ascii=False),
                     ex=3600 * 24 * 7,
                 )
-
-                # Финализация выполняется только после публикации проверяемого
-                # success proof. Core API сверяет job_id, task_id и action.
-                if result_status == "success" and close_ticket_payload:
-                    close_ok = await self.api_client.add_comment(
-                        task_id=task_id,
-                        comment=close_ticket_payload["comment"],
-                        status_id=close_ticket_payload["status_id"],
-                        expenses=close_ticket_payload["expenses"],
-                        verified_execution_job_id=job_id,
-                    )
-                    final_data["ticket_close_ok"] = close_ok
-                    if not close_ok:
-                        final_data["message"] = (
-                            f"{result_message} Инфраструктурное действие выполнено, "
-                            "но заявка не была финализирована."
-                        )
-                    await self.redis.set(
-                        f"execution_job:{job_id}",
-                        json.dumps(final_data, ensure_ascii=False),
-                        ex=3600 * 24 * 7,
-                    )
             # Публикуем событие завершения
             await self._publish_event(job_id, result_status, final_data)
             print(

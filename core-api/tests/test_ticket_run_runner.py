@@ -61,6 +61,7 @@ async def seed_autopilot_prerequisites(db) -> None:
         service_id=19,
         scenario_key="printer_installation",
         enabled=True,
+        rollout_mode="legacy",
         config_json={},
         updated_by="test",
     ))

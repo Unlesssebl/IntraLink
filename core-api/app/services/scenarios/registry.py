@@ -7,6 +7,11 @@ import hashlib
 from app.services.scenarios.base import Scenario, ScenarioContext
 from app.services.scenarios.builtin import built_in_scenarios
 
+SCENARIO_KEY_ALIASES: dict[str, str] = {
+    "user_creation": "create_user",
+    "printer_installation": "install_printer",
+}
+
 
 class ScenarioRegistry:
     def __init__(self, scenarios: tuple[Scenario, ...] | None = None) -> None:
@@ -14,6 +19,10 @@ class ScenarioRegistry:
         self._order: list[tuple[str, int]] = []
         for scenario in scenarios or built_in_scenarios():
             self.register(scenario)
+
+    @staticmethod
+    def normalize_key(key: str) -> str:
+        return SCENARIO_KEY_ALIASES.get(key, key)
 
     def register(self, scenario: Scenario) -> None:
         key = (scenario.definition.key, scenario.definition.version)
@@ -23,9 +32,10 @@ class ScenarioRegistry:
         self._order.append(key)
 
     def get(self, key: str, version: int | None = None) -> Scenario | None:
+        canonical_key = self.normalize_key(key)
         if version is not None:
-            return self._scenarios.get((key, version))
-        versions = [item for item in self._order if item[0] == key]
+            return self._scenarios.get((canonical_key, version)) or self._scenarios.get((key, version))
+        versions = [item for item in self._order if item[0] in (canonical_key, key)]
         if not versions:
             return None
         return self._scenarios[max(versions, key=lambda item: item[1])]

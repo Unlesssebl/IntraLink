@@ -10,7 +10,7 @@ import {
   type TicketRunCommand,
 } from '../../lib/ticketRuns';
 import { applyTask, reanalyzeTask, confirmExecutionJob } from '../../lib/tasks';
-import { submitDecisionFeedback } from '../../lib/decisionsApi';
+import { submitDecisionFeedback, overrideTaskFacts } from '../../lib/decisionsApi';
 import {
   captureInitialDecisionVersion,
   isDecisionVersionStale,
@@ -41,8 +41,8 @@ export interface UseUnifiedDecisionReturn {
   setSelectedStatusOverride: (statusId: number | null) => void;
 
   // Вкладки оснований
-  selectedTab: 'rules' | 'rag' | 'ai' | 'diagnostics' | 'completeness';
-  setSelectedTab: (tab: 'rules' | 'rag' | 'ai' | 'diagnostics' | 'completeness') => void;
+  selectedTab: 'facts' | 'rules' | 'rag' | 'ai' | 'diagnostics' | 'completeness';
+  setSelectedTab: (tab: 'facts' | 'rules' | 'rag' | 'ai' | 'diagnostics' | 'completeness') => void;
 
   // Состояние жизненного цикла и защиты
   ticketRun: TicketRun | null;
@@ -58,6 +58,7 @@ export interface UseUnifiedDecisionReturn {
   handleCancelTicket: () => Promise<void>;
   handleTakeTicket: () => Promise<void>;
   handleReanalyze: () => Promise<void>;
+  handleOverrideFacts: (facts: Record<string, any>) => Promise<boolean>;
   handleHitlApprove: () => Promise<void>;
   handleHitlReject: () => Promise<void>;
   handleTogglePauseRun: () => Promise<void>;
@@ -144,8 +145,8 @@ export function useUnifiedDecision({
   const [selectedTemplateKey, setSelectedTemplateKey] = useState<string>('');
   const [selectedStatusOverride, setSelectedStatusOverride] = useState<number | null>(null);
   const [selectedTab, setSelectedTab] = useState<
-    'rules' | 'rag' | 'ai' | 'diagnostics' | 'completeness'
-  >('rules');
+    'facts' | 'rules' | 'rag' | 'ai' | 'diagnostics' | 'completeness'
+  >('facts');
 
   const [ticketRun, setTicketRun] = useState<TicketRun | null>(null);
   const [runEvents, setRunEvents] = useState<TicketRunEvent[]>([]);
@@ -365,6 +366,47 @@ export function useUnifiedDecision({
     }
   }, [rawId, reanalyzing, onRefreshDetails, replyText, setReplyText, onToast]);
 
+  // Ручная корректировка фактов сценария (Fact-Override)
+  const handleOverrideFacts = useCallback(
+    async (facts: Record<string, any>): Promise<boolean> => {
+      if (!rawId) return false;
+      setSubmitting(true);
+      try {
+        const expectedVersion =
+          details?.decision_envelope?.decision_version || details?.decision?.version;
+        const res = await overrideTaskFacts(rawId, {
+          expected_decision_version: expectedVersion,
+          facts,
+          current_draft_text: replyText,
+        });
+
+        if (res.decision_envelope?.response_draft && !replyText.trim()) {
+          setReplyText(res.decision_envelope.response_draft);
+        }
+
+        if (onRefreshDetails) {
+          await onRefreshDetails();
+        }
+        await loadRunState();
+
+        onToast({
+          type: 'success',
+          message: `Факты сценария обновлены. Сформировано решение #${res.decision_envelope.decision_version}.`,
+        });
+        return true;
+      } catch (err: any) {
+        onToast({
+          type: 'error',
+          message: `Ошибка корректировки фактов: ${err.message || err}`,
+        });
+        return false;
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [rawId, details, replyText, setReplyText, onRefreshDetails, loadRunState, onToast]
+  );
+
   const handleTogglePauseRun = useCallback(async () => {
     if (!ticketRun) return;
     try {
@@ -513,6 +555,7 @@ export function useUnifiedDecision({
     handleCancelTicket,
     handleTakeTicket,
     handleReanalyze,
+    handleOverrideFacts,
     handleHitlApprove,
     handleHitlReject,
     handleTogglePauseRun,

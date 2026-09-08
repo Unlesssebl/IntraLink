@@ -34,12 +34,14 @@ async def enable_user_creation_autopilot(db) -> TicketRunService:
                 service_id=53,
                 scenario_key="user_creation",
                 enabled=True,
+                rollout_mode="legacy",
                 config_json={},
                 updated_by="test",
             )
         )
     else:
         scenario.enabled = True
+        scenario.rollout_mode = "legacy"
     await db.commit()
     return service
 

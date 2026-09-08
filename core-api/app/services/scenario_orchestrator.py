@@ -126,9 +126,38 @@ class TicketRunOrchestrator:
         return await self.db.scalar(
             select(CommandRecord)
             .where(CommandRecord.ticket_run_id == run_id)
-            .order_by(CommandRecord.created_at.desc())
+            .order_by(
+                CommandRecord.created_at.desc(),
+                CommandRecord.idempotency_key.desc(),
+            )
             .limit(1)
         )
+
+    async def _resolve_service_auth(self, explicit_auth: str | None) -> str | None:
+        if explicit_auth:
+            return explicit_auth
+        try:
+            from app.services.worker import get_redis_client
+            from app.services.crypto import decrypt_token
+            r = get_redis_client()
+            encrypted_auth = await r.get("worker:service_auth_b64")
+            if encrypted_auth:
+                return decrypt_token(encrypted_auth)
+        except Exception:
+            pass
+        try:
+            import base64
+            from app.services.vault import get_raw_setting, KEY_SERVICE_ACCOUNT
+            from app.services.crypto import decrypt_token
+            config = await get_raw_setting(self.db, KEY_SERVICE_ACCOUNT) or {}
+            login = str(config.get("login") or "").strip()
+            enc_pwd = config.get("encrypted_password")
+            if login and enc_pwd:
+                pwd = decrypt_token(enc_pwd)
+                return base64.b64encode(f"{login}:{pwd}".encode("utf-8")).decode("ascii")
+        except Exception:
+            pass
+        return None
 
     async def _reconcile_command(
         self,
@@ -145,29 +174,34 @@ class TicketRunOrchestrator:
         event_key = f"command:{command.id}:{command.version}:{command.status}"
         if await self._event_exists(run.id, event_key):
             return None
+        expected_state = (
+            TicketRunState.WAITING_APPROVAL.value
+            if command.status == "awaiting_approval"
+            else TicketRunState.RUNNING.value
+        )
         if command.status in {"awaiting_approval", "queued", "running"}:
-            run.state = (
-                TicketRunState.WAITING_APPROVAL.value
-                if command.status == "awaiting_approval"
-                else TicketRunState.RUNNING.value
-            )
-            return OrchestrationResult(run, None, command)
+            if run.state == expected_state:
+                return None
+            run.state = expected_state
         if command.status in {"failed", "needs_review", "rejected", "cancelled"}:
             run.state = TicketRunState.PAUSED.value
             run.pause_reason = f"command_{command.status}"
             run.error_code = run.pause_reason
             run.error_message = command.error_message
         elif command.status == "succeeded" and command.action == "create_user":
-            if not service_auth_b64:
+            auth = await self._resolve_service_auth(service_auth_b64)
+            if not auth:
                 run.state = TicketRunState.PAUSED.value
                 run.pause_reason = "verified_result_delivery_requires_auth"
             else:
                 await CommandDeliveryService(self.db).deliver_create_user(
                     command.id,
                     actor=actor,
-                    service_auth_b64=service_auth_b64,
+                    service_auth_b64=auth,
                 )
-                return OrchestrationResult(run, None, command)
+                run.state = TicketRunState.COMPLETED.value
+                run.outcome = "completed"
+                run.completed_at = dt.datetime.now(dt.timezone.utc)
         elif command.status == "succeeded" and run.current_step == "request_clarification":
             run.state = TicketRunState.WAITING_ANSWER.value
             run.waiting_reason = "clarification_requested"
@@ -339,6 +373,13 @@ class TicketRunOrchestrator:
         run = await self.db.get(TicketRun, run_id)
         if run is None:
             raise ValueError("run_not_found")
+        from app.services.scenarios.shadow_comparator import ShadowComparator
+        comparison = ShadowComparator.compare(
+            legacy_scenario_key=legacy_scenario_key,
+            envelope=envelope,
+            task=task,
+            comments=comments,
+        )
         event_key = "shadow:" + ticket_event_key(
             task, comments, "ticket_changed"
         ).split(":", 1)[-1]
@@ -355,6 +396,9 @@ class TicketRunOrchestrator:
                     "outcome_kind": envelope.outcome.kind,
                     "outcome_key": getattr(envelope.outcome, "outcome_key", None),
                     "confidence": envelope.confidence,
+                    "diverged": comparison.diverged,
+                    "divergence_reasons": comparison.divergence_reasons,
+                    "details": comparison.details,
                 },
             )
             await self.db.commit()
@@ -378,6 +422,8 @@ class TicketRunOrchestrator:
         initial = await self.db.get(TicketRun, run_id)
         if initial is None:
             raise ValueError("run_not_found")
+        if await self._event_exists(run_id, key):
+            return OrchestrationResult(initial, None, None, duplicate_event=True)
         reconciled = await self._reconcile_command(
             initial,
             actor=actor,
@@ -387,8 +433,6 @@ class TicketRunOrchestrator:
         )
         if reconciled is not None:
             return reconciled
-        if await self._event_exists(run_id, key):
-            return OrchestrationResult(initial, None, None, duplicate_event=True)
         initial_version = initial.version
         initial_fact_revision = initial.fact_revision
         initial_decision_version = initial.decision_version or 0
@@ -455,6 +499,9 @@ class TicketRunOrchestrator:
             run.pause_reason = "no_executable_resolution"
             run.current_step = "manual_review"
         else:
+            run.state = TicketRunState.RUNNING.value
+            run.pause_reason = None
+            run.waiting_reason = None
             action, target, parameters = payload
             command = await self.commands.dispatch(
                 run=run,

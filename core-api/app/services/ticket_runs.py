@@ -255,7 +255,7 @@ class TicketRunService:
         config: dict[str, Any],
         actor: str,
         expected_version: int | None,
-        rollout_mode: str = "legacy",
+        rollout_mode: str = "active",
     ) -> AutopilotScenario:
         supported = {
             "printer_installation",
@@ -761,6 +761,127 @@ class TicketRunService:
         await self.db.commit()
         await self.db.refresh(run)
         return run
+
+    async def rollback_scenarios(
+        self,
+        *,
+        service_id: int | None = None,
+        target_mode: str = "shadow",
+        actor: str = "operator",
+        reason: str = "Emergency rollback",
+    ) -> list[AutopilotScenario]:
+        if target_mode not in {"legacy", "shadow"}:
+            raise ValueError("target_mode must be legacy or shadow")
+        query = select(AutopilotScenario).with_for_update()
+        if service_id is not None:
+            query = query.where(AutopilotScenario.service_id == service_id)
+        records = list((await self.db.scalars(query)).all())
+        for record in records:
+            record.rollout_mode = target_mode
+            record.version += 1
+            record.updated_by = actor
+        await self.db.commit()
+        for record in records:
+            await self.db.refresh(record)
+        return records
+
+    async def get_shadow_metrics(
+        self,
+        *,
+        days: int = 7,
+        scenario_key: str | None = None,
+        limit_recent: int = 20,
+    ) -> dict[str, Any]:
+        import datetime as dt
+        since_dt = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
+        query = (
+            select(TicketRunEvent, TicketRun.task_id)
+            .join(TicketRun, TicketRunEvent.ticket_run_id == TicketRun.id)
+            .where(
+                TicketRunEvent.event_type == "scenario_shadow_compared",
+                TicketRunEvent.created_at >= since_dt,
+            )
+            .order_by(TicketRunEvent.created_at.desc())
+        )
+        rows = list((await self.db.execute(query)).all())
+
+        total = 0
+        matched = 0
+        diverged = 0
+        total_confidence = 0.0
+        by_scenario: dict[str, dict[str, Any]] = {}
+        recent_divergences: list[dict[str, Any]] = []
+
+        for event, task_id in rows:
+            details = event.details_json if isinstance(event.details_json, dict) else {}
+            sc_key = str(details.get("scenario_key") or "unknown")
+            if scenario_key and sc_key != scenario_key:
+                continue
+
+            total += 1
+            is_div = bool(details.get("diverged", False))
+            conf = float(details.get("confidence") or 0.0)
+            total_confidence += conf
+
+            if is_div:
+                diverged += 1
+                if len(recent_divergences) < limit_recent:
+                    recent_divergences.append(
+                        {
+                            "ticket_run_id": str(event.ticket_run_id),
+                            "task_id": task_id,
+                            "scenario_key": sc_key,
+                            "divergence_reasons": details.get("divergence_reasons", []),
+                            "confidence": conf,
+                            "created_at": event.created_at.isoformat() if event.created_at else None,
+                            "details": details.get("details", {}),
+                        }
+                    )
+            else:
+                matched += 1
+
+            if sc_key not in by_scenario:
+                by_scenario[sc_key] = {
+                    "total": 0,
+                    "matched": 0,
+                    "diverged": 0,
+                    "total_conf": 0.0,
+                }
+            by_scenario[sc_key]["total"] += 1
+            by_scenario[sc_key]["total_conf"] += conf
+            if is_div:
+                by_scenario[sc_key]["diverged"] += 1
+            else:
+                by_scenario[sc_key]["matched"] += 1
+
+        overall_divergence_rate = round((diverged / total * 100), 2) if total > 0 else 0.0
+        by_scenario_stats = {}
+        for k, v in by_scenario.items():
+            tot = v["total"]
+            div = v["diverged"]
+            by_scenario_stats[k] = {
+                "total": tot,
+                "matched": v["matched"],
+                "diverged": div,
+                "divergence_rate_percent": round((div / tot * 100), 2) if tot > 0 else 0.0,
+                "avg_confidence": round(v["total_conf"] / tot, 3) if tot > 0 else 0.0,
+            }
+
+        return {
+            "period_days": days,
+            "total_shadow_evaluations": total,
+            "total_diverged": diverged,
+            "overall_divergence_rate_percent": overall_divergence_rate,
+            "by_scenario": by_scenario_stats,
+            "recent_divergences": recent_divergences,
+            "summary": {
+                "total_evaluations": total,
+                "matched": matched,
+                "diverged": diverged,
+                "divergence_rate_percent": overall_divergence_rate,
+                "avg_confidence": round(total_confidence / total, 3) if total > 0 else 0.0,
+            },
+        }
 
 
 async def register_observed_assignments(

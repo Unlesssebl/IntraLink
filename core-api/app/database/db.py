@@ -378,7 +378,7 @@ class AutopilotScenario(Base):
         Boolean, nullable=False, default=False, server_default="false"
     )
     rollout_mode: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="legacy", server_default="legacy"
+        String(16), nullable=False, default="active", server_default="active"
     )
     version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
@@ -632,7 +632,12 @@ class CommandRecord(Base):
     plan_expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     lease_expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+        server_default=func.now(),
+        index=True,
+    )
     updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

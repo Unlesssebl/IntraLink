@@ -192,15 +192,24 @@ class TicketRunRunner:
             "scenario_key"
         )
         service_id = int(task.get("ServiceId") or 0)
+        from app.services.scenarios.registry import ScenarioRegistry
+
+        norm_key = (
+            ScenarioRegistry.normalize_key(configured_key)
+            if configured_key
+            else configured_key
+        )
         scenario_config = await self.db.scalar(
             select(AutopilotScenario).where(
                 AutopilotScenario.service_id == service_id,
-                AutopilotScenario.scenario_key == configured_key,
+                AutopilotScenario.scenario_key.in_([configured_key, norm_key]),
                 AutopilotScenario.enabled.is_(True),
             )
         )
         rollout_mode = (
-            scenario_config.rollout_mode if scenario_config is not None else "legacy"
+            scenario_config.rollout_mode
+            if (scenario_config is not None and scenario_config.rollout_mode)
+            else "active"
         )
         use_scenario_orchestrator = rollout_mode == "active"
         if rollout_mode == "canary":

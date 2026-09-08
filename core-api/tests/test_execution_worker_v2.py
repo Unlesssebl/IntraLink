@@ -80,7 +80,17 @@ async def test_diagnose_host_has_a_real_worker_handler():
 @pytest.mark.asyncio
 async def test_verified_printer_failure_is_persisted_as_structured_result():
     worker = worker_module.WindowsExecutionWorker()
-    worker.registry._handlers.pop("install_printer", None)
+    mock_handler = AsyncMock()
+    mock_handler.run_pipeline = AsyncMock(
+        return_value=ActionResult(
+            success=False,
+            message="Принтер отсутствует после установки",
+            failure_kind="verified_failure",
+            failure_code="printer_not_found_after_install",
+            verified_failure=True,
+        )
+    )
+    worker.registry._handlers["install_printer"] = mock_handler
     worker.redis = AsyncMock()
     worker.api_client.claim_command_v2 = AsyncMock(
         return_value=(
@@ -95,16 +105,6 @@ async def test_verified_printer_failure_is_persisted_as_structured_result():
         )
     )
     worker.api_client.finish_command_v2 = AsyncMock(return_value=True)
-    worker._precheck_host_tcp = AsyncMock(return_value=True)
-    worker.printer_exec.install_printer = AsyncMock(
-        return_value=ActionResult(
-            success=False,
-            message="Принтер отсутствует после установки",
-            failure_kind="verified_failure",
-            failure_code="printer_not_found_after_install",
-            verified_failure=True,
-        )
-    )
 
     ack = await worker._process_job(
         worker_module.STREAM_EXECUTION_QUEUE_V2,
