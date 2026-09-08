@@ -96,6 +96,13 @@ async def lifespan(_app: FastAPI):
     except Exception as e:
         logger.warning("Vault: ошибка авто-прогрева кэша в Redis: %s", e)
 
+    # Очистка зависших батчей триажа при рестарте сервера (Stale Recovery)
+    try:
+        from app.routers.triage import cleanup_stale_triage_batches
+        await cleanup_stale_triage_batches(get_redis_client())
+    except Exception as e:
+        logger.warning("Ошибка проверки зависших батчей триажа: %s", e)
+
     # Запуск Pub/Sub слушателя инвалидации кэша правил
     invalidation_task = asyncio.create_task(
         start_rules_invalidation_listener(settings.REDIS_URL)

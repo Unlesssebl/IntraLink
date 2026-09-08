@@ -10,7 +10,7 @@ import time
 import uuid
 from typing import Any, Literal
 import jwt
-from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -150,7 +150,36 @@ class RAGSyncRequest(BaseModel):
 
 
 class AnalyzeBatchRequest(BaseModel):
-    task_ids: list[int] = Field(..., min_length=1, max_length=300)
+    task_ids: list[int] = Field(..., min_length=1, max_length=500)
+
+
+class AnalyzeBatchResponse(BaseModel):
+    status: str
+    batch_id: str
+    total: int
+    already_running: bool = False
+    message: str
+
+
+class BatchStatusResponse(BaseModel):
+    batch_id: str
+    status: str
+    total: int
+    processed: int
+    failed: int
+    skipped: int
+    progress_pct: int
+    is_active: bool
+    completed_task_ids: list[int]
+
+
+class CancelBatchResponse(BaseModel):
+    batch_id: str
+    status: str
+    message: str
+
+
+_active_background_tasks: set[asyncio.Task] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -579,22 +608,28 @@ async def reanalyze_task_endpoint(
     )
 
 
-@router.post(
-    "/analyze-batch",
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(require_permission("triage:mutate"))],
-)
-async def analyze_batch_endpoint(
-    payload: AnalyzeBatchRequest,
-    service_auth_b64: str = Depends(get_service_auth_b64),
-    operator: str = Depends(principal_subject),
-    _origin: None = Depends(verify_trusted_origin),
-):
-    task_ids = list(dict.fromkeys(payload.task_ids))
+async def _execute_triage_batch_worker(
+    *,
+    batch_id: str,
+    task_ids: list[int],
+    service_auth_b64: str,
+    operator: str,
+) -> None:
+    redis = get_redis_client()
     semaphore = asyncio.Semaphore(settings.TRIAGE_ANALYSIS_MAX_CONCURRENCY)
+    total = len(task_ids)
+    start_time = time.time()
+    abort_key = f"triage:batch:{batch_id}:abort"
+    batch_key = f"triage:batch:{batch_id}"
+    completed_set_key = f"triage:batch:{batch_id}:completed"
 
-    async def analyze_one(task_id: int) -> dict[str, Any]:
+    async def analyze_single(task_id: int) -> dict[str, Any]:
+        if await redis.exists(abort_key):
+            return {"task_id": task_id, "status": "cancelled"}
+
         async with semaphore, AsyncSessionLocal() as session:
+            if await redis.exists(abort_key):
+                return {"task_id": task_id, "status": "cancelled"}
             try:
                 card = await run_explicit_analysis(
                     task_id=task_id,
@@ -603,36 +638,308 @@ async def analyze_batch_endpoint(
                     db=session,
                     force=False,
                 )
-                return {
+                processed = await redis.hincrby(batch_key, "processed", 1)
+                await redis.sadd(completed_set_key, str(task_id))
+                await redis.hset(batch_key, "heartbeat", str(time.time()))
+
+                failed = int(await redis.hget(batch_key, "failed") or 0)
+                pct = int(min(100, round((processed + failed) / max(1, total) * 100)))
+
+                event_payload = {
+                    "event": "task_analyzed",
+                    "batch_id": batch_id,
                     "task_id": task_id,
                     "status": "processed",
-                    "analysis": card["analysis"],
+                    "analysis": card.get("analysis"),
+                    "scenario_key": card.get("scenario_key"),
+                    "progress": {
+                        "processed": processed,
+                        "failed": failed,
+                        "total": total,
+                        "pct": pct,
+                    },
                 }
+                await redis.publish(
+                    "events:all", json.dumps(event_payload, ensure_ascii=False)
+                )
+                return {"task_id": task_id, "status": "processed"}
             except HTTPException as exc:
-                status_value = (
-                    "skipped" if exc.detail == "analysis_already_running" else "failed"
+                if exc.detail == "analysis_already_running":
+                    await redis.hincrby(batch_key, "skipped", 1)
+                    status_val = "skipped"
+                else:
+                    await redis.hincrby(batch_key, "failed", 1)
+                    status_val = "failed"
+                await redis.hset(batch_key, "heartbeat", str(time.time()))
+                processed = int(await redis.hget(batch_key, "processed") or 0)
+                failed = int(await redis.hget(batch_key, "failed") or 0)
+                pct = int(min(100, round((processed + failed) / max(1, total) * 100)))
+
+                event_payload = {
+                    "event": "task_analyzed",
+                    "batch_id": batch_id,
+                    "task_id": task_id,
+                    "status": status_val,
+                    "error": str(exc.detail),
+                    "progress": {
+                        "processed": processed,
+                        "failed": failed,
+                        "total": total,
+                        "pct": pct,
+                    },
+                }
+                await redis.publish(
+                    "events:all", json.dumps(event_payload, ensure_ascii=False)
                 )
                 return {
                     "task_id": task_id,
-                    "status": status_value,
+                    "status": status_val,
                     "error": str(exc.detail),
                 }
             except Exception:
-                logger.exception("Batch analysis failed for task %s", task_id)
+                logger.exception("Async batch analysis failed for task %s", task_id)
+                failed = await redis.hincrby(batch_key, "failed", 1)
+                await redis.hset(batch_key, "heartbeat", str(time.time()))
+                processed = int(await redis.hget(batch_key, "processed") or 0)
+                pct = int(min(100, round((processed + failed) / max(1, total) * 100)))
+
+                event_payload = {
+                    "event": "task_analyzed",
+                    "batch_id": batch_id,
+                    "task_id": task_id,
+                    "status": "failed",
+                    "error": "analysis_failed",
+                    "progress": {
+                        "processed": processed,
+                        "failed": failed,
+                        "total": total,
+                        "pct": pct,
+                    },
+                }
+                await redis.publish(
+                    "events:all", json.dumps(event_payload, ensure_ascii=False)
+                )
                 return {
                     "task_id": task_id,
                     "status": "failed",
                     "error": "analysis_failed",
                 }
 
-    results = await asyncio.gather(*(analyze_one(task_id) for task_id in task_ids))
-    return {
-        "total": len(task_ids),
-        "processed": sum(1 for item in results if item["status"] == "processed"),
-        "skipped": sum(1 for item in results if item["status"] == "skipped"),
-        "failed": sum(1 for item in results if item["status"] == "failed"),
-        "results": results,
-    }
+    try:
+        await asyncio.gather(*(analyze_single(tid) for tid in task_ids))
+    except asyncio.CancelledError:
+        logger.warning("Batch %s cancelled via coroutine cancellation", batch_id)
+    except Exception as err:
+        logger.exception("Unexpected error in batch %s: %s", batch_id, err)
+    finally:
+        is_aborted = bool(await redis.exists(abort_key))
+        final_status = "cancelled" if is_aborted else "completed"
+        processed = int(await redis.hget(batch_key, "processed") or 0)
+        failed = int(await redis.hget(batch_key, "failed") or 0)
+        skipped = int(await redis.hget(batch_key, "skipped") or 0)
+        elapsed = round(time.time() - start_time, 2)
+
+        await redis.hset(
+            batch_key,
+            mapping={
+                "status": final_status,
+                "elapsed_seconds": str(elapsed),
+                "heartbeat": str(time.time()),
+            },
+        )
+        active_id = await redis.get("triage:batch:active_id")
+        if active_id == batch_id:
+            await redis.delete("triage:batch:active_id")
+
+        if is_aborted:
+            final_event = {
+                "event": "batch_cancelled",
+                "batch_id": batch_id,
+                "total": total,
+                "processed": processed,
+                "failed": failed,
+                "elapsed_seconds": elapsed,
+            }
+        else:
+            final_event = {
+                "event": "batch_completed",
+                "batch_id": batch_id,
+                "total": total,
+                "processed": processed,
+                "failed": failed,
+                "skipped": skipped,
+                "elapsed_seconds": elapsed,
+            }
+        await redis.publish("events:all", json.dumps(final_event, ensure_ascii=False))
+        logger.info(
+            "Batch %s finalized (%s): %d processed, %d failed, %d skipped in %.2fs",
+            batch_id,
+            final_status,
+            processed,
+            failed,
+            skipped,
+            elapsed,
+        )
+
+
+async def cleanup_stale_triage_batches(redis: Any) -> None:
+    try:
+        active_id = await redis.get("triage:batch:active_id")
+        if not active_id:
+            return
+        batch_key = f"triage:batch:{active_id}"
+        data = await redis.hgetall(batch_key)
+        if not data:
+            await redis.delete("triage:batch:active_id")
+            return
+        heartbeat = float(data.get("heartbeat") or data.get("created_at") or 0)
+        if time.time() - heartbeat > 30.0:
+            logger.warning(
+                "Stale active triage batch %s detected on startup (heartbeat age: %.1fs). Marking as interrupted.",
+                active_id,
+                time.time() - heartbeat,
+            )
+            await redis.hset(batch_key, "status", "interrupted")
+            await redis.delete("triage:batch:active_id")
+    except Exception as exc:
+        logger.warning("Error cleaning up stale triage batches: %s", exc)
+
+
+@router.post(
+    "/analyze-batch",
+    response_model=AnalyzeBatchResponse,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
+async def analyze_batch_endpoint(
+    payload: AnalyzeBatchRequest,
+    response: Response,
+    service_auth_b64: str = Depends(get_service_auth_b64),
+    operator: str = Depends(principal_subject),
+    _origin: None = Depends(verify_trusted_origin),
+):
+    clean_task_ids = [tid for tid in dict.fromkeys(payload.task_ids) if tid > 0]
+    if not clean_task_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no_valid_task_ids")
+
+    redis = get_redis_client()
+
+    # Проверка Single Flight: если батч уже активен, возвращаем его
+    active_id = await redis.get("triage:batch:active_id")
+    if active_id:
+        active_status = await redis.hget(f"triage:batch:{active_id}", "status")
+        if active_status == "running":
+            total_raw = await redis.hget(f"triage:batch:{active_id}", "total")
+            active_total = int(total_raw) if total_raw else len(clean_task_ids)
+            response.status_code = status.HTTP_200_OK
+            return AnalyzeBatchResponse(
+                status="already_running",
+                batch_id=active_id,
+                total=active_total,
+                already_running=True,
+                message="Пакетный анализ уже выполняется",
+            )
+
+    batch_id = f"batch_{uuid.uuid4().hex[:12]}"
+    await redis.set("triage:batch:active_id", batch_id, ex=1800)
+    batch_key = f"triage:batch:{batch_id}"
+    await redis.hset(
+        batch_key,
+        mapping={
+            "batch_id": batch_id,
+            "total": str(len(clean_task_ids)),
+            "processed": "0",
+            "failed": "0",
+            "skipped": "0",
+            "status": "running",
+            "created_at": str(time.time()),
+            "heartbeat": str(time.time()),
+            "operator": operator,
+        },
+    )
+    await redis.expire(batch_key, 1800)
+    await redis.expire(f"triage:batch:{batch_id}:completed", 1800)
+
+    task = asyncio.create_task(
+        _execute_triage_batch_worker(
+            batch_id=batch_id,
+            task_ids=clean_task_ids,
+            service_auth_b64=service_auth_b64,
+            operator=operator,
+        )
+    )
+    _active_background_tasks.add(task)
+    task.add_done_callback(_active_background_tasks.discard)
+
+    response.status_code = status.HTTP_202_ACCEPTED
+    return AnalyzeBatchResponse(
+        status="accepted",
+        batch_id=batch_id,
+        total=len(clean_task_ids),
+        already_running=False,
+        message="Пакетный анализ запущен в фоновом режиме",
+    )
+
+
+@router.get(
+    "/analyze-batch/{batch_id}",
+    response_model=BatchStatusResponse,
+    dependencies=[Depends(require_permission("triage:read"))],
+)
+async def get_analyze_batch_status_endpoint(batch_id: str):
+    redis = get_redis_client()
+    batch_key = f"triage:batch:{batch_id}"
+    data = await redis.hgetall(batch_key)
+    if not data:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "batch_not_found")
+
+    total = int(data.get("total") or 0)
+    processed = int(data.get("processed") or 0)
+    failed = int(data.get("failed") or 0)
+    skipped = int(data.get("skipped") or 0)
+    status_val = data.get("status") or "unknown"
+    pct = int(min(100, round((processed + failed) / max(1, total) * 100)))
+
+    completed_raw = await redis.smembers(f"triage:batch:{batch_id}:completed")
+    completed_task_ids = [int(tid) for tid in completed_raw if tid.isdigit()]
+
+    return BatchStatusResponse(
+        batch_id=batch_id,
+        status=status_val,
+        total=total,
+        processed=processed,
+        failed=failed,
+        skipped=skipped,
+        progress_pct=pct,
+        is_active=status_val == "running",
+        completed_task_ids=completed_task_ids,
+    )
+
+
+@router.post(
+    "/analyze-batch/{batch_id}/cancel",
+    response_model=CancelBatchResponse,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
+async def cancel_analyze_batch_endpoint(
+    batch_id: str,
+    _origin: None = Depends(verify_trusted_origin),
+):
+    redis = get_redis_client()
+    batch_key = f"triage:batch:{batch_id}"
+    if not await redis.exists(batch_key):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "batch_not_found")
+
+    await redis.set(f"triage:batch:{batch_id}:abort", "1", ex=300)
+    active_id = await redis.get("triage:batch:active_id")
+    if active_id == batch_id:
+        await redis.delete("triage:batch:active_id")
+
+    return CancelBatchResponse(
+        batch_id=batch_id,
+        status="cancelling",
+        message="Сигнал отмены передан воркеру",
+    )
+
 
 
 def extract_operator_user_id(

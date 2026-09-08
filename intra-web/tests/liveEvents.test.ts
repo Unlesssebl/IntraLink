@@ -73,3 +73,48 @@ test('liveEvents: сопоставление завершения задачи �
   assert.strictEqual(update.statusInfo.status, 'closed');
   assert.strictEqual(update.statusInfo.statusName, 'Выполнена');
 });
+
+test('liveEvents: парсинг и валидация событий batch triage (task_analyzed, batch_completed, batch_cancelled)', () => {
+  const rawAnalyzed = JSON.stringify({
+    event: 'task_analyzed',
+    batch_id: 'batch_test_123',
+    task_id: 139001,
+    status: 'processed',
+    scenario_key: 'printer_install',
+    progress: { processed: 10, failed: 1, total: 50, pct: 22 },
+  });
+  const evAnalyzed = parseLiveEvent(rawAnalyzed);
+  assert.strictEqual(evAnalyzed.event, 'task_analyzed');
+  assert.strictEqual(evAnalyzed.batch_id, 'batch_test_123');
+  assert.strictEqual(evAnalyzed.task_id, 139001);
+  assert.strictEqual(evAnalyzed.status, 'processed');
+  assert.strictEqual(evAnalyzed.scenario_key, 'printer_install');
+  assert.strictEqual(evAnalyzed.progress.pct, 22);
+
+  const rawCompleted = JSON.stringify({
+    event: 'batch_completed',
+    batch_id: 'batch_test_123',
+    total: 50,
+    processed: 48,
+    failed: 2,
+    skipped: 0,
+    elapsed_seconds: 4.2,
+  });
+  const evCompleted = parseLiveEvent(rawCompleted);
+  assert.strictEqual(evCompleted.event, 'batch_completed');
+  assert.strictEqual(evCompleted.processed, 48);
+  assert.strictEqual(evCompleted.elapsed_seconds, 4.2);
+
+  const rawCancelled = JSON.stringify({
+    event: 'batch_cancelled',
+    batch_id: 'batch_test_123',
+    total: 50,
+    processed: 25,
+    failed: 0,
+    elapsed_seconds: 2.1,
+  });
+  const evCancelled = parseLiveEvent(rawCancelled);
+  assert.strictEqual(evCancelled.event, 'batch_cancelled');
+  assert.strictEqual(evCancelled.processed, 25);
+});
+

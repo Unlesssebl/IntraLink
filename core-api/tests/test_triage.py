@@ -193,21 +193,59 @@ async def test_rag_sync_endpoint():
 
 @pytest.mark.asyncio
 async def test_analyze_batch_endpoint():
-    mock_card = {
-        "task_id": 139001,
-        "analysis": {
-            "has_result": True,
-            "state": "ready",
-            "freshness": "current",
-            "decision_id": "mock-uuid",
-            "decision_version": 1,
-        },
-    }
-    with patch(
-        "app.routers.triage.run_explicit_analysis",
-        new_callable=AsyncMock,
-        return_value=mock_card,
-    ):
+    redis_store = {}
+    mock_r = AsyncMock()
+
+    async def mock_get(key):
+        return redis_store.get(key)
+
+    async def mock_set(key, val, **kwargs):
+        redis_store[key] = str(val)
+        return True
+
+    async def mock_hget(key, field):
+        h = redis_store.get(key, {})
+        return h.get(field)
+
+    async def mock_hset(key, field=None, value=None, mapping=None):
+        if key not in redis_store or not isinstance(redis_store[key], dict):
+            redis_store[key] = {}
+        if mapping:
+            for k, v in mapping.items():
+                redis_store[key][k] = str(v)
+        if field is not None:
+            redis_store[key][field] = str(value)
+        return 1
+
+    async def mock_hgetall(key):
+        return redis_store.get(key, {})
+
+    async def mock_smembers(key):
+        return set()
+
+    async def mock_delete(*keys):
+        for k in keys:
+            redis_store.pop(k, None)
+        return 1
+
+    async def mock_expire(key, time):
+        return True
+
+    async def mock_publish(channel, message):
+        return 1
+
+    mock_r.get.side_effect = mock_get
+    mock_r.set.side_effect = mock_set
+    mock_r.hget.side_effect = mock_hget
+    mock_r.hset.side_effect = mock_hset
+    mock_r.hgetall.side_effect = mock_hgetall
+    mock_r.smembers.side_effect = mock_smembers
+    mock_r.delete.side_effect = mock_delete
+    mock_r.expire.side_effect = mock_expire
+    mock_r.publish.side_effect = mock_publish
+
+    with patch("app.routers.triage.get_redis_client", return_value=mock_r), \
+         patch("app.routers.triage._execute_triage_batch_worker", new_callable=AsyncMock):
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -216,9 +254,45 @@ async def test_analyze_batch_endpoint():
                 headers=HEADERS,
                 json={"task_ids": list(range(1, 201))},
             )
-            assert resp.status_code == 200
+            assert resp.status_code == 202
             data = resp.json()
+            assert data["status"] == "accepted"
             assert data["total"] == 200
-            assert data["processed"] == 200
-            assert len(data["results"]) == 200
+            assert "batch_id" in data
+            assert data["already_running"] is False
+
+            batch_id = data["batch_id"]
+
+            # Проверка Single Flight: повторный запрос возвращает тот же активный батч
+            resp_dup = await client.post(
+                "/api/v1/triage/analyze-batch",
+                headers=HEADERS,
+                json={"task_ids": [1, 2, 3]},
+            )
+            assert resp_dup.status_code == 200
+            data_dup = resp_dup.json()
+            assert data_dup["status"] == "already_running"
+            assert data_dup["batch_id"] == batch_id
+            assert data_dup["already_running"] is True
+
+            # Проверка получения статуса батча
+            resp_status = await client.get(
+                f"/api/v1/triage/analyze-batch/{batch_id}",
+                headers=HEADERS,
+            )
+            assert resp_status.status_code == 200
+            status_data = resp_status.json()
+            assert status_data["batch_id"] == batch_id
+            assert "status" in status_data
+
+            # Проверка отмены батча
+            resp_cancel = await client.post(
+                f"/api/v1/triage/analyze-batch/{batch_id}/cancel",
+                headers=HEADERS,
+            )
+            assert resp_cancel.status_code == 200
+            cancel_data = resp_cancel.json()
+            assert cancel_data["status"] == "cancelling"
+
+
 

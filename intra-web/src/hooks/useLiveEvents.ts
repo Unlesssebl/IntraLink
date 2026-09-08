@@ -11,6 +11,41 @@ export interface LiveEventPayload {
   [key: string]: any;
 }
 
+export interface TaskAnalyzedEvent {
+  event: 'task_analyzed';
+  batch_id: string;
+  task_id: number;
+  status: 'processed' | 'failed' | 'skipped' | 'cancelled';
+  analysis?: any;
+  scenario_key?: string;
+  error?: string;
+  progress?: {
+    processed: number;
+    failed: number;
+    total: number;
+    pct: number;
+  };
+}
+
+export interface BatchCompletedEvent {
+  event: 'batch_completed';
+  batch_id: string;
+  total: number;
+  processed: number;
+  failed: number;
+  skipped: number;
+  elapsed_seconds?: number;
+}
+
+export interface BatchCancelledEvent {
+  event: 'batch_cancelled';
+  batch_id: string;
+  total: number;
+  processed: number;
+  failed: number;
+  elapsed_seconds?: number;
+}
+
 interface UseLiveEventsOptions {
   enabled?: boolean;
   onEvent?: (event: LiveEventPayload) => void;
@@ -18,6 +53,9 @@ interface UseLiveEventsOptions {
   onTaskStatusUpdated?: (taskIds: number[], newStatusId: number) => void;
   onConfirmRequired?: (jobId: string, prompt: string, details: any) => void;
   onOutageEvent?: (event: LiveEventPayload) => void;
+  onTaskAnalyzed?: (event: TaskAnalyzedEvent) => void;
+  onBatchCompleted?: (event: BatchCompletedEvent) => void;
+  onBatchCancelled?: (event: BatchCancelledEvent) => void;
 }
 
 export function useLiveEvents({
@@ -27,6 +65,9 @@ export function useLiveEvents({
   onTaskStatusUpdated,
   onConfirmRequired,
   onOutageEvent,
+  onTaskAnalyzed,
+  onBatchCompleted,
+  onBatchCancelled,
 }: UseLiveEventsOptions = {}) {
   const [isConnected, setIsConnected] = useState(false);
   const [lastEvent, setLastEvent] = useState<LiveEventPayload | null>(null);
@@ -41,6 +82,9 @@ export function useLiveEvents({
     onTaskStatusUpdated,
     onConfirmRequired,
     onOutageEvent,
+    onTaskAnalyzed,
+    onBatchCompleted,
+    onBatchCancelled,
   });
 
   useEffect(() => {
@@ -50,6 +94,9 @@ export function useLiveEvents({
       onTaskStatusUpdated,
       onConfirmRequired,
       onOutageEvent,
+      onTaskAnalyzed,
+      onBatchCompleted,
+      onBatchCancelled,
     };
   });
 
@@ -112,6 +159,15 @@ export function useLiveEvents({
           if (eventType === 'outage_detected' || eventType === 'outage_updated' || eventType === 'outage_resolved') {
             callbacksRef.current.onOutageEvent?.(payload);
           }
+
+          // 5. Обработка пакетного асинхронного анализа (Async Batch Triage)
+          if (eventType === 'task_analyzed') {
+            callbacksRef.current.onTaskAnalyzed?.(payload as any);
+          } else if (eventType === 'batch_completed') {
+            callbacksRef.current.onBatchCompleted?.(payload as any);
+          } else if (eventType === 'batch_cancelled') {
+            callbacksRef.current.onBatchCancelled?.(payload as any);
+          }
         } catch (e) {
           console.debug('[LiveEvents] Ошибка парсинга события:', e);
         }
@@ -136,6 +192,9 @@ export function useLiveEvents({
         'outage_detected',
         'outage_updated',
         'outage_resolved',
+        'task_analyzed',
+        'batch_completed',
+        'batch_cancelled',
       ];
       eventNames.forEach((evName) => {
         es.addEventListener(evName, (e: any) => {

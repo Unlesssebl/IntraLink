@@ -1559,6 +1559,7 @@ export async function fetchQueue(filterId = 984, limit = 50, includeRag = false)
 
 
   analysisCounts?: import('./types').AnalysisCounts;
+  activeBatchId?: string | null;
 
 
 
@@ -1871,6 +1872,7 @@ export async function fetchQueue(filterId = 984, limit = 50, includeRag = false)
 
 
     analysisCounts: data.analysis_counts,
+    activeBatchId: data.active_batch_id || null,
 
 
 
@@ -3674,86 +3676,60 @@ export async function broadcastOutageComment(
 
 
 
-export interface AnalyzeBatchResult {
-
-
-
+export interface AnalyzeBatchResponse {
+  status: 'accepted' | 'already_running';
+  batch_id: string;
   total: number;
+  already_running: boolean;
+  message: string;
+}
 
-
-
+export interface BatchStatusResponse {
+  batch_id: string;
+  status: 'pending' | 'running' | 'completed' | 'cancelled' | 'failed';
+  total: number;
   processed: number;
-
-
-
-  skipped: number;
-
-
-
   failed: number;
-
-
-
-  results: Array<{ task_id: number; status: 'processed' | 'skipped' | 'failed'; error?: string }>;
-
-
-
+  skipped: number;
+  pct: number;
+  elapsed_seconds: number;
+  completed_task_ids: number[];
 }
 
-
-
-
-
-
-
-export async function triggerQueueAnalysis(taskIds?: number[]): Promise<AnalyzeBatchResult> {
-  if (!taskIds?.length) {
-    throw new Error('Нет заявок для анализа');
-  }
-
-  // Нормализуем ID: только уникальные положительные целые числа
-  const cleanIds = Array.from(
-    new Set(
-      taskIds
-        .map(id => Number(id))
-        .filter(id => Number.isInteger(id) && id > 0)
-    )
-  );
-
-  if (!cleanIds.length) {
-    throw new Error('Не найдено корректных ID заявок для анализа');
-  }
-
-  // Чанкование на случай больших очередей (порциями по 100 заявок на запрос)
-  const CHUNK_SIZE = 100;
-  if (cleanIds.length <= CHUNK_SIZE) {
-    return apiFetch<AnalyzeBatchResult>('/api/v1/triage/analyze-batch', {
-      method: 'POST',
-      body: JSON.stringify({ task_ids: cleanIds }),
-    });
-  }
-
-  const aggregated: AnalyzeBatchResult = {
-    total: cleanIds.length,
-    processed: 0,
-    skipped: 0,
-    failed: 0,
-    results: [],
-  };
-
-  for (let i = 0; i < cleanIds.length; i += CHUNK_SIZE) {
-    const chunk = cleanIds.slice(i, i + CHUNK_SIZE);
-    const res = await apiFetch<AnalyzeBatchResult>('/api/v1/triage/analyze-batch', {
-      method: 'POST',
-      body: JSON.stringify({ task_ids: chunk }),
-    });
-    aggregated.processed += res.processed || 0;
-    aggregated.skipped += res.skipped || 0;
-    aggregated.failed += res.failed || 0;
-    if (Array.isArray(res.results)) {
-      aggregated.results.push(...res.results);
-    }
-  }
-
-  return aggregated;
+export interface CancelBatchResponse {
+  batch_id: string;
+  status: 'cancelling';
+  message: string;
 }
+
+// Для обратной совместимости
+export type AnalyzeBatchResult = AnalyzeBatchResponse;
+
+export async function triggerQueueAnalysis(taskIds?: number[]): Promise<AnalyzeBatchResponse> {
+  let cleanIds: number[] | undefined;
+  if (taskIds && taskIds.length > 0) {
+    cleanIds = Array.from(
+      new Set(
+        taskIds
+          .map(id => Number(id))
+          .filter(id => Number.isInteger(id) && id > 0)
+      )
+    );
+  }
+
+  return apiFetch<AnalyzeBatchResponse>('/api/v1/triage/analyze-batch', {
+    method: 'POST',
+    body: JSON.stringify(cleanIds && cleanIds.length > 0 ? { task_ids: cleanIds } : {}),
+  });
+}
+
+export async function getBatchStatus(batchId: string): Promise<BatchStatusResponse> {
+  return apiFetch<BatchStatusResponse>(`/api/v1/triage/analyze-batch/${encodeURIComponent(batchId)}`);
+}
+
+export async function cancelBatch(batchId: string): Promise<CancelBatchResponse> {
+  return apiFetch<CancelBatchResponse>(`/api/v1/triage/analyze-batch/${encodeURIComponent(batchId)}/cancel`, {
+    method: 'POST',
+  });
+}
+

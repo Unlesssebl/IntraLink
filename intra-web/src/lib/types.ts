@@ -397,6 +397,7 @@ export interface QueueResponse {
   root_services?: Array<{ id: number; name: string }>;
   subservices_by_root?: Record<number, Array<{ id: number; name: string; parent_id?: number }>>;
   tasks: TaskItem[];
+  active_batch_id?: string | null;
 }
 
 export interface SingleApplyPayload {
