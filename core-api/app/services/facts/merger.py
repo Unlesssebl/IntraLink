@@ -51,15 +51,21 @@ def merge_observations(
 ) -> FactBag:
     registry = registry or get_fact_registry()
     current_time = now or datetime.now(timezone.utc)
-    grouped: dict[str, list[FactObservation]] = defaultdict(list)
+    grouped: dict[str, dict[tuple[FactSource, str], FactObservation]] = defaultdict(dict)
     for observation in observations:
         registry.require(observation.key)
         if observation.metadata.get("shadow") and not include_shadow:
             continue
-        grouped[observation.key].append(observation)
+        provenance = (observation.source, observation.source_ref)
+        # A source reference identifies one observation slot.  Re-collection of
+        # the same form field/comment replaces its previous snapshot rather than
+        # creating a false same-priority conflict.
+        grouped[observation.key].pop(provenance, None)
+        grouped[observation.key][provenance] = observation
 
     resolved: dict[str, ResolvedFact] = {}
-    for key, items in grouped.items():
+    for key, item_map in grouped.items():
+        items = list(item_map.values())
         ordered = sorted(items, key=lambda item: SOURCE_PRIORITY[item.source])
         live = [item for item in ordered if not _is_expired(item, current_time)]
         if not live:
@@ -71,10 +77,13 @@ def merge_observations(
             )
             continue
 
+        # Stored observations are loaded oldest-first and observations collected
+        # for the current event are appended.  The latest valid operator value is
+        # therefore the authoritative correction.
         operator = next(
             (
                 item
-                for item in live
+                for item in reversed(live)
                 if item.source is FactSource.OPERATOR and item.state is FactState.VALID
             ),
             None,

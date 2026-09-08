@@ -471,21 +471,35 @@ async def process_autonomous_lifecycle(service_auth_b64: str) -> None:
             f"{settings.STATUS_IN_PROGRESS_ID},"
             f"{settings.STATUS_WAITING_ID}"
         )
-        response = await get_tasks(
-            service_auth_b64,
-            {
-                "ExecutorId": assistant_user_id,
-                "StatusIds": status_ids_str,
-                "pagesize": 100,
-                "include": "executorids,status,customfields",
-            },
-        )
-        if isinstance(response, dict):
-            tasks = response.get("Tasks", [])
-        elif isinstance(response, list):
-            tasks = response
-        else:
-            tasks = []
+        tasks: list[dict[str, Any]] = []
+        page = 1
+        page_size = 100
+        while True:
+            response = await get_tasks(
+                service_auth_b64,
+                {
+                    "ExecutorIds": str(assistant_user_id),
+                    "StatusIds": status_ids_str,
+                    "page": str(page),
+                    "pagesize": page_size,
+                    "include": "executorids,status,customfields",
+                },
+            )
+            if isinstance(response, dict):
+                batch = response.get("Tasks", [])
+            elif isinstance(response, list):
+                batch = response
+            else:
+                batch = []
+
+            if not batch:
+                break
+            tasks.extend(batch)
+            if len(batch) < page_size:
+                break
+            page += 1
+            if page > 50:
+                break
 
         from app.services.ticket_runs import register_observed_assignments
 
@@ -540,7 +554,17 @@ async def process_autonomous_lifecycle(service_auth_b64: str) -> None:
                                 reason="assistant_removed",
                             )
                             return
-                        if run.mode != "autopilot" or run.state not in {
+                        if run.mode != "autopilot":
+                            return
+                        if run.state in {"paused", "system_error"}:
+                            from app.services.command_delivery import CommandDeliveryService
+                            await CommandDeliveryService(db).reconcile_undelivered_failure(
+                                run_id=run.id,
+                                actor="poller",
+                                service_auth_b64=service_auth_b64,
+                            )
+                            return
+                        if run.state not in {
                             "running",
                             "waiting_answer",
                             "waiting_approval",

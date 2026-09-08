@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -28,6 +29,37 @@ PERSON_FIELD_IDS: dict[str, tuple[str, ...]] = {
 }
 IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 UNC_RE = re.compile(r"\\\\[^\s\\]+\\[^\s]+")
+
+
+def _comment_source_ref(comment: dict[str, Any], text: str) -> str:
+    comment_id = (
+        comment.get("Id")
+        or comment.get("id")
+        or comment.get("CommentId")
+        or comment.get("comment_id")
+    )
+    if comment_id not in (None, ""):
+        return f"comment:{comment_id}"
+    author = str(
+        comment.get("Author")
+        or comment.get("AuthorName")
+        or comment.get("Creator")
+        or comment.get("UserName")
+        or ""
+    )
+    created_at = str(
+        comment.get("CreatedAt")
+        or comment.get("Created")
+        or comment.get("CreateDate")
+        or comment.get("Date")
+        or comment.get("created_at")
+        or ""
+    )
+    normalized = " ".join(text.casefold().split())
+    digest = hashlib.sha256(
+        f"{normalized}\n{author.casefold().strip()}\n{created_at.strip()}".encode("utf-8")
+    ).hexdigest()[:32]
+    return f"comment:sha256:{digest}"
 
 
 def _observation(
@@ -183,7 +215,7 @@ async def collect_deterministic(
             )
         )
 
-    for index, comment in enumerate(comments or []):
+    for comment in comments or []:
         text = str(
             comment.get("Comments")
             or comment.get("Comment")
@@ -193,6 +225,7 @@ async def collect_deterministic(
         ).strip()
         if not text:
             continue
+        comment_ref = _comment_source_ref(comment, text)
         comment_pcs = extract_pc_names_from_text(text)
         if comment_pcs:
             result.append(
@@ -200,7 +233,7 @@ async def collect_deterministic(
                     "pc_name",
                     comment_pcs[0],
                     source=FactSource.COMMENT,
-                    source_ref=f"comment:{index}:pc_name",
+                    source_ref=f"{comment_ref}:pc_name",
                     evidence_span=comment_pcs[0],
                 )
             )
@@ -211,7 +244,7 @@ async def collect_deterministic(
                     "printer_address",
                     comment_ip.group(0),
                     source=FactSource.COMMENT,
-                    source_ref=f"comment:{index}:ip",
+                    source_ref=f"{comment_ref}:ip",
                     evidence_span=comment_ip.group(0),
                 )
             )

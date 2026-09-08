@@ -475,7 +475,8 @@ async def test_manual_write_waits_for_started_operation_to_finish():
                 ticket_run_id=run.id,
             )
         assert exc.value.status_code == 409
-        assert "operation in progress" in str(exc.value.detail)
+        assert exc.value.detail["detail"] == "ticket_run_has_active_command"
+        assert exc.value.detail["command_status"] == "running"
 
 
 @pytest.mark.asyncio

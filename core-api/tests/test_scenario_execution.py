@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
+
 import pytest
 
 from shared.domain import (
@@ -16,8 +19,9 @@ from shared.domain import (
 from app.database.db import AsyncSessionLocal, ResolutionPolicy, ResponseTemplate
 from app.services.decision_compiler import DecisionCompiler
 from app.services.facts import collect_structured, merge_observations
+from app.services.facts.collectors import collect_deterministic
 from app.services.scenario_decision import ScenarioDecisionService
-from app.services.scenarios import ScenarioRegistry
+from app.services.scenarios import ScenarioContext, ScenarioRegistry
 from app.services.scenario_orchestrator import ticket_event_key
 
 
@@ -68,6 +72,116 @@ def test_invalid_structured_value_cannot_be_overridden_by_llm():
 
     assert facts.facts["surname"].state is FactState.INVALID
     assert facts.facts["surname"].value == "test"
+
+
+def test_latest_valid_operator_observation_wins():
+    facts = merge_observations(
+        [
+            _observation("pc_name", "PC-OLD", FactSource.OPERATOR, "operator:first"),
+            _observation("pc_name", "PC-NEW", FactSource.OPERATOR, "operator:second"),
+        ]
+    )
+
+    assert facts.valid_value("pc_name") == "PC-NEW"
+    assert facts.facts["pc_name"].selected_source_ref == "operator:second"
+
+
+def test_expired_latest_operator_observation_does_not_hide_valid_value():
+    valid = _observation("pc_name", "PC-VALID", FactSource.OPERATOR, "operator:first")
+    expired = _observation("pc_name", "PC-EXPIRED", FactSource.OPERATOR, "operator:second")
+    expired.expires_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+
+    facts = merge_observations([valid, expired])
+
+    assert facts.valid_value("pc_name") == "PC-VALID"
+
+
+def test_invalid_latest_operator_observation_does_not_hide_valid_value():
+    valid = _observation("pc_name", "PC-VALID", FactSource.OPERATOR, "operator:first")
+    invalid = _observation(
+        "pc_name",
+        "invalid host",
+        FactSource.OPERATOR,
+        "operator:second",
+        state=FactState.INVALID,
+    )
+
+    facts = merge_observations([valid, invalid])
+
+    assert facts.valid_value("pc_name") == "PC-VALID"
+
+
+def test_different_comments_of_same_priority_remain_conflicting():
+    facts = merge_observations(
+        [
+            _observation("pc_name", "PC-01", FactSource.COMMENT, "comment:1:pc_name"),
+            _observation("pc_name", "PC-02", FactSource.COMMENT, "comment:2:pc_name"),
+        ]
+    )
+
+    assert facts.facts["pc_name"].state is FactState.CONFLICTING
+
+
+@pytest.mark.asyncio
+async def test_comment_source_ref_is_stable_when_history_order_changes():
+    first = {
+        "Comment": "Подключить к PC-01",
+        "Author": "user",
+        "Created": "2026-09-08T10:00:00Z",
+    }
+    second = {
+        "Comment": "Адрес 10.1.2.3",
+        "Author": "user",
+        "Created": "2026-09-08T10:01:00Z",
+    }
+
+    normal = await collect_deterministic({}, [first, second])
+    reordered = await collect_deterministic({}, [second, first])
+
+    assert {(item.key, item.source_ref) for item in normal} == {
+        (item.key, item.source_ref) for item in reordered
+    }
+
+
+@pytest.mark.asyncio
+async def test_explicit_observations_do_not_trigger_collection():
+    async with AsyncSessionLocal() as db:
+        service = ScenarioDecisionService(db)
+        service.fact_planner.collect = AsyncMock(side_effect=AssertionError("unexpected collection"))
+        await service.analyze(
+            task={"Id": 1, "Name": "Обычная консультация"},
+            observations=[
+                _observation("task_id", "1", FactSource.STRUCTURED_FIELD, "ticket:task_id")
+            ],
+        )
+
+    service.fact_planner.collect.assert_not_awaited()
+
+
+def test_printer_installation_routes_only_explicit_install_intent():
+    registry = ScenarioRegistry()
+    facts = merge_observations(
+        [
+            _observation("pc_name", "PC-01", FactSource.STRUCTURED_FIELD, "field:pc"),
+            _observation("printer_name", "HP LaserJet", FactSource.STRUCTURED_FIELD, "field:model"),
+            _observation("printer_address", "10.1.2.3", FactSource.STRUCTURED_FIELD, "field:ip"),
+        ]
+    )
+
+    install = registry.route(
+        ScenarioContext(task={"ServiceId": 19, "Name": "Подключить принтер HP"}, facts=facts)
+    )
+    failure = registry.route(
+        ScenarioContext(task={"ServiceId": 19, "Name": "Принтер не печатает"}, facts=facts)
+    )
+    reinstall = registry.route(
+        ScenarioContext(task={"ServiceId": 19, "Name": "Переустановить принтер"}, facts=facts)
+    )
+
+    assert (install.definition.key, install.definition.version) == ("install_printer", 2)
+    assert failure.definition.key != "install_printer"
+    assert (reinstall.definition.key, reinstall.definition.version) == ("install_printer", 2)
+    assert registry.get("install_printer", 1) is not None
 
 
 def test_scenario_canary_is_stable_for_task_id():

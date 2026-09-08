@@ -58,6 +58,36 @@ def _create_user_match(context: ScenarioContext) -> tuple[bool, float, str]:
     return bool(found), 0.92 if found else 0.0, ",".join(found)
 
 
+def _printer_install_match(context: ScenarioContext) -> tuple[bool, float, str]:
+    text = _text(context)
+    device_tokens = ("принтер", "мфу", "printer")
+    install_tokens = (
+        "установ",
+        "подключ",
+        "добав",
+        "настроить новый",
+        "настройка нового",
+        "переустанов",
+    )
+    failure_tokens = (
+        "не печатает",
+        "не сканирует",
+        "замят",
+        "полос",
+        "ошибка печати",
+        "очередь зависла",
+    )
+    has_device = any(token in text for token in device_tokens) or bool(
+        context.facts.valid_value("printer_name")
+    )
+    matched_intents = [token for token in install_tokens if token in text]
+    matched_failures = [token for token in failure_tokens if token in text]
+    is_reinstall = "переустанов" in text
+    matched = has_device and bool(matched_intents) and (not matched_failures or is_reinstall)
+    reason = ",".join([*matched_intents, *matched_failures])
+    return matched, 0.94 if matched else 0.0, reason
+
+
 def _redirect_match(context: ScenarioContext) -> tuple[bool, float, str]:
     redirect = detect_service_redirect(context.task)
     if redirect:
@@ -221,7 +251,36 @@ def built_in_scenarios() -> tuple[Scenario, ...]:
                     ),
                 ],
             ),
-            _contains("принтер", "мфу", "печать", "сканер"),
+            # Version 1 remains addressable for already pinned runs, but new
+            # routing is handled exclusively by the stricter version 2 matcher.
+            lambda _context: (False, 0.0, "legacy_pinned_only"),
+            action="install_printer",
+            outcome_key="install_printer_proposed",
+            parameter_map={
+                "pc_name": "pc_name",
+                "printer_name": "printer_name",
+                "printer_ip": "printer_address",
+            },
+        ),
+        FactActionScenario(
+            ScenarioDefinition(
+                key="install_printer",
+                version=2,
+                risk_level=1,
+                allowed_actions=["install_printer"],
+                clarification_outcome_key="printer_ip_clarify",
+                success_outcome_key="resolved_standard",
+                required_facts=[
+                    FactRequirement(key="pc_name", clarification_key="clarify_pc_name"),
+                    FactRequirement(
+                        key="printer_name", clarification_key="clarify_printer_name"
+                    ),
+                    FactRequirement(
+                        key="printer_address", clarification_key="clarify_printer_address"
+                    ),
+                ],
+            ),
+            _printer_install_match,
             action="install_printer",
             outcome_key="install_printer_proposed",
             parameter_map={

@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 
 from shared.domain import (
+    FactObservation,
     FactSource,
     FactState,
 )
@@ -20,6 +21,7 @@ from app.database.db import (
     TicketRunEvent,
 )
 from app.services.scenario_orchestrator import TicketRunOrchestrator, ticket_event_key
+from app.services.facts import TicketFactStore
 from app.services.ticket_runs import TicketRunState
 
 
@@ -266,14 +268,166 @@ async def test_orchestrator_duplicate_event_idempotency():
         # Первый вызов
         res1 = await orchestrator.advance(run_id=run.id, task=task, event_type="ticket_created")
         assert res1.duplicate_event is False
+        fact_revision = res1.run.fact_revision
         cmd_count_1 = (await db.scalars(select(CommandRecord).where(CommandRecord.ticket_run_id == run.id))).all()
         assert len(cmd_count_1) == 1
 
         # Повторный вызов с идентичным payload
         res2 = await orchestrator.advance(run_id=run.id, task=task, event_type="ticket_created")
         assert res2.duplicate_event is True
+        assert res2.run.fact_revision == fact_revision
         cmd_count_2 = (await db.scalars(select(CommandRecord).where(CommandRecord.ticket_run_id == run.id))).all()
         assert len(cmd_count_2) == 1  # Никаких повторных команд не создано
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command_status", ["awaiting_approval", "queued", "running"])
+async def test_orchestrator_defers_new_event_while_command_is_active(command_status):
+    async with AsyncSessionLocal() as db:
+        await _seed_templates_and_policies(db)
+        run = await _create_test_run(db, task_id=92100)
+        task = {
+            "Id": 92100,
+            "ServiceId": 53,
+            "Name": "Создать пользователя",
+            "_field_meta": {
+                "raw": {
+                    "1057": "Иванов",
+                    "1058": "Иван",
+                    "1065": "Инженер",
+                    "1064": "ИТ",
+                    "1074": "Интра",
+                }
+            },
+        }
+        orchestrator = TicketRunOrchestrator(db)
+        initial = await orchestrator.advance(run_id=run.id, task=task)
+        initial.command.status = command_status
+        run.state = (
+            TicketRunState.WAITING_APPROVAL.value
+            if command_status == "awaiting_approval"
+            else TicketRunState.RUNNING.value
+        )
+        await db.commit()
+
+        deferred = await orchestrator.advance(
+            run_id=run.id,
+            task=task,
+            comments=[{"Id": 1, "Comment": "Дополнительная информация"}],
+            event_type="comment_added",
+        )
+
+        commands = (
+            await db.scalars(select(CommandRecord).where(CommandRecord.ticket_run_id == run.id))
+        ).all()
+        event = await db.scalar(
+            select(TicketRunEvent).where(
+                TicketRunEvent.ticket_run_id == run.id,
+                TicketRunEvent.event_type == "ticket_event_deferred",
+            )
+        )
+        assert len(commands) == 1
+        assert deferred.command.id == initial.command.id
+        assert event is not None
+        assert event.details_json["command_status"] == command_status
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_uses_persisted_operator_fact_for_printer_command():
+    async with AsyncSessionLocal() as db:
+        await _seed_templates_and_policies(db)
+        run = TicketRun(
+            id=uuid.uuid4(),
+            task_id=92101,
+            mode="autopilot",
+            state=TicketRunState.RUNNING.value,
+            trigger_kind="ticket_created",
+            trigger_key="ticket:92101:created",
+            trigger_snapshot_json={"scenario_key": "install_printer"},
+            scenario_key="install_printer",
+            scenario_version=2,
+            fact_revision=1,
+            version=1,
+            created_by="test",
+            updated_by="test",
+        )
+        db.add(run)
+        await db.commit()
+        await TicketFactStore(db).append(
+            run.id,
+            [
+                FactObservation(
+                    key="pc_name",
+                    value="PC-NEW",
+                    state=FactState.VALID,
+                    source=FactSource.OPERATOR,
+                    source_ref="operator:test",
+                )
+            ],
+        )
+        await db.commit()
+
+        result = await TicketRunOrchestrator(db).advance(
+            run_id=run.id,
+            task={
+                "Id": 92101,
+                "ServiceId": 19,
+                "Name": "Подключить принтер",
+                "Description": "Для PC-OLD, адрес 10.1.2.3",
+                "PrinterName": "HP LaserJet",
+            },
+        )
+
+        assert result.command is not None
+        assert result.command.action == "install_printer"
+        assert result.command.params_json["pc_name"] == "PC-NEW"
+
+
+@pytest.mark.asyncio
+async def test_printer_v2_missing_address_requests_clarification_without_install():
+    async with AsyncSessionLocal() as db:
+        await _seed_templates_and_policies(db)
+        run = TicketRun(
+            id=uuid.uuid4(),
+            task_id=92102,
+            mode="autopilot",
+            state=TicketRunState.RUNNING.value,
+            trigger_kind="ticket_created",
+            trigger_key="ticket:92102:created",
+            trigger_snapshot_json={"scenario_key": "install_printer"},
+            scenario_key="install_printer",
+            scenario_version=2,
+            fact_revision=0,
+            version=1,
+            created_by="test",
+            updated_by="test",
+        )
+        db.add(run)
+        await db.commit()
+
+        result = await TicketRunOrchestrator(db).advance(
+            run_id=run.id,
+            task={
+                "Id": 92102,
+                "ServiceId": 19,
+                "Name": "Подключить принтер",
+                "Description": "Для PC-01",
+                "PrinterName": "HP LaserJet",
+            },
+        )
+
+        assert result.envelope is not None
+        assert result.envelope.outcome.kind == "clarification"
+        assert "printer_address" in result.envelope.outcome.missing_fields
+        install_commands = (
+            await db.scalars(
+                select(CommandRecord).where(
+                    CommandRecord.ticket_run_id == run.id,
+                    CommandRecord.action == "install_printer",
+                )
+            )
+        ).all()
+        assert install_commands == []
 
 
 @pytest.mark.asyncio

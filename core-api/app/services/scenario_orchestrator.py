@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
+import logging
 import uuid
 from dataclasses import dataclass
-import datetime as dt
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger("core_api.scenario_orchestrator")
 
 from shared.domain import (
     ActionProposed,
@@ -185,9 +188,28 @@ class TicketRunOrchestrator:
             run.state = expected_state
         if command.status in {"failed", "needs_review", "rejected", "cancelled"}:
             run.state = TicketRunState.PAUSED.value
-            run.pause_reason = f"command_{command.status}"
-            run.error_code = run.pause_reason
+            if command.status == "needs_review":
+                run.pause_reason = "command_result_requires_review"
+                run.error_code = "command_result_requires_review"
+            else:
+                run.pause_reason = f"command_{command.status}"
+                run.error_code = run.pause_reason
             run.error_message = command.error_message
+
+            auth = await self._resolve_service_auth(service_auth_b64)
+            if auth:
+                try:
+                    await CommandDeliveryService(self.db).deliver_command_failure(
+                        command.id,
+                        actor=actor,
+                        service_auth_b64=auth,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Не удалось доставить комментарий об ошибке команды %s в IntraService: %s",
+                        command.id,
+                        exc,
+                    )
         elif command.status == "succeeded" and command.action == "create_user":
             auth = await self._resolve_service_auth(service_auth_b64)
             if not auth:
@@ -422,8 +444,10 @@ class TicketRunOrchestrator:
         initial = await self.db.get(TicketRun, run_id)
         if initial is None:
             raise ValueError("run_not_found")
-        if await self._event_exists(run_id, key):
-            return OrchestrationResult(initial, None, None, duplicate_event=True)
+        if initial.completed_at is not None:
+            return OrchestrationResult(initial, None, None)
+
+        # 1. Сначала сверяем статус команды: команда могла измениться при неизменной заявке
         reconciled = await self._reconcile_command(
             initial,
             actor=actor,
@@ -433,6 +457,33 @@ class TicketRunOrchestrator:
         )
         if reconciled is not None:
             return reconciled
+
+        # 2. Только если команда не требовала сверки, дедуплицируем входное событие заявки
+        if await self._event_exists(run_id, key):
+            return OrchestrationResult(initial, None, None, duplicate_event=True)
+
+        active_command = await self._latest_command(run_id)
+        if active_command is not None and active_command.status in {
+            "awaiting_approval",
+            "queued",
+            "running",
+        }:
+            initial.version += 1
+            initial.updated_by = actor
+            await self.runs._append_run_event(
+                initial,
+                event_type="ticket_event_deferred",
+                event_key=key,
+                actor=actor,
+                details={
+                    "command_id": str(active_command.id),
+                    "command_status": active_command.status,
+                    "source_event_type": event_type,
+                },
+            )
+            await self.db.commit()
+            await self.db.refresh(initial)
+            return OrchestrationResult(initial, None, active_command)
         initial_version = initial.version
         initial_fact_revision = initial.fact_revision
         initial_decision_version = initial.decision_version or 0
@@ -444,16 +495,18 @@ class TicketRunOrchestrator:
         await self.db.rollback()
 
         # Network/LLM collection happens before the write lock.
-        observations = await collect_ticket_observations(
+        fresh_observations = await collect_ticket_observations(
             task, comments=comments, diagnostics=diagnostics
         )
+        stored_observations = await self.facts.load(run_id)
+        observations = [*stored_observations, *fresh_observations]
         envelope = await self.decisions.analyze(
             task=task,
             comments=comments,
             diagnostics=diagnostics,
             kb_matches=kb_matches,
             observations=observations,
-            fact_revision=initial_fact_revision + 1,
+            fact_revision=initial_fact_revision + bool(fresh_observations),
             decision_version=initial_decision_version + 1,
             pinned_scenario_key=(
                 pinned_scenario.definition.key if pinned_scenario else None
@@ -476,8 +529,9 @@ class TicketRunOrchestrator:
         if await self._event_exists(run_id, key):
             return OrchestrationResult(run, None, None, duplicate_event=True)
 
-        await self.facts.append(run.id, observations)
-        run.fact_revision += 1
+        if fresh_observations:
+            await self.facts.append(run.id, fresh_observations)
+            run.fact_revision += 1
         run.scenario_key = envelope.scenario_key
         run.scenario_version = envelope.scenario_version
         run.context_fingerprint = key.split(":", 1)[-1]
@@ -494,6 +548,22 @@ class TicketRunOrchestrator:
             run.error_code = "resolution_unavailable"
             run.error_message = str(envelope.policy["resolution_error"])
             run.current_step = "resolve_policy"
+            auth = await self._resolve_service_auth(service_auth_b64)
+            if auth:
+                try:
+                    await CommandDeliveryService(self.db).deliver_run_failure(
+                        run.id,
+                        error_code=run.error_code,
+                        error_message=run.error_message,
+                        actor=actor,
+                        service_auth_b64=auth,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Не удалось доставить комментарий об ошибке запуска %s в IntraService: %s",
+                        run.id,
+                        exc,
+                    )
         elif payload is None:
             run.state = TicketRunState.PAUSED.value
             run.pause_reason = "no_executable_resolution"

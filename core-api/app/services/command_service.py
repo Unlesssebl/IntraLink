@@ -157,6 +157,7 @@ class CommandService:
         *,
         task_id: int | None = None,
         action: str | None = None,
+        exclude_command_id: uuid.UUID | None = None,
     ) -> TicketRun | None:
         if ticket_run_id is None:
             if task_id is not None:
@@ -172,7 +173,9 @@ class CommandService:
                         "Active ticket run must be linked to the command",
                     )
             return None
-        run = await self.db.get(TicketRun, ticket_run_id)
+        run = await self.db.scalar(
+            select(TicketRun).where(TicketRun.id == ticket_run_id).with_for_update()
+        )
         if run is None:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Ticket run not found")
         if run.completed_at is not None or run.state != "running":
@@ -189,18 +192,27 @@ class CommandService:
                         raise HTTPException(status.HTTP_409_CONFLICT, "Autopilot is disabled")
                 else:
                     raise HTTPException(status.HTTP_409_CONFLICT, "Autopilot is disabled")
-        running_command = await self.db.scalar(
-            select(CommandRecord.id)
-            .where(
+        active_command_query = select(CommandRecord).where(
                 CommandRecord.ticket_run_id == run.id,
-                CommandRecord.status == "running",
+                CommandRecord.status.in_(("awaiting_approval", "queued", "running")),
             )
+        if exclude_command_id is not None:
+            active_command_query = active_command_query.where(
+                CommandRecord.id != exclude_command_id
+            )
+        active_command = await self.db.scalar(
+            active_command_query
+            .order_by(CommandRecord.created_at.desc())
             .limit(1)
         )
-        if running_command is not None:
+        if active_command is not None:
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
-                "Ticket run already has an operation in progress",
+                {
+                    "detail": "ticket_run_has_active_command",
+                    "command_id": str(active_command.id),
+                    "command_status": active_command.status,
+                },
             )
         return run
 
@@ -599,7 +611,9 @@ class CommandService:
                 "Command action was disabled before execution",
             )
         await self._assert_ticket_run_allows_execution(
-            command.ticket_run_id, task_id=command.task_id
+            command.ticket_run_id,
+            task_id=command.task_id,
+            exclude_command_id=command.id,
         )
         token = secrets.token_urlsafe(32)
         attempt_no = int(await self.db.scalar(

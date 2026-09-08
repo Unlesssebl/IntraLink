@@ -100,8 +100,9 @@ async def test_override_facts_success_recompiles_envelope(auth_headers):
     task_id = 777123
     mock_task = {
         "Id": task_id,
-        "Name": "Настроить печать HP LaserJet",
-        "Description": "Требуется принтер",
+        "Name": "Подключить принтер HP LaserJet",
+        "Description": "Требуется установить новый принтер",
+        "PrinterName": "HP LaserJet",
         "ServiceId": 19,
         "StatusId": 31,
     }

@@ -12,6 +12,7 @@ from shared.normalizer import is_valid_pc_name, is_valid_printer_name, normalize
 from app.database.db import DecisionFeedback, DecisionRecord, DecisionStep, TicketRun, get_db
 from app.routers.deps import get_service_auth_b64, principal_subject, require_permission, verify_trusted_origin
 from app.services.decision_journal import DecisionJournalService, serialize_decision
+from app.services.facts import collect_ticket_observations
 from app.services.facts.store import TicketFactStore
 from app.services.scenario_decision import ScenarioDecisionService
 from app.services.ticket_runs import TicketRunMode, TicketRunService, TicketRunState
@@ -239,6 +240,11 @@ async def override_task_facts(
     fact_store = TicketFactStore(db)
     await fact_store.append(run.id, observations)
     all_observations = await fact_store.load(run.id)
+    fresh_observations = await collect_ticket_observations(
+        card.get("task") or {},
+        comments=card.get("history") or [],
+        diagnostics=card.get("telemetry"),
+    )
 
     # Пересчитываем решение через ScenarioDecisionService
     next_decision_version = max(run.decision_version or 0, payload.expected_decision_version or 0) + 1
@@ -251,11 +257,13 @@ async def override_task_facts(
         generated_response=payload.current_draft_text or card.get("ai_suggested_resolution"),
         fact_revision=run.fact_revision + 1,
         decision_version=next_decision_version,
-        observations=all_observations,
+        observations=[*all_observations, *fresh_observations],
     )
 
     run.fact_revision += 1
     run.decision_version = envelope.decision_version
+    run.version += 1
+    run.updated_by = actor
     await run_service._append_run_event(
         run,
         event_type="facts_overridden",

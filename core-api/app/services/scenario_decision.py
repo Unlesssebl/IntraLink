@@ -59,10 +59,9 @@ class ScenarioDecisionService:
                 task, comments=comments, diagnostics=diagnostics
             )
         else:
-            fresh = await self.fact_planner.collect(
-                task, comments=comments, diagnostics=diagnostics
-            )
-            observations = [*fresh, *observations]
+            # Callers that provide observations own collection and ordering.  This
+            # keeps one decision bound to one immutable fact snapshot.
+            observations = list(observations)
         facts = merge_observations(observations, revision=fact_revision)
         scenario_task = deepcopy(task)
         person_keys = (

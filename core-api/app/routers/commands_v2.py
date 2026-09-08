@@ -400,7 +400,13 @@ async def deliver_command(
     _origin: None = Depends(verify_trusted_origin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Deliver the verified command resolution to the external ticketing system."""
+    """Deliver the verified command resolution or failure to the external ticketing system."""
+    command = await CommandService(db).get(command_id)
+    if command.status in {"failed", "rejected", "cancelled", "needs_review"}:
+        return await CommandDeliveryService(db).deliver_command_failure(
+            command_id,
+            actor=context.subject,
+        )
     return await CommandDeliveryService(db).deliver_create_user(
         command_id,
         actor=context.subject,

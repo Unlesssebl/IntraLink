@@ -53,10 +53,14 @@ def base_web_url() -> str:
 
 @pytest_asyncio.fixture(autouse=True)
 async def initialize_test_database():
-    """Каждый изолированный тест видит актуальную SQLite-схему приложения."""
-    from app.database.db import init_db
+    """Каждый тест использует актуальную SQLite- или мигрированную PostgreSQL-схему."""
+    from app.config import settings
+    from app.database.db import init_db, verify_schema
 
-    await init_db()
+    if settings.DATABASE_URL.startswith("sqlite"):
+        await init_db()
+    else:
+        await verify_schema()
     yield
     from app.main import app
     from sqlalchemy import delete
