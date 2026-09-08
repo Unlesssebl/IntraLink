@@ -12,7 +12,7 @@ export interface TimelineEvent {
   timestamp: Date;
 }
 
-import type { TicketAIPlan } from '../lib/types';
+import type { TicketAIPlan, DecisionEnvelope } from '../lib/types';
 
 export interface Ticket {
   id: string;
@@ -60,7 +60,79 @@ export interface Ticket {
   hasKbMatches?: boolean;
   hasAiSolution?: boolean;
   hasRuleEngine?: boolean;
+  // Сценарный пайплайн и классификация очереди
+  isProcessed?: boolean;
+  scenarioKey?: string;
+  envelope?: DecisionEnvelope | null;
 }
+
+export interface ScenarioBadgeConfig {
+  label: string;
+  badgeClass: string;
+}
+
+export const scenarioBadgeConfigs: Record<string, ScenarioBadgeConfig> = {
+  create_user: {
+    label: 'Учетная запись',
+    badgeClass: 'bg-blue-50/90 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300 border-blue-200 dark:border-blue-900',
+  },
+  user_creation: {
+    label: 'Учетная запись',
+    badgeClass: 'bg-blue-50/90 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300 border-blue-200 dark:border-blue-900',
+  },
+  install_printer: {
+    label: 'Принтер / МФУ',
+    badgeClass: 'bg-purple-50/90 dark:bg-purple-950/40 text-purple-800 dark:text-purple-300 border-purple-200 dark:border-purple-900',
+  },
+  printer_installation: {
+    label: 'Принтер / МФУ',
+    badgeClass: 'bg-purple-50/90 dark:bg-purple-950/40 text-purple-800 dark:text-purple-300 border-purple-200 dark:border-purple-900',
+  },
+  grant_wlan: {
+    label: 'Wi-Fi доступ',
+    badgeClass: 'bg-emerald-50/90 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900',
+  },
+  wlan_access: {
+    label: 'Wi-Fi доступ',
+    badgeClass: 'bg-emerald-50/90 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900',
+  },
+  redirect: {
+    label: 'Перенаправление',
+    badgeClass: 'bg-amber-50/90 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-900',
+  },
+  offline_host: {
+    label: 'Хост офлайн',
+    badgeClass: 'bg-rose-50/90 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300 border-rose-200 dark:border-rose-900',
+  },
+  physical_device: {
+    label: 'Каб. 112 (Ремонт)',
+    badgeClass: 'bg-indigo-50/90 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-300 border-indigo-200 dark:border-indigo-900',
+  },
+  hardware_repair: {
+    label: 'Каб. 112 (Ремонт)',
+    badgeClass: 'bg-indigo-50/90 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-300 border-indigo-200 dark:border-indigo-900',
+  },
+  file_lock: {
+    label: 'Блокировка файла',
+    badgeClass: 'bg-amber-50/90 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-900',
+  },
+  rag_consultation: {
+    label: 'База знаний (RAG)',
+    badgeClass: 'bg-cyan-50/90 dark:bg-cyan-950/40 text-cyan-800 dark:text-cyan-300 border-cyan-200 dark:border-cyan-900',
+  },
+  duplicate_task: {
+    label: 'Дубликат',
+    badgeClass: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 border-neutral-300 dark:border-neutral-700',
+  },
+  duplicate: {
+    label: 'Дубликат',
+    badgeClass: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 border-neutral-300 dark:border-neutral-700',
+  },
+  consultation: {
+    label: 'Консультация',
+    badgeClass: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border-neutral-200 dark:border-neutral-700',
+  },
+};
 
 export interface ToastMessage {
   id: string;

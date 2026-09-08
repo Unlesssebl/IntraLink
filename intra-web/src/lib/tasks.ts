@@ -1,5 +1,6 @@
 import { apiFetch } from './api';
 import type { Ticket, Status, Priority, Category, TimelineEvent } from '../data/mock';
+import { scenarioBadgeConfigs } from '../data/mock';
 import type {
   TaskItem,
   TaskDetails,
@@ -14,6 +15,7 @@ import type {
   AIHealthData,
   SanitizePreviewResult,
   OutageIncident,
+  DecisionEnvelope,
 } from './types';
 import { ensureManualTicketRun } from './ticketRuns';
 
@@ -235,6 +237,56 @@ export function buildTicketAIPlan(task: TaskItem): TicketAIPlan {
   };
 }
 
+export function isTicketProcessed(task: TaskItem | any, envelope?: DecisionEnvelope | null): boolean {
+  // 1. Дубликат всегда обработан (выявлен контуром дедупликации)
+  if (task.is_duplicate || task.duplicate_info?.is_duplicate || envelope?.scenario_key === 'duplicate') {
+    return true;
+  }
+
+  // 2. Явный прикладной сценарий из ScenarioDecisionService
+  const scenario = envelope?.scenario_key || task.rule_type || task.template_key || '';
+  const knownProcessedScenarios = new Set([
+    'create_user',
+    'user_creation',
+    'install_printer',
+    'printer_installation',
+    'printer_issue',
+    'grant_wlan',
+    'wlan_access',
+    'wifi_access',
+    'redirect',
+    'redirect_catalog',
+    'offline_host',
+    'pc_offline',
+    'physical_device',
+    'hardware_repair',
+    'file_lock',
+    '1c_cache',
+    'clear_1c_cache',
+  ]);
+
+  if (knownProcessedScenarios.has(scenario)) {
+    return true;
+  }
+
+  // 3. RAG прецедент с подтвержденной базой решений
+  if (scenario === 'rag_consultation' || (task.kb_matches && task.kb_matches.length > 0)) {
+    return true;
+  }
+
+  // 4. Решение сформировано с конкретным исходом (outcome), отличным от базового consultation
+  if (envelope && envelope.scenario_key && envelope.scenario_key !== 'consultation') {
+    return true;
+  }
+
+  // 5. Если есть сгенерированный план, у которого actionType не generic fallback standard
+  if (task.aiPlan && task.aiPlan.actionType !== 'standard') {
+    return true;
+  }
+
+  return false;
+}
+
 export function mapTaskToTicket(task: TaskItem): Ticket {
   const createdDate = task.created ? new Date(task.created) : new Date();
   const slaDeadline = new Date(createdDate.getTime() + 4 * 3600000);
@@ -264,7 +316,29 @@ export function mapTaskToTicket(task: TaskItem): Ticket {
   else if (task.score >= 7) priority = 'high';
   else if (task.score <= 3) priority = 'low';
 
-  const aiPlan = buildTicketAIPlan(task);
+  const envelope = (task as any).decision_envelope || (task as any).suggested_action?._decision_envelope || (task as any).suggested_action?.decision_envelope || null;
+  const scenarioKey = envelope?.scenario_key || task.rule_type || task.template_key || ((task as any).is_duplicate ? 'duplicate' : undefined);
+
+  let aiPlan = buildTicketAIPlan(task);
+  if (envelope) {
+    const outcome = envelope.outcome || {};
+    const targetStatusId = outcome.target_status_id ?? task.target_status_id ?? aiPlan.targetStatusId;
+    const targetStatusName = outcome.target_status_name ?? task.target_status_name ?? aiPlan.targetStatusName;
+    const comment = envelope.response_draft || outcome.comment || task.suggested_comment || aiPlan.comment;
+    const badgeConfig = scenarioKey ? scenarioBadgeConfigs[scenarioKey] : undefined;
+    aiPlan = {
+      ...aiPlan,
+      actionBadge: badgeConfig?.label || aiPlan.actionBadge,
+      actionTitle: outcome.action_title || aiPlan.actionTitle,
+      targetStatusId,
+      targetStatusName,
+      comment,
+      confidenceScore: envelope.confidence ?? aiPlan.confidenceScore,
+      badgeClass: badgeConfig?.badgeClass || aiPlan.badgeClass,
+    };
+  }
+
+  const isProcessed = isTicketProcessed(task, envelope);
 
   return {
     id: `HD-${task.id}`,
@@ -319,6 +393,9 @@ export function mapTaskToTicket(task: TaskItem): Ticket {
     hasAiSolution: Boolean(
       (task as any).sources?.ai
     ),
+    isProcessed,
+    scenarioKey,
+    envelope,
   };
 }
 
@@ -335,6 +412,7 @@ export async function fetchQueue(filterId = 984, limit = 50, includeRag = false)
     if (item.task_id && item.suggested_action) {
       const t = item.task || {};
       const action = item.suggested_action || {};
+      const envelope = item.decision_envelope || action._decision_envelope || action.decision_envelope || null;
       return {
         id: item.task_id,
         name: item.name || t.Name || '',
@@ -367,6 +445,9 @@ export async function fetchQueue(filterId = 984, limit = 50, includeRag = false)
         duplicate_info: item.duplicate_info || null,
         telemetry: item.telemetry || null,
         circuit: item.circuit || 'green',
+        decision_envelope: envelope,
+        scenario_key: envelope?.scenario_key || action.scenario_key || action.rule_type,
+        kb_matches: item.kb_matches || [],
       } as any;
     }
     return item;
@@ -842,5 +923,14 @@ export async function broadcastOutageComment(
   });
   return { success: true, affected_count: res.affected_count || 0 };
 }
+
+export async function triggerQueueAnalysis(taskIds?: number[]): Promise<void> {
+  if (taskIds && taskIds.length > 0) {
+    await Promise.allSettled(taskIds.map(id => reanalyzeTask(id)));
+  } else {
+    await purgeTriageCache();
+  }
+}
+
 
 

@@ -1,7 +1,15 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import type { Ticket, Status } from '../data/mock';
-import { statusConfig, priorityConfig, getStatusDotClass } from '../data/mock';
-import { applyTask, bulkApplyTasks, smartBulkApplyTasks, mapStatusToStatusId, fetchActiveOutages } from '../lib/tasks';
+import { statusConfig, priorityConfig, getStatusDotClass, scenarioBadgeConfigs } from '../data/mock';
+import {
+  applyTask,
+  bulkApplyTasks,
+  smartBulkApplyTasks,
+  mapStatusToStatusId,
+  fetchActiveOutages,
+  triggerQueueAnalysis,
+  reanalyzeTask,
+} from '../lib/tasks';
 import type { SmartBulkApplyItemPayload, OutageIncident } from '../lib/types';
 import type { ServiceSelection } from '../components/Sidebar';
 import TicketInspector from '../components/TicketInspector';
@@ -15,14 +23,14 @@ import {
   IconPlay,
   IconPaperclip,
   IconSparkles,
-  IconPencil,
   IconAlertTriangle,
   IconChevronDown,
   IconChevronRight,
-  IconRocket,
-  IconBolt,
   IconBookOpen,
   IconArrowRight,
+  IconRefresh,
+  IconCheck,
+  IconCheckCircle,
 } from '../components/Icons';
 
 import SmartBatchModal, { type SmartBatchItem } from '../components/queue/SmartBatchModal';
@@ -44,8 +52,7 @@ interface Props {
 }
 
 type ViewMode = 'table' | 'kanban';
-type FilterTab = 'all' | 'duplicates' | 'redirects' | 'repair' | 'wifi';
-type AuditFilter = 'all' | 'needs_attention' | 'waiting_approval' | 'system_error' | 'fallback' | 'autopilot';
+type ProcessedTab = 'processed' | 'unprocessed';
 
 interface SmartBatchModalState {
   open: boolean;
@@ -152,10 +159,9 @@ export default function QueuePage({
   onSelectActiveTask,
 }: Props) {
   const [view, setView] = useState<ViewMode>('table');
-  const [filterTab, setFilterTab] = useState<FilterTab>('all');
-  const [showRuleEngineOnly, setShowRuleEngineOnly] = useState(false);
-  const [showAiOnly, setShowAiOnly] = useState(false);
-  const [auditFilter, setAuditFilter] = useState<AuditFilter>('all');
+  const [processedTab, setProcessedTab] = useState<ProcessedTab>('processed');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzingTaskIds, setAnalyzingTaskIds] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [inlineStatusTicketId, setInlineStatusTicketId] = useState<string | null>(null);
   const [openHostTicketId, setOpenHostTicketId] = useState<string | null>(null);
@@ -209,100 +215,86 @@ export default function QueuePage({
 
   const selectedTicket = tickets.find(t => t.id === selectedTicketId) ?? null;
 
-  // Filter by service first to get scope-specific counts
-  const scopedTickets = tickets.filter(t => {
-    if (selectedService.serviceId !== null) {
-      return t.serviceId === selectedService.serviceId;
-    }
-    if (selectedService.rootId !== null) {
-      return t.rootServiceId === selectedService.rootId || t.serviceId === selectedService.rootId;
-    }
-    return true;
-  });
-
-  // Counts for KPI within current scope
-  const countTotal = scopedTickets.length;
-  const countRuleEngine = scopedTickets.filter(t => t.hasRuleEngine).length;
-  const countAiReady = scopedTickets.filter(t => t.hasAiSolution).length;
-  const countDuplicates = scopedTickets.filter(t => t.isDuplicate || t.ruleType === 'duplicate_task').length;
-  const countRedirects = scopedTickets.filter(t => t.isRedirect || t.ruleType?.startsWith('redirect')).length;
-  const countRepair = scopedTickets.filter(
-    t =>
-      t.ruleType === 'hardware_repair' ||
-      t.templateKey === 'hardware_repair' ||
-      t.templateKey === 'bring_device_112' ||
-      t.templateKey === 'bring_pc_112'
-  ).length;
-  const countWifi = scopedTickets.filter(t => t.ruleType === 'wlan_access' || t.templateKey === 'wifi_access').length;
-
-  // Counts for audit status filter
-  const countAttention = scopedTickets.filter(t => {
-    const run = ticketRuns[t.rawId];
-    return run && (run.state === 'waiting_approval' || run.state === 'paused' || run.state === 'system_error');
-  }).length;
-  const countApproval = scopedTickets.filter(t => ticketRuns[t.rawId]?.state === 'waiting_approval').length;
-  const countSystemError = scopedTickets.filter(t => ticketRuns[t.rawId]?.state === 'system_error').length;
-  const countAutopilot = scopedTickets.filter(t => ticketRuns[t.rawId]?.mode === 'autopilot').length;
-  const countFallback = scopedTickets.filter(t => !t.hasRuleEngine && !t.hasAiSolution).length;
-
-  // Adaptive smart tabs: hide tabs that have 0 items in selected service scope (Marks #3)
-  const availableTabs: { key: FilterTab; label: string; count: number }[] = [
-    { key: 'all', label: 'Все заявки', count: countTotal },
-  ];
-
-  if (countDuplicates > 0) {
-    availableTabs.push({ key: 'duplicates', label: 'Дубликаты', count: countDuplicates });
-  }
-  if (countRedirects > 0) {
-    availableTabs.push({ key: 'redirects', label: 'Редиректы', count: countRedirects });
-  }
-  if (countRepair > 0) {
-    availableTabs.push({ key: 'repair', label: 'В ремонт', count: countRepair });
-  }
-  if (countWifi > 0) {
-    availableTabs.push({ key: 'wifi', label: 'Wi-Fi доступ', count: countWifi });
-  }
-
-  // If currently active tab is no longer present in available tabs, fallback to 'all'
-  useEffect(() => {
-    if (!availableTabs.some(tab => tab.key === filterTab)) {
-      setFilterTab('all');
-    }
-  }, [availableTabs, filterTab]);
-
-  const filtered = scopedTickets.filter(t => {
-    if (activeOutageFilterIds && !activeOutageFilterIds.includes(t.rawId)) return false;
-    if (showRuleEngineOnly && !t.hasRuleEngine) return false;
-    if (showAiOnly && !t.hasAiSolution) return false;
-    if (filterTab === 'duplicates' && !t.isDuplicate && t.ruleType !== 'duplicate_task') return false;
-    if (filterTab === 'redirects' && !t.isRedirect && !t.ruleType?.startsWith('redirect')) return false;
-    if (
-      filterTab === 'repair' &&
-      t.ruleType !== 'hardware_repair' &&
-      t.templateKey !== 'hardware_repair' &&
-      t.templateKey !== 'bring_device_112' &&
-      t.templateKey !== 'bring_pc_112'
-    )
-      return false;
-    if (filterTab === 'wifi' && t.ruleType !== 'wlan_access' && t.templateKey !== 'wifi_access') return false;
-
-    // Audit State Filter
-    if (auditFilter === 'needs_attention') {
-      const run = ticketRuns[t.rawId];
-      if (!run || !(run.state === 'waiting_approval' || run.state === 'paused' || run.state === 'system_error')) {
-        return false;
+  // Фильтрация по выбранному сервису из сайдбара
+  const scopedTickets = useMemo(() => {
+    return tickets.filter(t => {
+      if (selectedService.serviceId !== null) {
+        return t.serviceId === selectedService.serviceId;
       }
-    } else if (auditFilter === 'waiting_approval') {
-      if (ticketRuns[t.rawId]?.state !== 'waiting_approval') return false;
-    } else if (auditFilter === 'system_error') {
-      if (ticketRuns[t.rawId]?.state !== 'system_error') return false;
-    } else if (auditFilter === 'autopilot') {
-      if (ticketRuns[t.rawId]?.mode !== 'autopilot') return false;
-    } else if (auditFilter === 'fallback') {
-      if (t.hasRuleEngine || t.hasAiSolution) return false;
-    }
+      if (selectedService.rootId !== null) {
+        return t.rootServiceId === selectedService.rootId || t.serviceId === selectedService.rootId;
+      }
+      return true;
+    });
+  }, [tickets, selectedService]);
 
-    // Search with null-guards (Audit E-5)
+  // Глобальное разделение на Обработанные и Не обработанные
+  const processedTickets = useMemo(() => {
+    return scopedTickets.filter(t => Boolean(t.isProcessed));
+  }, [scopedTickets]);
+
+  const unprocessedTickets = useMemo(() => {
+    return scopedTickets.filter(t => !t.isProcessed);
+  }, [scopedTickets]);
+
+  const countProcessed = processedTickets.length;
+  const countUnprocessed = unprocessedTickets.length;
+
+  // Автоматический выбор таба при пустых обработанных
+  useEffect(() => {
+    if (countProcessed === 0 && countUnprocessed > 0 && processedTab === 'processed') {
+      setProcessedTab('unprocessed');
+    }
+  }, [countProcessed, countUnprocessed, processedTab]);
+
+  // Запуск фонового анализа очереди или конкретных заявок
+  const handleTriggerAnalysis = async (specificTaskIds?: number[]) => {
+    setIsAnalyzing(true);
+    if (specificTaskIds && specificTaskIds.length > 0) {
+      setAnalyzingTaskIds(new Set(specificTaskIds));
+    }
+    try {
+      onToast({
+        type: 'info',
+        message: specificTaskIds?.length
+          ? `Запущен анализ ${specificTaskIds.length} заявок...`
+          : 'Запущен анализ очереди заявок через сценарный пайплайн...',
+      });
+      await triggerQueueAnalysis(specificTaskIds);
+      onToast({ type: 'success', message: 'Анализ очереди успешно завершен' });
+      onRefresh();
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Ошибка анализа: ${err.message || err}` });
+    } finally {
+      setIsAnalyzing(false);
+      setAnalyzingTaskIds(new Set());
+    }
+  };
+
+  const handleSingleReanalyze = async (ticket: Ticket) => {
+    setAnalyzingTaskIds(prev => new Set(prev).add(ticket.rawId));
+    try {
+      onToast({ type: 'info', message: `Анализ заявки #${ticket.rawId}...` });
+      await reanalyzeTask(ticket.rawId);
+      onToast({ type: 'success', message: `Заявка #${ticket.rawId} обработана сценарием` });
+      onRefresh();
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Ошибка анализа #${ticket.rawId}: ${err.message || err}` });
+    } finally {
+      setAnalyzingTaskIds(prev => {
+        const next = new Set(prev);
+        next.delete(ticket.rawId);
+        return next;
+      });
+    }
+  };
+
+  // Базовый набор тикетов по текущему сегменту
+  const currentTabTickets = processedTab === 'processed' ? processedTickets : unprocessedTickets;
+
+  const filtered = currentTabTickets.filter(t => {
+    if (activeOutageFilterIds && !activeOutageFilterIds.includes(t.rawId)) return false;
+
     if (searchQuery) {
       const q = searchQuery.toLowerCase().trim();
       const matchId = t.id.toLowerCase().includes(q) || String(t.rawId).includes(q);
@@ -345,7 +337,6 @@ export default function QueuePage({
     });
   };
 
-  // Smart Plan Direct Action for Single Ticket
   const handleApplyTicketPlan = async (t: Ticket) => {
     const plan = t.aiPlan;
     if (!plan) {
@@ -450,7 +441,6 @@ export default function QueuePage({
     }
   };
 
-  // Real Single Inline Actions
   const handleInlineTake = async (t: Ticket) => {
     try {
       await applyTask(t.rawId, {
@@ -466,7 +456,6 @@ export default function QueuePage({
   };
 
   const handleInlineStatusChange = async (t: Ticket, s: Status) => {
-    // Guard: Do not allow blind closing without comment (Audit E-2)
     if (s === 'resolved') {
       onSelectTicket(t.id);
       setInlineStatusTicketId(null);
@@ -492,7 +481,6 @@ export default function QueuePage({
     }
   };
 
-  // Bulk Actions with Confirm Modal (Audit C-3)
   const initiateBulkAction = (actionType: 'take' | 'cancel' | 'resolve') => {
     if (selected.size === 0) return;
     const selectedTickets = tickets.filter(t => selected.has(t.id));
@@ -600,7 +588,6 @@ export default function QueuePage({
     { status: 'resolved', label: 'Выполнены / Отменены' },
   ];
 
-  // Kanban Drag & Drop with state ROLLBACK on failure (Audit C-2)
   const handleKanbanDrop = useCallback(
     async (status: Status, ticketId: string) => {
       const t = tickets.find(x => x.id === ticketId);
@@ -611,7 +598,6 @@ export default function QueuePage({
       const prevStatusName = t.statusName;
       const targetStatusId = mapStatusToStatusId(status);
 
-      // Optimistic update
       onUpdateTicket(ticketId, { status, statusId: targetStatusId, statusName: statusConfig[status].label });
       setDragOver(null);
 
@@ -623,7 +609,6 @@ export default function QueuePage({
         });
         onToast({ type: 'success', message: `Заявка #${t.rawId} переведена в «${statusConfig[status].label}»` });
       } catch (err: any) {
-        // Rollback state!
         onUpdateTicket(ticketId, { status: prevStatus, statusId: prevStatusId, statusName: prevStatusName });
         onToast({
           type: 'error',
@@ -652,21 +637,22 @@ export default function QueuePage({
 
   return (
     <div className="h-full flex overflow-hidden">
-      {/* Main queue panel */}
+      {/* Главная панель очереди */}
       <div className="flex-1 flex flex-col min-w-0 bg-white dark:bg-neutral-950">
-        {/* Unified Clean Toolbar (Without redundant search, with adaptive smart tabs) */}
+        {/* Строгий тулбар по Swiss Grid (Zero-Emoji, лаконичное разделение) */}
         <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-2.5 border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 flex-wrap">
           <div className="flex items-center gap-3 flex-wrap">
-            {/* View Mode Toggle */}
+            {/* Переключатель вида */}
             <div className="flex items-center gap-0.5 bg-neutral-100 dark:bg-neutral-900 p-0.5 rounded-lg border border-neutral-200 dark:border-neutral-800">
               {(['table', 'kanban'] as const).map(v => (
                 <button
                   key={v}
                   onClick={() => setView(v)}
-                  className={`px-3 py-1 rounded-md text-[12.5px] font-semibold transition-colors cursor-pointer ${view === v
-                    ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-2xs'
-                    : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
-                    }`}
+                  className={`px-3 py-1 rounded-md text-[12.5px] font-semibold transition-colors cursor-pointer ${
+                    view === v
+                      ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-2xs'
+                      : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+                  }`}
                 >
                   {v === 'table' ? 'Таблица' : 'Канбан'}
                 </button>
@@ -675,136 +661,70 @@ export default function QueuePage({
 
             <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-800" />
 
-            {ticketRunsStaleAt && (
-              <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300" title={ticketRunsStaleAt.toLocaleString('ru-RU')}>
-                Состояния циклов временно недоступны · показаны последние данные
-              </span>
-            )}
-
-            {/* Rule Engine Fast Toggle Button */}
-            <button
-              type="button"
-              onClick={() => setShowRuleEngineOnly(prev => !prev)}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer border ${
-                showRuleEngineOnly
-                  ? 'bg-blue-600 text-white border-blue-500 shadow-2xs'
-                  : 'bg-white dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 border-neutral-250 dark:border-neutral-750 hover:bg-neutral-50 dark:hover:bg-neutral-800'
-              }`}
-              title={showRuleEngineOnly ? 'Показать все доступные заявки' : 'Показать только заявки с регламентом Rule Engine'}
-            >
-              <IconBolt size={13} className={showRuleEngineOnly ? 'text-white' : 'text-blue-600 dark:text-blue-400'} />
-              <span>Rule Engine</span>
-              <span
-                className={`text-[11px] font-bold px-1.5 py-0.2 rounded-full tabular-nums ${
-                  showRuleEngineOnly
-                    ? 'bg-white/20 text-white'
-                    : 'bg-blue-100 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300'
+            {/* Глобальные сегменты: Обработанные / Не обработанные */}
+            <div className="flex items-center gap-1.5 p-0.5 bg-neutral-100 dark:bg-neutral-900 rounded-lg border border-neutral-200 dark:border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setProcessedTab('processed')}
+                className={`flex items-center gap-2 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer ${
+                  processedTab === 'processed'
+                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 shadow-2xs'
+                    : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100'
                 }`}
               >
-                {countRuleEngine}
-              </span>
-            </button>
+                <span>Обработанные</span>
+                <span
+                  className={`text-[11px] tabular-nums font-mono px-1.5 py-0.2 rounded-full font-bold ${
+                    processedTab === 'processed'
+                      ? 'bg-white/20 text-white dark:bg-neutral-900/20 dark:text-neutral-900'
+                      : 'bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'
+                  }`}
+                >
+                  {countProcessed}
+                </span>
+              </button>
 
-            {/* AI-Ready Fast Toggle Button */}
-            <button
-              type="button"
-              onClick={() => setShowAiOnly(prev => !prev)}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer border ${
-                showAiOnly
-                  ? 'bg-purple-600 text-white border-purple-500 shadow-2xs'
-                  : 'bg-white dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 border-neutral-250 dark:border-neutral-750 hover:bg-neutral-50 dark:hover:bg-neutral-800'
-              }`}
-              title={showAiOnly ? 'Показать все доступные заявки' : 'Показать только заявки с готовым решением AI'}
-            >
-              <IconSparkles size={13} className={showAiOnly ? 'text-white' : 'text-purple-600 dark:text-purple-400'} />
-              <span>AI Решение</span>
-              <span
-                className={`text-[11px] font-bold px-1.5 py-0.2 rounded-full tabular-nums ${
-                  showAiOnly
-                    ? 'bg-white/20 text-white'
-                    : 'bg-purple-100 dark:bg-purple-950/80 text-purple-700 dark:text-purple-300'
+              <button
+                type="button"
+                onClick={() => setProcessedTab('unprocessed')}
+                className={`flex items-center gap-2 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer ${
+                  processedTab === 'unprocessed'
+                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 shadow-2xs'
+                    : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100'
                 }`}
               >
-                {countAiReady}
-              </span>
-            </button>
-
-            <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-800" />
-
-            {/* Adaptive Smart Filter Tabs (Marks #3) */}
-            <div className="flex items-center gap-1 flex-wrap">
-              {availableTabs.map(tab => {
-                const isActive = filterTab === tab.key;
-                return (
-                  <button
-                    key={tab.key}
-                    onClick={() => setFilterTab(tab.key)}
-                    className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[13px] font-medium transition-colors cursor-pointer ${isActive
-                      ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 font-bold border border-neutral-200/80 dark:border-neutral-700/80'
-                      : 'text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-900 hover:text-neutral-900 dark:hover:text-neutral-100'
-                      }`}
-                  >
-                    <span>{tab.label}</span>
-                    <span
-                      className={`text-[11px] tabular-nums font-sans px-1.5 py-0.2 rounded-full font-bold ${isActive
-                        ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                        : 'bg-neutral-200/80 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'
-                        }`}
-                    >
-                      {tab.count}
-                    </span>
-                  </button>
-                );
-              })}
+                <span>Не обработанные</span>
+                <span
+                  className={`text-[11px] tabular-nums font-mono px-1.5 py-0.2 rounded-full font-bold ${
+                    processedTab === 'unprocessed'
+                      ? 'bg-white/20 text-white dark:bg-neutral-900/20 dark:text-neutral-900'
+                      : countUnprocessed > 0
+                        ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 font-semibold'
+                        : 'bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'
+                  }`}
+                >
+                  {countUnprocessed}
+                </span>
+              </button>
             </div>
 
-            {/* Smart Tab Context Action Buttons (100% HITL Batch Trigger) */}
-            {filterTab === 'wifi' && countWifi > 0 && (
-              <button
-                onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.ruleType === 'wlan_access' || t.templateKey === 'wifi_access'))}
-                disabled={processingBulk}
-                className="flex items-center gap-1.5 px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-md text-[12.5px] font-bold shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
-              >
-                <IconWifi size={13} />
-                <span>Выдать Wi-Fi всем ({countWifi})</span>
-              </button>
-            )}
-
-            {filterTab === 'duplicates' && countDuplicates > 0 && (
-              <button
-                onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.isDuplicate || t.ruleType === 'duplicate_task'))}
-                disabled={processingBulk}
-                className="flex items-center gap-1.5 px-3 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 border border-neutral-800 dark:border-neutral-200 rounded-lg text-[12.5px] font-medium shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
-              >
-                <IconDuplicate size={13} />
-                <span>Отменить все дубликаты ({countDuplicates})</span>
-              </button>
-            )}
-
-            {filterTab === 'redirects' && countRedirects > 0 && (
-              <button
-                onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.isRedirect || t.ruleType?.startsWith('redirect')))}
-                disabled={processingBulk}
-                className="flex items-center gap-1.5 px-3 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 border border-neutral-800 dark:border-neutral-200 rounded-lg text-[12.5px] font-medium shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
-              >
-                <IconRedirect size={13} />
-                <span>Перенаправить все ({countRedirects})</span>
-              </button>
-            )}
-
-            {filterTab === 'repair' && countRepair > 0 && (
-              <button
-                onClick={() => openSmartBatchModal(scopedTickets.filter(t => t.ruleType === 'hardware_repair'))}
-                disabled={processingBulk}
-                className="flex items-center gap-1.5 px-3 py-1 bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-neutral-100 dark:hover:bg-white dark:text-neutral-900 border border-neutral-800 dark:border-neutral-200 rounded-lg text-[12.5px] font-medium shadow-xs cursor-pointer transition-colors ml-2 animate-in fade-in"
-              >
-                <IconWrench size={13} />
-                <span>В ремонт все ({countRepair})</span>
-              </button>
-            )}
+            {/* Кнопка запуска анализа очереди */}
+            <button
+              type="button"
+              onClick={() => handleTriggerAnalysis()}
+              disabled={isAnalyzing}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-850 text-neutral-800 dark:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-neutral-800 shadow-2xs disabled:opacity-60"
+              title="Принудительно запустить анализ входящих заявок через сценарный пайплайн"
+            >
+              <IconRefresh
+                size={13}
+                className={`text-neutral-500 dark:text-neutral-400 ${isAnalyzing ? 'animate-spin' : ''}`}
+              />
+              <span>{isAnalyzing ? 'Анализ очереди...' : 'Запустить анализ'}</span>
+            </button>
 
             {activeOutageFilterIds && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-lg text-xs ml-2 animate-in fade-in">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-lg text-xs ml-1 animate-in fade-in">
                 <span>Фильтр инцидента ({activeOutageFilterIds.length} заявок)</span>
                 <button
                   type="button"
@@ -817,17 +737,43 @@ export default function QueuePage({
               </div>
             )}
           </div>
+
+          <div className="flex items-center gap-2">
+            {selectedService.name && (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-neutral-700 dark:text-neutral-300">
+                <span className="text-neutral-400 dark:text-neutral-500">Сервис:</span>
+                <span className="font-semibold truncate max-w-[180px]">{selectedService.name}</span>
+                <button
+                  type="button"
+                  onClick={onResetService}
+                  className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 cursor-pointer ml-1 font-bold"
+                  title="Показать все сервисы"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {ticketRunsStaleAt && (
+              <span
+                className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+                title={ticketRunsStaleAt.toLocaleString('ru-RU')}
+              >
+                Состояния циклов временно недоступны
+              </span>
+            )}
+          </div>
         </div>
 
-        {/* Outage Alert Banner */}
+        {/* Аварийный баннер AIOps */}
         {outages.length > 0 && (
           <div className="px-4 pt-3">
             <OutageAlertBanner
               outages={outages}
-              onSelectTicket={(id) => onSelectTicket(id)}
-              onFilterTicketIds={(ids) => setActiveOutageFilterIds(ids)}
+              onSelectTicket={id => onSelectTicket(id)}
+              onFilterTicketIds={ids => setActiveOutageFilterIds(ids)}
               onToast={onToast}
-              onOutageResolved={(outageId) => {
+              onOutageResolved={outageId => {
                 setOutages(prev => prev.filter(o => o.id !== outageId));
                 setActiveOutageFilterIds(null);
               }}
@@ -835,86 +781,42 @@ export default function QueuePage({
           </div>
         )}
 
-        {/* Audit Filter Sub-bar */}
-        <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-2 border-b border-neutral-150 dark:border-neutral-850 bg-neutral-50/50 dark:bg-neutral-900/30 flex-wrap">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[11px] uppercase tracking-wider font-bold text-neutral-400 dark:text-neutral-500 mr-1">
-              Аудит:
-            </span>
-            {([
-              { key: 'all' as AuditFilter, label: 'Все', count: scopedTickets.length },
-              { key: 'needs_attention' as AuditFilter, label: 'Внимание', count: countAttention, variant: 'alert' },
-              { key: 'waiting_approval' as AuditFilter, label: 'Подтверждение', count: countApproval, variant: 'warn' },
-              { key: 'system_error' as AuditFilter, label: 'Ошибка связи', count: countSystemError, variant: 'danger' },
-              { key: 'autopilot' as AuditFilter, label: 'Автопилот', count: countAutopilot },
-              { key: 'fallback' as AuditFilter, label: 'Fallback', count: countFallback },
-            ])
-              .filter(chip => chip.key === 'all' || chip.count > 0)
-              .map(chip => {
-                const isActive = auditFilter === chip.key;
-                return (
-                  <button
-                    key={chip.key}
-                    type="button"
-                    onClick={() => setAuditFilter(chip.key)}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11.5px] font-semibold border transition-colors cursor-pointer ${
-                      isActive
-                        ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 border-neutral-900 dark:border-neutral-100 shadow-2xs'
-                        : chip.variant === 'danger'
-                        ? 'bg-rose-50/70 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-900 hover:bg-rose-100'
-                        : chip.variant === 'warn'
-                        ? 'bg-amber-50/70 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-900 hover:bg-amber-100'
-                        : chip.variant === 'alert'
-                        ? 'bg-orange-50/70 dark:bg-orange-950/40 text-orange-800 dark:text-orange-300 border-orange-200 dark:border-orange-900 hover:bg-orange-100'
-                        : 'bg-white dark:bg-neutral-850 text-neutral-600 dark:text-neutral-400 border-neutral-200/90 dark:border-neutral-750 hover:bg-neutral-100 dark:hover:bg-neutral-800'
-                    }`}
-                  >
-                    <span>{chip.label}</span>
-                    <span
-                      className={`text-[10.5px] tabular-nums font-mono px-1 rounded-full ${
-                        isActive
-                          ? 'bg-white/20 text-white dark:bg-neutral-900/20 dark:text-neutral-900'
-                          : 'bg-black/5 dark:bg-white/10'
-                      }`}
-                    >
-                      {chip.count}
-                    </span>
-                  </button>
-                );
-              })}
-          </div>
-        </div>
-
-        {/* Active Assistant Live Execution Banner (Zero-Emoji, Linear Standard) */}
+        {/* Индикатор активного выполнения ассистента */}
         {activeExecution?.has_active && activeExecution.task_id && (
-          <div className={`shrink-0 px-4 py-2 border-b flex items-center justify-between gap-3 text-xs transition-colors ${
-            activeExecution.state === 'waiting_approval'
-              ? 'bg-amber-50/90 dark:bg-amber-950/40 border-amber-200/80 dark:border-amber-900/60 text-amber-900 dark:text-amber-200'
-              : 'bg-blue-50/90 dark:bg-blue-950/40 border-blue-200/80 dark:border-blue-900/60 text-blue-900 dark:text-blue-200'
-          }`}>
+          <div
+            className={`shrink-0 px-4 py-2 border-b flex items-center justify-between gap-3 text-xs transition-colors ${
+              activeExecution.state === 'waiting_approval'
+                ? 'bg-amber-50/90 dark:bg-amber-950/40 border-amber-200/80 dark:border-amber-900/60 text-amber-900 dark:text-amber-200'
+                : 'bg-blue-50/90 dark:bg-blue-950/40 border-blue-200/80 dark:border-blue-900/60 text-blue-900 dark:text-blue-200'
+            }`}
+          >
             <div className="flex items-center gap-2.5 min-w-0">
               <span className="relative flex h-2 w-2 shrink-0">
-                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                  activeExecution.state === 'waiting_approval' ? 'bg-amber-400' : 'bg-blue-400'
-                }`}></span>
-                <span className={`relative inline-flex rounded-full h-2 w-2 ${
-                  activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
-                }`}></span>
+                <span
+                  className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                    activeExecution.state === 'waiting_approval' ? 'bg-amber-400' : 'bg-blue-400'
+                  }`}
+                />
+                <span
+                  className={`relative inline-flex rounded-full h-2 w-2 ${
+                    activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
+                  }`}
+                />
               </span>
               <div className="flex items-center gap-2 min-w-0 font-medium">
                 <span className="text-neutral-500 dark:text-neutral-400 shrink-0">Ассистент:</span>
-                <span className="font-mono font-bold shrink-0">
-                  #{activeExecution.task_id}
-                </span>
+                <span className="font-mono font-bold shrink-0">#{activeExecution.task_id}</span>
                 <span className="opacity-40 shrink-0">·</span>
-                <span className="truncate">
-                  {activeExecution.status_text}
-                </span>
+                <span className="truncate">{activeExecution.status_text}</span>
               </div>
             </div>
             <button
               type="button"
-              onClick={() => onSelectActiveTask ? onSelectActiveTask(activeExecution.task_id!) : onSelectTicket(String(activeExecution.task_id))}
+              onClick={() =>
+                onSelectActiveTask
+                  ? onSelectActiveTask(activeExecution.task_id!)
+                  : onSelectTicket(String(activeExecution.task_id))
+              }
               className={`shrink-0 px-3 py-1 rounded-md text-[11.5px] font-semibold transition-colors cursor-pointer border ${
                 activeExecution.state === 'waiting_approval'
                   ? 'bg-amber-600 hover:bg-amber-500 text-white border-amber-500 shadow-2xs'
@@ -926,7 +828,7 @@ export default function QueuePage({
           </div>
         )}
 
-        {/* Table View (Matching style and layout from image-2.png) */}
+        {/* Табличный вид */}
         {view === 'table' && (
           <div className="flex-1 overflow-auto bg-white dark:bg-neutral-950">
             <table className="w-full min-w-[1360px] text-[14px] border-collapse table-fixed">
@@ -943,8 +845,8 @@ export default function QueuePage({
                   <th className="w-40 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     СТАТУС
                   </th>
-                  <th className="w-44 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
-                    РЕШЕНИЕ AI
+                  <th className="w-48 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                    {processedTab === 'processed' ? 'СЦЕНАРИЙ / РЕШЕНИЕ' : 'СОСТОЯНИЕ АНАЛИЗА'}
                   </th>
                   <th className="w-[360px] px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     ЗАЯВКА
@@ -971,37 +873,32 @@ export default function QueuePage({
                   const isSelected = selected.has(ticket.id);
                   const isActive = selectedTicketId === ticket.id;
                   const isEven = index % 2 === 0;
+                  const isTicketAnalyzing = analyzingTaskIds.has(ticket.rawId);
 
                   const rowBg = isActive
                     ? '!bg-blue-100/90 dark:!bg-blue-950/80 border-l-4 border-l-blue-600 dark:border-l-blue-500'
                     : isSelected
                       ? '!bg-neutral-200/90 dark:!bg-neutral-800'
                       : isEven
-                        ? 'bg-[#f4f7fb] dark:bg-neutral-900/60'
+                        ? 'bg-[#f8fafc] dark:bg-neutral-900/50'
                         : 'bg-white dark:bg-neutral-950';
 
                   const hostList = parseHostList(ticket.host);
                   const primaryHost = hostList[0];
                   const otherHosts = hostList.slice(1);
-                  const smartTagClass = "px-2 py-0.5 border border-neutral-200/80 dark:border-neutral-700/80 bg-neutral-100/80 dark:bg-neutral-800/80 text-neutral-600 dark:text-neutral-400 rounded text-[11.5px] font-medium";
                   const ticketRun = ticketRuns[ticket.rawId];
-                  const runStateLabel: Record<string, string> = {
-                    pending: 'ожидает',
-                    running: 'выполняется',
-                    waiting_answer: 'ждёт ответа',
-                    waiting_approval: 'ждёт подтверждения',
-                              paused: 'нужно внимание',
-                              system_error: 'ошибка связи',
-                    completed: 'завершён',
-                  };
+
+                  const scenarioKey = ticket.scenarioKey || ticket.envelope?.scenario_key || ticket.ruleType;
+                  const scenarioConfig = scenarioKey ? scenarioBadgeConfigs[scenarioKey] : undefined;
+                  const scenarioLabel = scenarioConfig?.label || (ticket.isDuplicate ? 'Дубликат' : (scenarioKey || '—'));
 
                   return (
                     <tr
                       key={ticket.id}
                       onClick={() => onSelectTicket(isActive ? null : ticket.id)}
-                      className={`cursor-pointer transition-colors outline-none hover:!bg-blue-50/70 dark:hover:!bg-neutral-800/80 h-[66px] border-b border-neutral-100 dark:border-neutral-850 ${rowBg}`}
+                      className={`cursor-pointer transition-colors outline-none hover:!bg-neutral-100/70 dark:hover:!bg-neutral-850/80 h-[66px] border-b border-neutral-100 dark:border-neutral-850 ${rowBg}`}
                     >
-                      {/* Checkbox */}
+                      {/* Чекбокс */}
                       <td className="w-12 px-3.5 py-3 text-center" onClick={e => e.stopPropagation()}>
                         <input
                           type="checkbox"
@@ -1011,7 +908,7 @@ export default function QueuePage({
                         />
                       </td>
 
-                      {/* Status Indicator (Card/Button style, h-7.5 rounded-lg) */}
+                      {/* Статус заявки */}
                       <td
                         className="w-40 px-3.5 py-3 whitespace-nowrap"
                         onClick={e => {
@@ -1022,12 +919,17 @@ export default function QueuePage({
                         <div className="relative inline-block">
                           <button
                             type="button"
-                            className="group h-7.5 max-w-full inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
+                            className="group h-7.5 max-w-full inline-flex items-center gap-1.5 px-2.5 rounded-md text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs"
                             title="Нажмите для изменения статуса"
                           >
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${statusConfig[ticket.status].dotClass}`} />
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusConfig[ticket.status].dotClass}`}
+                            />
                             <span className="truncate">{ticket.statusName || statusConfig[ticket.status].label}</span>
-                            <IconChevronDown size={10} className="opacity-40 group-hover:opacity-100 transition-opacity ml-0.5" />
+                            <IconChevronDown
+                              size={10}
+                              className="opacity-40 group-hover:opacity-100 transition-opacity ml-0.5"
+                            />
                           </button>
 
                           {activeExecution?.has_active && activeExecution.task_id === ticket.rawId ? (
@@ -1040,22 +942,25 @@ export default function QueuePage({
                                 }`}
                                 title={activeExecution.status_text}
                               >
-                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-ping ${
-                                  activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
-                                }`} />
+                                <span
+                                  className={`w-1.5 h-1.5 rounded-full shrink-0 animate-ping ${
+                                    activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
+                                  }`}
+                                />
                                 <span className="truncate max-w-[130px]">
-                                  {activeExecution.phase_title || (activeExecution.state === 'waiting_approval' ? 'Ожидает одобрения' : 'Выполняется')}
+                                  {activeExecution.phase_title ||
+                                    (activeExecution.state === 'waiting_approval'
+                                      ? 'Ожидает одобрения'
+                                      : 'Выполняется')}
                                 </span>
                               </span>
                             </div>
                           ) : ticketRun ? (
-                            <div className="mt-1.5">
-                              {renderTicketRunPill(ticketRun)}
-                            </div>
+                            <div className="mt-1.5">{renderTicketRunPill(ticketRun)}</div>
                           ) : null}
 
                           {inlineStatusTicketId === ticket.id && (
-                            <div className="absolute left-0 top-8 z-30 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-xl shadow-xl py-1.5 min-w-[170px] animate-in fade-in zoom-in-95 duration-100">
+                            <div className="absolute left-0 top-8 z-30 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-xl py-1.5 min-w-[170px] animate-in fade-in zoom-in-95 duration-100">
                               <div className="px-2.5 py-1 text-[10px] uppercase font-bold text-neutral-400 dark:text-neutral-500 tracking-wider">
                                 Сменить статус
                               </div>
@@ -1070,7 +975,7 @@ export default function QueuePage({
                                     }}
                                     className="w-full px-2.5 py-1.5 text-left text-[12px] font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer flex items-center gap-2 text-neutral-800 dark:text-neutral-200"
                                   >
-                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${sc.dotClass}`} />
+                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${sc.dotClass}`} />
                                     <span>{sc.label}</span>
                                   </button>
                                 );
@@ -1081,10 +986,10 @@ export default function QueuePage({
                                   e.stopPropagation();
                                   handleInlineStatusChange(ticket, 'resolved');
                                 }}
-                                className="w-full px-2.5 py-1.5 text-left text-[12px] font-semibold text-blue-600 dark:text-blue-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer flex items-center justify-between"
+                                className="w-full px-2.5 py-1.5 text-left text-[12px] font-semibold text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer flex items-center justify-between"
                               >
                                 <div className="flex items-center gap-2">
-                                  <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse bg-emerald-500" />
+                                  <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-emerald-500" />
                                   <span>Выполнить / Отменить</span>
                                 </div>
                                 <IconChevronRight size={12} />
@@ -1094,139 +999,111 @@ export default function QueuePage({
                         </div>
                       </td>
 
-                      {/* Unified Smart AI Solution & Action Button */}
-                      <td className="w-44 overflow-hidden px-3.5 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                        {ticket.statusId === 27 ? (
-                          <div
-                            className="h-7.5 max-w-full inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 shadow-2xs"
-                            title="Заявка уже переведена в статус «В работе»"
-                          >
-                            <span className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse shrink-0" />
-                            <span>В работе</span>
+                      {/* Сценарий / Решение (или статус анализа) */}
+                      <td className="w-48 overflow-hidden px-3.5 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                        {ticket.isProcessed ? (
+                          <div className="flex flex-col gap-1 items-start">
+                            {/* Бейдж сценария */}
+                            <span
+                              className={`px-2 py-0.5 rounded text-[11px] font-medium border inline-flex items-center gap-1 max-w-[170px] truncate ${
+                                scenarioConfig?.badgeClass ||
+                                'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-neutral-700'
+                              }`}
+                              title={scenarioLabel}
+                            >
+                              <span className="truncate">{scenarioLabel}</span>
+                            </span>
+
+                            {/* Кнопка быстрого применения целевого статуса */}
+                            {ticket.statusId === 27 ? (
+                              <span className="text-[11px] text-neutral-400 dark:text-neutral-500 font-medium">
+                                В работе
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleApplyTicketPlan(ticket)}
+                                className="group h-6 max-w-full inline-flex items-center gap-1 px-2 rounded text-[11px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50 hover:bg-neutral-100 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 transition-all cursor-pointer shadow-2xs"
+                                title={
+                                  ticket.aiPlan
+                                    ? `${ticket.aiPlan.actionTitle}\nОтвет: «${ticket.aiPlan.comment}»`
+                                    : 'Принять в работу'
+                                }
+                              >
+                                <span
+                                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${getStatusDotClass(
+                                    ticket.aiPlan?.targetStatusId ?? 27
+                                  )}`}
+                                />
+                                <span className="truncate max-w-[120px]">
+                                  {ticket.aiPlan?.targetStatusName || 'В работу'}
+                                </span>
+                                <IconArrowRight
+                                  size={9}
+                                  className="text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-colors ml-0.5 shrink-0"
+                                />
+                              </button>
+                            )}
                           </div>
                         ) : (
-                          <button
-                            onClick={() => handleApplyTicketPlan(ticket)}
-                            className="group h-7.5 max-w-full inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
-                            title={ticket.aiPlan ? `${ticket.aiPlan.actionTitle}\nОтвет: «${ticket.aiPlan.comment}»\nСписание: ${ticket.aiPlan.expensesMinutes} мин` : 'Принять заявку в работу'}
-                          >
-                            <span
-                              className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${getStatusDotClass(
-                                ticket.aiPlan?.targetStatusId ?? (ticket.ruleType === 'hardware_repair' ? 48 : 27)
-                              )}`}
-                            />
-                            <span className="truncate">{ticket.aiPlan?.targetStatusName || (ticket.ruleType === 'hardware_repair' ? 'Ожидание устройства' : 'В работе')}</span>
-                            <IconArrowRight size={10} className="text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-colors ml-0.5" />
-                          </button>
+                          <div className="flex flex-col gap-1 items-start">
+                            <span className="px-2 py-0.5 rounded text-[11px] font-medium border bg-neutral-100 dark:bg-neutral-850 text-neutral-500 dark:text-neutral-400 border-neutral-200 dark:border-neutral-800">
+                              Ожидает анализа
+                            </span>
+                            <button
+                              type="button"
+                              disabled={isTicketAnalyzing}
+                              onClick={() => handleSingleReanalyze(ticket)}
+                              className="h-6 inline-flex items-center gap-1 px-2 rounded text-[11px] font-medium border border-neutral-200/80 dark:border-neutral-750 bg-white hover:bg-neutral-50 dark:bg-neutral-900 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 transition-colors cursor-pointer disabled:opacity-50"
+                              title="Запустить сценарный анализ для этой заявки"
+                            >
+                              <IconRefresh
+                                size={10}
+                                className={`text-neutral-400 ${isTicketAnalyzing ? 'animate-spin' : ''}`}
+                              />
+                              <span>{isTicketAnalyzing ? 'Анализ...' : 'Анализ'}</span>
+                            </button>
+                          </div>
                         )}
                       </td>
 
-                      {/* Ticket Title (Top) & Requester Info (Bottom), Tags next to Description */}
+                      {/* Заявка (Тема, ID, Заявитель) */}
                       <td className="w-[360px] min-w-0 overflow-hidden px-3.5 py-3">
                         <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-                          <span className="min-w-0 flex-1 truncate text-[15px] font-bold text-neutral-900 dark:text-neutral-100">
+                          <span className="min-w-0 flex-1 truncate text-[14.5px] font-semibold text-neutral-900 dark:text-neutral-100">
                             {ticket.title}
                           </span>
 
-                          {/* Rule Engine Badge */}
-                          {ticket.hasRuleEngine && (
-                            <span
-                              className="px-2 py-0.5 rounded text-[11px] font-semibold border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 inline-flex items-center gap-1 shrink-0"
-                              title="Сработало регламентное правило Rule Engine"
-                            >
-                              <IconBolt size={10} className="text-blue-600 dark:text-blue-400 shrink-0" />
-                              <span>Rule Engine</span>
-                            </span>
-                          )}
-
-                          {/* AI Ready Solution Badge */}
-                          {ticket.hasAiSolution && (
-                            <span
-                              className="px-2 py-0.5 rounded text-[11px] font-semibold border border-purple-300 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/70 text-purple-700 dark:text-purple-300 inline-flex items-center gap-1 shrink-0"
-                              title="Для этой заявки готово проверенное решение AI"
-                            >
-                              <IconSparkles size={10} className="text-purple-600 dark:text-purple-400 shrink-0" />
-                              <span>AI Решение</span>
-                            </span>
-                          )}
-
-                          {/* Smart tag badges placed right beside title/description */}
-                          {ticket.isDuplicate && (
-                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
-                              <IconDuplicate size={11} className="text-neutral-500 shrink-0" />
-                              <span>дубликат</span>
-                            </span>
-                          )}
-                          {ticket.isRedirect && (
-                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
-                              <IconRedirect size={11} className="text-neutral-500 shrink-0" />
-                              <span>редирект</span>
-                            </span>
-                          )}
-                          {(ticket.ruleType === 'hardware_repair' ||
-                            ticket.templateKey === 'hardware_repair' ||
-                            ticket.templateKey === 'bring_device_112' ||
-                            ticket.templateKey === 'bring_pc_112') && (
-                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
-                              <IconWrench size={11} className="text-neutral-500 shrink-0" />
-                              <span>в ремонт</span>
-                            </span>
-                          )}
-                          {(ticket.ruleType === 'wlan_access' || ticket.templateKey === 'wifi_access') && (
-                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
-                              <IconWifi size={11} className="text-neutral-500 shrink-0" />
-                              <span>wi-fi</span>
-                            </span>
-                          )}
-                          {(ticket.ruleType === '1c_cache' || ticket.templateKey === '1c_cache') && (
-                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
-                              <span>1с</span>
-                            </span>
-                          )}
-                          {(ticket.ruleType === 'printer_spooler' ||
-                            ticket.templateKey === 'printer_install' ||
-                            ticket.templateKey === 'printer_offline' ||
-                            ticket.templateKey === 'printer_ip_clarify') && (
-                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
-                              <span>печать</span>
-                            </span>
-                          )}
-                          {(ticket.ruleType === 'credentials_reset' ||
-                            ticket.templateKey === 'ad_password_reset' ||
-                            ticket.templateKey === 'password_reset_call') && (
-                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
-                              <span>пароль</span>
-                            </span>
-                          )}
-                          {(ticket.ruleType === 'user_creation' ||
-                            ticket.templateKey === 'user_created' ||
-                            ticket.templateKey === 'account_details_clarify' ||
-                            ticket.templateKey === 'account_pc_occupied' ||
-                            ticket.serviceId === 53) && (
-                            <span className={`${smartTagClass} inline-flex items-center gap-1`}>
-                              <IconUser size={11} className="text-neutral-500 shrink-0" />
-                              <span>создание уз</span>
-                            </span>
-                          )}
                           {ticket.hasKbMatches && (
-                            <span className="px-1.5 py-0.2 rounded text-[10px] font-medium border border-purple-200 dark:border-purple-800/80 bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 inline-flex items-center gap-1" title="Есть похожие решения в базе знаний RAG">
-                              <IconBookOpen size={10} className="shrink-0 text-purple-600 dark:text-purple-400" />
+                            <span
+                              className="px-1.5 py-0.2 rounded text-[10px] font-medium border border-neutral-200 dark:border-neutral-800 bg-neutral-100/80 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 inline-flex items-center gap-1 shrink-0"
+                              title="Найдено прецедентное решение в базе знаний"
+                            >
+                              <IconBookOpen size={10} className="shrink-0 text-neutral-500" />
                               <span>RAG</span>
                             </span>
                           )}
+
                           {ticket.circuit === 'red' && (
-                            <span className="px-1 py-0.2 rounded text-[9.5px] font-mono font-bold border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400" title="Контур RED: пароли/AD, закрытый On-Prem">
+                            <span
+                              className="px-1 py-0.2 rounded text-[9.5px] font-mono font-bold border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 shrink-0"
+                              title="Контур RED: повышенные требования безопасности"
+                            >
                               RED
                             </span>
                           )}
+
                           {ticket.hasAttachments && (
-                            <span className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors shrink-0" title="Есть вложения">
+                            <span
+                              className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors shrink-0"
+                              title="Есть вложения"
+                            >
                               <IconPaperclip size={13} />
                             </span>
                           )}
                         </div>
 
-                        <div className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden text-[13px] font-normal text-neutral-500 dark:text-neutral-400">
+                        <div className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden text-[12.5px] font-normal text-neutral-500 dark:text-neutral-400">
                           <a
                             href={`/admin/api/tasks/${ticket.rawId}/open`}
                             target="_blank"
@@ -1244,24 +1121,27 @@ export default function QueuePage({
                         </div>
                       </td>
 
-                      {/* Service / Category */}
+                      {/* Сервис / Услуга */}
                       <td className="w-48 px-3.5 py-3 whitespace-nowrap">
-                        <span className="text-[13.5px] text-neutral-800 dark:text-neutral-200 font-normal truncate block max-w-[200px]" title={ticket.servicePath || ticket.serviceName}>
+                        <span
+                          className="text-[13px] text-neutral-700 dark:text-neutral-300 font-normal truncate block max-w-[190px]"
+                          title={ticket.servicePath || ticket.serviceName}
+                        >
                           {ticket.serviceName}
                         </span>
                       </td>
 
-                      {/* Host (Clean Badge style) */}
+                      {/* Хост рабочей станции */}
                       <td className="w-36 px-3.5 py-3 whitespace-nowrap">
                         {primaryHost ? (
                           <div className="relative inline-flex items-center gap-1.5">
                             <span
-                              onClick={(e) => {
+                              onClick={e => {
                                 e.stopPropagation();
                                 navigator.clipboard.writeText(primaryHost);
                                 onToast({ type: 'info', message: `Хост ${primaryHost} скопирован в буфер` });
                               }}
-                              className="max-w-[105px] truncate font-mono font-semibold text-[12px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200/80 dark:border-neutral-700/80 px-2 py-0.5 rounded cursor-pointer hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors"
+                              className="max-w-[105px] truncate font-mono font-semibold text-[11.5px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200/80 dark:border-neutral-700/80 px-2 py-0.5 rounded cursor-pointer hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors"
                               title="Нажмите, чтобы скопировать хост"
                             >
                               {primaryHost}
@@ -1270,11 +1150,12 @@ export default function QueuePage({
                             {otherHosts.length > 0 && (
                               <div className="relative">
                                 <button
-                                  onClick={(e) => {
+                                  type="button"
+                                  onClick={e => {
                                     e.stopPropagation();
                                     setOpenHostTicketId(openHostTicketId === ticket.id ? null : ticket.id);
                                   }}
-                                  className="px-1.5 py-0.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 rounded text-[11px] font-mono font-bold cursor-pointer transition-colors"
+                                  className="px-1.5 py-0.5 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-600 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700 rounded text-[10.5px] font-mono font-bold cursor-pointer transition-colors"
                                   title="Показать все хосты"
                                 >
                                   +{otherHosts.length}
@@ -1291,15 +1172,17 @@ export default function QueuePage({
                                     {hostList.map((h, i) => (
                                       <div
                                         key={i}
-                                        onClick={(e) => {
+                                        onClick={e => {
                                           e.stopPropagation();
                                           navigator.clipboard.writeText(h);
                                           onToast({ type: 'info', message: `Хост ${h} скопирован` });
                                           setOpenHostTicketId(null);
                                         }}
-                                        className="flex items-center justify-between px-2 py-1 bg-neutral-50 dark:bg-neutral-800 hover:bg-blue-50 dark:hover:bg-blue-950/50 rounded cursor-pointer transition-colors"
+                                        className="flex items-center justify-between px-2 py-1 bg-neutral-50 dark:bg-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded cursor-pointer transition-colors"
                                       >
-                                        <span className="font-mono font-bold text-[12px] text-neutral-800 dark:text-neutral-200">{h}</span>
+                                        <span className="font-mono font-bold text-[12px] text-neutral-800 dark:text-neutral-200">
+                                          {h}
+                                        </span>
                                         <span className="text-[10px] text-neutral-400">копировать</span>
                                       </div>
                                     ))}
@@ -1313,10 +1196,13 @@ export default function QueuePage({
                         )}
                       </td>
 
-                      {/* Executors Column */}
+                      {/* Исполнитель */}
                       <td className="w-40 px-3.5 py-3 whitespace-nowrap">
                         {ticket.executors ? (
-                          <span className="text-[13px] text-neutral-800 dark:text-neutral-200 font-medium truncate block max-w-[150px]" title={ticket.executors}>
+                          <span
+                            className="text-[12.5px] text-neutral-700 dark:text-neutral-300 font-medium truncate block max-w-[145px]"
+                            title={ticket.executors}
+                          >
                             {ticket.executors}
                           </span>
                         ) : (
@@ -1327,11 +1213,11 @@ export default function QueuePage({
                       {/* SLA */}
                       <td className="w-28 px-3.5 py-3 whitespace-nowrap">
                         {ticket.slaDeadline.getTime() < Date.now() ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200/80 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-900/60">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-900/60">
                             Просрочена
                           </span>
                         ) : (
-                          <span className="text-neutral-500 dark:text-neutral-400 font-mono text-[12.5px] tabular-nums font-medium">
+                          <span className="text-neutral-500 dark:text-neutral-400 font-mono text-[12px] tabular-nums font-medium">
                             {formatSla(ticket.slaDeadline)}
                           </span>
                         )}
@@ -1342,28 +1228,45 @@ export default function QueuePage({
               </tbody>
             </table>
 
-            {/* Empty State */}
+            {/* Состояния отсутствия заявок (Zero-Emoji, строгий Swiss Grid) */}
             {sorted.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-24 text-neutral-400 dark:text-neutral-600">
-                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" className="mb-3 opacity-40">
-                  <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                <p className="text-base font-bold text-neutral-700 dark:text-neutral-300">
-                  {scopedTickets.length === 0
-                    ? (selectedService.name ? `В разделе «${selectedService.name}» нет заявок` : 'Очередь 1-й линии пуста')
-                    : 'Нет заявок по данному фильтру'}
+              <div className="flex flex-col items-center justify-center py-20 text-neutral-400 dark:text-neutral-600">
+                <div className="w-10 h-10 rounded-full border border-neutral-200 dark:border-neutral-800 flex items-center justify-center mb-3 bg-neutral-50 dark:bg-neutral-900">
+                  <IconCheck size={18} className="text-neutral-400 dark:text-neutral-500" />
+                </div>
+                <p className="text-[14px] font-semibold text-neutral-700 dark:text-neutral-300">
+                  {processedTab === 'processed'
+                    ? countProcessed === 0
+                      ? 'Нет обработанных заявок'
+                      : 'Нет заявок по текущему фильтру'
+                    : countUnprocessed === 0
+                      ? 'Все входящие заявки обработаны'
+                      : 'Нет необработанных заявок по фильтру'}
                 </p>
-                <p className="text-xs text-neutral-400 mt-1">
-                  {scopedTickets.length === 0 && selectedService.name
-                    ? 'Выберите другой сервис в сайдбаре или нажмите «Сбросить»'
-                    : (tickets.length === 0 ? 'Все заявки в фильтре 984 успешно обработаны' : 'Попробуйте изменить поисковый запрос или сбросить фильтры')}
+                <p className="text-[12px] text-neutral-400 dark:text-neutral-500 mt-1 max-w-[340px] text-center">
+                  {processedTab === 'processed' && countProcessed === 0 && countUnprocessed > 0 ? (
+                    <span>
+                      В очереди находится {countUnprocessed} сырых заявок.{' '}
+                      <button
+                        type="button"
+                        onClick={() => setProcessedTab('unprocessed')}
+                        className="text-neutral-900 dark:text-neutral-100 font-semibold underline cursor-pointer"
+                      >
+                        Перейти к не обработанным
+                      </button>
+                    </span>
+                  ) : processedTab === 'unprocessed' && countUnprocessed === 0 ? (
+                    <span>Все обращения в фильтре 1-й линии успешно распределены по сценариям</span>
+                  ) : (
+                    <span>Попробуйте сбросить поисковый запрос или фильтр сервиса</span>
+                  )}
                 </p>
               </div>
             )}
           </div>
         )}
 
-        {/* Kanban View (With Rollback support, Marks #4, #5) */}
+        {/* Канбан вид */}
         {view === 'kanban' && (
           <div className="flex-1 overflow-x-auto p-4">
             <div className="flex gap-4 h-full min-w-max">
@@ -1372,10 +1275,11 @@ export default function QueuePage({
                 return (
                   <div
                     key={col.status}
-                    className={`w-80 shrink-0 flex flex-col rounded-xl border transition-colors ${dragOver === col.status
-                      ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 ring-2 ring-blue-500/20'
-                      : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900'
-                      }`}
+                    className={`w-80 shrink-0 flex flex-col rounded-lg border transition-colors ${
+                      dragOver === col.status
+                        ? 'border-neutral-900 bg-neutral-100/50 dark:border-neutral-100 dark:bg-neutral-900/50'
+                        : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/40'
+                    }`}
                     onDragOver={e => {
                       e.preventDefault();
                       setDragOver(col.status);
@@ -1386,63 +1290,73 @@ export default function QueuePage({
                       if (id) handleKanbanDrop(col.status, id);
                     }}
                   >
-                    <div className="flex items-center gap-2 px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 shrink-0">
-                      <span className={`w-2 h-2 rounded-full shrink-0 animate-pulse ${statusConfig[col.status].dotClass}`} />
-                      <span className="text-[13.5px] font-bold text-neutral-800 dark:text-neutral-200">{col.label}</span>
-                      <span className="ml-auto text-[12px] bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 px-2 py-0.5 rounded-full font-bold">
+                    <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-neutral-200 dark:border-neutral-800 shrink-0">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${statusConfig[col.status].dotClass}`} />
+                      <span className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-200">
+                        {col.label}
+                      </span>
+                      <span className="ml-auto text-[11px] font-mono bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 px-1.5 py-0.2 rounded font-semibold">
                         {colTickets.length}
                       </span>
                     </div>
 
-                    <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+                    <div className="flex-1 overflow-y-auto p-2.5 space-y-2">
                       {colTickets.map(t => (
                         <div
                           key={t.id}
                           draggable
                           onDragStart={e => e.dataTransfer.setData('ticketId', t.id)}
                           onClick={() => onSelectTicket(selectedTicketId === t.id ? null : t.id)}
-                          className={`bg-white dark:bg-neutral-800 rounded-lg border p-3.5 cursor-pointer transition-all shadow-2xs hover:shadow-sm hover:scale-[1.01] active:scale-[0.99] ${selectedTicketId === t.id
-                            ? 'border-blue-500 dark:border-blue-400 ring-2 ring-blue-500/30'
-                            : 'border-neutral-200/80 dark:border-neutral-700/80 hover:border-neutral-300 dark:hover:border-neutral-600'
-                            }`}
+                          className={`bg-white dark:bg-neutral-850 rounded-md border p-3 cursor-pointer transition-all shadow-2xs hover:border-neutral-300 dark:hover:border-neutral-700 ${
+                            selectedTicketId === t.id
+                              ? 'border-neutral-900 dark:border-neutral-100 ring-1 ring-neutral-900 dark:ring-neutral-100'
+                              : 'border-neutral-200 dark:border-neutral-800'
+                          }`}
                         >
                           <div className="flex items-start justify-between gap-2 mb-1.5">
-                            <span className="font-mono font-bold text-[12px] text-neutral-400 dark:text-neutral-500">#{t.rawId}</span>
-                            <span className={`text-[11px] font-bold flex items-center gap-1 ${priorityConfig[t.priority].textClass}`}>
+                            <span className="font-mono font-semibold text-[11.5px] text-neutral-400 dark:text-neutral-500">
+                              #{t.rawId}
+                            </span>
+                            <span
+                              className={`text-[10.5px] font-semibold flex items-center gap-1 ${
+                                priorityConfig[t.priority].textClass
+                              }`}
+                            >
                               <span className={`w-1.5 h-1.5 rounded-full ${priorityConfig[t.priority].dotClass}`} />
                               {priorityConfig[t.priority].label}
                             </span>
                           </div>
-                          <p className="text-[13.5px] font-semibold text-neutral-900 dark:text-neutral-100 leading-snug mb-2">
+                          <p className="text-[13px] font-medium text-neutral-900 dark:text-neutral-100 leading-snug mb-2">
                             {t.title}
                           </p>
-                          <div className="flex items-center justify-between text-[12px] text-neutral-400">
-                            <span className="truncate max-w-[150px] font-medium">{t.requesterName}</span>
-                            <span className={`font-mono font-bold ${getSlaClass(t.slaDeadline)}`}>
+                          <div className="flex items-center justify-between text-[11.5px] text-neutral-400">
+                            <span className="truncate max-w-[140px]">{t.requesterName}</span>
+                            <span className={`font-mono font-medium ${getSlaClass(t.slaDeadline)}`}>
                               {formatSla(t.slaDeadline)}
                             </span>
                           </div>
 
                           {activeExecution?.has_active && activeExecution.task_id === t.rawId ? (
-                            <div className="mt-2 pt-1.5 border-t border-neutral-100 dark:border-neutral-700/60">
+                            <div className="mt-2 pt-1.5 border-t border-neutral-100 dark:border-neutral-750">
                               <span
-                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border ${
+                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium border ${
                                   activeExecution.state === 'waiting_approval'
                                     ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-800'
                                     : 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 border-blue-300 dark:border-blue-800'
                                 }`}
-                                title={activeExecution.status_text}
                               >
-                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-ping ${
-                                  activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
-                                }`} />
-                                <span className="truncate max-w-[150px]">
-                                  {activeExecution.phase_title || (activeExecution.state === 'waiting_approval' ? 'Ожидает одобрения' : 'Выполняется')}
+                                <span
+                                  className={`w-1.5 h-1.5 rounded-full shrink-0 animate-ping ${
+                                    activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
+                                  }`}
+                                />
+                                <span className="truncate max-w-[140px]">
+                                  {activeExecution.phase_title || 'Выполняется'}
                                 </span>
                               </span>
                             </div>
                           ) : ticketRuns[t.rawId] ? (
-                            <div className="mt-2 pt-1.5 border-t border-neutral-100 dark:border-neutral-700/60">
+                            <div className="mt-2 pt-1.5 border-t border-neutral-100 dark:border-neutral-750">
                               {renderTicketRunPill(ticketRuns[t.rawId])}
                             </div>
                           ) : null}
@@ -1450,10 +1364,8 @@ export default function QueuePage({
                       ))}
 
                       {colTickets.length === 0 && (
-                        <div className="flex flex-col items-center justify-center h-28 border border-dashed border-neutral-200 dark:border-neutral-800 rounded-xl p-4 text-center">
-                          <span className="text-[12px] text-neutral-400 dark:text-neutral-500 font-medium">
-                            Нет заявок
-                          </span>
+                        <div className="flex flex-col items-center justify-center h-24 border border-dashed border-neutral-200 dark:border-neutral-800 rounded-md p-3 text-center">
+                          <span className="text-[11.5px] text-neutral-400 dark:text-neutral-500">Нет заявок</span>
                         </div>
                       )}
                     </div>
@@ -1465,7 +1377,7 @@ export default function QueuePage({
         )}
       </div>
 
-      {/* Ticket Inspector Slide-over */}
+      {/* Инспектор карточки заявки */}
       {selectedTicket && (
         <TicketInspector
           ticket={selectedTicket}
@@ -1475,52 +1387,69 @@ export default function QueuePage({
         />
       )}
 
-      {/* Real Bulk Action Bar (100% HITL Smart Automation) */}
+      {/* Плавающая панель пакетных действий */}
       {selected.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2.5 px-4 py-2.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded-2xl shadow-2xl border border-neutral-700 dark:border-neutral-300 animate-in fade-in slide-in-from-bottom-3 duration-150 flex-wrap justify-center">
-          <span className="text-[13px] font-bold mr-1 shrink-0">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3.5 py-2 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded-lg shadow-2xl border border-neutral-700 dark:border-neutral-300 animate-in fade-in slide-in-from-bottom-2 duration-150 flex-wrap justify-center">
+          <span className="text-[12.5px] font-semibold mr-1 shrink-0 font-mono">
             Выбрано: {selected.size}
           </span>
-          <div className="w-px h-5 bg-neutral-700 dark:bg-neutral-300 shrink-0" />
-          
-          {/* Main 100% HITL Smart Button */}
-          <button
-            onClick={() => openSmartBatchModal(tickets.filter(t => selected.has(t.id)))}
-            disabled={processingBulk}
-            className="text-[13px] font-bold bg-blue-600 hover:bg-blue-500 text-white px-3.5 py-1.5 rounded-lg transition-all shadow-md cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shrink-0"
-          >
-            <IconSparkles size={14} className="text-blue-200" />
-            <span>Применить решения ({selected.size})</span>
-          </button>
+          <div className="w-px h-4 bg-neutral-700 dark:bg-neutral-300 shrink-0" />
+
+          {processedTab === 'processed' ? (
+            <button
+              type="button"
+              onClick={() => openSmartBatchModal(tickets.filter(t => selected.has(t.id)))}
+              disabled={processingBulk}
+              className="text-[12px] font-semibold bg-neutral-100 text-neutral-900 hover:bg-white dark:bg-neutral-900 dark:text-neutral-100 dark:hover:bg-neutral-800 px-3 py-1 rounded transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+            >
+              <IconSparkles size={12} />
+              <span>Применить решения ({selected.size})</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                const selectedTaskIds = tickets.filter(t => selected.has(t.id)).map(t => t.rawId);
+                handleTriggerAnalysis(selectedTaskIds);
+              }}
+              disabled={isAnalyzing || processingBulk}
+              className="text-[12px] font-semibold bg-neutral-100 text-neutral-900 hover:bg-white dark:bg-neutral-900 dark:text-neutral-100 dark:hover:bg-neutral-800 px-3 py-1 rounded transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+            >
+              <IconRefresh size={12} className={isAnalyzing ? 'animate-spin' : ''} />
+              <span>Проанализировать выбранные ({selected.size})</span>
+            </button>
+          )}
 
           <button
+            type="button"
             onClick={() => initiateBulkAction('take')}
             disabled={processingBulk}
-            className="text-[12.5px] font-semibold text-neutral-300 hover:text-white dark:text-neutral-700 dark:hover:text-neutral-900 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50 shrink-0"
+            className="text-[12px] font-medium text-neutral-300 hover:text-white dark:text-neutral-700 dark:hover:text-neutral-900 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50 shrink-0"
           >
             В работу
           </button>
           <button
+            type="button"
             onClick={() => initiateBulkAction('cancel')}
             disabled={processingBulk}
-            className="text-[12.5px] font-semibold text-neutral-300 hover:text-white dark:text-neutral-700 dark:hover:text-neutral-900 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50 shrink-0"
+            className="text-[12px] font-medium text-neutral-300 hover:text-white dark:text-neutral-700 dark:hover:text-neutral-900 transition-colors px-2 py-1 cursor-pointer disabled:opacity-50 shrink-0"
           >
             Отменить
           </button>
-          <div className="w-px h-5 bg-neutral-700 dark:bg-neutral-300 shrink-0" />
+
+          <div className="w-px h-4 bg-neutral-700 dark:bg-neutral-300 shrink-0" />
           <button
+            type="button"
             onClick={() => setSelected(new Set())}
-            className="text-neutral-400 hover:text-white dark:hover:text-neutral-900 transition-colors cursor-pointer p-1 shrink-0"
+            className="text-neutral-400 hover:text-white dark:hover:text-neutral-900 transition-colors cursor-pointer p-0.5 shrink-0"
             title="Снять выделение"
           >
-            <svg width="14" height="14" viewBox="0 0 13 13" fill="none">
-              <path d="M2 2l9 9M11 2l-9 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
+            ✕
           </button>
         </div>
       )}
 
-      {/* Smart Batch Plan Modal (100% HITL Confirmation with In-line Edit) */}
+      {/* Модальное окно умного подтверждения пакета (100% HITL) */}
       {smartBatchModal && (
         <SmartBatchModal
           items={smartBatchModal.items}
@@ -1531,7 +1460,7 @@ export default function QueuePage({
         />
       )}
 
-      {/* Bulk Confirm Modal (Audit C-3: Verified Execution Safeguard) */}
+      {/* Модальное окно подтверждения массового действия */}
       {bulkModal && (
         <BulkConfirmModal
           modal={bulkModal}
