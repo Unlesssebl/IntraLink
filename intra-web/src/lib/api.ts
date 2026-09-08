@@ -59,7 +59,28 @@ export async function apiFetch<T = any>(url: string, options: RequestInit = {}, 
       let errorText = response.statusText;
       try {
         const errData = await response.json();
-        errorText = errData.detail || errData.message || JSON.stringify(errData);
+        if (Array.isArray(errData.detail)) {
+          errorText = errData.detail
+            .map((item: any) => {
+              if (typeof item === 'string') return item;
+              if (item?.msg) {
+                const loc = Array.isArray(item.loc)
+                  ? item.loc.filter((p: any) => p !== 'body').join('.')
+                  : '';
+                return loc ? `${loc}: ${item.msg}` : item.msg;
+              }
+              return JSON.stringify(item);
+            })
+            .join('; ');
+        } else if (typeof errData.detail === 'string') {
+          errorText = errData.detail;
+        } else if (errData.detail) {
+          errorText = JSON.stringify(errData.detail);
+        } else if (errData.message) {
+          errorText = errData.message;
+        } else {
+          errorText = JSON.stringify(errData);
+        }
       } catch {
         try {
           errorText = await response.text();

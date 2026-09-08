@@ -190,3 +190,35 @@ async def test_rag_sync_endpoint():
             assert data["status"] == "success"
             assert data["indexed"] == 3
 
+
+@pytest.mark.asyncio
+async def test_analyze_batch_endpoint():
+    mock_card = {
+        "task_id": 139001,
+        "analysis": {
+            "has_result": True,
+            "state": "ready",
+            "freshness": "current",
+            "decision_id": "mock-uuid",
+            "decision_version": 1,
+        },
+    }
+    with patch(
+        "app.routers.triage.run_explicit_analysis",
+        new_callable=AsyncMock,
+        return_value=mock_card,
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/v1/triage/analyze-batch",
+                headers=HEADERS,
+                json={"task_ids": list(range(1, 201))},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["total"] == 200
+            assert data["processed"] == 200
+            assert len(data["results"]) == 200
+
