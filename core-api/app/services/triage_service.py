@@ -322,6 +322,7 @@ class TriageService:
                         distance_threshold=0.70,
                         circuit=circuit_dec.circuit,
                         metadata=routing_metadata,
+                        service_id=t.get("ServiceId"),
                     )
                     if kb_matches:
                         decision = auto_detect_template(
@@ -481,6 +482,7 @@ class TriageService:
                 distance_threshold=0.70,
                 circuit=circuit_dec.circuit,
                 metadata=routing_metadata,
+                service_id=task.get("ServiceId"),
             )
 
         decision = auto_detect_template(

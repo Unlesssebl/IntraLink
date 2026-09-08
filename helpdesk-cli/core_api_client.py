@@ -157,12 +157,23 @@ class CoreApiClient:
             return []
 
     async def search_kb(
-        self, query: str, limit: int = 3, threshold: float = 0.70
+        self,
+        query: str,
+        limit: int = 3,
+        threshold: float = 0.70,
+        service_id: int | None = None,
+        service_path: str | None = None,
     ) -> list[dict[str, Any]]:
         """Семантический поиск в базе знаний pgvector через Core API."""
         session = await self._get_session()
         url = f"{self.base_url}/api/v1/triage/rag/search"
-        payload = {"query": query, "limit": limit, "threshold": threshold}
+        payload = {
+            "query": query,
+            "limit": limit,
+            "threshold": threshold,
+            "service_id": service_id,
+            "service_path": service_path,
+        }
         async with session.post(url, json=payload) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -179,6 +190,8 @@ class CoreApiClient:
         service_name: str,
         status_name: str,
         classification_data: dict[str, Any] | None = None,
+        service_path: str | None = None,
+        service_path_ids: list[int] | None = None,
     ) -> bool:
         """Прямая индексация решения задачи в Core API RAG."""
         session = await self._get_session()
@@ -192,6 +205,8 @@ class CoreApiClient:
             "service_name": service_name,
             "status_name": status_name,
             "classification_data": classification_data or {},
+            "service_path": service_path,
+            "service_path_ids": service_path_ids,
         }
         async with session.post(url, json=payload) as resp:
             return resp.status == 200

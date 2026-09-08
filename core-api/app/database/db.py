@@ -2,8 +2,8 @@ import datetime
 import uuid
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, Uuid, func, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID, TSVECTOR
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, FetchedValue, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, Uuid, func, text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
@@ -14,6 +14,7 @@ from app.config import settings
 JSON_TYPE = JSON().with_variant(JSONB, "postgresql")
 UUID_TYPE = Uuid(as_uuid=True).with_variant(UUID(as_uuid=True), "postgresql")
 TSVECTOR_TYPE = Text().with_variant(TSVECTOR(), "postgresql")
+ARRAY_INT_TYPE = JSON().with_variant(ARRAY(Integer), "postgresql")
 
 # Настройка асинхронного движка SQLAlchemy с устойчивым пулом соединений
 engine_kwargs: dict = {"echo": False}
@@ -33,7 +34,7 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
-CURRENT_SCHEMA_REVISION = "20260908_0009"
+CURRENT_SCHEMA_REVISION = "20260908_0010"
 
 
 
@@ -250,8 +251,10 @@ class TaskKnowledgeBase(Base):
     problem: Mapped[str] = mapped_column(String, nullable=False)
     solution: Mapped[str] = mapped_column(String, nullable=False)
 
-    service_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    service_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     service_name: Mapped[str] = mapped_column(String, nullable=False)
+    service_path: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    service_path_ids: Mapped[list[int] | None] = mapped_column(ARRAY_INT_TYPE, nullable=True)
     status_name: Mapped[str] = mapped_column(String, nullable=False)
 
     classification_data: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
@@ -270,8 +273,12 @@ class TaskKnowledgeBase(Base):
     )
 
     # Полнотекстовый поисковый вектор (tsvector в PostgreSQL, Text в SQLite)
+    # Вычисляется СУБД (GENERATED ALWAYS AS ... STORED в PostgreSQL)
     search_vector: Mapped[str | None] = mapped_column(
-        TSVECTOR_TYPE, nullable=True
+        TSVECTOR_TYPE,
+        server_default=FetchedValue(),
+        server_onupdate=FetchedValue(),
+        nullable=True,
     )
 
 

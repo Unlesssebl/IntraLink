@@ -109,6 +109,8 @@ class RAGSearchRequest(BaseModel):
     profile: Literal["precise", "balanced", "broad"] = Field(
         "balanced", description="Версионируемый профиль качества поиска"
     )
+    service_id: int | None = Field(None, description="ID раздела/услуги IntraService для приоритизации")
+    service_path: str | None = Field(None, description="Полный иерархический путь услуги")
 
 
 class RAGIndexRequest(BaseModel):
@@ -120,6 +122,8 @@ class RAGIndexRequest(BaseModel):
     service_name: str
     status_name: str
     classification_data: dict[str, Any] | None = None
+    service_path: str | None = None
+    service_path_ids: list[int] | None = None
 
 
 class RAGSyncRequest(BaseModel):
@@ -596,6 +600,8 @@ async def rag_search_endpoint(
         limit=payload.limit,
         distance_threshold=profile["distance"],
         rerank_threshold=profile["rerank"],
+        service_id=payload.service_id,
+        service_path=payload.service_path,
     )
     return {"total": len(matches), "matches": matches}
 
@@ -616,6 +622,8 @@ async def rag_index_endpoint(
         service_name=payload.service_name,
         status_name=payload.status_name,
         classification_data=payload.classification_data,
+        service_path=payload.service_path,
+        service_path_ids=payload.service_path_ids,
     )
     if not ok:
         raise HTTPException(
@@ -623,6 +631,16 @@ async def rag_index_endpoint(
             detail=f"Не удалось проиндексировать задачу #{payload.task_id} в RAG.",
         )
     return {"status": "success", "task_id": payload.task_id}
+
+
+@router.post("/rag/backfill-paths", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
+async def rag_backfill_paths_endpoint(
+    db: AsyncSession = Depends(get_db),
+):
+    """Фоновое обогащение существующих записей базы знаний полными путями каталога услуг."""
+    from app.services.rag import backfill_kb_service_paths
+    updated = await backfill_kb_service_paths(db)
+    return {"status": "success", "updated_records": updated}
 
 
 @router.post("/rag/sync", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])

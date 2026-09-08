@@ -803,10 +803,22 @@ def _synthesize_deterministic_fallback(
     kb_matches: list[dict[str, Any]] | None = None,
     telemetry: dict[str, Any] | None = None,
     rule_decision: dict[str, Any] | None = None,
+    comments_history: list[dict[str, Any]] | None = None,
 ) -> str:
     """
     Детерминированный синтез ответа без LLM (0ms, 100% стабильность).
     """
+    task_id = task.get("Id") or ""
+
+    # 0. Thread-aware: если в заявке уже идет диалог, не повторяем шаблон 'принята в работу'
+    if comments_history:
+        thread_ctx = extract_thread_context(comments_history)
+        if thread_ctx.get("is_follow_up"):
+            return (
+                f"Спасибо за информацию! Принял уточнение по заявке #{task_id}. "
+                "Продолжаю диагностику и сообщу результат."
+            )
+
     # 0. Приоритет корпоративного регламента
     r_key = (rule_decision.get("rule_type") or rule_decision.get("template_key")) if rule_decision else None
     execution_rule_types = {"wlan_access", "user_creation"}
@@ -819,7 +831,6 @@ def _synthesize_deterministic_fallback(
         if rule_comment:
             return rule_comment
 
-    task_id = task.get("Id") or ""
     name = task.get("Name") or ""
     desc = task.get("Description") or ""
     combined = f"{name} {desc}".lower()
@@ -949,7 +960,11 @@ async def synthesize_triage_resolution(
     if force_deterministic:
         return result(
             _synthesize_deterministic_fallback(
-                task=task, kb_matches=kb_matches, telemetry=telemetry, rule_decision=rule_decision
+                task=task,
+                kb_matches=kb_matches,
+                telemetry=telemetry,
+                rule_decision=rule_decision,
+                comments_history=comments_history,
             ),
             deterministic_meta,
         )
@@ -965,7 +980,11 @@ async def synthesize_triage_resolution(
     if any(k in combined for k in _NON_IT_KEYWORDS):
         return result(
             _synthesize_deterministic_fallback(
-                task=task, kb_matches=kb_matches, telemetry=telemetry, rule_decision=rule_decision
+                task=task,
+                kb_matches=kb_matches,
+                telemetry=telemetry,
+                rule_decision=rule_decision,
+                comments_history=comments_history,
             ),
             deterministic_meta,
         )
@@ -983,7 +1002,11 @@ async def synthesize_triage_resolution(
     if eval_circuit == DataCircuit.RED:
         return result(
             _synthesize_deterministic_fallback(
-                task=task, kb_matches=kb_matches, telemetry=telemetry, rule_decision=rule_decision
+                task=task,
+                kb_matches=kb_matches,
+                telemetry=telemetry,
+                rule_decision=rule_decision,
+                comments_history=comments_history,
             ),
             {**deterministic_meta, "circuit": eval_circuit.value},
         )
@@ -1122,7 +1145,11 @@ async def synthesize_triage_resolution(
     # Fallback
     return result(
         _synthesize_deterministic_fallback(
-            task=task, kb_matches=kb_matches, telemetry=telemetry, rule_decision=rule_decision
+            task=task,
+            kb_matches=kb_matches,
+            telemetry=telemetry,
+            rule_decision=rule_decision,
+            comments_history=comments_history,
         ),
         {**deterministic_meta, "circuit": eval_circuit.value if eval_circuit else None},
     )
@@ -1136,46 +1163,73 @@ async def synthesize_clarification_comment(
 ) -> str:
     """
     Генерирует вежливый адаптивный ответ с пояснением, каких именно реквизитов не хватает.
+    Поддерживает как контекст создания учетных записей, так и общие технические уточнения (ПК, сеть, ПО).
     При сбое или недоступности LLM гарантированно возвращает детерминированный эталонный шаблон.
     """
-    field_labels = {
-        "surname": "фамилию",
-        "name": "имя",
-        "patronymic": "отчество",
-        "title": "должность",
-        "department": "подразделение",
-        "company": "организацию / компанию",
-        "phone": "телефон",
-    }
-    needed: list[str] = []
-    for f in (missing_fields or []) + (invalid_fields or []):
-        label = field_labels.get(f, f)
-        if label not in needed:
-            needed.append(label)
-
-    fields_str = ", ".join(needed) if needed else "ФИО сотрудника полностью, должность и подразделение"
-    default_text = (
-        f"Добрый день! Для создания учетной записи сотрудника в корпоративной сети, пожалуйста, "
-        f"укажите {fields_str} ответным комментарием к этой заявке."
-    )
-
     t_desc = str(task.get("Description") or "").strip()
     t_name = str(task.get("Name") or "").strip()
     user_text = f"{t_name}. {t_desc}".strip()
+    user_lower = user_text.lower()
 
-    system_prompt = (
-        "Ты — вежливый инженер IT-поддержки (Беликов Ален). "
-        "Пользователь подал заявку на создание пользователя сети, но указал неполные или некорректные данные. "
-        "Сформируй доброжелательный, краткий ответ заявителю (1-3 предложения), "
-        "где объясни, каких именно данных не хватает (ФИО, должность, подразделение), "
-        "и попроси прислать их ответным комментарием к этой заявке. "
-        "Правила: без эмодзи, официальный вежливый стиль, не выдумывай данные, не используй иностранные слова."
+    is_user_creation = (
+        bool(missing_fields or invalid_fields)
+        or any(w in user_lower for w in ["учетн", "пользовател", "сотрудник", "логин", "домен"])
     )
-    user_prompt = (
-        f"Заявка: {user_text}\n"
-        f"Отсутствующие или некорректные поля: {fields_str}\n\n"
-        "Сформируй вежливый текст запроса уточнений."
-    )
+
+    if is_user_creation:
+        field_labels = {
+            "surname": "фамилию",
+            "name": "имя",
+            "patronymic": "отчество",
+            "title": "должность",
+            "department": "подразделение",
+            "company": "организацию / компанию",
+            "phone": "телефон",
+        }
+        needed: list[str] = []
+        for f in (missing_fields or []) + (invalid_fields or []):
+            label = field_labels.get(f, f)
+            if label not in needed:
+                needed.append(label)
+
+        fields_str = ", ".join(needed) if needed else "ФИО сотрудника полностью, должность и подразделение"
+        default_text = (
+            f"Здравствуйте! Для создания учетной записи сотрудника в корпоративной сети, пожалуйста, "
+            f"укажите {fields_str} ответным комментарием к этой заявке."
+        )
+
+        system_prompt = (
+            "Ты — опытный инженер 1-й линии Helpdesk ООО «АйТи ТЭМПО» Беликов Ален. "
+            "Пользователь подал заявку на создание пользователя сети, но указал неполные или некорректные данные. "
+            "Сформируй доброжелательный, краткий ответ заявителю (1-3 предложения), "
+            "где объясни, каких именно данных не хватает (ФИО, должность, подразделение), "
+            "и попроси прислать их ответным комментарием к этой заявке. "
+            "Правила: ответ ОБЯЗАТЕЛЬНО должен начинаться со слова 'Здравствуйте!', строго без эмодзи, обращение на 'Вы'."
+        )
+        user_prompt = (
+            f"Заявка: {user_text}\n"
+            f"Отсутствующие или некорректные поля: {fields_str}\n\n"
+            "Сформируй вежливый текст запроса уточнений."
+        )
+    else:
+        default_text = (
+            "Здравствуйте! Пожалуйста, уточните подробнее, что именно происходит "
+            "(появляется ли сообщение об ошибке, зависает ли система?), "
+            "а также номер кабинета и инвентарный номер оборудования для проведения диагностики."
+        )
+        system_prompt = (
+            "Ты — опытный инженер 1-й линии Helpdesk ООО «АйТи ТЭМПО» Беликов Ален. "
+            "Пользователь обратился с кратким или неясным описанием проблемы. "
+            "Сформируй доброжелательный, краткий ответ заявителю (1-3 предложения). "
+            "Ответ ОБЯЗАТЕЛЬНО должен начинаться со слова 'Здравствуйте!'. "
+            "Вежливо попроси уточнить симптомы проблемы, текст или код ошибки, "
+            "а также номер кабинета или инвентарный номер оборудования. "
+            "Правила: без эмодзи, обращение строго на 'Вы', деловой стиль инженера Беликова Алена."
+        )
+        user_prompt = (
+            f"Заявка: {user_text}\n"
+            "Сформируй вежливый запрос уточнений заявителю."
+        )
 
     try:
         from app.services.ai.schemas import RoutedInferenceRequest, RoutingMetadata
@@ -1190,11 +1244,13 @@ async def synthesize_clarification_comment(
         res = await asyncio.wait_for(ai_hub.dispatch_routed_inference(req), timeout=3.0)
         output_text = getattr(res, "text", None) or getattr(res, "final_text", None)
         if output_text and len(output_text.strip()) > 20:
-            cleaned = output_text.strip()
+            cleaned = strip_emojis(output_text.strip())
             if (cleaned.startswith('"') and cleaned.endswith('"')) or (
                 cleaned.startswith("«") and cleaned.endswith("»")
             ):
                 cleaned = cleaned[1:-1].strip()
+            if not cleaned.lower().startswith("здравствуйте"):
+                cleaned = f"Здравствуйте! {cleaned}"
             return cleaned
     except Exception as e:
         logger.debug(

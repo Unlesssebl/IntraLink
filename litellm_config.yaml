@@ -3,7 +3,7 @@ model_list:
   # а Core API и клиенты всегда используют intralink-chat.
   - model_name: intralink-chat
     litellm_params:
-      model: gemini/gemini-3.5-flash
+      model: gemini/gemini-2.5-flash
       api_key: os.environ/GEMINI_API_KEY
       rpm: 15
 

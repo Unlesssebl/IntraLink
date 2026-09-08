@@ -6,13 +6,14 @@ from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 import aiohttp
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.db import AsyncSessionLocal, TaskKnowledgeBase
 from app.services import intraservice
 from app.services.ai import DataCircuit, RoutingMetadata, data_sanitizer
+from app.services.service_catalog import ServiceCatalogService
 from shared.json_utils import json_dumps, json_loads
 
 logger = logging.getLogger("core_api.rag")
@@ -407,9 +408,11 @@ async def dense_vector_search(
     distance_threshold: float = 0.85,
     circuit: DataCircuit | None = None,
     metadata: RoutingMetadata | None = None,
+    service_path: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Векторный dense-поиск по косинусному расстоянию в pgvector.
+    При наличии service_path обогащает контекст запроса полным путем каталога.
     """
     clean_query = clean_html(query_text).strip()
     if not clean_query:
@@ -430,7 +433,11 @@ async def dense_vector_search(
     except Exception:
         pass
 
-    query_vector = await get_embedding_vector(clean_query, circuit=eval_circuit)
+    vector_query_text = clean_query
+    if service_path:
+        vector_query_text = f"Сервис: {service_path}. {clean_query}"
+
+    query_vector = await get_embedding_vector(vector_query_text, circuit=eval_circuit)
     if not query_vector:
         return []
 
@@ -443,6 +450,8 @@ async def dense_vector_search(
                 TaskKnowledgeBase.solution,
                 TaskKnowledgeBase.service_id,
                 TaskKnowledgeBase.service_name,
+                TaskKnowledgeBase.service_path,
+                TaskKnowledgeBase.service_path_ids,
                 TaskKnowledgeBase.status_name,
                 TaskKnowledgeBase.quality_score,
                 TaskKnowledgeBase.classification_data,
@@ -480,6 +489,8 @@ async def dense_vector_search(
                     "solution": r.solution,
                     "service_id": r.service_id,
                     "service_name": r.service_name,
+                    "service_path": getattr(r, "service_path", None) or r.service_name,
+                    "service_path_ids": getattr(r, "service_path_ids", None) or [],
                     "status_name": r.status_name,
                     "quality_score": float(getattr(r, "quality_score", 1.0) or 1.0),
                     "classification_data": c_data,
@@ -502,11 +513,14 @@ async def sparse_text_search(
     db: AsyncSession,
     query_text: str,
     limit: int = 10,
+    service_id: int | None = None,
+    service_path_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Полнотекстовый sparse-поиск по ключевым словам и техническим идентификаторам в базе решений.
-    При наличии PostgreSQL search_vector использует нативный GIN-индекс и ts_rank('russian').
-    В средах тестирования (SQLite) автоматически переключается на токенный поиск.
+    При наличии PostgreSQL search_vector использует нативный GIN-индекс и ts_rank('russian')
+    с мягким бустом точного сервиса (x1.25) или родительской ветки (x1.10).
+    В средах тестирования (SQLite) автоматически переключается на токенный поиск с аналогичным бустом.
     """
     from sqlalchemy import or_, text
 
@@ -525,10 +539,23 @@ async def sparse_text_search(
     if is_postgres and hasattr(TaskKnowledgeBase, "search_vector"):
         try:
             # Нормализация дефисов перед числами (KB-5005565 -> KB 5005565),
-            # чтобы дефис не интерпретировался tsquery как оператор отрицания
+            # чтобы дефис не интерпретировался tsquery как оператор отрицания.
+            # Не раздуваем fts_query словами пути сервиса во избежание AND-коллизий!
             fts_query = re.sub(r"-(\d+)", r" \1", clean_query).strip()
             ts_query_expr = func.plainto_tsquery("russian", fts_query)
-            rank_expr = func.ts_rank(TaskKnowledgeBase.search_vector, ts_query_expr).label("rank_score")
+
+            # Мягкий буст по точной услуге (1.25) или ветке каталога (1.10)
+            if service_id or service_path_ids:
+                cases = []
+                if service_id:
+                    cases.append((TaskKnowledgeBase.service_id == service_id, 1.25))
+                if service_path_ids and hasattr(TaskKnowledgeBase, "service_path_ids"):
+                    cases.append((TaskKnowledgeBase.service_path_ids.overlap(service_path_ids), 1.10))
+                boost_factor = case(*cases, else_=1.0)
+            else:
+                boost_factor = 1.0
+
+            rank_expr = (boost_factor * func.ts_rank(TaskKnowledgeBase.search_vector, ts_query_expr)).label("rank_score")
 
             stmt = (
                 select(
@@ -538,6 +565,8 @@ async def sparse_text_search(
                     TaskKnowledgeBase.solution,
                     TaskKnowledgeBase.service_id,
                     TaskKnowledgeBase.service_name,
+                    TaskKnowledgeBase.service_path,
+                    TaskKnowledgeBase.service_path_ids,
                     TaskKnowledgeBase.status_name,
                     TaskKnowledgeBase.quality_score,
                     TaskKnowledgeBase.classification_data,
@@ -570,6 +599,8 @@ async def sparse_text_search(
                         "solution": r.solution,
                         "service_id": r.service_id,
                         "service_name": r.service_name,
+                        "service_path": getattr(r, "service_path", None) or r.service_name,
+                        "service_path_ids": getattr(r, "service_path_ids", None) or [],
                         "status_name": r.status_name,
                         "quality_score": float(getattr(r, "quality_score", 1.0) or 1.0),
                         "classification_data": c_data,
@@ -615,6 +646,8 @@ async def sparse_text_search(
                 TaskKnowledgeBase.solution,
                 TaskKnowledgeBase.service_id,
                 TaskKnowledgeBase.service_name,
+                TaskKnowledgeBase.service_path,
+                TaskKnowledgeBase.service_path_ids,
                 TaskKnowledgeBase.status_name,
                 TaskKnowledgeBase.quality_score,
                 TaskKnowledgeBase.classification_data,
@@ -649,6 +682,12 @@ async def sparse_text_search(
             if clean_query.lower() in combined:
                 score += 5.0
 
+            # Мягкий буст по сервису
+            if service_id and r.service_id == service_id:
+                score *= 1.25
+            elif service_path_ids and set(getattr(r, "service_path_ids", []) or []).intersection(service_path_ids):
+                score *= 1.10
+
             c_data = r.classification_data or {}
             res_type = c_data.get("resolution_type")
             if not res_type:
@@ -662,7 +701,10 @@ async def sparse_text_search(
                 "solution": r.solution,
                 "service_id": r.service_id,
                 "service_name": r.service_name,
+                "service_path": getattr(r, "service_path", None) or r.service_name,
+                "service_path_ids": getattr(r, "service_path_ids", None) or [],
                 "status_name": r.status_name,
+                "quality_score": float(getattr(r, "quality_score", 1.0) or 1.0),
                 "classification_data": c_data,
                 "resolution_type": res_type,
                 "resolution_label": c_data.get("resolution_label", "Успешно выполнено"),
@@ -688,10 +730,13 @@ def reciprocal_rank_fusion(
     sparse_results: list[dict[str, Any]],
     k: int = 60,
     limit: int = 3,
+    service_id: int | None = None,
+    service_path_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Слияние результатов Dense pgvector и Sparse tsvector по алгоритму Reciprocal Rank Fusion (RRF).
-    Формула: RRF_Score = sum(1.0 / (k + rank_i))
+    Слияние результатов Dense pgvector и Sparse tsvector по алгоритму Reciprocal Rank Fusion (RRF)
+    с мягким бустом совпадения точного сервиса (x1.25) или родительской ветки каталога (x1.10).
+    Формула: RRF_Score = sum(1.0 / (k + rank_i)) * service_boost
     """
     scores: dict[int, float] = {}
     doc_map: dict[int, dict[str, Any]] = {}
@@ -712,6 +757,16 @@ def reciprocal_rank_fusion(
         if tid not in doc_map:
             doc_map[tid] = dict(doc)
 
+    # Мягкий буст RRF-скора при совпадении точной услуги (x1.25) или ветки (x1.10)
+    for tid in scores:
+        doc = doc_map[tid]
+        cand_sid = doc.get("service_id")
+        cand_path_ids = set(doc.get("service_path_ids") or [])
+        if service_id and cand_sid == service_id:
+            scores[tid] *= 1.25
+        elif service_path_ids and cand_path_ids.intersection(service_path_ids):
+            scores[tid] *= 1.10
+
     sorted_tids = sorted(
         scores.keys(), key=lambda x: scores[x], reverse=True
     )[:limit]
@@ -727,6 +782,12 @@ def reciprocal_rank_fusion(
         if "distance" in item and item["distance"] is not None:
             dense_pct = round((1.0 - float(item["distance"])) * 100.0, 1)
             sim_pct = max(sim_pct, dense_pct)
+
+        # Сохранение относительного буста в similarity_pct
+        if service_id and item.get("service_id") == service_id:
+            sim_pct = min(99.0, round(sim_pct * 1.15, 1))
+        elif service_path_ids and set(item.get("service_path_ids") or []).intersection(service_path_ids):
+            sim_pct = min(99.0, round(sim_pct * 1.05, 1))
 
         q_score = float(item.get("quality_score") or 1.0)
         # Взвешенный скоринг ценности: сходство * (0.7 + 0.3 * quality_score)
@@ -787,6 +848,7 @@ async def rerank_candidates(
     top_n: int = 3,
     threshold: float = 0.85,
     circuit: DataCircuit | None = None,
+    target_service_path: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Выполняет двухэтапную переоценку (Rerank) топ-кандидатов через локальный Cross-Encoder.
@@ -797,18 +859,24 @@ async def rerank_candidates(
         return []
 
     clean_query = clean_html(query_text).strip()
+    rerank_query = clean_query
+    if target_service_path:
+        rerank_query = f"Сервис: {target_service_path}. {clean_query}"
+
     doc_texts = []
     for c in candidates:
         name = c.get("name") or ""
         problem = c.get("problem") or ""
         solution = c.get("solution") or ""
+        cand_path = c.get("service_path") or c.get("service_name") or ""
+        prefix = f"Сервис: {cand_path}. " if cand_path else ""
         doc_texts.append(
-            f"Тема: {name}. Проблема: {problem}. Решение: {solution}".strip()
+            f"{prefix}Тема: {name}. Проблема: {problem}. Решение: {solution}".strip()
         )
 
     # Выполняем rerank в отдельном потоке (worker thread)
     scores = await asyncio.to_thread(
-        _rerank_fastembed_sync, clean_query, doc_texts
+        _rerank_fastembed_sync, rerank_query, doc_texts
     )
 
     if scores is not None and len(scores) == len(candidates):
@@ -850,10 +918,14 @@ async def search_knowledge_base(
     distill_query: bool = True,
     rerank: bool = True,
     rerank_threshold: float = 0.85,
+    service_id: int | None = None,
+    service_path: str | None = None,
+    service_path_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Выполняет гибридный семантический поиск (Hybrid RRF: Dense pgvector + Sparse tsvector)
-    с предварительной нормализацией запроса (Query Distillation) и двухэтапным Cross-Encoder Reranker.
+    с предварительной нормализацией запроса (Query Distillation), контекстом иерархии услуг
+    (service_id / service_path) и двухэтапным Cross-Encoder Reranker.
     """
     clean_query = clean_html(query_text).strip()
     if not clean_query:
@@ -862,9 +934,17 @@ async def search_knowledge_base(
     eval_circuit = circuit
     if eval_circuit is None:
         dec = data_sanitizer.evaluate_circuit(
-            prompt=clean_query, metadata=metadata or RoutingMetadata()
+            prompt=clean_query, metadata=metadata or RoutingMetadata(service_id=service_id)
         )
         eval_circuit = dec.circuit
+
+    # Авто-резолв иерархии сервиса при наличии service_id
+    if service_id and (not service_path or not service_path_ids):
+        resolved_path, resolved_ids = await ServiceCatalogService.get_service_path(service_id)
+        if not service_path:
+            service_path = resolved_path
+        if not service_path_ids:
+            service_path_ids = resolved_ids
 
     # Очистка от эмоционального шума
     search_query = (
@@ -875,7 +955,7 @@ async def search_knowledge_base(
     if not search_query:
         search_query = clean_query
 
-    # Кэш результатов RAG в Redis (TTL 10 минут) с ревизией корпуса для предотвращения stale кэша
+    # Кэш результатов RAG в Redis (TTL 10 минут) с ревизией корпуса и изоляцией по разделу услуги
     import hashlib
     import json
     from app.services.worker import get_redis_client
@@ -891,9 +971,11 @@ async def search_knowledge_base(
     except Exception:
         pass
 
+    path_hash = hashlib.md5((service_path or "").encode()).hexdigest()[:8]
     cache_key = (
         f"rag:cache:{hashlib.md5(search_query.encode()).hexdigest()}:"
         f"rev:{corpus_rev}:"
+        f"svc:{service_id or 0}:p:{path_hash}:"
         f"{eval_circuit.value if eval_circuit else 'auto'}:{limit}:"
         f"{distance_threshold}:{int(hybrid)}:{int(rerank)}:{rerank_threshold}"
     )
@@ -918,11 +1000,14 @@ async def search_knowledge_base(
             distance_threshold=distance_threshold,
             circuit=eval_circuit,
             metadata=metadata,
+            service_path=service_path,
         )
         sparse_matches = await sparse_text_search(
             db=db,
             query_text=search_query,
             limit=candidate_limit,
+            service_id=service_id,
+            service_path_ids=service_path_ids,
         )
 
         if dense_matches or sparse_matches:
@@ -931,6 +1016,8 @@ async def search_knowledge_base(
                 sparse_results=sparse_matches,
                 k=60,
                 limit=candidate_limit,
+                service_id=service_id,
+                service_path_ids=service_path_ids,
             )
             for m in fused_matches:
                 m["distilled_query"] = search_query
@@ -943,6 +1030,7 @@ async def search_knowledge_base(
                     top_n=limit,
                     threshold=rerank_threshold,
                     circuit=eval_circuit,
+                    target_service_path=service_path,
                 )
                 final_matches = reranked
             else:
@@ -956,6 +1044,7 @@ async def search_knowledge_base(
             distance_threshold=distance_threshold,
             circuit=eval_circuit,
             metadata=metadata,
+            service_path=service_path,
         )
         for m in dense_matches:
             m["distilled_query"] = search_query
@@ -985,9 +1074,12 @@ async def index_task_knowledge(
     classification_data: dict[str, Any] | None = None,
     force_local: bool = False,
     circuit: DataCircuit | None = None,
+    service_path: str | None = None,
+    service_path_ids: list[int] | None = None,
 ) -> bool:
     """
-    Индексирует решение заявки в таблицу task_knowledge_base с генерацией эмбеддинга.
+    Индексирует решение заявки в таблицу task_knowledge_base с генерацией эмбеддинга и
+    полным иерархическим путем раздела каталога.
     Автоматически переключается на локальный контур при наличии паролей или конфиденциальности.
     """
     try:
@@ -996,8 +1088,18 @@ async def index_task_knowledge(
             logger.debug("Заявка #%d отклонена Quality Gate RAG (неинформативное решение: '%s')", task_id, (solution or "")[:50])
             return False
 
+        # Авто-резолв полного пути сервиса при необходимости
+        if (not service_path or not service_path_ids) and service_id:
+            resolved_path, resolved_ids = await ServiceCatalogService.get_service_path(service_id)
+            if not service_path:
+                service_path = resolved_path
+            if not service_path_ids:
+                service_path_ids = resolved_ids
+
         res_label = (classification_data or {}).get("resolution_label") or "Решение"
+        service_header = f"Сервис: {service_path}\n" if service_path else (f"Сервис: {service_name}\n" if service_name else "")
         embed_input = (
+            f"{service_header}"
             f"Тема: {original_name}\n"
             f"Статус: {status_name} [{res_label}]\n"
             f"Проблема: {problem}\n"
@@ -1033,6 +1135,8 @@ async def index_task_knowledge(
             existing.solution = solution
             existing.service_id = service_id
             existing.service_name = service_name
+            existing.service_path = service_path
+            existing.service_path_ids = service_path_ids
             existing.status_name = status_name
             existing.classification_data = merged_data
             existing.embedding = vec
@@ -1046,6 +1150,8 @@ async def index_task_knowledge(
                 solution=solution,
                 service_id=service_id,
                 service_name=service_name,
+                service_path=service_path,
+                service_path_ids=service_path_ids,
                 status_name=status_name,
                 classification_data=merged_data,
                 embedding=vec,
@@ -1064,8 +1170,9 @@ async def index_task_knowledge(
             pass
 
         logger.info(
-            "Заявка #%d успешно проиндексирована в базе знаний RAG (контур: %s)",
+            "Заявка #%d успешно проиндексирована в базе знаний RAG (сервис: %s, контур: %s)",
             task_id,
+            service_path or service_name,
             eval_circuit.value if eval_circuit else "default",
         )
         return True
@@ -1073,6 +1180,40 @@ async def index_task_knowledge(
         logger.exception("Ошибка индексации заявки #%d в RAG: %s", task_id, e)
         await db.rollback()
         return False
+
+
+async def backfill_kb_service_paths(db: AsyncSession) -> int:
+    """
+    Заполняет service_path и service_path_ids для существующих записей task_knowledge_base,
+    у которых service_path IS NULL, через ServiceCatalogService.
+    """
+    try:
+        stmt = select(TaskKnowledgeBase).where(TaskKnowledgeBase.service_path.is_(None))
+        result = await db.execute(stmt)
+        records = result.scalars().all()
+        if not records:
+            return 0
+
+        updated_count = 0
+        for rec in records:
+            if rec.service_id:
+                path_str, path_ids = await ServiceCatalogService.get_service_path(rec.service_id)
+                rec.service_path = path_str
+                rec.service_path_ids = path_ids
+                updated_count += 1
+            elif rec.service_name:
+                rec.service_path = rec.service_name
+                rec.service_path_ids = []
+                updated_count += 1
+
+        if updated_count > 0:
+            await db.commit()
+            logger.info("Успешно выполнен backfill service_path для %d записей KB", updated_count)
+        return updated_count
+    except Exception as e:
+        logger.exception("Ошибка backfill_kb_service_paths: %s", e)
+        await db.rollback()
+        return 0
 
 
 async def sync_historical_closed_tasks(
@@ -1083,7 +1224,8 @@ async def sync_historical_closed_tasks(
 ) -> dict[str, Any]:
     """
     Выгружает закрытые заявки из IntraService (StatusId in 29, 30),
-    извлекает финальный комментарий инженера и сохраняет их в векторную базу pgvector.
+    извлекает финальный комментарий инженера и сохраняет их в векторную базу pgvector
+    с полным иерархическим путем раздела каталога.
     """
     from datetime import datetime, timedelta, timezone
 
@@ -1141,6 +1283,9 @@ async def sync_historical_closed_tasks(
         s_id = t.get("ServiceId") or 0
         s_name = t.get("ServiceName") or "Общие"
         st_name = t.get("StatusName") or "Закрыта"
+        s_path, s_path_ids = await ServiceCatalogService.get_service_path(s_id)
+        if not s_name and s_path:
+            s_name = s_path.split(" > ")[-1]
 
         ok = await index_task_knowledge(
             db=db,
@@ -1159,6 +1304,8 @@ async def sync_historical_closed_tasks(
                 "resolution_label": canon.get("resolution_label", "Успешно выполнено"),
                 "resolution_badge_color": canon.get("resolution_badge_color", "emerald"),
             },
+            service_path=s_path,
+            service_path_ids=s_path_ids,
         )
         if ok:
             indexed_count += 1
@@ -1709,14 +1856,17 @@ async def sync_stratified_kb(
                                 continue
                         t_name = (t.get("Name") or f"Заявка #{tid}")[:255]
                         s_id = t.get("ServiceId") or sub_ids[0]
-                        s_name = t.get("ServiceName") or r_name
+                        s_path, s_path_ids = await ServiceCatalogService.get_service_path(s_id)
+                        s_name = t.get("ServiceName") or (s_path.split(" > ")[-1] if s_path else r_name)
                         st_name = canon.get("status_name") or t.get("StatusName") or "Закрыта"
                         res_label = canon.get("resolution_label") or "Успешно выполнено"
                         res_type = canon.get("resolution_type") or "resolved"
                         res_badge = canon.get("resolution_badge_color") or "emerald"
 
-                        # Обогащенный векторный ввод с явным контекстом статуса и исхода
+                        # Обогащенный векторный ввод с явным контекстом полного пути сервиса
+                        service_prefix = f"Сервис: {s_path or s_name}\n"
                         embed_input = (
+                            f"{service_prefix}"
                             f"Тема: {t_name}\n"
                             f"Статус: {st_name} [{res_label}]\n"
                             f"Проблема: {problem_text}\n"
@@ -1781,6 +1931,8 @@ async def sync_stratified_kb(
                             solution=solution_text,
                             service_id=s_id,
                             service_name=s_name,
+                            service_path=s_path,
+                            service_path_ids=s_path_ids,
                             status_name=st_name,
                             classification_data={
                                 "synced_from_history": True,

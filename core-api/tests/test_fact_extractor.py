@@ -36,11 +36,14 @@ async def test_llm_only_fills_missing_facts_with_grounded_schema():
     }
     with (
         patch.object(settings, "LLM_FACT_EXTRACTION_MODE", "enabled"),
+        patch.object(settings, "LLM_PROVIDER_PREFERENCE", "ollama_only"),
         patch.object(
             ai_hub,
             "generate_ollama_completion",
             new=AsyncMock(return_value=json.dumps(extracted, ensure_ascii=False)),
         ) as completion,
+        patch("app.services.fact_extractor._fetch_from_cache", new=AsyncMock(return_value=None)),
+        patch("app.services.fact_extractor._save_to_cache", new=AsyncMock()),
     ):
         enriched = await enrich_task_with_extracted_facts(task)
 

@@ -25,6 +25,9 @@ def register_parser(subparsers: Any) -> None:
     p_skb.add_argument(
         "--threshold", type=float, default=0.70, help="Порог расстояния"
     )
+    p_skb.add_argument(
+        "--service-id", "-s", type=int, default=None, help="ID раздела/услуги для приоритизации"
+    )
     p_skb.add_argument("--json", action="store_true", help="Вывод в JSON")
 
     # sync-kb
@@ -61,7 +64,10 @@ async def handle_search_kb(args: Any) -> None:
     try:
         query = args.query.strip()
         matches = await client.search_kb(
-            query=query, limit=args.limit, threshold=args.threshold
+            query=query,
+            limit=args.limit,
+            threshold=args.threshold,
+            service_id=getattr(args, "service_id", None),
         )
 
         if getattr(args, "json", False):
@@ -76,8 +82,9 @@ async def handle_search_kb(args: Any) -> None:
             return
 
         for m in matches:
+            svc_info = m.get("service_path") or m.get("service_name") or "Не указан"
             print(
-                f"\n• [Кейс #{m['task_id']} | Сходство: {m.get('similarity_pct')}% | Раздел: {m.get('service_name')}]"
+                f"\n• [Кейс #{m['task_id']} | Сходство: {m.get('similarity_pct')}% | Раздел: {svc_info}]"
             )
             print(f"  Тема:     {m.get('name')}")
             print(f"  Проблема: {m.get('problem')}")
