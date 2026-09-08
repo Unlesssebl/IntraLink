@@ -77,6 +77,45 @@ async def test_journal_redacts_secrets_and_reports_unread_attachment_as_limitati
 
 
 @pytest.mark.asyncio
+async def test_deterministic_fallback_is_not_reported_as_ai_usage():
+    async with AsyncSessionLocal() as db:
+        record = await DecisionJournalService(db).record_triage(
+            task_id=94006,
+            task=task(94006),
+            history=[],
+            decision={"rule_type": "standard_in_work", "comment": "Fallback", "status_id": 27},
+            ai_text="Детерминированный ответ",
+            ai_metadata={"ai_used": False, "backend": "deterministic", "fallback": True},
+        )
+        assert record.source_json["ai"] is False
+        ai_step = await db.scalar(
+            select(DecisionStep).where(
+                DecisionStep.decision_id == record.id,
+                DecisionStep.component == "ai",
+            )
+        )
+        assert ai_step is not None
+        assert ai_step.status == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_operational_decision_does_not_fabricate_rule_source():
+    async with AsyncSessionLocal() as db:
+        record = await DecisionJournalService(db).record_operational(
+            task_id=94007,
+            ticket_run_id=None,
+            action="apply_triage",
+            target={"task_id": 94007},
+            parameters={"status_id": 27},
+            actor="operator:test",
+            task=task(94007),
+            history=[],
+        )
+        assert record.source_json == {"rule": False, "rag": False, "ai": False}
+        assert record.context_json["ticket_fingerprint"]
+
+
+@pytest.mark.asyncio
 async def test_old_decision_is_rejected_after_new_version():
     async with AsyncSessionLocal() as db:
         journal = DecisionJournalService(db)

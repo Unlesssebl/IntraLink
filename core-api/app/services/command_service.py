@@ -174,7 +174,7 @@ class CommandService:
             return None
         run = await self.db.get(TicketRun, ticket_run_id)
         if run is None:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Ticket run not found")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Ticket run not found")
         if run.completed_at is not None or run.state != "running":
             raise HTTPException(status.HTTP_409_CONFLICT, f"Ticket run is {run.state}")
         if task_id is not None and run.task_id != task_id:
@@ -221,7 +221,7 @@ class CommandService:
     ) -> tuple[CommandRecord, bool]:
         action_def = self.registry.get(action)
         if action_def is None:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Unknown action: {action}")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown action: {action}")
         if not action_def.implemented:
             raise HTTPException(
                 status.HTTP_501_NOT_IMPLEMENTED,
@@ -229,7 +229,7 @@ class CommandService:
             )
         missing = _required_fields(action_def, target, parameters)
         if missing:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {"missing_fields": missing})
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, {"missing_fields": missing})
 
         request_hash = canonical_hash(action, target, parameters)
         existing = await self.db.scalar(
@@ -252,23 +252,10 @@ class CommandService:
         await self._assert_ticket_run_allows_execution(
             ticket_run_id, task_id=task_id, action=action
         )
-        if decision_id is None and source == "web" and task_id is not None:
-            from app.services.decision_journal import DecisionJournalService
-
-            generated_decision = await DecisionJournalService(self.db).record_operational(
-                task_id=task_id,
-                ticket_run_id=ticket_run_id,
-                action=action,
-                target=target,
-                parameters=parameters,
-                actor=initiator,
-            )
-            decision_id = generated_decision.id
-            decision_version = generated_decision.version
         if decision_id is not None:
             if task_id is None or decision_version is None:
                 raise HTTPException(
-                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
                     "decision_version_and_task_id_required",
                 )
             from app.services.decision_journal import DecisionJournalService
@@ -278,9 +265,9 @@ class CommandService:
                 task_id=task_id,
                 version=decision_version,
             )
-        elif source in {"autopilot", "triage", "assistant"}:
+        elif task_id is not None:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
                 "decision_id_required",
             )
 
@@ -390,9 +377,9 @@ class CommandService:
         if command.status != "awaiting_approval":
             raise HTTPException(status.HTTP_409_CONFLICT, f"Command is {command.status}")
         if decision not in {"approve", "reject"}:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid decision")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid decision")
         if decision == "reject" and not (reason or "").strip():
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Reason is required for rejection")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Reason is required for rejection")
 
         if expected_version is not None and command.version != expected_version:
             raise HTTPException(
@@ -657,7 +644,7 @@ class CommandService:
         worker_id: str,
     ) -> CommandRecord:
         if outcome not in {"succeeded", "failed", "needs_review"}:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid outcome")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid outcome")
         command = await self.get(command_id, for_update=True)
         token_hash = hashlib.sha256(claim_token.encode()).hexdigest()
         if command.status != "running" or not secrets.compare_digest(command.lease_token_hash or "", token_hash):
@@ -937,7 +924,7 @@ class CommandService:
         if command.status != "needs_review":
             raise HTTPException(status.HTTP_409_CONFLICT, f"Command is {command.status}")
         if decision not in {"succeeded", "failed", "requeue"}:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid review decision")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid review decision")
         command.version += 1
         command.error_message = reason
         command.completed_at = None
@@ -1020,7 +1007,7 @@ class CommandService:
         try:
             policy_mode = PolicyMode(mode)
         except ValueError as exc:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid policy mode") from exc
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid policy mode") from exc
         record = await self.db.get(ActionPolicyRecord, action)
         if record is None:
             record = ActionPolicyRecord(action=action, mode=policy_mode.value, updated_by=actor)

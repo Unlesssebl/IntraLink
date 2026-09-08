@@ -69,13 +69,15 @@ export interface AutopilotSetting {
 export interface AutopilotScenario {
   id: string;
   service_id: number;
-  scenario_key: 'printer_installation';
+  scenario_key: AutopilotScenarioKey;
   enabled: boolean;
   version: number;
   config: Record<string, unknown>;
   updated_by: string;
   updated_at: string | null;
 }
+
+export type AutopilotScenarioKey = 'printer_installation' | 'user_creation';
 
 export const fetchTicketRun = (taskId: number) =>
   apiFetch<TicketRunView>(`/api/v2/ticket-runs/by-task/${taskId}`);
@@ -132,7 +134,7 @@ export const updateAutopilotSetting = (
 
 export const saveAutopilotScenario = (payload: {
   service_id: number;
-  scenario_key: 'printer_installation';
+  scenario_key: AutopilotScenarioKey;
   enabled: boolean;
   config?: Record<string, unknown>;
   expected_version?: number;

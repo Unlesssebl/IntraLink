@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert';
+import {
+  captureInitialDecisionVersion,
+  isDecisionVersionStale,
+} from '../src/components/inspector/decisionStaleness.ts';
 
 function parseHostList(hostStr?: string): string[] {
   if (!hostStr) return [];
@@ -50,4 +54,15 @@ test('formatSla: корректно форматирует оставшееся 
 test('normalizeHostForWinRm: очищает URL префиксы и порты, приводя к верхнему регистру', () => {
   assert.strictEqual(normalizeHostForWinRm('http://pc-admin-01:5985'), 'PC-ADMIN-01');
   assert.strictEqual(normalizeHostForWinRm('ws-user-05'), 'WS-USER-05');
+});
+
+test('decision staleness: версия предыдущей заявки не переносится на новую', () => {
+  const previous = { taskId: 101, version: 4 };
+  const unchanged = captureInitialDecisionVersion(previous, 202, 101, 9);
+  assert.deepStrictEqual(unchanged, previous);
+  assert.strictEqual(isDecisionVersionStale(false, unchanged, 202, 9), false);
+
+  const current = captureInitialDecisionVersion(unchanged, 202, 202, 2);
+  assert.deepStrictEqual(current, { taskId: 202, version: 2 });
+  assert.strictEqual(isDecisionVersionStale(false, current, 202, 3), true);
 });

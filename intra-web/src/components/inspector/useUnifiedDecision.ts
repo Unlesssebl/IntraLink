@@ -11,6 +11,11 @@ import {
 } from '../../lib/ticketRuns';
 import { applyTask, reanalyzeTask, confirmExecutionJob } from '../../lib/tasks';
 import { submitDecisionFeedback } from '../../lib/decisionsApi';
+import {
+  captureInitialDecisionVersion,
+  isDecisionVersionStale,
+  type InitialDecisionVersion,
+} from './decisionStaleness';
 
 export interface UseUnifiedDecisionProps {
   ticket: Ticket;
@@ -142,19 +147,22 @@ export function useUnifiedDecision({
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
 
   // 2. Staleness Guard
-  const initialDecisionVersionRef = useRef<number | null>(null);
-  const isStale = Boolean(
-    (details?.readiness as any)?.stale ||
-      (initialDecisionVersionRef.current !== null &&
-        details?.decision?.version !== undefined &&
-        details.decision.version > initialDecisionVersionRef.current)
+  const initialDecisionRef = useRef<InitialDecisionVersion | null>(null);
+  const isStale = isDecisionVersionStale(
+    Boolean((details?.readiness as any)?.stale),
+    initialDecisionRef.current,
+    rawId,
+    details?.decision?.version,
   );
 
   useEffect(() => {
-    if (details?.decision?.version && initialDecisionVersionRef.current === null) {
-      initialDecisionVersionRef.current = details.decision.version;
-    }
-  }, [details?.decision?.version]);
+    initialDecisionRef.current = captureInitialDecisionVersion(
+      initialDecisionRef.current,
+      rawId,
+      details?.decision?.task_id,
+      details?.decision?.version,
+    );
+  }, [rawId, details?.decision?.task_id, details?.decision?.version]);
 
   // 3. Адаптивный дифференциальный поллинг TicketRun
   const loadRunState = useCallback(async () => {
@@ -331,7 +339,9 @@ export function useUnifiedDecision({
       if (updated.ai_suggested_resolution && !replyText.trim()) {
         setReplyText(updated.ai_suggested_resolution);
       }
-      initialDecisionVersionRef.current = updated.decision?.version || null;
+      initialDecisionRef.current = updated.decision?.version
+        ? { taskId: rawId, version: updated.decision.version }
+        : null;
       onToast({
         type: 'success',
         message: `Предложение по заявке #${rawId} обновлено по актуальным данным`,

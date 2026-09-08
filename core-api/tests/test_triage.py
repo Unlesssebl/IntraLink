@@ -22,6 +22,7 @@ def override_deps():
         scalar_result = MagicMock()
         scalar_result.all.return_value = []
         session.scalars = AsyncMock(return_value=scalar_result)
+        session.add = MagicMock()
         session.commit = AsyncMock()
         session.rollback = AsyncMock()
         yield session

@@ -42,7 +42,7 @@ class AutopilotSettingRequest(BaseModel):
 
 class AutopilotScenarioRequest(BaseModel):
     service_id: int = Field(gt=0)
-    scenario_key: Literal["printer_installation"]
+    scenario_key: Literal["printer_installation", "user_creation"]
     enabled: bool = False
     config: dict = Field(default_factory=dict)
     expected_version: int | None = Field(None, ge=1)

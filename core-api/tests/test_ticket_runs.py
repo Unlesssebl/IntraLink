@@ -16,6 +16,7 @@ from app.database.db import (
 )
 from app.services.ticket_runs import REQUIRED_AUTOPILOT_TEMPLATES, TicketRunService
 from app.services.command_service import CommandService
+from app.services.decision_journal import DecisionJournalService
 
 
 def assistant_task(task_id: int = 91001) -> dict:
@@ -85,6 +86,17 @@ async def enable_autopilot(db) -> TicketRunService:
     await db.commit()
     await service.set_global_enabled(enabled=True, actor="admin:test", expected_version=1)
     return service
+
+
+async def operational_decision(db, run, action: str, target: dict, parameters: dict):
+    return await DecisionJournalService(db).record_operational(
+        task_id=run.task_id,
+        ticket_run_id=run.id,
+        action=action,
+        target=target,
+        parameters=parameters,
+        actor="test",
+    )
 
 
 @pytest.mark.asyncio
@@ -270,15 +282,19 @@ async def test_command_can_be_durably_linked_to_ticket_run():
             open_status_id=31,
         )
         assert registration.run is not None
+        target = {"host": "PC-91007", "task_id": 91007}
+        decision = await operational_decision(db, registration.run, "diagnose_host", target, {})
         command, duplicate = await CommandService(db).create(
             action="diagnose_host",
-            target={"host": "PC-91007", "task_id": 91007},
+            target=target,
             parameters={},
             idempotency_key="ticket-run-test-91007",
             initiator="autopilot",
             source="web",
             priority=5,
             ticket_run_id=registration.run.id,
+            decision_id=decision.id,
+            decision_version=decision.version,
         )
         assert duplicate is False
         assert command.ticket_run_id == registration.run.id
@@ -301,15 +317,19 @@ async def test_global_disable_pauses_run_and_cancels_unstarted_command():
             open_status_id=31,
         )
         assert registration.run is not None
+        target = {"host": "PC-91008", "task_id": 91008}
+        decision = await operational_decision(db, registration.run, "diagnose_host", target, {})
         command, _ = await CommandService(db).create(
             action="diagnose_host",
-            target={"host": "PC-91008", "task_id": 91008},
+            target=target,
             parameters={},
             idempotency_key="ticket-run-disable-91008",
             initiator="autopilot",
             source="web",
             priority=5,
             ticket_run_id=registration.run.id,
+            decision_id=decision.id,
+            decision_version=decision.version,
         )
 
         await run_service.set_global_enabled(
@@ -334,20 +354,25 @@ async def test_successful_manual_final_status_completes_linked_run():
             trigger_key="manual:91009:test",
         )
         service = CommandService(db)
+        target = {"task_id": 91009}
+        parameters = {
+            "task_ids": [91009],
+            "status_id": 29,
+            "comment": "Выполнено",
+            "expenses": 10,
+        }
+        decision = await operational_decision(db, run, "apply_triage", target, parameters)
         command, _ = await service.create(
             action="apply_triage",
-            target={"task_id": 91009},
-            parameters={
-                "task_ids": [91009],
-                "status_id": 29,
-                "comment": "Выполнено",
-                "expenses": 10,
-            },
+            target=target,
+            parameters=parameters,
             idempotency_key="manual-finalize-91009",
             initiator="operator:test",
             source="web",
             priority=5,
             ticket_run_id=run.id,
+            decision_id=decision.id,
+            decision_version=decision.version,
         )
         if command.status == "awaiting_approval":
             command = await service.approve(
@@ -422,15 +447,19 @@ async def test_manual_write_waits_for_started_operation_to_finish():
             trigger_key="manual:91011:test",
         )
         service = CommandService(db)
+        target = {"task_id": 91011, "host": "PC-91011"}
+        decision = await operational_decision(db, run, "diagnose_host", target, {})
         diagnosis, _ = await service.create(
             action="diagnose_host",
-            target={"task_id": 91011, "host": "PC-91011"},
+            target=target,
             parameters={},
             idempotency_key="manual-running-91011",
             initiator="operator:test",
             source="web",
             priority=5,
             ticket_run_id=run.id,
+            decision_id=decision.id,
+            decision_version=decision.version,
         )
         await service.claim(diagnosis.id, worker_id="windows:test")
 

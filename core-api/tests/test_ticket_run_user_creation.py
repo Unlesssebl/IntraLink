@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app.database.db import (
     AsyncSessionLocal,
     ActionPolicyRecord,
+    AutopilotScenario,
     CommandRecord,
     TicketRun,
     TicketRunEvent,
@@ -16,9 +17,36 @@ from app.services.ticket_run_runner import TicketRunRunner
 from app.services.actions.registry import PolicyMode
 
 
+async def enable_user_creation_autopilot(db) -> TicketRunService:
+    service = TicketRunService(db)
+    setting = await service.get_global_setting()
+    assert setting is not None
+    setting.enabled = True
+    scenario = await db.scalar(
+        select(AutopilotScenario).where(
+            AutopilotScenario.service_id == 53,
+            AutopilotScenario.scenario_key == "user_creation",
+        )
+    )
+    if scenario is None:
+        db.add(
+            AutopilotScenario(
+                service_id=53,
+                scenario_key="user_creation",
+                enabled=True,
+                config_json={},
+                updated_by="test",
+            )
+        )
+    else:
+        scenario.enabled = True
+    await db.commit()
+    return service
+
+
 @pytest.mark.asyncio
 async def test_register_user_creation_run():
-    """Тест автоматической регистрации цикла user_creation без ручной настройки таблицы сценариев."""
+    """Цикл user_creation создаётся только для явно включённого сценария."""
     async with AsyncSessionLocal() as db:
         policy = await db.get(ActionPolicyRecord, "create_user")
         if not policy:
@@ -44,7 +72,8 @@ async def test_register_user_creation_run():
             "Description": "test",
         }
 
-        res = await TicketRunService(db).register_assignment(
+        service = await enable_user_creation_autopilot(db)
+        res = await service.register_assignment(
             task=task,
             assistant_user_id=10502,
             open_status_id=31,
@@ -78,7 +107,8 @@ async def test_user_creation_clarification_on_invalid_data():
             "Description": "test",
         }
 
-        reg = await TicketRunService(db).register_assignment(
+        service = await enable_user_creation_autopilot(db)
+        reg = await service.register_assignment(
             task=task,
             assistant_user_id=10502,
             open_status_id=31,
@@ -124,19 +154,21 @@ async def test_user_creation_max_clarifications_exceeded():
             "Name": "Заявка на создание пользователя сети",
             "ServiceId": 53,
             "ServiceName": "Создание нового пользователя сети",
-            "StatusId": 35,
+            "StatusId": 31,
             "ExecutorId": 10502,
             "ExecutorIds": "10502",
             "Description": "test",
         }
 
-        reg = await TicketRunService(db).register_assignment(
+        service = await enable_user_creation_autopilot(db)
+        reg = await service.register_assignment(
             task=task,
             assistant_user_id=10502,
             open_status_id=31,
             actor="test",
         )
         assert reg.run is not None
+        task["StatusId"] = 35
         reg.run.clarification_count = 2
         await db.commit()
 
@@ -184,7 +216,8 @@ async def test_user_creation_command_failure_hidden_comment():
             "Description": "test",
         }
 
-        reg = await TicketRunService(db).register_assignment(
+        service = await enable_user_creation_autopilot(db)
+        reg = await service.register_assignment(
             task=task,
             assistant_user_id=10502,
             open_status_id=31,
@@ -262,12 +295,12 @@ async def test_user_creation_waiting_answer_receives_reply():
             "Description": "test",
             "ServiceId": 53,
             "ServiceName": "Создание нового пользователя сети",
-            "StatusId": 35,
+            "StatusId": 31,
             "ExecutorId": 10502,
             "ExecutorIds": "10502",
         }
 
-        registry = TicketRunService(db)
+        registry = await enable_user_creation_autopilot(db)
         reg = await registry.register_assignment(
             task=task,
             assistant_user_id=10502,
@@ -275,6 +308,7 @@ async def test_user_creation_waiting_answer_receives_reply():
             actor="test",
         )
         assert reg.run is not None
+        task["StatusId"] = 35
 
         # Имитируем, что раннер уже задал вопрос и перешел в WAITING_ANSWER
         reg.run.state = TicketRunState.WAITING_ANSWER.value

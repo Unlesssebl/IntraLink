@@ -192,7 +192,7 @@ class DecisionJournalService:
         rule_type = (decision or {}).get("rule_type")
         rule_source = bool(decision and rule_type not in {None, "standard_in_work"})
         rag_source = bool(kb_matches or (decision or {}).get("rag_applied"))
-        ai_source = bool(ai_text)
+        ai_source = (ai_metadata or {}).get("ai_used") is True
         action = action_for_decision(decision)
         typed_outcome = (decision or {}).get("typed_outcome")
         missing_data = missing_data_for_decision(task, decision, action)
@@ -305,7 +305,7 @@ class DecisionJournalService:
                         )
                     },
                     output_json={"matches": sanitize_payload(kb_matches)},
-                    metadata_json={"passed_to_ai": bool(ai_text and kb_matches)},
+                    metadata_json={"passed_to_ai": bool(ai_source and kb_matches)},
                 )
             )
             sequence += 1
@@ -314,7 +314,11 @@ class DecisionJournalService:
                     decision_id=record.id,
                     sequence=sequence,
                     component="ai",
-                    status="succeeded" if ai_text else "not_used",
+                    status=(
+                        "succeeded"
+                        if ai_source
+                        else ("fallback" if ai_text else "not_used")
+                    ),
                     input_json={"history_limit": 5},
                     output_json={"text": sanitize_payload(ai_text)} if ai_text else {},
                     metadata_json=sanitize_payload(ai_metadata or {"model": None, "backend": None}),
@@ -348,10 +352,21 @@ class DecisionJournalService:
         target: dict[str, Any],
         parameters: dict[str, Any],
         actor: str,
+        task: dict[str, Any] | None = None,
+        history: list[dict[str, Any]] | None = None,
     ) -> DecisionRecord:
-        task = {"Id": task_id, "target": target, "parameters": parameters}
+        history = history or []
+        task_snapshot = task or {"Id": task_id}
+        fingerprint_task = {
+            **task_snapshot,
+            "command_target": target,
+            "command_parameters": parameters,
+        }
         fingerprint = context_fingerprint(
-            task=task, history=[], decision={"action": action}, analysis_kind="execution"
+            task=fingerprint_task,
+            history=history,
+            decision={"action": action},
+            analysis_kind="execution",
         )
         existing = await self.db.scalar(
             select(DecisionRecord).where(
@@ -377,8 +392,18 @@ class DecisionJournalService:
             status="finalized",
             outcome="proposal",
             context_fingerprint=fingerprint,
-            source_json={"rule": True, "rag": False, "ai": False},
-            context_json=sanitize_payload({"target": target}),
+            source_json={"rule": False, "rag": False, "ai": False},
+            context_json=sanitize_payload(
+                {
+                    "task": task_snapshot,
+                    "ticket_fingerprint": (
+                        ticket_snapshot_fingerprint(task_snapshot, history)
+                        if task is not None
+                        else None
+                    ),
+                    "target": target,
+                }
+            ),
             completeness_json={"complete": True, "missing_data": [], "blocked_reasons": []},
             proposal_json=sanitize_payload(
                 {"action": action, "parameters": parameters, "ready": True}

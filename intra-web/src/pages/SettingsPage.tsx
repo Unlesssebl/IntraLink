@@ -15,6 +15,7 @@ import {
   updateAutopilotSetting,
   type AutopilotSetting,
 } from '../lib/ticketRuns';
+import type { AutopilotScenarioKey } from '../lib/ticketRuns';
 import { useAuth } from '../lib/auth';
 
 interface Props {
@@ -35,6 +36,7 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
   const [autopilot, setAutopilot] = useState<AutopilotSetting | null>(null);
   const [savingAutopilot, setSavingAutopilot] = useState(false);
   const [scenarioServiceId, setScenarioServiceId] = useState('');
+  const [scenarioKey, setScenarioKey] = useState<AutopilotScenarioKey>('printer_installation');
   const [savingScenario, setSavingScenario] = useState(false);
 
   // Domain auth state
@@ -174,7 +176,7 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
     try {
       await saveAutopilotScenario({
         service_id: Number(scenarioServiceId),
-        scenario_key: 'printer_installation',
+        scenario_key: scenarioKey,
         enabled: true,
         config: {},
       });
@@ -188,12 +190,12 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
     }
   };
 
-  const handleToggleScenario = async (serviceId: number, enabled: boolean, version: number, config: Record<string, unknown>) => {
+  const handleToggleScenario = async (serviceId: number, scenarioKey: AutopilotScenarioKey, enabled: boolean, version: number, config: Record<string, unknown>) => {
     setSavingScenario(true);
     try {
       await saveAutopilotScenario({
         service_id: serviceId,
-        scenario_key: 'printer_installation',
+        scenario_key: scenarioKey,
         enabled,
         config,
         expected_version: version,
@@ -283,11 +285,19 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-xs font-medium text-neutral-800 dark:text-neutral-200">Поддерживаемые сервисы</div>
-                <div className="text-[11px] text-neutral-500">Сценарий: установка принтера</div>
+                <div className="text-[11px] text-neutral-500">Каждый сервис связан с явно включённым сценарием</div>
               </div>
               <span className="text-[11px] text-neutral-500">{autopilot?.scenarios.filter(item => item.enabled).length || 0} включено</span>
             </div>
             <div className="flex gap-2">
+              <select
+                value={scenarioKey}
+                onChange={event => setScenarioKey(event.target.value as AutopilotScenarioKey)}
+                className="rounded border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-900 outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+              >
+                <option value="printer_installation">Установка принтера</option>
+                <option value="user_creation">Создание учётной записи</option>
+              </select>
               <input
                 type="number"
                 min={1}
@@ -302,9 +312,9 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
               <div key={item.id} className="flex items-center justify-between rounded border border-neutral-200/80 px-2.5 py-2 text-xs dark:border-neutral-800">
                 <div>
                   <span className="font-mono font-semibold">#{item.service_id}</span>
-                  <span className="ml-2 text-neutral-500">Установка принтера</span>
+                  <span className="ml-2 text-neutral-500">{item.scenario_key === 'user_creation' ? 'Создание учётной записи' : 'Установка принтера'}</span>
                 </div>
-                <button type="button" disabled={!canManageAutopilot || savingScenario} onClick={() => handleToggleScenario(item.service_id, !item.enabled, item.version, item.config)} className={`rounded px-2 py-1 text-[11px] font-semibold ${item.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}>
+                <button type="button" disabled={!canManageAutopilot || savingScenario} onClick={() => handleToggleScenario(item.service_id, item.scenario_key, !item.enabled, item.version, item.config)} className={`rounded px-2 py-1 text-[11px] font-semibold ${item.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}>
                   {item.enabled ? 'Включён' : 'Выключен'}
                 </button>
               </div>

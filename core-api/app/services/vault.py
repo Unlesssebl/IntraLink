@@ -317,6 +317,22 @@ async def get_service_account_user_id(
     return user_id
 
 
+async def get_service_account_auth_b64(db: AsyncSession) -> str | None:
+    """Build the encrypted Basic credential from the PostgreSQL SSOT.
+
+    This intentionally does not depend on Redis so correctness checks remain
+    available while the authorization cache is degraded.
+    """
+    config = await get_raw_setting(db, KEY_SERVICE_ACCOUNT) or {}
+    login = str(config.get("login") or "").strip()
+    encrypted_password = config.get("encrypted_password")
+    if not login or not encrypted_password:
+        return None
+    password = decrypt_token(encrypted_password)
+    encoded = base64.b64encode(f"{login}:{password}".encode("utf-8")).decode("ascii")
+    return encrypt_token(encoded)
+
+
 async def save_domain_credentials(
     db: AsyncSession,
     username: str,

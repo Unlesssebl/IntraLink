@@ -26,10 +26,16 @@ from app.routers.deps import (
     require_service_scope,
     verify_trusted_origin,
 )
-from app.services.command_service import CommandService, serialize_command
-from app.services.command_secrets import CommandSecretService
+from app.services import intraservice
 from app.services.command_delivery import CommandDeliveryService
+from app.services.command_secrets import CommandSecretService
+from app.services.command_service import CommandService, serialize_command
+from app.services.decision_journal import (
+    DecisionJournalService,
+    ticket_snapshot_fingerprint,
+)
 from app.services.identity import PrincipalContext, require_context_permission
+from app.services.vault import get_service_account_auth_b64
 from app.services.identity import create_approval_challenge, consume_approval_challenge
 from app.services.worker import get_redis_client
 
@@ -43,7 +49,7 @@ class CreateCommandRequest(BaseModel):
     target: dict[str, Any] = Field(default_factory=dict)
     parameters: dict[str, Any] = Field(default_factory=dict)
     priority: int = Field(5, ge=1, le=10)
-    source: str = Field("api", max_length=32)
+    source: Literal["api", "web", "autopilot", "triage", "assistant"] = "api"
     ticket_run_id: uuid.UUID | None = None
     decision_id: uuid.UUID | None = None
     decision_version: int | None = Field(None, ge=1)
@@ -133,6 +139,59 @@ async def create_command(
     _origin: None = Depends(verify_trusted_origin),
     db: AsyncSession = Depends(get_db),
 ):
+    task_id_raw = payload.target.get("task_id") or payload.parameters.get("task_id")
+    try:
+        task_id = int(task_id_raw) if task_id_raw is not None else None
+    except (TypeError, ValueError):
+        task_id = None
+
+    decision_id = payload.decision_id
+    decision_version = payload.decision_version
+    if task_id is not None:
+        service_auth_b64 = await get_service_account_auth_b64(db)
+        if not service_auth_b64:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "service_account_not_configured",
+            )
+        current_task = await intraservice.get_single_task(service_auth_b64, task_id)
+        current_history = await intraservice.get_task_lifetime(service_auth_b64, task_id)
+        if current_task is None or current_history is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "ticket_context_unavailable",
+            )
+        journal = DecisionJournalService(db)
+        if decision_id is None:
+            generated = await journal.record_operational(
+                task_id=task_id,
+                ticket_run_id=payload.ticket_run_id,
+                action=payload.action,
+                target=payload.target,
+                parameters=payload.parameters,
+                actor=context.subject,
+                task=current_task,
+                history=current_history,
+            )
+            decision_id = generated.id
+            decision_version = generated.version
+        else:
+            if decision_version is None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    "decision_version_and_task_id_required",
+                )
+            decision = await journal.require_current(
+                decision_id=decision_id,
+                task_id=task_id,
+                version=decision_version,
+            )
+            expected_fingerprint = decision.context_json.get("ticket_fingerprint")
+            if not expected_fingerprint:
+                raise HTTPException(status.HTTP_409_CONFLICT, "decision_context_unverifiable")
+            if expected_fingerprint != ticket_snapshot_fingerprint(current_task, current_history):
+                raise HTTPException(status.HTTP_409_CONFLICT, "decision_stale")
+
     command, duplicate = await CommandService(db).create(
         action=payload.action,
         target=payload.target,
@@ -143,8 +202,8 @@ async def create_command(
         source=payload.source,
         priority=payload.priority,
         ticket_run_id=payload.ticket_run_id,
-        decision_id=payload.decision_id,
-        decision_version=payload.decision_version,
+        decision_id=decision_id,
+        decision_version=decision_version,
     )
     return {**serialize_command(command), "duplicate": duplicate}
 
@@ -798,4 +857,3 @@ async def get_active_worker_execution(
         "active_nodes_count": active_nodes_count,
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
-

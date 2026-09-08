@@ -1,5 +1,6 @@
 import datetime as dt
 import uuid
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -29,6 +30,7 @@ from app.services.command_service import CommandService
 from app.config import settings
 from app.main import app
 from app.services.identity import create_service_credential, ensure_rbac_catalog
+from app.services.decision_journal import DecisionJournalService
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -75,6 +77,84 @@ async def test_safe_command_is_transactionally_queued_with_outbox():
         assert await db.scalar(
             select(func.count(CommandOutbox.id)).where(CommandOutbox.command_id == command.id)
         ) == 1
+
+
+@pytest.mark.asyncio
+async def test_ticket_command_requires_decision_for_every_declared_source():
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(HTTPException) as exc:
+            await CommandService(db).create(
+                action="diagnose_host",
+                target={"host": "PC-AUDIT", "task_id": 987654},
+                parameters={},
+                idempotency_key="decision-required-for-api-source",
+                initiator="api-client",
+                source="api",
+                priority=5,
+            )
+        assert exc.value.status_code == 422
+        assert exc.value.detail == "decision_id_required"
+
+
+@pytest.mark.asyncio
+async def test_command_api_rejects_decision_after_external_ticket_change():
+    task_id = 987655
+    original_task = {
+        "Id": task_id,
+        "StatusId": 31,
+        "ServiceId": 19,
+        "Name": "Установить принтер",
+        "Description": "Исходный контекст",
+    }
+    async with AsyncSessionLocal() as db:
+        decision = await DecisionJournalService(db).record_triage(
+            task_id=task_id,
+            task=original_task,
+            history=[],
+            decision={"rule_type": "printer_install", "status_id": 27},
+        )
+        _principal, credential, secret = await create_service_credential(
+            db,
+            subject="stale-command-client",
+            display_name="Stale command test",
+            scopes={"command:create"},
+        )
+
+    headers = {
+        "X-Service-Key-Id": credential.key_id,
+        "X-Service-Secret": secret,
+        "Idempotency-Key": "stale-external-ticket-test",
+    }
+    changed_task = {**original_task, "Description": "Контекст изменён после анализа"}
+    with (
+        patch(
+            "app.routers.commands_v2.get_service_account_auth_b64",
+            new=AsyncMock(return_value="encrypted-auth"),
+        ),
+        patch(
+            "app.routers.commands_v2.intraservice.get_single_task",
+            new=AsyncMock(return_value=changed_task),
+        ),
+        patch(
+            "app.routers.commands_v2.intraservice.get_task_lifetime",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v2/commands",
+                headers=headers,
+                json={
+                    "action": "diagnose_host",
+                    "target": {"task_id": task_id, "host": "PC-AUDIT"},
+                    "parameters": {},
+                    "source": "api",
+                    "decision_id": str(decision.id),
+                    "decision_version": decision.version,
+                },
+            )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "decision_stale"
 
 
 @pytest.mark.asyncio

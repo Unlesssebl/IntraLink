@@ -4,7 +4,9 @@ Revision ID: 20260907_0007
 Revises: 20260907_0006
 """
 
+import json
 import string
+from pathlib import Path
 from typing import Sequence, Union
 
 from alembic import op
@@ -57,6 +59,46 @@ def upgrade() -> None:
             )
             """
         )
+    )
+
+    # A clean database has no application-startup seed at migration time. Load
+    # the complete packaged catalog before deriving the v2 response catalog;
+    # otherwise the two compatibility rows above make the later startup seeder
+    # believe that the legacy catalog is already complete.
+    templates_path = (
+        Path(__file__).resolve().parents[2]
+        / "app"
+        / "services"
+        / "rules"
+        / "templates.json"
+    )
+    if not templates_path.is_file():
+        raise RuntimeError(f"Decision template seed is missing: {templates_path}")
+    templates = json.loads(templates_path.read_text(encoding="utf-8"))
+    seed_template = sa.text(
+        """
+        INSERT INTO triage_templates
+            (key, name, category, status_id, status_name, expenses, template_text, is_active)
+        VALUES
+            (:key, :name, :category, :status_id, :status_name, :expenses, :template_text, true)
+        ON CONFLICT (key) DO NOTHING
+        """
+    )
+    bind = op.get_bind()
+    bind.execute(
+        seed_template,
+        [
+            {
+                "key": key,
+                "name": item.get("name") or key,
+                "category": item.get("category", "in_work"),
+                "status_id": int(item.get("status_id", 27)),
+                "status_name": item.get("status_name", "В работе"),
+                "expenses": int(item.get("expenses", 10)),
+                "template_text": item.get("template", ""),
+            }
+            for key, item in templates.items()
+        ],
     )
 
     op.create_table(
@@ -204,7 +246,6 @@ def upgrade() -> None:
             """
         )
     )
-    bind = op.get_bind()
     rows = bind.execute(
         sa.text("SELECT id, template_text FROM response_templates")
     ).mappings()
