@@ -90,8 +90,21 @@ class TicketRunRunner:
         run = await self.db.get(TicketRun, run_id)
         if run is None:
             raise ValueError("run_not_found")
-        if run.completed_at is not None or run.mode != "autopilot":
+        if run.completed_at is not None:
             return run
+        if run.mode != "autopilot":
+            has_active_command = (
+                await self.db.scalar(
+                    select(CommandRecord.id).where(
+                        CommandRecord.ticket_run_id == run.id,
+                        CommandRecord.status.in_(
+                            ["queued", "running", "awaiting_approval", "succeeded", "failed"]
+                        ),
+                    ).limit(1)
+                )
+            ) is not None
+            if run.state != TicketRunState.RUNNING.value and not has_active_command:
+                return run
         if run.state in {TicketRunState.PAUSED.value, TicketRunState.SYSTEM_ERROR.value}:
             return run
 

@@ -34,13 +34,20 @@ async def test_llm_only_fills_missing_facts_with_grounded_schema():
         ],
         "ambiguities": [],
     }
+    from app.services.ai.schemas import RoutedInferenceResponse
+    mock_result = RoutedInferenceResponse(
+        circuit="red",
+        model="qwen",
+        text=json.dumps(extracted, ensure_ascii=False),
+        execution_time_ms=10.0,
+    )
     with (
         patch.object(settings, "LLM_FACT_EXTRACTION_MODE", "enabled"),
         patch.object(settings, "LLM_PROVIDER_PREFERENCE", "ollama_only"),
         patch.object(
             ai_hub,
-            "generate_ollama_completion",
-            new=AsyncMock(return_value=json.dumps(extracted, ensure_ascii=False)),
+            "dispatch_routed_inference",
+            new=AsyncMock(return_value=mock_result),
         ) as completion,
         patch("app.services.fact_extractor._fetch_from_cache", new=AsyncMock(return_value=None)),
         patch("app.services.fact_extractor._save_to_cache", new=AsyncMock()),
@@ -50,7 +57,7 @@ async def test_llm_only_fills_missing_facts_with_grounded_schema():
     assert enriched["_extracted_person"]["surname"] == "Иванов"
     assert enriched["_llm_fact_extraction"]["accepted"] is True
     assert (
-        completion.await_args.kwargs["response_schema"]["additionalProperties"] is False
+        completion.await_args.args[0].response_schema["additionalProperties"] is False
     )
 
 
@@ -103,6 +110,7 @@ async def test_gemini_first_with_ollama_fallback():
         patch.object(ai_hub, "generate_cloud_completion", new=gemini_mock),
         patch.object(ai_hub, "generate_ollama_completion", new=ollama_mock),
         patch("app.services.ai.sanitizer.data_sanitizer.save_vault", new=AsyncMock(return_value=True)),
+        patch("app.services.ai.hub.get_redis_client", side_effect=Exception("no redis")),
         patch("app.services.fact_extractor._fetch_from_cache", new=AsyncMock(return_value=None)),
         patch("app.services.fact_extractor._save_to_cache", new=AsyncMock()),
     ):

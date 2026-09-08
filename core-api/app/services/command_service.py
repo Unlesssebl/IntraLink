@@ -216,7 +216,7 @@ class CommandService:
             )
         return run
 
-    async def create(
+    async def create_record(
         self,
         *,
         action: str,
@@ -230,6 +230,7 @@ class CommandService:
         ticket_run_id: uuid.UUID | None = None,
         decision_id: uuid.UUID | None = None,
         decision_version: int | None = None,
+        flush: bool = True,
     ) -> tuple[CommandRecord, bool]:
         action_def = self.registry.get(action)
         if action_def is None:
@@ -255,15 +256,31 @@ class CommandService:
         mode = await self._policy_mode(action)
         if mode == PolicyMode.DISABLED:
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"Action '{action}' is disabled")
-        command_status = "queued" if mode == PolicyMode.AUTO else "awaiting_approval"
+
         task_id_raw = target.get("task_id") or parameters.get("task_id")
         try:
             task_id = int(task_id_raw) if task_id_raw is not None else None
         except (TypeError, ValueError):
             task_id = None
-        await self._assert_ticket_run_allows_execution(
+        run = await self._assert_ticket_run_allows_execution(
             ticket_run_id, task_id=task_id, action=action
         )
+
+        # Вычисление эффективного статуса:
+        # Для действий из сценария в режиме manual мутирующие действия требуют подтверждения (awaiting_approval);
+        # Действия диагностики (risk_level == 0), действия финализации (apply_triage) или ручные вызовы оператора (source == "web")
+        # следуют своей политике безопасности.
+        if (
+            run is not None
+            and run.mode == "manual"
+            and source == "scenario_orchestrator"
+            and action_def.risk_level > 0
+            and action != "apply_triage"
+        ):
+            command_status = "awaiting_approval"
+        else:
+            command_status = "queued" if mode == PolicyMode.AUTO else "awaiting_approval"
+
         if decision_id is not None:
             if task_id is None or decision_version is None:
                 raise HTTPException(
@@ -313,40 +330,75 @@ class CommandService:
             preflight_evidence_json={},
             plan_expires_at=plan_expires_at,
         )
-        self.db.add(command)
-        try:
-            await self.db.flush()
-            self.db.add(CommandEvent(
-                command_id=command.id,
-                sequence=1,
-                event_type="created",
-                details_json={"status": command_status, "plan_hash": initial_plan_hash},
-                actor=initiator,
-            ))
-            self.db.add(CommandEvent(
-                command_id=command.id,
-                sequence=2,
-                event_type="plan_frozen",
-                details_json={
-                    "plan_hash": initial_plan_hash,
-                    "version": 1,
-                    "expires_at": plan_expires_at.isoformat(),
-                },
-                actor=initiator,
-            ))
-            if command_status == "queued":
-                self._enqueue(command)
-            await self.db.commit()
-        except IntegrityError:
-            await self.db.rollback()
-            existing = await self.db.scalar(
-                select(CommandRecord).where(CommandRecord.idempotency_key == idempotency_key)
-            )
-            if existing and existing.request_hash == request_hash:
-                return existing, True
-            raise HTTPException(status.HTTP_409_CONFLICT, "Idempotency-Key conflict")
-        await self.db.refresh(command)
+        async with self.db.begin_nested():
+            self.db.add(command)
+            try:
+                if flush:
+                    await self.db.flush()
+                self.db.add(CommandEvent(
+                    command_id=command.id,
+                    sequence=1,
+                    event_type="created",
+                    details_json={"status": command_status, "plan_hash": initial_plan_hash},
+                    actor=initiator,
+                ))
+                self.db.add(CommandEvent(
+                    command_id=command.id,
+                    sequence=2,
+                    event_type="plan_frozen",
+                    details_json={
+                        "plan_hash": initial_plan_hash,
+                        "version": 1,
+                        "expires_at": plan_expires_at.isoformat(),
+                    },
+                    actor=initiator,
+                ))
+                if command_status == "queued":
+                    self._enqueue(command)
+                if flush:
+                    await self.db.flush()
+            except IntegrityError:
+                existing = await self.db.scalar(
+                    select(CommandRecord).where(CommandRecord.idempotency_key == idempotency_key)
+                )
+                if existing and existing.request_hash == request_hash:
+                    return existing, True
+                raise HTTPException(status.HTTP_409_CONFLICT, "Idempotency-Key conflict")
         return command, False
+
+    async def create(
+        self,
+        *,
+        action: str,
+        target: dict[str, Any],
+        parameters: dict[str, Any],
+        idempotency_key: str,
+        initiator: str,
+        source: str,
+        priority: int,
+        initiator_principal_id: uuid.UUID | None = None,
+        ticket_run_id: uuid.UUID | None = None,
+        decision_id: uuid.UUID | None = None,
+        decision_version: int | None = None,
+    ) -> tuple[CommandRecord, bool]:
+        command, is_dup = await self.create_record(
+            action=action,
+            target=target,
+            parameters=parameters,
+            idempotency_key=idempotency_key,
+            initiator=initiator,
+            source=source,
+            priority=priority,
+            initiator_principal_id=initiator_principal_id,
+            ticket_run_id=ticket_run_id,
+            decision_id=decision_id,
+            decision_version=decision_version,
+            flush=True,
+        )
+        if not is_dup:
+            await self.db.commit()
+            await self.db.refresh(command)
+        return command, is_dup
 
     def _enqueue(self, command: CommandRecord, *, delay_seconds: int = 0) -> None:
         stream, routing_key = resolve_command_stream(command)
@@ -385,6 +437,11 @@ class CommandService:
         approver_roles: frozenset[str] = frozenset(),
         approver_permissions: frozenset[str] | None = None,
     ) -> CommandRecord:
+        pre = await self.get(command_id, for_update=False)
+        if pre.ticket_run_id is not None:
+            await self.db.scalar(
+                select(TicketRun).where(TicketRun.id == pre.ticket_run_id).with_for_update()
+            )
         command = await self.get(command_id, for_update=True)
         if command.status != "awaiting_approval":
             raise HTTPException(status.HTTP_409_CONFLICT, f"Command is {command.status}")
@@ -523,6 +580,11 @@ class CommandService:
         message_id: str | None = None,
         outbox_id: uuid.UUID | None = None,
     ) -> Claim:
+        pre = await self.get(command_id, for_update=False)
+        if pre.ticket_run_id is not None:
+            await self.db.scalar(
+                select(TicketRun).where(TicketRun.id == pre.ticket_run_id).with_for_update()
+            )
         command = await self.get(command_id, for_update=True)
         now = dt.datetime.now(dt.timezone.utc)
         if command.status == "running":
@@ -908,6 +970,11 @@ class CommandService:
         return command
 
     async def cancel(self, command_id: uuid.UUID, *, reason: str, actor: str) -> CommandRecord:
+        pre = await self.get(command_id, for_update=False)
+        if pre.ticket_run_id is not None:
+            await self.db.scalar(
+                select(TicketRun).where(TicketRun.id == pre.ticket_run_id).with_for_update()
+            )
         command = await self.get(command_id, for_update=True)
         if command.status not in {"awaiting_approval", "queued"}:
             raise HTTPException(status.HTTP_409_CONFLICT, "Command can no longer be cancelled safely")

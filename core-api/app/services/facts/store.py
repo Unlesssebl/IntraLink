@@ -14,10 +14,26 @@ from shared.domain import FactObservation
 from app.database.db import TicketFactObservation
 
 
-def _parse_time(value: str | None) -> datetime | None:
-    if not value:
+def _to_utc_dt(value: str | datetime | None) -> datetime | None:
+    if value is None:
         return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if isinstance(value, str):
+        if not value.strip():
+            return None
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    elif isinstance(value, datetime):
+        dt = value
+    else:
+        return None
+
+    from datetime import timezone
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _parse_time(value: str | datetime | None) -> datetime | None:
+    return _to_utc_dt(value)
 
 
 class TicketFactStore:
@@ -29,8 +45,23 @@ class TicketFactStore:
         ticket_run_id: uuid.UUID,
         observations: Iterable[FactObservation],
     ) -> list[TicketFactObservation]:
+        from datetime import timedelta, timezone
+        latest_stored = await self.db.scalar(
+            select(TicketFactObservation.observed_at)
+            .where(TicketFactObservation.ticket_run_id == ticket_run_id)
+            .order_by(TicketFactObservation.observed_at.desc(), TicketFactObservation.id.desc())
+            .limit(1)
+        )
+        current_mono = _to_utc_dt(latest_stored)
+        now_utc = datetime.now(timezone.utc)
+
         rows: list[TicketFactObservation] = []
         for observation in observations:
+            obs_time = _to_utc_dt(observation.observed_at) or now_utc
+            if current_mono is not None and obs_time <= current_mono:
+                obs_time = current_mono + timedelta(microseconds=1000)
+            current_mono = obs_time
+
             values = {
                 "ticket_run_id": ticket_run_id,
                 "fact_key": observation.key,
@@ -41,12 +72,10 @@ class TicketFactStore:
                 "evidence_span": observation.evidence_span,
                 "sensitivity": observation.sensitivity.value,
                 "metadata_json": observation.metadata,
-                "expires_at": _parse_time(observation.expires_at),
+                "observed_at": obs_time,
+                "expires_at": _to_utc_dt(observation.expires_at),
                 "schema_version": observation.schema_version,
             }
-            observed_at = _parse_time(observation.observed_at)
-            if observed_at is not None:
-                values["observed_at"] = observed_at
             row = TicketFactObservation(
                 **values,
             )
@@ -60,7 +89,7 @@ class TicketFactStore:
             await self.db.scalars(
                 select(TicketFactObservation)
                 .where(TicketFactObservation.ticket_run_id == ticket_run_id)
-                .order_by(TicketFactObservation.observed_at, TicketFactObservation.id)
+                .order_by(TicketFactObservation.observed_at.asc(), TicketFactObservation.id.asc())
             )
         ).all()
         return [

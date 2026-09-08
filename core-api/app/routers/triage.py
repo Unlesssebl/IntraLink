@@ -252,7 +252,10 @@ async def attach_existing_decision(
 ) -> dict[str, Any]:
     """Hydrate the compatibility DTO from durable data without recalculation."""
     card.setdefault("kb_matches", [])
-    card.setdefault("telemetry", None)
+    if card.get("telemetry") is None:
+        task_obj = card.get("task") or {}
+        tid = int(task_obj.get("Id") or (record.task_id if record else 0))
+        card["telemetry"] = await get_task_telemetry(tid) if tid > 0 else None
     card.setdefault("ai_metadata", {})
     card.setdefault("sources", record.source_json if record else {})
     card["suggested_action"] = decision_to_legacy(record) if record else None

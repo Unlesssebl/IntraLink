@@ -430,18 +430,34 @@ class TicketRunService:
 
     async def list_resumable(self, *, limit: int = 100) -> list[TicketRun]:
         """Return persisted cycles whose next step may be evaluated by the runner."""
+        from sqlalchemy import and_, or_
+        is_autopilot_resumable = and_(
+            TicketRun.mode == TicketRunMode.AUTOPILOT.value,
+            TicketRun.state.in_(
+                [
+                    TicketRunState.RUNNING.value,
+                    TicketRunState.WAITING_ANSWER.value,
+                    TicketRunState.WAITING_APPROVAL.value,
+                ]
+            ),
+        )
+        has_command_subquery = (
+            select(CommandRecord.id)
+            .where(
+                CommandRecord.ticket_run_id == TicketRun.id,
+                CommandRecord.status.in_(["queued", "running", "awaiting_approval", "succeeded", "failed"]),
+            )
+            .exists()
+        )
+        is_manual_with_command = and_(
+            TicketRun.mode == TicketRunMode.MANUAL.value,
+            has_command_subquery,
+        )
         statement = (
             select(TicketRun)
             .where(
                 TicketRun.completed_at.is_(None),
-                TicketRun.mode == TicketRunMode.AUTOPILOT.value,
-                TicketRun.state.in_(
-                    [
-                        TicketRunState.RUNNING.value,
-                        TicketRunState.WAITING_ANSWER.value,
-                        TicketRunState.WAITING_APPROVAL.value,
-                    ]
-                ),
+                or_(is_autopilot_resumable, is_manual_with_command),
             )
             .order_by(TicketRun.updated_at, TicketRun.created_at)
             .limit(limit)

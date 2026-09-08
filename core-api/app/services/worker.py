@@ -555,7 +555,19 @@ async def process_autonomous_lifecycle(service_auth_b64: str) -> None:
                             )
                             return
                         if run.mode != "autopilot":
-                            return
+                            from app.database.db import CommandRecord
+                            has_active_command = (
+                                await db.scalar(
+                                    select(CommandRecord.id).where(
+                                        CommandRecord.ticket_run_id == run.id,
+                                        CommandRecord.status.in_(
+                                            ["queued", "running", "awaiting_approval", "succeeded", "failed"]
+                                        ),
+                                    ).limit(1)
+                                )
+                            ) is not None
+                            if run.state != "running" and not has_active_command:
+                                return
                         if run.state in {"paused", "system_error"}:
                             from app.services.command_delivery import CommandDeliveryService
                             await CommandDeliveryService(db).reconcile_undelivered_failure(

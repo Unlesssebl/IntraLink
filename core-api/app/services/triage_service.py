@@ -285,14 +285,13 @@ class TriageService:
                 metadata=routing_metadata,
             )
 
-            telemetry = None
+            import app.routers.triage as tr
+
+            telemetry = await tr.get_task_telemetry(t_id)
             rule_diag: dict[str, Any] = {}
             if compute_recommendations:
                 # Вычисление рекомендаций разрешено только из явного mutating
                 # endpoint. Обычная загрузка очереди остаётся read-only.
-                import app.routers.triage as tr
-
-                telemetry = await tr.get_task_telemetry(t_id)
                 if telemetry is None:
                     asyncio.create_task(tr.prefetch_task_telemetry(t))
                 rule_diag = cls._telemetry_to_rule_diag(telemetry)

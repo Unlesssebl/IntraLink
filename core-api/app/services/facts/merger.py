@@ -51,12 +51,15 @@ def merge_observations(
 ) -> FactBag:
     registry = registry or get_fact_registry()
     current_time = now or datetime.now(timezone.utc)
-    grouped: dict[str, dict[tuple[FactSource, str], FactObservation]] = defaultdict(dict)
-    for observation in observations:
+    grouped: dict[str, dict[Any, FactObservation]] = defaultdict(dict)
+    for idx, observation in enumerate(observations):
         registry.require(observation.key)
         if observation.metadata.get("shadow") and not include_shadow:
             continue
-        provenance = (observation.source, observation.source_ref)
+        if observation.source is FactSource.OPERATOR:
+            provenance = (observation.source, observation.source_ref, idx)
+        else:
+            provenance = (observation.source, observation.source_ref)
         # A source reference identifies one observation slot.  Re-collection of
         # the same form field/comment replaces its previous snapshot rather than
         # creating a false same-priority conflict.
@@ -80,7 +83,7 @@ def merge_observations(
         # Stored observations are loaded oldest-first and observations collected
         # for the current event are appended.  The latest valid operator value is
         # therefore the authoritative correction.
-        operator = next(
+        valid_operator = next(
             (
                 item
                 for item in reversed(live)
@@ -88,14 +91,34 @@ def merge_observations(
             ),
             None,
         )
-        if operator is not None:
+        if valid_operator is not None:
             resolved[key] = ResolvedFact(
                 key=key,
-                value=operator.value,
+                value=valid_operator.value,
                 state=FactState.VALID,
-                selected_source=operator.source,
-                selected_source_ref=operator.source_ref,
+                selected_source=valid_operator.source,
+                selected_source_ref=valid_operator.source_ref,
                 observations=ordered,
+            )
+            continue
+
+        latest_operator = next(
+            (
+                item
+                for item in reversed(live)
+                if item.source is FactSource.OPERATOR
+            ),
+            None,
+        )
+        if latest_operator is not None and latest_operator.state is FactState.INVALID:
+            resolved[key] = ResolvedFact(
+                key=key,
+                value=latest_operator.value,
+                state=FactState.INVALID,
+                selected_source=latest_operator.source,
+                selected_source_ref=latest_operator.source_ref,
+                observations=ordered,
+                conflict_reason="explicit_operator_value_invalid",
             )
             continue
 

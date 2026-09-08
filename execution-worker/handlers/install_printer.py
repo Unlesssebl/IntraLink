@@ -274,12 +274,12 @@ class InstallPrinterHandler(ActionHandler[InstallPrinterInput]):
 
         # 6. Расчет SHA-256 хеша INF-файла драйвера (если файл локально доступен воркеру)
         driver_sha256 = None
-        inf_local = Path(printer_cfg.driver_inf_path)
-        if inf_local.exists() and inf_local.is_file():
-            try:
+        try:
+            inf_local = Path(printer_cfg.driver_inf_path)
+            if inf_local.exists() and inf_local.is_file():
                 driver_sha256 = hashlib.sha256(inf_local.read_bytes()).hexdigest()
-            except Exception as e:
-                logger.debug("Не удалось рассчитать sha256 для %s: %s", inf_local, e)
+        except (OSError, Exception) as e:
+            logger.debug("Не удалось проверить или рассчитать sha256 для %s: %s", printer_cfg.driver_inf_path, e)
 
         # 7. Формирование снимка preflight_evidence
         evidence = {

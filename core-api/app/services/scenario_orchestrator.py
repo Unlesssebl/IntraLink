@@ -87,7 +87,7 @@ class CommandDispatcher:
             task=task,
             history=comments,
         )
-        command, _duplicate = await CommandService(self.db).create(
+        command, _duplicate = await CommandService(self.db).create_record(
             action=action,
             target=target,
             parameters=parameters,
@@ -100,6 +100,7 @@ class CommandDispatcher:
             ticket_run_id=run.id,
             decision_id=decision.id,
             decision_version=decision.version,
+            flush=True,
         )
         run.decision_version = decision.version
         return command
@@ -115,15 +116,89 @@ class TicketRunOrchestrator:
         self.decisions = ScenarioDecisionService(db)
         self.commands = CommandDispatcher(db)
 
-    async def _event_exists(self, run_id: uuid.UUID, event_key: str) -> bool:
-        return (
-            await self.db.scalar(
-                select(TicketRunEvent.id).where(
-                    TicketRunEvent.ticket_run_id == run_id,
-                    TicketRunEvent.event_key == event_key,
+    async def _event_exists(
+        self,
+        run_id: uuid.UUID,
+        event_key: str,
+        *,
+        event_type: str | None = None,
+        exclude_deferred: bool = False,
+    ) -> bool:
+        stmt = select(TicketRunEvent.id).where(
+            TicketRunEvent.ticket_run_id == run_id,
+            TicketRunEvent.event_key == event_key,
+        )
+        if event_type is not None:
+            stmt = stmt.where(TicketRunEvent.event_type == event_type)
+        elif exclude_deferred:
+            stmt = stmt.where(TicketRunEvent.event_type != "ticket_event_deferred")
+        return (await self.db.scalar(stmt)) is not None
+
+    async def _get_pending_deferred_events(
+        self, run_id: uuid.UUID
+    ) -> list[TicketRunEvent]:
+        """Возвращает отложенные события, которые еще не были поглощены scenario_advanced."""
+        events = list(
+            (
+                await self.db.scalars(
+                    select(TicketRunEvent)
+                    .where(
+                        TicketRunEvent.ticket_run_id == run_id,
+                        TicketRunEvent.event_type == "ticket_event_deferred",
+                    )
+                    .order_by(TicketRunEvent.sequence)
                 )
-            )
-        ) is not None
+            ).all()
+        )
+        if not events:
+            return []
+        consumed_keys: set[str] = set()
+        advanced_events = list(
+            (
+                await self.db.scalars(
+                    select(TicketRunEvent)
+                    .where(
+                        TicketRunEvent.ticket_run_id == run_id,
+                        TicketRunEvent.event_type.in_(["scenario_advanced", "command_reconciled"]),
+                    )
+                )
+            ).all()
+        )
+        for adv in advanced_events:
+            if adv.event_key:
+                consumed_keys.add(adv.event_key)
+            for c_key in (adv.details_json or {}).get("consumed_event_keys", []):
+                consumed_keys.add(c_key)
+
+        pending: list[TicketRunEvent] = []
+        for ev in events:
+            details = ev.details_json or {}
+            source_key = details.get("source_event_key") or ev.event_key
+            if source_key and source_key not in consumed_keys:
+                pending.append(ev)
+        return pending
+
+    def _has_target_drift(
+        self,
+        command: CommandRecord,
+        task: dict[str, Any],
+        pending_deferred: list[TicketRunEvent],
+    ) -> bool:
+        """Проверяет, изменились ли цель или ключевые параметры во время выполнения команды."""
+        if not pending_deferred:
+            return False
+        cmd_target = command.target_json or {}
+        cmd_params = command.params_json or {}
+        if command.action in ("install_printer", "printer"):
+            from app.services.ticket_run_runner import TicketRunRunner
+            fresh_pc, fresh_ip = TicketRunRunner.extract_printer_parameters(task)
+            cmd_pc = cmd_params.get("pc_name") or cmd_target.get("pc_name")
+            cmd_ip = cmd_params.get("printer_ip") or cmd_target.get("printer_ip")
+            if fresh_pc and cmd_pc and fresh_pc.upper() != str(cmd_pc).upper():
+                return True
+            if fresh_ip and cmd_ip and fresh_ip.strip() != str(cmd_ip).strip():
+                return True
+        return False
 
     async def _latest_command(self, run_id: uuid.UUID) -> CommandRecord | None:
         return await self.db.scalar(
@@ -210,110 +285,135 @@ class TicketRunOrchestrator:
                         command.id,
                         exc,
                     )
-        elif command.status == "succeeded" and command.action == "create_user":
-            auth = await self._resolve_service_auth(service_auth_b64)
-            if not auth:
+        elif command.status == "succeeded":
+            pending_deferred = await self._get_pending_deferred_events(run.id)
+            if self._has_target_drift(command, task, pending_deferred):
                 run.state = TicketRunState.PAUSED.value
-                run.pause_reason = "verified_result_delivery_requires_auth"
-            else:
-                await CommandDeliveryService(self.db).deliver_create_user(
-                    command.id,
-                    actor=actor,
-                    service_auth_b64=auth,
+                run.pause_reason = "target_changed_during_execution"
+                run.error_message = (
+                    "Параметры или цель задачи изменились во время выполнения команды"
                 )
+            elif command.action == "create_user":
+                auth = await self._resolve_service_auth(service_auth_b64)
+                if not auth:
+                    run.state = TicketRunState.PAUSED.value
+                    run.pause_reason = "verified_result_delivery_requires_auth"
+                else:
+                    try:
+                        await CommandDeliveryService(self.db).deliver_create_user(
+                            command.id,
+                            actor=actor,
+                            service_auth_b64=auth,
+                        )
+                        run.state = TicketRunState.COMPLETED.value
+                        run.outcome = "completed"
+                        run.completed_at = dt.datetime.now(dt.timezone.utc)
+                    except Exception as exc:
+                        logger.warning(
+                            "Не удалось доставить результат create_user %s: %s",
+                            command.id,
+                            exc,
+                        )
+                        run.state = TicketRunState.PAUSED.value
+                        run.pause_reason = "delivery_failed"
+                        run.error_message = str(exc)
+            elif run.current_step == "request_clarification":
+                run.state = TicketRunState.WAITING_ANSWER.value
+                run.waiting_reason = "clarification_requested"
+                run.clarification_count += 1
+            elif command.action == "apply_triage":
                 run.state = TicketRunState.COMPLETED.value
                 run.outcome = "completed"
                 run.completed_at = dt.datetime.now(dt.timezone.utc)
-        elif command.status == "succeeded" and run.current_step == "request_clarification":
-            run.state = TicketRunState.WAITING_ANSWER.value
-            run.waiting_reason = "clarification_requested"
-            run.clarification_count += 1
-        elif command.status == "succeeded" and command.action == "apply_triage":
-            run.state = TicketRunState.COMPLETED.value
-            run.outcome = "completed"
-            run.completed_at = dt.datetime.now(dt.timezone.utc)
-        elif command.status == "succeeded":
-            try:
-                scenario = get_scenario_registry().get(
-                    run.scenario_key or "", run.scenario_version
-                )
-                if scenario is None:
-                    raise ValueError("pinned_scenario_version_unavailable")
-                outcome_key = scenario.definition.success_outcome_key
-                if not outcome_key:
-                    raise ResolutionUnavailable("scenario_success_outcome_missing")
-                policy = await resolve_outcome(
-                    self.db,
-                    outcome_key,
-                    {},
-                    expected_kind="resolution",
-                )
-                outcome = ResolutionProposed(
-                    rule_key=f"scenario.{scenario.definition.key}.verified",
-                    rule_version=str(scenario.definition.version),
-                    outcome_key=outcome_key,
-                    target_status_id=policy.get("status_id"),
-                    evidence=[
-                        Evidence(
-                            source="worker",
-                            field="command_id",
-                            code="verified_success",
-                            detail=str(command.id),
-                        )
-                    ],
-                )
-                envelope = DecisionEnvelope(
-                    decision_version=(run.decision_version or 0) + 1,
-                    scenario_key=scenario.definition.key,
-                    scenario_version=scenario.definition.version,
-                    facts_revision=run.fact_revision,
-                    facts_summary={},
-                    candidates=[
-                        CandidateOutcome(
-                            candidate_id=f"verified:{command.id}",
-                            source="diagnostic",
-                            outcome=outcome,
-                            evidence_refs=["worker:command_id:verified_success"],
-                            score=1.0,
-                            can_authorize_action=False,
-                        )
-                    ],
-                    outcome=outcome,
-                    policy=policy,
-                    response_draft=policy["comment"],
-                    evidence_refs=["worker:command_id:verified_success"],
-                    confidence=0.99,
-                    requires_approval=bool(policy.get("requires_approval")),
-                    status="proposed",
-                )
-                final_command = await self.commands.dispatch(
-                    run=run,
-                    envelope=envelope,
-                    action="apply_triage",
-                    target={"task_id": run.task_id},
-                    parameters={
-                        "task_ids": [run.task_id],
-                        "status_id": policy["status_id"],
-                        "comment": policy["comment"],
-                        "expenses": policy.get("expenses") or 0,
-                    },
-                    actor=actor,
-                    task=task,
-                    comments=comments,
-                )
-                run.current_step = "finalize:apply_triage"
-                run.state = (
-                    TicketRunState.WAITING_APPROVAL.value
-                    if final_command.status == "awaiting_approval"
-                    else TicketRunState.RUNNING.value
-                )
-                command = final_command
-            except (KeyError, ResolutionUnavailable, ValueError) as exc:
-                run.state = TicketRunState.PAUSED.value
-                run.pause_reason = "verified_action_requires_finalization"
-                run.error_message = str(exc)
+            else:
+                try:
+                    scenario = get_scenario_registry().get(
+                        run.scenario_key or "", run.scenario_version
+                    )
+                    if scenario is None:
+                        raise ValueError("pinned_scenario_version_unavailable")
+                    outcome_key = scenario.definition.success_outcome_key
+                    if not outcome_key:
+                        raise ResolutionUnavailable("scenario_success_outcome_missing")
+                    policy = await resolve_outcome(
+                        self.db,
+                        outcome_key,
+                        {},
+                        expected_kind="resolution",
+                    )
+                    outcome = ResolutionProposed(
+                        rule_key=f"scenario.{scenario.definition.key}.verified",
+                        rule_version=str(scenario.definition.version),
+                        outcome_key=outcome_key,
+                        target_status_id=policy.get("status_id"),
+                        evidence=[
+                            Evidence(
+                                source="worker",
+                                field="command_id",
+                                code="verified_success",
+                                detail=str(command.id),
+                            )
+                        ],
+                    )
+                    envelope = DecisionEnvelope(
+                        decision_version=(run.decision_version or 0) + 1,
+                        scenario_key=scenario.definition.key,
+                        scenario_version=scenario.definition.version,
+                        facts_revision=run.fact_revision,
+                        facts_summary={},
+                        candidates=[
+                            CandidateOutcome(
+                                candidate_id=f"verified:{command.id}",
+                                source="diagnostic",
+                                outcome=outcome,
+                                evidence_refs=["worker:command_id:verified_success"],
+                                score=1.0,
+                                can_authorize_action=False,
+                            )
+                        ],
+                        outcome=outcome,
+                        policy=policy,
+                        response_draft=policy["comment"],
+                        evidence_refs=["worker:command_id:verified_success"],
+                        confidence=0.99,
+                        requires_approval=bool(policy.get("requires_approval")),
+                        status="proposed",
+                    )
+                    final_command = await self.commands.dispatch(
+                        run=run,
+                        envelope=envelope,
+                        action="apply_triage",
+                        target={"task_id": run.task_id},
+                        parameters={
+                            "task_ids": [run.task_id],
+                            "status_id": policy["status_id"],
+                            "comment": policy["comment"],
+                            "expenses": policy.get("expenses") or 0,
+                        },
+                        actor=actor,
+                        task=task,
+                        comments=comments,
+                    )
+                    run.current_step = "finalize:apply_triage"
+                    run.state = (
+                        TicketRunState.WAITING_APPROVAL.value
+                        if final_command.status == "awaiting_approval"
+                        else TicketRunState.RUNNING.value
+                    )
+                    command = final_command
+                except (KeyError, ResolutionUnavailable, ValueError) as exc:
+                    run.state = TicketRunState.PAUSED.value
+                    run.pause_reason = "verified_action_requires_finalization"
+                    run.error_message = str(exc)
         else:
             return None
+
+        consumed_keys: list[str] = []
+        if command.status in {"succeeded", "failed", "needs_review", "rejected", "cancelled"}:
+            consumed_keys = [
+                (ev.details_json or {}).get("source_event_key") or ev.event_key
+                for ev in (await self._get_pending_deferred_events(run.id))
+            ]
 
         run.version += 1
         run.updated_by = actor
@@ -327,6 +427,7 @@ class TicketRunOrchestrator:
                 "command_status": command.status,
                 "command_action": command.action,
                 "run_state": run.state,
+                "consumed_event_keys": consumed_keys,
             },
         )
         await self.db.commit()
@@ -468,22 +569,40 @@ class TicketRunOrchestrator:
             "queued",
             "running",
         }:
-            initial.version += 1
-            initial.updated_by = actor
-            await self.runs._append_run_event(
-                initial,
-                event_type="ticket_event_deferred",
-                event_key=key,
-                actor=actor,
-                details={
-                    "command_id": str(active_command.id),
-                    "command_status": active_command.status,
-                    "source_event_type": event_type,
-                },
+            deferred_key = f"deferred:{key}"
+            if await self._event_exists(run_id, deferred_key):
+                return OrchestrationResult(initial, None, active_command, duplicate_event=True)
+
+            run = await self.db.scalar(
+                select(TicketRun).where(TicketRun.id == run_id).with_for_update()
             )
-            await self.db.commit()
-            await self.db.refresh(initial)
-            return OrchestrationResult(initial, None, active_command)
+            if run is None:
+                raise ValueError("run_not_found")
+            locked_command = await self._latest_command(run_id)
+            if locked_command is None or locked_command.status not in {
+                "awaiting_approval",
+                "queued",
+                "running",
+            }:
+                await self.db.rollback()
+            else:
+                run.version += 1
+                run.updated_by = actor
+                await self.runs._append_run_event(
+                    run,
+                    event_type="ticket_event_deferred",
+                    event_key=deferred_key,
+                    actor=actor,
+                    details={
+                        "command_id": str(locked_command.id),
+                        "command_status": locked_command.status,
+                        "source_event_type": event_type,
+                        "source_event_key": key,
+                    },
+                )
+                await self.db.commit()
+                await self.db.refresh(run)
+                return OrchestrationResult(run, None, locked_command)
         initial_version = initial.version
         initial_fact_revision = initial.fact_revision
         initial_decision_version = initial.decision_version or 0
@@ -593,6 +712,14 @@ class TicketRunOrchestrator:
                 else TicketRunState.RUNNING.value
             )
 
+        pending_deferred = await self._get_pending_deferred_events(run.id)
+        consumed_keys = [
+            (ev.details_json or {}).get("source_event_key") or ev.event_key
+            for ev in pending_deferred
+        ]
+        if key not in consumed_keys:
+            consumed_keys.append(key)
+
         run.version += 1
         await self.runs._append_run_event(
             run,
@@ -607,6 +734,7 @@ class TicketRunOrchestrator:
                 "outcome_key": getattr(envelope.outcome, "outcome_key", None),
                 "command_id": str(command.id) if command else None,
                 "command_status": command.status if command else None,
+                "consumed_event_keys": consumed_keys,
             },
         )
         await self.db.commit()
