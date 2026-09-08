@@ -44,12 +44,12 @@ async def event_stream(
             if job_id:
                 channel_name = f"job:{job_id}:events"
                 await pubsub.subscribe(channel_name)
-                logger.info("SSE клиент подписался на канал %s", channel_name)
+                logger.debug("SSE клиент подписался на канал %s", channel_name)
             else:
                 # Подписка на глобальный канал, обновления задач и паттерны событий
                 await pubsub.subscribe("events:all", "channel:task_updates")
                 await pubsub.psubscribe("job:*:events", "intraservice_events:*")
-                logger.info("SSE клиент подписался на глобальный поток событий")
+                logger.debug("SSE клиент подписался на глобальный поток событий")
 
             # Отправляем директиву retry: 3000 (RFC 8895) и приветственное событие
             init_payload = json.dumps(

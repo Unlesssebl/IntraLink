@@ -56,7 +56,9 @@ export default function SkillsHub({ token }: SkillsHubProps) {
 
   // Server-Sent Events (SSE) listener
   useEffect(() => {
-    const es = new EventSource('/api/v1/events/stream');
+    const token = localStorage.getItem('intralink_admin_token');
+    const url = `/api/v1/events/stream?channel=all${token ? `&token=${encodeURIComponent(token)}` : ''}`;
+    const es = new EventSource(url, { withCredentials: true });
 
     es.onopen = () => {
       setSseConnected(true);

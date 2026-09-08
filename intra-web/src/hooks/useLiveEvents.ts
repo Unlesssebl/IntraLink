@@ -34,6 +34,25 @@ export function useLiveEvents({
   const reconnectTimeoutRef = useRef<number | null>(null);
   const retryDelayRef = useRef(1000);
 
+  // Храним актуальные ссылки на коллбеки в ref, чтобы connect не пересоздавался при каждом рендере родителя
+  const callbacksRef = useRef({
+    onEvent,
+    onQueueRefreshNeeded,
+    onTaskStatusUpdated,
+    onConfirmRequired,
+    onOutageEvent,
+  });
+
+  useEffect(() => {
+    callbacksRef.current = {
+      onEvent,
+      onQueueRefreshNeeded,
+      onTaskStatusUpdated,
+      onConfirmRequired,
+      onOutageEvent,
+    };
+  });
+
   const connect = useCallback(() => {
     if (!enabled) return;
     if (eventSourceRef.current) {
@@ -60,38 +79,38 @@ export function useLiveEvents({
           const payload: LiveEventPayload = { ...parsed, event: eventType };
 
           setLastEvent(payload);
-          onEvent?.(payload);
+          callbacksRef.current.onEvent?.(payload);
 
           // 1. Обработка применения триажа или смены статуса заявки
           if (eventType === 'triage_applied' && Array.isArray(payload.task_ids) && payload.status_id) {
-            onTaskStatusUpdated?.(payload.task_ids, payload.status_id);
-            onQueueRefreshNeeded?.('triage_applied');
+            callbacksRef.current.onTaskStatusUpdated?.(payload.task_ids, payload.status_id);
+            callbacksRef.current.onQueueRefreshNeeded?.('triage_applied');
           } else if ((eventType === 'status_change' || eventType === 'new_task') && payload.task_id) {
             if (payload.status_id) {
-              onTaskStatusUpdated?.([payload.task_id], payload.status_id);
+              callbacksRef.current.onTaskStatusUpdated?.([payload.task_id], payload.status_id);
             }
-            onQueueRefreshNeeded?.(eventType);
+            callbacksRef.current.onQueueRefreshNeeded?.(eventType);
           }
 
           // 2. Обработка завершения фоновой задачи воркера
           if ((eventType === 'success' || eventType === 'failed') && payload.data) {
             const taskId = payload.data.task_id || payload.task_id;
             if (taskId && eventType === 'success') {
-              onTaskStatusUpdated?.([taskId], 29);
+              callbacksRef.current.onTaskStatusUpdated?.([taskId], 29);
             }
-            onQueueRefreshNeeded?.(`worker_${eventType}`);
+            callbacksRef.current.onQueueRefreshNeeded?.(`worker_${eventType}`);
           }
 
           // 3. Обработка запроса HitL-подтверждения
           if (eventType === 'confirm_required' && payload.data) {
             const jobId = payload.job_id || 'unknown';
             const prompt = payload.data.prompt || 'Требуется подтверждение действия';
-            onConfirmRequired?.(jobId, prompt, payload.data.details);
+            callbacksRef.current.onConfirmRequired?.(jobId, prompt, payload.data.details);
           }
 
           // 4. Обработка событий массовых инцидентов (AIOps Outages)
           if (eventType === 'outage_detected' || eventType === 'outage_updated' || eventType === 'outage_resolved') {
-            onOutageEvent?.(payload);
+            callbacksRef.current.onOutageEvent?.(payload);
           }
         } catch (e) {
           console.debug('[LiveEvents] Ошибка парсинга события:', e);
@@ -139,7 +158,7 @@ export function useLiveEvents({
       console.warn('[LiveEvents] Не удалось создать EventSource:', err);
       setIsConnected(false);
     }
-  }, [enabled, onEvent, onQueueRefreshNeeded, onTaskStatusUpdated, onConfirmRequired]);
+  }, [enabled]);
 
   useEffect(() => {
     if (enabled) {
