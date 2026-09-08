@@ -1104,3 +1104,80 @@ async def synthesize_triage_resolution(
         ),
         {**deterministic_meta, "circuit": eval_circuit.value if eval_circuit else None},
     )
+
+
+async def synthesize_clarification_comment(
+    task: dict[str, Any],
+    missing_fields: list[str] | None = None,
+    invalid_fields: list[str] | None = None,
+    scenario_hint: str = "создание учетной записи",
+) -> str:
+    """
+    Генерирует вежливый адаптивный ответ с пояснением, каких именно реквизитов не хватает.
+    При сбое или недоступности LLM гарантированно возвращает детерминированный эталонный шаблон.
+    """
+    field_labels = {
+        "surname": "фамилию",
+        "name": "имя",
+        "patronymic": "отчество",
+        "title": "должность",
+        "department": "подразделение",
+        "company": "организацию / компанию",
+        "phone": "телефон",
+    }
+    needed: list[str] = []
+    for f in (missing_fields or []) + (invalid_fields or []):
+        label = field_labels.get(f, f)
+        if label not in needed:
+            needed.append(label)
+
+    fields_str = ", ".join(needed) if needed else "ФИО сотрудника полностью, должность и подразделение"
+    default_text = (
+        f"Добрый день! Для создания учетной записи сотрудника в корпоративной сети, пожалуйста, "
+        f"укажите {fields_str} ответным комментарием к этой заявке."
+    )
+
+    t_desc = str(task.get("Description") or "").strip()
+    t_name = str(task.get("Name") or "").strip()
+    user_text = f"{t_name}. {t_desc}".strip()
+
+    system_prompt = (
+        "Ты — вежливый инженер IT-поддержки (Беликов Ален). "
+        "Пользователь подал заявку на создание пользователя сети, но указал неполные или некорректные данные. "
+        "Сформируй доброжелательный, краткий ответ заявителю (1-3 предложения), "
+        "где объясни, каких именно данных не хватает (ФИО, должность, подразделение), "
+        "и попроси прислать их ответным комментарием к этой заявке. "
+        "Правила: без эмодзи, официальный вежливый стиль, не выдумывай данные, не используй иностранные слова."
+    )
+    user_prompt = (
+        f"Заявка: {user_text}\n"
+        f"Отсутствующие или некорректные поля: {fields_str}\n\n"
+        "Сформируй вежливый текст запроса уточнений."
+    )
+
+    try:
+        from app.services.ai.schemas import RoutedInferenceRequest, RoutingMetadata
+
+        req = RoutedInferenceRequest(
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            metadata=RoutingMetadata(service_id=int(task.get("ServiceId") or 0)),
+            max_tokens=256,
+            temperature=0.2,
+        )
+        res = await asyncio.wait_for(ai_hub.dispatch_routed_inference(req), timeout=3.0)
+        output_text = getattr(res, "text", None) or getattr(res, "final_text", None)
+        if output_text and len(output_text.strip()) > 20:
+            cleaned = output_text.strip()
+            if (cleaned.startswith('"') and cleaned.endswith('"')) or (
+                cleaned.startswith("«") and cleaned.endswith("»")
+            ):
+                cleaned = cleaned[1:-1].strip()
+            return cleaned
+    except Exception as e:
+        logger.debug(
+            "Сбой адаптивного AI-синтеза уточнения, возврат дефолтного шаблона: %s", e
+        )
+
+    return default_text
+

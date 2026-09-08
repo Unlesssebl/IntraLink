@@ -521,6 +521,7 @@ export interface SkillActionItem {
   default_mode: 'auto' | 'confirm' | 'disabled';
   effective_mode: 'auto' | 'confirm' | 'disabled';
   target_type: string;
+  auto_eligible?: boolean;
   parameters_schema: Record<string, any>;
 }
 

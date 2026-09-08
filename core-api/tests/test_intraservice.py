@@ -641,6 +641,25 @@ class TestAddTaskComment:
         assert json_data == {"Id": 42, "Comment": "Тестовый коммент", "IsPrivateComment": False}
 
     @pytest.mark.asyncio
+    async def test_calls_task_endpoint_put_private(self):
+        """add_task_comment с is_private=True должен передавать IsPrivateComment=True."""
+        import app.services.intraservice as is_module
+
+        with patch(
+            "app.services.intraservice._make_request",
+            new_callable=AsyncMock,
+            return_value={"Id": 1},
+        ) as mock_req:
+            result = await is_module.add_task_comment(
+                "auth", task_id=42, comment="Скрытый коммент", is_private=True
+            )
+
+        assert result is True
+        call_args, call_kwargs = mock_req.call_args
+        json_data = call_kwargs.get("json_data")
+        assert json_data == {"Id": 42, "Comment": "Скрытый коммент", "IsPrivateComment": True}
+
+    @pytest.mark.asyncio
     async def test_returns_false_on_api_error(self):
         """Если API вернул ошибку (None), add_task_comment должен вернуть False."""
         import app.services.intraservice as is_module

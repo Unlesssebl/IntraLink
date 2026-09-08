@@ -78,7 +78,7 @@ async def test_policy_engine_default_and_override():
 
 
 @pytest.mark.asyncio
-async def test_printer_policy_defaults_to_confirm_and_rejects_auto():
+async def test_printer_policy_defaults_to_confirm_and_allows_admin_auto():
     engine = PolicyEngine()
 
     mode, allowed, _ = await engine.evaluate_execution_mode(
@@ -87,11 +87,15 @@ async def test_printer_policy_defaults_to_confirm_and_rejects_auto():
     assert allowed is True
     assert mode == "confirm"
 
-    # На время пилота mutating-действие install_printer запрещено переводить в AUTO
-    with pytest.raises(ValueError):
-        await engine.set_action_policy("install_printer", PolicyMode.AUTO, actor="test-admin")
+    # Администратор может перевести действие в AUTO
+    await engine.set_action_policy("install_printer", PolicyMode.AUTO, actor="test-admin")
+    mode, allowed, _ = await engine.evaluate_execution_mode(
+        "install_printer", requested_mode="auto"
+    )
+    assert allowed is True
+    assert mode == "auto"
 
-    # Но администратор может включить аварийный killswitch (DISABLED) или подтвердить CONFIRM
+    # А также подтвердить CONFIRM или включить аварийный killswitch (DISABLED)
     await engine.set_action_policy("install_printer", PolicyMode.CONFIRM, actor="test-admin")
     mode, allowed, _ = await engine.evaluate_execution_mode(
         "install_printer", requested_mode="auto"
@@ -114,19 +118,23 @@ async def test_skills_admin_api():
             action_ids = [a["id"] for a in data]
             assert "install_printer" in action_ids
             assert "grant_wlan" in action_ids
+            assert [a for a in data if a["id"] == "create_user"][0]["auto_eligible"] is True
+            assert [a for a in data if a["id"] == "diagnose_host"][0]["auto_eligible"] is True
 
             # 2. Детали действия
             detail_resp = await client.get("/api/v1/skills/install_printer", headers=HEADERS)
             assert detail_resp.status_code == 200
             assert detail_resp.json()["id"] == "install_printer"
+            assert detail_resp.json()["auto_eligible"] is True
 
-            # 3. На время пилота попытка перевести mutating-действие в AUTO блокируется (409)
+            # 3. Администратор может перевести действие в AUTO
             patch_resp = await client.patch(
                 "/api/v1/skills/install_printer/policy",
                 headers=HEADERS,
                 json={"mode": "auto"},
             )
-            assert patch_resp.status_code == 409
+            assert patch_resp.status_code == 200
+            assert patch_resp.json()["effective_mode"] == "auto"
 
             # 4. Администратор может установить CONFIRM или DISABLED
             patch_resp = await client.patch(
@@ -171,3 +179,49 @@ async def test_command_submit_blocked_by_killswitch():
             # Должен быть заблокирован (HTTP 403 Forbidden)
             assert resp.status_code == 403
             assert "Killswitch" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_skills_policy_origin_validation():
+    """Проверяет корректность фильтрации Origin при мутации политик."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://10.245.19.85:8000"
+    ) as client:
+        # 1. Запрос от легитимного Same-Origin (веб-интерфейс открыт на том же хосте)
+        same_origin_headers = {
+            **HEADERS,
+            "Origin": "http://10.245.19.85:8000",
+            "Host": "10.245.19.85:8000",
+        }
+        resp = await client.patch(
+            "/api/v1/skills/install_printer/policy",
+            headers=same_origin_headers,
+            json={"mode": "confirm"},
+        )
+        assert resp.status_code == 200
+
+        # 2. Запрос от явно доверенного Origin из CORS_ORIGINS
+        cors_headers = {
+            **HEADERS,
+            "Origin": "http://localhost:5173",
+        }
+        resp = await client.patch(
+            "/api/v1/skills/install_printer/policy",
+            headers=cors_headers,
+            json={"mode": "disabled"},
+        )
+        assert resp.status_code == 200
+
+        # 3. Запрос от недоверенного внешнего Origin (блокируется CSRF-защитой)
+        untrusted_headers = {
+            **HEADERS,
+            "Origin": "http://attacker-site.com",
+            "Host": "10.245.19.85:8000",
+        }
+        resp = await client.patch(
+            "/api/v1/skills/install_printer/policy",
+            headers=untrusted_headers,
+            json={"mode": "confirm"},
+        )
+        assert resp.status_code == 403
+        assert "Недоверенный Origin" in resp.json()["detail"]

@@ -24,7 +24,7 @@ def read_secret_file(file_path_env: str) -> str | None:
 class Settings(BaseSettings):
     APP_ENV: str = Field("development", description="development | test | production")
     CORS_ORIGINS: str = Field(
-        "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173",
+        "http://localhost:3000,http://localhost:5173,http://localhost:8000,http://127.0.0.1:3000,http://127.0.0.1:5173,http://127.0.0.1:8000",
         description="Разделённый запятыми список доверенных web origins",
     )
     INTRASERVICE_URL: str = Field(..., description="URL-адрес API IntraService")

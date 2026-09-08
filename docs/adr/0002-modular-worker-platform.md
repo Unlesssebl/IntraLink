@@ -91,10 +91,11 @@
 
 ### 2.4. Защита от "Зомби-воркера" (Cooperative Cancellation) и привязка Approval
 
-- **Привязка Approval к `plan_hash`:** Подтверждение оператора (Human-in-the-Loop) связывается с версией команды (`command_version`), собранными на фазе `preflight` evidence, сроком годности (`expires_at`) и неизменяемым `plan_hash = SHA256(version + params + preflight_evidence)`. При любом изменении параметров или истечении срока approval аннулируется.
+- **Привязка Approval к `plan_hash`:** В режиме Human-in-the-Loop (`CONFIRM`) подтверждение оператора связывается с версией команды (`command_version`), собранными на фазе `preflight` evidence, сроком годности (`expires_at`) и неизменяемым `plan_hash = SHA256(version + params + preflight_evidence)`. При любом изменении параметров или истечении срока approval аннулируется.
+- **Динамический режим AUTO:** Администратор может переводить любые действия в режим `AUTO` через Skills Hub (`PATCH /api/v1/skills/{id}/policy`). В этом режиме команда минует фазу ожидания одобрения (`awaiting_approval`) и направляется сразу в шину исполнения (`status='queued'`), проходя все фазы статической валидации и preflight.
 - **Fail-Closed до первого side effect:** Любая потеря связи с Redis или Core API до начала фазы `execute` немедленно прерывает команду без применения изменений.
 - **Cooperative Cancellation:** Воркер запускает фоновую задачу продления `LeaseRenewer` с относительным TTL (`time.monotonic()` и `lease_ttl_seconds`). При получении `409 Conflict` (lease перехвачен или истек) или потере host lock Renewer активирует `cancellation_token`, локальный подпроцесс PowerShell принудительно прерывается (`process.kill()`), а статус переводится в `needs_review`.
-- **Запрет автоповтора mutating-команд:** Неизвестный исход изменяющего действия всегда фиксируется как `needs_review` и запрещает автоматический retry.
+- **Запрет автоповтора mutating-команд:** Неизвестный исход изменяющего действия всегда фиксируется как `needs_review` и запрещает автоматический retry (`AUTO_RETRY_ELIGIBLE_ACTIONS`).
 
 ### 2.5. Маршрутизация по возможностям и серверный Routing Quarantine
 

@@ -466,12 +466,18 @@ async def process_autonomous_lifecycle(service_auth_b64: str) -> None:
     if not assistant_user_id:
         return
     try:
+        status_ids_str = (
+            f"{settings.STATUS_OPEN_ID},"
+            f"{settings.STATUS_IN_PROGRESS_ID},"
+            f"{settings.STATUS_WAITING_ID}"
+        )
         response = await get_tasks(
             service_auth_b64,
             {
                 "ExecutorId": assistant_user_id,
-                "StatusId": str(settings.STATUS_OPEN_ID),
-                "include": "executorids,status",
+                "StatusIds": status_ids_str,
+                "pagesize": 100,
+                "include": "executorids,status,customfields",
             },
         )
         if isinstance(response, dict):

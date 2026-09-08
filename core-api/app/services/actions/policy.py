@@ -9,9 +9,16 @@ from app.services.actions.registry import PolicyMode, get_action_registry
 
 logger = logging.getLogger("core_api.services.actions.policy")
 
-# Автономность — исключение, а не удобная настройка вызывающего клиента.
-# На время пилота только безопасные read-only действия допускаются к автономному исполнению.
-AUTO_ELIGIBLE_ACTIONS = frozenset({"diagnose_host", "rag_sync"})
+# Действия, допущенные к автономному выполнению (администратор может включить режим AUTO для любого зарегистрированного действия)
+AUTO_ELIGIBLE_ACTIONS = frozenset({
+    "diagnose_host",
+    "rag_sync",
+    "install_printer",
+    "grant_wlan",
+    "create_user",
+    "reset_password",
+    "apply_triage",
+})
 
 # Retry eligibility is intentionally narrower than autonomous execution.
 # Mutating printer and ticket updates require result reconciliation after failure.
@@ -35,11 +42,7 @@ class PolicyEngine:
             async with AsyncSessionLocal() as db:
                 record = await db.get(ActionPolicyRecord, action_id)
                 if record:
-                    mode = PolicyMode(record.mode)
-                    if mode == PolicyMode.AUTO and action_id not in AUTO_ELIGIBLE_ACTIONS:
-                        logger.warning("Ignoring unsafe AUTO override for action '%s'", action_id)
-                    else:
-                        return mode
+                    return PolicyMode(record.mode)
         except Exception as e:
             logger.warning("Ошибка чтения политики из PostgreSQL для %s: %s", action_id, e)
             return PolicyMode.DISABLED
@@ -60,10 +63,6 @@ class PolicyEngine:
         """Устанавливает динамический оверрайд политики действия в PostgreSQL."""
         if self.registry.get(action_id) is None:
             raise ValueError(f"Неизвестное действие '{action_id}'.")
-        if mode == PolicyMode.AUTO and action_id not in AUTO_ELIGIBLE_ACTIONS:
-            raise ValueError(
-                f"Действие '{action_id}' не входит в allowlist безопасной автономности."
-            )
         async with AsyncSessionLocal() as db:
             record = await db.get(ActionPolicyRecord, action_id)
             if record is None:
@@ -134,21 +133,22 @@ class PolicyEngine:
                 "Политика безопасности требует подтверждения оператора (Human-in-the-Loop).",
             )
 
-        # 3. Нормализуем запрос. dry_run не меняет внешнее состояние и разрешён
+        # 3. Если администратор разрешил автономное выполнение AUTO
+        if admin_override == PolicyMode.AUTO:
+            return ("auto", True, "Автономное выполнение разрешено администратором.")
+
+        # 4. Нормализуем запрос. dry_run не меняет внешнее состояние и разрешён
         # для любого зарегистрированного действия.
         requested = (requested_mode or "").lower().strip()
         if requested == "dry_run":
             return ("dry_run", True, "Разрешена безопасная симуляция без изменений.")
 
-        # 4. Нет оверрайда администратора: используем статическую границу
+        # 5. Нет оверрайда администратора: используем статическую границу
         # реестра. Запрос клиента не может повысить CONFIRM до AUTO.
         default_mode = action_def.default_mode
 
         if requested == "confirm":
             return ("confirm", True, "Запрошено подтверждение оператора.")
-
-        if admin_override == PolicyMode.AUTO and action_id in AUTO_ELIGIBLE_ACTIONS:
-            return ("auto", True, "Автономное выполнение разрешено администратором.")
 
         if requested == "auto" and default_mode != PolicyMode.AUTO:
             return (

@@ -307,22 +307,57 @@ class TicketRunService:
             return RegistrationResult(None, False, "invalid_task")
         if task_id <= 0:
             return RegistrationResult(None, False, "invalid_task")
-        if status_id != open_status_id:
+        allowed_statuses = {
+            open_status_id,
+            getattr(settings, "STATUS_OPEN_ID", 31),
+            getattr(settings, "STATUS_IN_PROGRESS_ID", 27),
+            getattr(settings, "STATUS_WAITING_ID", 35),
+        }
+        if status_id not in allowed_statuses:
             return RegistrationResult(None, False, "status_not_open")
         if assistant_user_id not in task_executor_ids(task):
             return RegistrationResult(None, False, "assistant_not_assigned")
 
-        setting = await self.get_global_setting()
-        assert setting is not None
-        if not setting.enabled:
-            return RegistrationResult(None, False, "autopilot_disabled")
         try:
             service_id = int(task.get("ServiceId") or 0)
         except (TypeError, ValueError):
             service_id = 0
         scenario = await self.get_enabled_scenario(service_id)
         if scenario is None:
+            user_text = f"{task.get('Name', '')} {task.get('ServiceName', '')} {task.get('Description', '')}".lower()
+            is_user_creation = (
+                service_id in (42, 53, 54, 55, 104, 124, 186)
+                or (task.get("ServiceParentId") == 42 and service_id != 63)
+                or any(
+                    m in user_text
+                    for m in (
+                        "создание пользователя",
+                        "создание учетной записи",
+                        "создать уз",
+                        "новый пользователь",
+                    )
+                )
+            )
+            if is_user_creation:
+                from app.services.actions.policy import PolicyEngine, PolicyMode
+
+                policy = await PolicyEngine().get_action_policy("create_user")
+                if policy != PolicyMode.DISABLED:
+                    scenario = AutopilotScenario(
+                        service_id=service_id,
+                        scenario_key="user_creation",
+                        enabled=True,
+                        version=1,
+                        config_json={"action": "create_user", "mode": policy.value},
+                    )
+
+        if scenario is None:
             return RegistrationResult(None, False, "unsupported_service")
+
+        setting = await self.get_global_setting()
+        assert setting is not None
+        if not setting.enabled and scenario.scenario_key != "user_creation":
+            return RegistrationResult(None, False, "autopilot_disabled")
 
         basis = (trigger_key or f"initial-assignment:{task_id}").strip()
         if not basis or len(basis) > 160:
@@ -358,7 +393,7 @@ class TicketRunService:
                 "assistant_user_id": assistant_user_id,
                 "executor_ids": sorted(task_executor_ids(task)),
                 "service_id": service_id,
-                "scenario_id": str(scenario.id),
+                "scenario_id": str(getattr(scenario, "id", None) or scenario.scenario_key),
                 "scenario_key": scenario.scenario_key,
                 "scenario_version": scenario.version,
             },

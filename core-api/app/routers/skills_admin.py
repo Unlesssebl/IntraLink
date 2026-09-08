@@ -16,6 +16,7 @@ from app.services.actions import (
     get_action_registry,
     get_policy_engine,
 )
+from app.services.actions.policy import AUTO_ELIGIBLE_ACTIONS
 
 logger = logging.getLogger("core_api.routers.skills_admin")
 
@@ -38,6 +39,7 @@ class ActionItemResponse(BaseModel):
     default_mode: PolicyMode
     effective_mode: PolicyMode
     target_type: str
+    auto_eligible: bool = Field(False, description="Разрешен ли автономный режим Auto")
     parameters_schema: dict[str, Any]
 
 
@@ -60,6 +62,7 @@ async def list_skills(
                 default_mode=a.default_mode,
                 effective_mode=eff_mode,
                 target_type=a.target_type,
+                auto_eligible=a.id in AUTO_ELIGIBLE_ACTIONS,
                 parameters_schema=a.parameters_schema,
             )
         )
@@ -88,6 +91,7 @@ async def get_skill_details(
         default_mode=a.default_mode,
         effective_mode=eff_mode,
         target_type=a.target_type,
+        auto_eligible=a.id in AUTO_ELIGIBLE_ACTIONS,
         parameters_schema=a.parameters_schema,
     )
 

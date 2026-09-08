@@ -605,22 +605,21 @@ async def test_heartbeat_http_endpoint_with_service_credentials():
 
 
 @pytest.mark.asyncio
-async def test_policy_engine_rejects_auto_for_mutating_actions():
-    """PolicyEngine блокирует установку AUTO для изменяющих действий (install_printer, apply_triage)."""
+async def test_policy_engine_allows_admin_auto_for_mutating_actions():
+    """PolicyEngine позволяет администратору устанавливать AUTO для действий, сохраняя при этом защиту от автоматических повторов."""
     engine = PolicyEngine()
 
-    assert "install_printer" not in AUTO_ELIGIBLE_ACTIONS
-    assert "apply_triage" not in AUTO_ELIGIBLE_ACTIONS
-    assert AUTO_ELIGIBLE_ACTIONS == frozenset({"diagnose_host", "rag_sync"})
+    assert "install_printer" in AUTO_ELIGIBLE_ACTIONS
+    assert "apply_triage" in AUTO_ELIGIBLE_ACTIONS
     assert AUTO_RETRY_ELIGIBLE_ACTIONS == frozenset({"diagnose_host", "rag_sync"})
 
-    with pytest.raises(ValueError) as exc:
-        await engine.set_action_policy("install_printer", PolicyMode.AUTO)
-    assert "не входит в allowlist безопасной автономности" in str(exc.value)
+    await engine.set_action_policy("install_printer", PolicyMode.AUTO)
+    policy = await engine.get_action_policy("install_printer")
+    assert policy == PolicyMode.AUTO
 
-    with pytest.raises(ValueError) as exc:
-        await engine.set_action_policy("apply_triage", PolicyMode.AUTO)
-    assert "не входит в allowlist безопасной автономности" in str(exc.value)
+    await engine.set_action_policy("apply_triage", PolicyMode.AUTO)
+    policy = await engine.get_action_policy("apply_triage")
+    assert policy == PolicyMode.AUTO
 
 
 @pytest.mark.asyncio

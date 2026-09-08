@@ -32,11 +32,10 @@
 - **Проблема:** Строка 96 использует `command.action in AUTO_ELIGIBLE_ACTIONS`, что позволяет автоматически перезапускать изменяющие команды при истечении lease.
 - **Решение:** Заменить на `command.action in AUTO_RETRY_ELIGIBLE_ACTIONS`. Если действие не входит в `AUTO_RETRY_ELIGIBLE_ACTIONS`, команда переходит строго в `needs_review` без повторной отправки в Outbox.
 
-### 2.3. Ужесточение политики автономности в `policy.py`
+### 2.3. Политика автономности и защита от неконтролируемых повторов в `policy.py`
 - Файл: `core-api/app/services/actions/policy.py`.
-- Исключить `install_printer` из `AUTO_ELIGIBLE_ACTIONS`.
-- `AUTO_ELIGIBLE_ACTIONS` должен содержать только безопасные read-only действия (`diagnose_host`, `rag_sync`).
-- Все mutating-команды на время пилота переводятся строго в режим `CONFIRM`.
+- **Режим исполнения AUTO:** Администратор системы имеет право переводить любые зарегистрированные действия (`create_user`, `install_printer`, `grant_wlan`, `apply_triage`, `diagnose_host`, `rag_sync`) в автономный режим `AUTO` через Skills Hub (`PATCH /api/v1/skills/{id}/policy`).
+- **Защита от повторов (Safe Retry Boundary):** Механизм автоматических ретраев при истечении lease в Outbox строго ограничен списком `AUTO_RETRY_ELIGIBLE_ACTIONS = frozenset({"diagnose_host", "rag_sync"})`. Мутирующие действия при сбое исполнения или потере связи никогда не перезапускаются автоматически и переводятся строго в `needs_review`.
 
 ### 2.4. Эндпоинт продления lease в `commands_v2.py`
 - Файлы: `core-api/app/routers/commands_v2.py`, `core-api/app/services/command_service.py`.

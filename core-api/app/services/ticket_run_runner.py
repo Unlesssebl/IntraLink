@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from typing import Any
 
@@ -16,6 +17,8 @@ from app.services.decision_journal import DecisionJournalService
 from app.services.lifecycle.intent_analyzer import IntentAnalyzer
 from app.services.template_engine import detect_service_redirect, render_template_strict
 from app.services.ticket_runs import TicketRunService, TicketRunState, task_executor_ids
+
+logger = logging.getLogger("core_api.ticket_run_runner")
 
 
 class TicketRunRunner:
@@ -184,6 +187,25 @@ class TicketRunRunner:
             return run
         if run.state in {TicketRunState.PAUSED.value, TicketRunState.SYSTEM_ERROR.value}:
             return run
+
+        scenario_key = (run.trigger_snapshot_json or {}).get("scenario_key")
+        if scenario_key == "user_creation":
+            if run.state == TicketRunState.WAITING_ANSWER.value:
+                return await self._advance_user_creation_waiting_answer(
+                    run=run,
+                    task=task,
+                    comments=comments or [],
+                    actor=actor,
+                    service_auth_b64=service_auth_b64,
+                )
+            return await self._advance_user_creation(
+                run=run,
+                task=task,
+                comments=comments or [],
+                actor=actor,
+                service_auth_b64=service_auth_b64,
+            )
+
         if run.state == TicketRunState.WAITING_ANSWER.value:
             return await self._advance_waiting_answer(
                 run=run,
@@ -339,6 +361,26 @@ class TicketRunRunner:
             run.pause_reason = (
                 "execution_failed" if command.status == "failed" else "result_needs_review"
             )
+            err_msg = command.error_message or "Command result requires review"
+            if service_auth_b64:
+                from app.services.intraservice import add_task_comment
+
+                hidden_msg = (
+                    f"🤖 [IntraLink AutoOps | System Diagnostic]\n"
+                    f"⚠️ Ошибка выполнения команды: {command.action}\n"
+                    f"• Статус: {command.status}\n"
+                    f"• Детали: {err_msg}\n"
+                    f"• Command ID: {command.id}\n"
+                    f"• Действие: Автономный цикл переведен на паузу для проверки инженером."
+                )
+                try:
+                    await add_task_comment(
+                        service_auth_b64, run.task_id, hidden_msg, is_private=True
+                    )
+                except Exception as c_err:
+                    logger.warning(
+                        "Не удалось отправить скрытый комментарий об ошибке: %s", c_err
+                    )
             return await self._record_step(
                 run,
                 step=step,
@@ -346,7 +388,7 @@ class TicketRunRunner:
                 actor=actor,
                 command=command,
                 error_code=run.pause_reason,
-                error_message=command.error_message or "Command result requires review",
+                error_message=err_msg,
                 event_details={"requires_attention": True},
             )
 
@@ -772,3 +814,328 @@ class TicketRunRunner:
                 service_auth_b64=service_auth_b64,
             )
         return run
+
+    async def _advance_user_creation(
+        self,
+        *,
+        run: TicketRun,
+        task: dict[str, Any],
+        comments: list[dict[str, Any]],
+        actor: str,
+        service_auth_b64: str | None = None,
+    ) -> TicketRun:
+        from app.services.actions.policy import PolicyEngine, PolicyMode
+        from app.services.ai_synthesis import synthesize_clarification_comment
+        from app.services.command_delivery import CommandDeliveryService
+        from app.services.intraservice import add_task_comment, update_task_full
+        from app.services.rules.credentials import ActionProposed, CredentialsRule
+
+        step = run.current_step or "validate_request"
+
+        if step == "validate_request":
+            rule = CredentialsRule()
+            outcome = rule.evaluate_typed(task)
+
+            # 1. Если реквизиты не полные / не валидные (например, "test")
+            if not isinstance(outcome, ActionProposed):
+                if run.clarification_count >= 2:
+                    run.pause_reason = "max_clarifications_exceeded"
+                    if service_auth_b64:
+                        hidden_msg = (
+                            "🤖 [IntraLink AutoOps | System Diagnostic]\n"
+                            "⚠️ Превышен лимит попыток уточнения реквизитов (2).\n"
+                            "• Действие: Автономный цикл приостановлен для ручной проверки инженером."
+                        )
+                        await add_task_comment(
+                            service_auth_b64, run.task_id, hidden_msg, is_private=True
+                        )
+                    return await self._record_step(
+                        run,
+                        step="validate_request",
+                        state=TicketRunState.PAUSED.value,
+                        actor=actor,
+                        error_code="max_clarifications_exceeded",
+                        error_message="Превышен лимит попыток уточнения реквизитов для создания УЗ",
+                        event_details={"requires_attention": True},
+                    )
+
+                run.clarification_count += 1
+                missing = getattr(outcome, "missing_fields", None) or []
+                invalid = getattr(outcome, "invalid_fields", None) or []
+                clarification_text = await synthesize_clarification_comment(
+                    task=task,
+                    missing_fields=missing,
+                    invalid_fields=invalid,
+                )
+
+                if service_auth_b64:
+                    await update_task_full(
+                        auth_b64=service_auth_b64,
+                        task_id=run.task_id,
+                        status_id=settings.STATUS_WAITING_ID,
+                        comment=clarification_text,
+                        is_private=False,
+                    )
+
+                run.waiting_reason = "missing_person_details"
+                run.waiting_until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=72)
+                return await self._record_step(
+                    run,
+                    step="validate_request",
+                    state=TicketRunState.WAITING_ANSWER.value,
+                    actor=actor,
+                    event_details={
+                        "clarification_text": clarification_text,
+                        "attempt": run.clarification_count,
+                    },
+                )
+
+            # 2. Реквизиты валидны (Happy Path)
+            policy = await PolicyEngine().get_action_policy("create_user")
+            if policy == PolicyMode.DISABLED:
+                run.pause_reason = "policy_disabled"
+                if service_auth_b64:
+                    hidden_msg = (
+                        "🤖 [IntraLink AutoOps | System Diagnostic]\n"
+                        "⚠️ Действие create_user отключено в Skills Hub политикой безопасности."
+                    )
+                    await add_task_comment(
+                        service_auth_b64, run.task_id, hidden_msg, is_private=True
+                    )
+                return await self._record_step(
+                    run,
+                    step="validate_request",
+                    state=TicketRunState.PAUSED.value,
+                    actor=actor,
+                    error_code="policy_disabled",
+                    error_message="Действие create_user отключено политикой безопасности",
+                    event_details={"requires_attention": True},
+                )
+
+            # Создаем команду create_user
+            params = outcome.parameters.model_dump()
+            params["task_id"] = run.task_id
+            command = await self._create_command(
+                run,
+                step="execute_create_user",
+                action="create_user",
+                target={"task_id": run.task_id},
+                parameters=params,
+                actor=actor,
+            )
+
+            # Если политика CONFIRM -> ждем подтверждения оператора
+            if policy == PolicyMode.CONFIRM or command.status == "awaiting_approval":
+                run.waiting_reason = "operator_approval_required"
+                return await self._record_step(
+                    run,
+                    step="execute_create_user",
+                    state=TicketRunState.WAITING_APPROVAL.value,
+                    actor=actor,
+                    command=command,
+                )
+
+            return run
+
+        # Шаг execute_create_user: отслеживаем статус команды
+        command = await self._command(run, step)
+        if command is None:
+            return await self._record_step(
+                run,
+                step=step,
+                state=TicketRunState.SYSTEM_ERROR.value,
+                actor=actor,
+                error_code="command_missing",
+                error_message=f"Linked command for step '{step}' is missing",
+            )
+
+        if command.status in {"queued", "running"}:
+            return run
+
+        if command.status == "awaiting_approval":
+            if run.state != TicketRunState.WAITING_APPROVAL.value:
+                await self._record_step(
+                    run,
+                    step=step,
+                    state=TicketRunState.WAITING_APPROVAL.value,
+                    actor=actor,
+                    command=command,
+                )
+            return run
+
+        if command.status in {"rejected", "cancelled"}:
+            run.pause_reason = (
+                "approval_rejected" if command.status == "rejected" else "command_cancelled"
+            )
+            return await self._record_step(
+                run,
+                step=step,
+                state=TicketRunState.PAUSED.value,
+                actor=actor,
+                command=command,
+            )
+
+        if command.status in {"failed", "needs_review"}:
+            run.pause_reason = (
+                "execution_failed" if command.status == "failed" else "result_needs_review"
+            )
+            err_msg = command.error_message or "Ошибка исполнения команды create_user"
+            if service_auth_b64:
+                hidden_msg = (
+                    f"🤖 [IntraLink AutoOps | System Diagnostic]\n"
+                    f"⚠️ Ошибка выполнения команды create_user: {err_msg}\n"
+                    f"• Command ID: {command.id}\n"
+                    f"• Действие: Автономный цикл переведен на паузу для проверки инженером."
+                )
+                await add_task_comment(
+                    service_auth_b64, run.task_id, hidden_msg, is_private=True
+                )
+            return await self._record_step(
+                run,
+                step=step,
+                state=TicketRunState.PAUSED.value,
+                actor=actor,
+                command=command,
+                error_code=run.pause_reason,
+                error_message=err_msg,
+                event_details={"requires_attention": True},
+            )
+
+        if command.status == "succeeded":
+            try:
+                await CommandDeliveryService(self.db).deliver_create_user(
+                    command.id,
+                    actor=actor,
+                    service_auth_b64=service_auth_b64,
+                )
+                run.state = TicketRunState.COMPLETED.value
+                run.completed_at = dt.datetime.now(dt.timezone.utc)
+                await self._record_step(
+                    run,
+                    step=step,
+                    state=TicketRunState.COMPLETED.value,
+                    actor=actor,
+                    command=command,
+                )
+            except Exception as e:
+                logger.exception("Ошибка доставки результатов create_user: %s", e)
+                if service_auth_b64:
+                    hidden_msg = (
+                        f"🤖 [IntraLink AutoOps | System Diagnostic]\n"
+                        f"⚠️ Ошибка доставки результатов создания УЗ в IntraService: {e}\n"
+                        f"• Command ID: {command.id}"
+                    )
+                    await add_task_comment(
+                        service_auth_b64, run.task_id, hidden_msg, is_private=True
+                    )
+                run.pause_reason = "delivery_failed"
+                await self._record_step(
+                    run,
+                    step=step,
+                    state=TicketRunState.PAUSED.value,
+                    actor=actor,
+                    command=command,
+                    error_code="delivery_failed",
+                    error_message=str(e),
+                )
+            return run
+
+        return run
+
+    async def _advance_user_creation_waiting_answer(
+        self,
+        *,
+        run: TicketRun,
+        task: dict[str, Any],
+        comments: list[dict[str, Any]],
+        actor: str,
+        service_auth_b64: str | None = None,
+    ) -> TicketRun:
+        from app.services.vault import get_service_account_user_id
+
+        service_user_id = await get_service_account_user_id(self.db)
+        assistant_id = str(service_user_id) if service_user_id is not None else None
+
+        eligible: list[dict[str, Any]] = []
+        for comment in comments:
+            raw_editor = comment.get("EditorId") or comment.get("UserId")
+            editor = str(raw_editor) if raw_editor is not None else None
+            if editor == assistant_id:
+                continue
+            raw_created = comment.get("Created") or comment.get("Date")
+            try:
+                created = dt.datetime.fromisoformat(str(raw_created).replace("Z", "+00:00"))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=dt.timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            waiting_started = (
+                run.waiting_until - dt.timedelta(hours=72)
+                if run.waiting_until
+                else run.updated_at
+            )
+            if waiting_started and waiting_started.tzinfo is None:
+                waiting_started = waiting_started.replace(tzinfo=dt.timezone.utc)
+            if waiting_started and created <= waiting_started:
+                continue
+            eligible.append(comment)
+
+        if eligible:
+            incoming_texts = [
+                str(c.get("Comment") or c.get("Comments") or "").strip()
+                for c in eligible
+                if str(c.get("Comment") or c.get("Comments") or "").strip()
+            ]
+            combined_desc = f"{task.get('Description', '')}\n" + "\n".join(incoming_texts)
+            enriched_task = dict(task)
+            enriched_task["Description"] = combined_desc
+
+            run.waiting_reason = None
+            run.waiting_until = None
+            run.state = TicketRunState.RUNNING.value
+            run.current_step = "validate_request"
+            await self._record_step(
+                run,
+                step="validate_request",
+                state=TicketRunState.RUNNING.value,
+                actor=actor,
+                event_details={"received_clarification": True},
+            )
+            return await self._advance_user_creation(
+                run=run,
+                task=enriched_task,
+                comments=comments,
+                actor=actor,
+                service_auth_b64=service_auth_b64,
+            )
+
+        if run.waiting_until:
+            now = dt.datetime.now(dt.timezone.utc)
+            waiting_until = run.waiting_until
+            if waiting_until.tzinfo is None:
+                waiting_until = waiting_until.replace(tzinfo=dt.timezone.utc)
+            if now >= waiting_until:
+                run.pause_reason = "clarification_timeout"
+                if service_auth_b64:
+                    hidden_msg = (
+                        "🤖 [IntraLink AutoOps | System Diagnostic]\n"
+                        "⚠️ Истекло время ожидания ответа заявителя (72ч).\n"
+                        "• Действие: Цикл переведен на паузу для проверки инженером."
+                    )
+                    from app.services.intraservice import add_task_comment
+
+                    await add_task_comment(
+                        service_auth_b64, run.task_id, hidden_msg, is_private=True
+                    )
+                return await self._record_step(
+                    run,
+                    step="wait_for_answer",
+                    state=TicketRunState.PAUSED.value,
+                    actor=actor,
+                    error_code="clarification_timeout",
+                    error_message="Истекло время ожидания ответа заявителя",
+                    event_details={"requires_attention": True},
+                )
+
+        return run
+

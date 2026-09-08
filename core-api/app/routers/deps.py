@@ -1,4 +1,6 @@
+import logging
 import secrets
+from urllib.parse import urlsplit
 import jwt
 
 from fastapi import Cookie, Depends, Header, HTTPException, Query, Request, status
@@ -15,6 +17,8 @@ from app.services.identity import (
     record_security_event,
     require_context_permission,
 )
+
+logger = logging.getLogger("core_api.routers.deps")
 
 
 def _decode_session_claims(token: str) -> dict:
@@ -71,21 +75,55 @@ async def get_user_by_tg_id(
 
 
 async def verify_trusted_origin(
+    request: Request,
     origin: str | None = Header(None, alias="Origin"),
 ) -> None:
-    """Reject cross-site browser mutations while allowing non-browser service calls."""
+    """Reject cross-site browser mutations while allowing non-browser service calls and same-origin browser requests."""
     if not origin:
         return
+
+    origin_clean = origin.strip().rstrip("/")
+
+    # 1. Проверяем explicit allowlist CORS_ORIGINS
     allowed = {
         value.strip().rstrip("/")
         for value in settings.CORS_ORIGINS.split(",")
         if value.strip()
     }
-    if origin.rstrip("/") not in allowed:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Недоверенный Origin для изменяющего запроса.",
-        )
+    if "*" in allowed or origin_clean in allowed:
+        return
+
+    # 2. Проверяем Same-Origin (браузер обращается к интерфейсу на том же хосте)
+    host_header = (request.headers.get("host") or "").strip()
+    if host_header:
+        proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
+        same_origin = f"{proto}://{host_header}".rstrip("/")
+        if origin_clean.lower() == same_origin.lower():
+            return
+
+        # Сверка netloc (хост:порт) на случай расхождения схем/reverse proxy
+        try:
+            origin_netloc = urlsplit(origin_clean).netloc.lower()
+            if origin_netloc and origin_netloc == host_header.lower():
+                return
+        except Exception:
+            pass
+
+    # Сравнение с base_url
+    base_url_origin = str(request.base_url).rstrip("/")
+    if origin_clean.lower() == base_url_origin.lower():
+        return
+
+    logger.warning(
+        "verify_trusted_origin: отклонен запрос с недоверенным Origin '%s' (Host: '%s', CORS_ORIGINS: %s)",
+        origin,
+        host_header,
+        allowed,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Недоверенный Origin для изменяющего запроса.",
+    )
 
 
 async def authenticate_request(

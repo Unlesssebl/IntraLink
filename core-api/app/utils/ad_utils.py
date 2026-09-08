@@ -81,7 +81,6 @@ def generate_sam_account_name(
     clean = re.sub(r"[^a-z0-9.]", "", base.lower())
     return clean[:20]
 
-
 def extract_user_creation_details_from_task(
     task: dict[str, Any],
 ) -> dict[str, Any]:
@@ -101,17 +100,42 @@ def extract_user_creation_details_from_task(
     pc_name = (raw_fields.get("1068") or raw_fields.get("1120") or "").strip()
     company = raw_fields.get("1074", "").strip()
     # Fallback из текста описания
+    desc = f"{task.get('Name', '')} {task.get('Description', '')}"
     if not surname or not name:
-        desc = f"{task.get('Name', '')} {task.get('Description', '')}"
         m_fio = re.search(
-            r"(?:фио|сотрудник|пользователь|создать)[:\s]+([А-ЯЁ][а-яё]+)\s+([А-ЯЁ][а-яё]+)(?:\s+([А-ЯЁ][а-яё]+))?",
+            r"(?:фио|сотрудник|пользователь|работник|ф\.и\.о\.)[:\s]+([А-ЯЁ][а-яё]+)\s+([А-ЯЁ][а-яё]+)(?:\s+([А-ЯЁ][а-яё]+))?",
             desc,
             re.IGNORECASE,
         )
         if m_fio:
-            surname = surname or m_fio.group(1)
-            name = name or m_fio.group(2)
-            patronymic = patronymic or (m_fio.group(3) or "")
+            cand_surname = m_fio.group(1)
+            cand_name = m_fio.group(2)
+            cand_patr = m_fio.group(3) or ""
+            stop_words = {"учетную", "учетная", "запись", "нового", "пользователя", "пользователь", "доступа", "почту"}
+            if cand_surname.lower() not in stop_words and cand_name.lower() not in stop_words:
+                surname = surname or cand_surname
+                name = name or cand_name
+                patronymic = patronymic or cand_patr
+
+    if not title:
+        m_title = re.search(r"(?:должность|позиция)[:\s]+([^\n\r,;]+)", desc, re.IGNORECASE)
+        if m_title:
+            title = m_title.group(1).strip()
+
+    if not department:
+        m_dept = re.search(r"(?:подразделение|отдел|департамент)[:\s]+([^\n\r,;]+)", desc, re.IGNORECASE)
+        if m_dept:
+            department = m_dept.group(1).strip()
+
+    if not company:
+        m_comp = re.search(r"(?:организация|компания|юридическое лицо)[:\s]+([^\n\r,;]+)", desc, re.IGNORECASE)
+        if m_comp:
+            company = m_comp.group(1).strip()
+
+    if not phone:
+        m_phone = re.search(r"(?:телефон|тел|внутренний тел)[:\s]+([+\d\s()-]{3,20})", desc, re.IGNORECASE)
+        if m_phone:
+            phone = m_phone.group(1).strip()
 
     return {
         "surname": surname,

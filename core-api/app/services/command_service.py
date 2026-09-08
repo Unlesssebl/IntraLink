@@ -145,17 +145,18 @@ class CommandService:
         override = await self.db.get(ActionPolicyRecord, action)
         if override:
             try:
-                mode = PolicyMode(override.mode)
+                return PolicyMode(override.mode)
             except ValueError:
                 return PolicyMode.DISABLED
-            if mode == PolicyMode.AUTO and action not in AUTO_ELIGIBLE_ACTIONS:
-                return PolicyMode.CONFIRM
-            return mode
         action_def = self.registry.get(action)
         return action_def.default_mode if action_def else PolicyMode.DISABLED
 
     async def _assert_ticket_run_allows_execution(
-        self, ticket_run_id: uuid.UUID | None, *, task_id: int | None = None
+        self,
+        ticket_run_id: uuid.UUID | None,
+        *,
+        task_id: int | None = None,
+        action: str | None = None,
     ) -> TicketRun | None:
         if ticket_run_id is None:
             if task_id is not None:
@@ -180,8 +181,14 @@ class CommandService:
             raise HTTPException(status.HTTP_409_CONFLICT, "Command task does not match ticket run")
         if run.mode == "autopilot":
             setting = await self.db.get(AutopilotSetting, "global")
-            if setting is None or not setting.enabled:
-                raise HTTPException(status.HTTP_409_CONFLICT, "Autopilot is disabled")
+            is_enabled = setting is not None and setting.enabled
+            if not is_enabled:
+                if action:
+                    mode = await self._policy_mode(action)
+                    if mode == PolicyMode.DISABLED:
+                        raise HTTPException(status.HTTP_409_CONFLICT, "Autopilot is disabled")
+                else:
+                    raise HTTPException(status.HTTP_409_CONFLICT, "Autopilot is disabled")
         running_command = await self.db.scalar(
             select(CommandRecord.id)
             .where(
@@ -242,7 +249,9 @@ class CommandService:
             task_id = int(task_id_raw) if task_id_raw is not None else None
         except (TypeError, ValueError):
             task_id = None
-        await self._assert_ticket_run_allows_execution(ticket_run_id, task_id=task_id)
+        await self._assert_ticket_run_allows_execution(
+            ticket_run_id, task_id=task_id, action=action
+        )
         if decision_id is None and source == "web" and task_id is not None:
             from app.services.decision_journal import DecisionJournalService
 
@@ -1012,11 +1021,6 @@ class CommandService:
             policy_mode = PolicyMode(mode)
         except ValueError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid policy mode") from exc
-        if policy_mode == PolicyMode.AUTO and action not in AUTO_ELIGIBLE_ACTIONS:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
-                "Only statically safe actions can run automatically",
-            )
         record = await self.db.get(ActionPolicyRecord, action)
         if record is None:
             record = ActionPolicyRecord(action=action, mode=policy_mode.value, updated_by=actor)

@@ -473,15 +473,17 @@ async def download_attachment_file(
         return None
 
 
-async def add_task_comment(auth_b64: str, task_id: int, comment: str) -> bool:
+async def add_task_comment(
+    auth_b64: str, task_id: int, comment: str, is_private: bool = False
+) -> bool:
     """
-    Добавляет комментарий к задаче в IntraService.
+    Добавляет комментарий к задаче в IntraService (публичный или скрытый для инженеров).
     """
     res = await _make_request(
         endpoint=f"task/{task_id}",
         method="PUT",
         auth_b64=auth_b64,
-        json_data={"Id": task_id, "Comment": comment, "IsPrivateComment": False},
+        json_data={"Id": task_id, "Comment": comment, "IsPrivateComment": is_private},
     )
     return res is not None
 
