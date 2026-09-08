@@ -54,6 +54,12 @@ from app.services.decision_journal import (
     ticket_snapshot_fingerprint,
 )
 
+from app.services.host_telemetry import (  # noqa: F401
+    get_task_telemetry,
+    prefetch_task_telemetry,
+)
+from app.services.ai_synthesis import synthesize_triage_resolution  # noqa: F401
+
 logger = logging.getLogger("core_api.routers.triage")
 
 router = APIRouter(
@@ -64,11 +70,6 @@ router = APIRouter(
 
 # Экспорт для обратной совместимости с тестами
 get_skipped_task_ids = TriageSessionManager.get_skipped_task_ids
-from app.services.host_telemetry import (  # noqa: F401
-    get_task_telemetry,
-    prefetch_task_telemetry,
-)
-from app.services.ai_synthesis import synthesize_triage_resolution  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -1035,35 +1036,6 @@ async def rag_sync_endpoint(
         limit=payload.limit,
     )
 
-
-@router.post(
-    "/cache/purge",
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(require_permission("triage:mutate"))],
-)
-async def purge_triage_cache_endpoint(
-    operator: str = Depends(principal_subject),
-):
-    """Глобальный сброс кэша вердиктов и резолюций AI/RuleEngine в Redis."""
-    redis = get_redis_client()
-    try:
-        keys = await redis.keys("ai:resolution:*")
-        deleted_count = 0
-        if keys:
-            deleted_count = await redis.delete(*keys)
-        TriageService._catalog_cache = {}
-        TriageService._catalog_cache_ts = 0.0
-        return {
-            "status": "ok",
-            "deleted_verdicts": deleted_count,
-            "message": "Кэш вердиктов и каталога успешно сброшен",
-        }
-    except Exception as e:
-        logger.exception("Ошибка при очистке кэша вердиктов: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка сброса кэша: {e}",
-        )
 
 
 @router.get("/feedback-review", status_code=status.HTTP_200_OK)

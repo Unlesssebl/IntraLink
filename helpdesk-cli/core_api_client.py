@@ -107,6 +107,32 @@ class CoreApiClient:
                 return await resp.json()
             return None
 
+    async def analyze_task(self, task_id: int) -> dict[str, Any] | None:
+        """Запускает первичный анализ задачи через POST /api/v1/triage/tasks/{task_id}/analyze."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v1/triage/tasks/{task_id}/analyze"
+        async with session.post(url) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            err_text = await resp.text()
+            logger.error(
+                "Ошибка analyze_task #%d (HTTP %d): %s", task_id, resp.status, err_text
+            )
+            return None
+
+    async def reanalyze_task(self, task_id: int) -> dict[str, Any] | None:
+        """Запускает принудительный повторный анализ задачи через POST /api/v1/triage/tasks/{task_id}/reanalyze."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v1/triage/tasks/{task_id}/reanalyze"
+        async with session.post(url) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            err_text = await resp.text()
+            logger.error(
+                "Ошибка reanalyze_task #%d (HTTP %d): %s", task_id, resp.status, err_text
+            )
+            return None
+
     async def get_task_history(self, task_id: int) -> list[dict[str, Any]]:
         """Получает историю изменений (lifetime) задачи."""
         card = await self.get_task_card(task_id)
@@ -120,11 +146,13 @@ class CoreApiClient:
         expenses: int = 0,
         executor_ids: str = "8664,10502",
         dry_run: bool = False,
+        decision_id: str | None = None,
+        decision_version: int | None = None,
     ) -> bool:
         """Атомарно применяет решение к списку задач через Core API."""
         session = await self._get_session()
         url = f"{self.base_url}/api/v1/triage/apply"
-        payload = {
+        payload: dict[str, Any] = {
             "task_ids": task_ids,
             "status_id": status_id,
             "comment": comment,
@@ -132,6 +160,11 @@ class CoreApiClient:
             "executor_ids": executor_ids,
             "dry_run": dry_run,
         }
+        if decision_id:
+            payload["decision_id"] = decision_id
+        if decision_version is not None:
+            payload["decision_version"] = decision_version
+
         async with session.post(url, json=payload) as resp:
             if resp.status == 200:
                 data = await resp.json()

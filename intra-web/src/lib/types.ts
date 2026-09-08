@@ -169,6 +169,7 @@ export interface AnalysisState {
   disposition: 'available' | 'applied';
   decision_id?: string | null;
   decision_version?: number | null;
+  analysis_revision?: string | null;
   scenario_key?: string | null;
   analyzed_at?: string | null;
   stale_reason?: string | null;

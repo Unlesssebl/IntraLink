@@ -22,6 +22,14 @@ def register_parser(subparsers: Any) -> None:
     )
     p_t.add_argument("task_id", type=int, help="ID заявки")
     p_t.add_argument("--json", action="store_true", help="Вывод в JSON")
+    p_t.add_argument(
+        "--analyze", action="store_true", help="Выполнить первичный анализ заявки"
+    )
+    p_t.add_argument(
+        "--reanalyze",
+        action="store_true",
+        help="Выполнить принудительный повторный анализ",
+    )
 
     # apply
     p_a = subparsers.add_parser(
@@ -78,7 +86,15 @@ def register_parser(subparsers: Any) -> None:
 async def handle_task(args: Any) -> None:
     client = CoreApiClient()
     try:
-        card = await client.get_task_card(args.task_id)
+        if getattr(args, "reanalyze", False):
+            print(f"🔄 Запуск принудительного повторного анализа для #{args.task_id}...")
+            card = await client.reanalyze_task(args.task_id)
+        elif getattr(args, "analyze", False):
+            print(f"⚡ Запуск анализа для #{args.task_id}...")
+            card = await client.analyze_task(args.task_id)
+        else:
+            card = await client.get_task_card(args.task_id)
+
         if not card or not card.get("task"):
             print(f"❌ Заявка #{args.task_id} не найдена в IntraService.", file=sys.stderr)
             sys.exit(1)
@@ -88,8 +104,14 @@ async def handle_task(args: Any) -> None:
             return
 
         task = card["task"]
-        history = card.get("history", [])
         kb_matches = card.get("kb_matches", [])
+        analysis = card.get("analysis") or {}
+        has_result = analysis.get("has_result", False)
+        ai_state = analysis.get("state", "not_analyzed")
+        freshness = analysis.get("freshness", "current")
+        stale_reason = analysis.get("stale_reason")
+        disposition = analysis.get("disposition", "available")
+
         action = card.get("suggested_action") or {}
         envelope = card.get("decision_envelope") or action.get("_decision_envelope") or {}
         outcome = envelope.get("outcome") or {}
@@ -104,9 +126,9 @@ async def handle_task(args: Any) -> None:
         meta = task.get("_field_meta") or {}
         created = (task.get("Created") or "")[:16].replace("T", " ")
 
-        print(f"\n=======================================================")
+        print("\n=======================================================")
         print(f"КАРТОЧКА ЗАЯВКИ [#{args.task_id}](https://servicedesk.corporate.loc/Task/View/{args.task_id}) | {conf_str}")
-        print(f"=======================================================")
+        print("=======================================================")
         print(f"Тема:        {task.get('Name')}")
         print(f"Раздел:      {task.get('ServiceName')} (ID: {task.get('ServiceId')})")
         print(f"Статус:      {task.get('StatusName')} (ID: {task.get('StatusId')})")
@@ -123,21 +145,39 @@ async def handle_task(args: Any) -> None:
                 print(f"  [Кейс #{m['task_id']} | Сходство: {m['similarity_pct']}%] {m['name']}")
                 print(f"  Решение: {m['solution'][:100]}...\n")
 
-        print(f"Рекомендованное действие:")
-        if scenario_key:
-            print(f"  Сценарий:       {scenario_key} (v{envelope.get('scenario_version', 1)})")
-        print(f"  Исход (Kind):   {outcome.get('kind', action.get('rule_type', 'standard'))}")
-        print(f"  Шаблон:         {outcome.get('template_key') or action.get('name') or '—'}")
-        print(f"  Целевой статус: {outcome.get('target_status_id') or action.get('status_id')} ({outcome.get('expenses_minutes') or action.get('expenses', 10)} мин)")
-        if facts:
-            fact_items = [f"{k}={v.get('value')}" for k, v in facts.items() if isinstance(v, dict) and v.get("value")]
-            if fact_items:
-                print(f"  Факты (FactBag):{', '.join(fact_items)}")
-        if blocked:
-            print(f"  Блокировки:     {', '.join(blocked)}")
-        comment = envelope.get("response_draft") or action.get("comment")
-        if comment:
-            print(f"  Комментарий:\n    {comment}\n")
+        if not has_result:
+            print("Рекомендованное действие:")
+            print("  [AI-СТАТУС: НЕ ПРОАНАЛИЗИРОВАНО]")
+            print(f"  💡 Для запуска анализа выполните: helpdesk task {args.task_id} --analyze\n")
+        else:
+            ai_badge = f"[AI: {ai_state.upper()}"
+            if disposition == "applied":
+                ai_badge += " | РЕШЕНИЕ ПРИМЕНЕНО"
+            elif freshness == "stale":
+                ai_badge += f" | УСТАРЕЛО ({stale_reason or 'требуется пересчёт'})"
+            elif freshness == "unknown":
+                ai_badge += " | АКТУАЛЬНОСТЬ НЕ ПРОВЕРЕНА"
+            else:
+                ai_badge += " | ГОТОВО"
+            ai_badge += "]"
+
+            print(f"Рекомендованное действие {ai_badge}:")
+            if scenario_key:
+                print(f"  Сценарий:       {scenario_key} (v{envelope.get('scenario_version', 1)})")
+            print(f"  Исход (Kind):   {outcome.get('kind', action.get('rule_type', 'standard'))}")
+            print(f"  Шаблон:         {outcome.get('template_key') or action.get('name') or '—'}")
+            print(f"  Целевой статус: {outcome.get('target_status_id') or action.get('status_id')} ({outcome.get('expenses_minutes') or action.get('expenses', 10)} мин)")
+            if facts:
+                fact_items = [f"{k}={v.get('value')}" for k, v in facts.items() if isinstance(v, dict) and v.get("value")]
+                if fact_items:
+                    print(f"  Факты (FactBag):{', '.join(fact_items)}")
+            if blocked:
+                print(f"  Блокировки:     {', '.join(blocked)}")
+            comment = envelope.get("response_draft") or action.get("comment")
+            if comment:
+                print(f"  Комментарий:\n    {comment}\n")
+            if freshness == "stale":
+                print(f"  💡 Решение устарело. Для повторного анализа выполните: helpdesk task {args.task_id} --reanalyze\n")
     finally:
         await client.close()
 
@@ -214,6 +254,14 @@ async def handle_apply(args: Any) -> None:
                     continue
 
             # Обычные заявки (смена статуса, комментарий, списание)
+            dec_id = None
+            dec_ver = None
+            card = await client.get_task_card(task_id)
+            if card:
+                analysis = card.get("analysis") or {}
+                dec_id = analysis.get("decision_id")
+                dec_ver = analysis.get("decision_version")
+
             ok = await client.apply_decision(
                 task_ids=[task_id],
                 status_id=status_id,
@@ -221,13 +269,15 @@ async def handle_apply(args: Any) -> None:
                 expenses=expenses,
                 executor_ids=executor_ids,
                 dry_run=dry_run,
+                decision_id=dec_id,
+                decision_version=dec_ver,
             )
             if ok:
                 print(f"[OK] Заявка #{task_id}: решение успешно применено через Core API.")
             else:
                 print(f"[ERROR] Ошибка применения решения для #{task_id}.", file=sys.stderr)
 
-        print(f"[DONE] Обработка пачки завершена.")
+        print("[DONE] Обработка пачки завершена.")
     finally:
         await client.close()
 
