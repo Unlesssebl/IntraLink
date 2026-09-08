@@ -17,6 +17,35 @@ import type {
 } from './types';
 import { ensureManualTicketRun } from './ticketRuns';
 
+export function safeRandomUUID(): string {
+  if (typeof crypto !== 'undefined') {
+    if (typeof crypto.randomUUID === 'function') {
+      try {
+        return crypto.randomUUID();
+      } catch {
+        // Fall through
+      }
+    }
+    if (typeof crypto.getRandomValues === 'function') {
+      try {
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+      } catch {
+        // Fall through
+      }
+    }
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export function mapStatusIdToStatus(statusId: number, statusName?: string): Status {
   if (statusId === 1 || statusId === 31 || (statusName && /новая|открыта/i.test(statusName))) return 'new';
   if (statusId === 4 || statusId === 5 || statusId === 28 || statusId === 29 || statusId === 30 || (statusName && /выполнен|решен|закрыт|отменен/i.test(statusName))) return 'resolved';
@@ -485,7 +514,7 @@ export async function applyTask(taskId: number, payload: SingleApplyPayload): Pr
   const ticketRunId = payload.ticket_run_id || (await ensureManualTicketRun(taskId)).id;
   const command = await apiFetch<any>('/api/v2/commands', {
     method: 'POST',
-    headers: { 'Idempotency-Key': crypto.randomUUID() },
+    headers: { 'Idempotency-Key': safeRandomUUID() },
     body: JSON.stringify({
       action: 'apply_triage',
       target: { task_id: taskId },
@@ -574,7 +603,7 @@ export async function enqueueExecution(payload: {
 }): Promise<{ status: string; job_id: string; action: string; task_id?: number }> {
   const result = await apiFetch<any>('/api/v2/commands', {
     method: 'POST',
-    headers: { 'Idempotency-Key': crypto.randomUUID() },
+    headers: { 'Idempotency-Key': safeRandomUUID() },
     body: JSON.stringify({
       action: payload.action,
       target: { task_id: payload.task_id },
@@ -602,7 +631,7 @@ export async function submitCommand(payload: {
 }): Promise<{ status: string; job_id: string; command_type: string; task_id?: number }> {
   const result = await apiFetch<any>('/api/v2/commands', {
     method: 'POST',
-    headers: { 'Idempotency-Key': payload.idempotency_key || crypto.randomUUID() },
+    headers: { 'Idempotency-Key': payload.idempotency_key || safeRandomUUID() },
     body: JSON.stringify({
       action: payload.type,
       target: payload.target || {},

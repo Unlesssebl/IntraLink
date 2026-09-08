@@ -28,6 +28,7 @@ AI-агент мгновенно распознает как слэш-коман
 | `/duplicates` `[N]`<br>`/dedup` `[N]` | `найди дубликаты`, `почисти дубли`, `проверь дубли заявок` | Поиск и пакетная отмена заявок-дубликатов с линковкой на основную задачу (Master ticket) |
 | `/newuser <ID>` | `создай пользователя <ID>`, `создай уз <ID>` | Автоматическое создание учетной записи в Active Directory с генерацией пароля и закрытием заявки (Статус 29: **Выполнена**) |
 | `/wlan <ID>` | `выдай wifi <ID>`, `вайфай <ID>` | Автоматическая выдача Wi-Fi доступа в AD (WLAN-WORKNET) и закрытие заявки |
+| `/printer <ID>` | `установи принтер <ID>`, `настрой печать <ID>` | Автоматическая установка принтера/МФУ через Windows Execution Worker и закрытие заявки (Статус 29: **Выполнена**) |
 | `/services` | `каталог сервисов`, `номера разделов` | Список корневых разделов каталога услуг с номерами (`01`..`16`) для фильтрации |
 | `/task <ID>` | `детали <ID>`, `покажи карточку <ID>` | Детальный просмотр задачи с кастомными полями, историей, контекстом переписки и RAG |
 | `/diag <ХОСТ/IP>` | `проверь <ХОСТ>`, `пинг <IP>` | Сетевая диагностика (ICMP Ping, DNS, SMB:445, WinRM:5985) |
@@ -63,6 +64,10 @@ uv run python helpdesk-cli/helpdesk.py batch --service 04 --limit 5 --redirect
 uv run python helpdesk-cli/helpdesk.py create-user <ID_ЗАЯВКИ>
 uv run python helpdesk-cli/helpdesk.py create-user <ID_ЗАЯВКИ> --dry-run
 uv run python helpdesk-cli/helpdesk.py wlan <ID_ЗАЯВКИ>
+
+# 1.3. АВТОМАТИЧЕСКАЯ УСТАНОВКА И НАСТРОЙКА ПРИНТЕРОВ
+uv run python helpdesk-cli/helpdesk.py printer <ID_ЗАЯВКИ> --approve
+uv run python helpdesk-cli/helpdesk.py printer <ID_ЗАЯВКИ> --pc WS-105 --printer "Kyocera ECOSYS M2040dn" --ip 10.244.12.45 --approve
 
 # Список доступных номеров разделов каталога:
 uv run python helpdesk-cli/helpdesk.py services

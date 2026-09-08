@@ -44,7 +44,14 @@ async def get_admin_ui():
     try:
         with HTML_PATH.open(encoding="utf-8") as f:
             html_content = f.read()
-        return HTMLResponse(content=html_content)
+        return HTMLResponse(
+            content=html_content,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
     except Exception as e:
         logger.exception("Ошибка при чтении файла шаблона админ-панели: %s", e)
         raise HTTPException(

@@ -8,6 +8,7 @@ from . import (
     diagnose,
     identity,
     kb,
+    printers,
     session,
     tasks,
     triage,
@@ -18,6 +19,7 @@ COMMAND_MODULES = [
     triage,
     tasks,
     identity,
+    printers,
     kb,
     catalog,
     session,
@@ -54,6 +56,9 @@ def register_all_commands(
         "wlan": identity.handle,
         "create-user": identity.handle,
         "new-user": identity.handle,
+        # Принтеры и МФУ
+        "printer": printers.handle,
+        "install-printer": printers.handle,
         # База знаний и RAG
         "search-kb": kb.handle,
         "sync-kb": kb.handle,

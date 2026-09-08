@@ -74,7 +74,9 @@ async def collect_structured(task: dict[str, Any]) -> list[FactObservation]:
             task.get("RequesterLogin")
             or task.get("InitiatorLogin")
             or task.get("UserLogin")
+            or task.get("CreatorLogin")
             or task.get("Email")
+            or task.get("Creator")
         ),
         "printer_name": task.get("PrinterName") or task.get("PrinterModel"),
     }

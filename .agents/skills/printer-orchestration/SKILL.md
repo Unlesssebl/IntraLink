@@ -6,9 +6,18 @@ description: >-
   SMB-индексацию драйверов, UPN-аутентификацию и тихий режим обработки системных сбоев.
 ---
 
-# 🖨️ Printer Worker & Orchestration Skill
+# Printer Worker & Orchestration Skill
 
-Этот навык описывает правила и архитектурные особенности микросервиса `printer-worker` при автоматической установке драйверов и подключении принтеров на рабочих станциях домена.
+Этот навык описывает правила и архитектурные особенности сервиса `execution-worker` (ActionHandler `InstallPrinterHandler`) при автоматической установке драйверов и подключении принтеров на рабочих станциях домена через Unified Command Bus v2.
+
+## CLI-команда установки:
+```bash
+# Установка принтера по заявке (реквизиты автоматически извлекаются из тикета):
+uv run python helpdesk-cli/helpdesk.py printer <ID_ЗАЯВКИ> --approve
+
+# Явное указание реквизитов:
+uv run python helpdesk-cli/helpdesk.py printer <ID_ЗАЯВКИ> --pc WS-105 --printer "Kyocera ECOSYS M2040dn" --ip 10.244.12.45 --approve
+```
 
 ---
 

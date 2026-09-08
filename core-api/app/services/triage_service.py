@@ -301,17 +301,9 @@ class TriageService:
                     "decision_source": "db_dedup",
                 }
             else:
-                # 2. Быстрый прогон через модульный RuleEngine (Wi-Fi, Ремонт, Редирект, Принтер)
-                decision = auto_detect_template(
-                    task=t,
-                    diag=rule_diag,
-                    kb_matches=None,
-                    redirect_mode=redirect_only,
-                )
-                decision = await materialize_typed_decision(db, decision)
-
-                # 3. Если правило общее/стандартное и запрошен RAG — ищем семантическое решение в pgvector RAG
-                if include_rag and decision.get("rule_type") in ("standard_in_work", None) and not decision.get("is_redirect"):
+                # 2. Единая доменная точка принятия решений: ScenarioDecisionService (SSOT)
+                is_redirect_hint = bool(detect_service_redirect(t))
+                if include_rag and not is_redirect_hint and not redirect_only:
                     kb_matches = await search_knowledge_base(
                         db=db,
                         query_text=query_text,
@@ -321,22 +313,35 @@ class TriageService:
                         metadata=routing_metadata,
                         service_id=t.get("ServiceId"),
                     )
-                    if kb_matches:
-                        decision = auto_detect_template(
-                            task=t,
-                            diag=rule_diag,
-                            kb_matches=kb_matches,
-                            redirect_mode=redirect_only,
-                        )
-                        decision = await materialize_typed_decision(db, decision)
+
+                envelope = None
+                try:
+                    envelope = await ScenarioDecisionService(db).analyze(
+                        task=t,
+                        diagnostics=rule_diag,
+                        kb_matches=kb_matches,
+                    )
+                    decision = envelope_to_legacy(envelope)
+                    decision["_decision_envelope"] = envelope.model_dump(mode="json")
+                    if envelope.scenario_key == "rag_consultation" and kb_matches:
                         decision["decision_source"] = "rag_consensus"
-                    else:
+                    elif envelope.scenario_key in ("consultation", "standard_in_work"):
                         decision["decision_source"] = "standard_fallback"
-                else:
-                    decision["decision_source"] = "rule_engine" if decision.get("rule_type") != "standard_in_work" else "standard_fallback"
+                    else:
+                        decision["decision_source"] = "scenario_engine"
+                except Exception as exc:
+                    logger.warning("ScenarioDecisionService failed for task %s, fallback to rule engine: %s", t_id, exc)
+                    decision = auto_detect_template(
+                        task=t,
+                        diag=rule_diag,
+                        kb_matches=kb_matches,
+                        redirect_mode=redirect_only,
+                    )
+                    decision = await materialize_typed_decision(db, decision)
+                    decision["decision_source"] = "rule_engine"
 
             sources = {
-                "rule": bool(decision and decision.get("rule_type") != "standard_in_work"),
+                "rule": bool(decision and decision.get("rule_type") not in ("rule.standard_in_work", "standard_in_work", "scenario.consultation")),
                 "rag": bool(kb_matches),
                 "ai": False,
             }
@@ -356,10 +361,14 @@ class TriageService:
             root_service_name = s_info.get("root_name") or "Общие вопросы"
 
             # Расчет Confidence Score для предотвращения слепого одобрения (Rubber Stamping)
-            confidence = calculate_confidence_score(
-                kb_matches=kb_matches,
-                telemetry=telemetry,
-                rule_decision=decision,
+            confidence = (
+                envelope.confidence
+                if envelope is not None
+                else calculate_confidence_score(
+                    kb_matches=kb_matches,
+                    telemetry=telemetry,
+                    rule_decision=decision,
+                )
             )
             if decision:
                 decision["confidence"] = confidence
@@ -559,7 +568,6 @@ class TriageService:
                 comments=history,
                 diagnostics=rule_diag,
                 kb_matches=kb_matches,
-                legacy_decision=decision,
                 generated_response=ai_resolution,
                 decision_version=int((decision or {}).get("version") or 1),
             )

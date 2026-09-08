@@ -137,8 +137,6 @@ class ScenarioDecisionService:
                     "invalid_fields": ", ".join(sorted(set(missing + invalid))),
                 },
             )
-        elif legacy_decision and isinstance(legacy_decision.get("typed_outcome"), dict):
-            outcome = DecisionOutcomeAdapter.validate_python(legacy_decision["typed_outcome"])
         else:
             outcome = scenario.decide(context)
 

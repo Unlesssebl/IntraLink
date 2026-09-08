@@ -1,7 +1,7 @@
 import json
 from typing import Any
 
-from diagnostics import format_diagnostics_summary, run_host_diagnostics
+from shared.diagnostics import format_diagnostics_summary, run_host_diagnostics
 
 
 def register_parser(subparsers: Any) -> None:

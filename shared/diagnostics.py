@@ -6,22 +6,13 @@ import socket
 import subprocess
 import time
 from typing import Any
-try:
-    from shared.normalizer import (
-        normalize_pc_name,
-        is_valid_pc_name,
-        resolve_pc_candidates,
-        normalize_printer_address,
-        KNOWN_PC_PREFIXES,
-    )
-except ImportError:
-    from normalizer import (
-        normalize_pc_name,
-        is_valid_pc_name,
-        resolve_pc_candidates,
-        normalize_printer_address,
-        KNOWN_PC_PREFIXES,
-    )
+from shared.normalizer import (
+    normalize_pc_name,
+    is_valid_pc_name,
+    resolve_pc_candidates,
+    normalize_printer_address,
+    KNOWN_PC_PREFIXES,
+)
 
 logger = logging.getLogger("helpdesk_agent.diagnostics")
 

@@ -13,7 +13,7 @@ from typing import Any
 import redis.asyncio as aioredis
 
 from core_api_client import CoreApiClient
-from diagnostics import run_host_diagnostics
+from shared.diagnostics import run_host_diagnostics
 from executors.ad import ActiveDirectoryExecutor
 from executors.printers import PrinterExecutor
 
