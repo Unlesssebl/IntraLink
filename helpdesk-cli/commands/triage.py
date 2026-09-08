@@ -166,7 +166,10 @@ async def handle_batch(args: Any) -> None:
             room = it.get("room") or "—"
             pc = it.get("pc_name") or "—"
             action = it.get("suggested_action") or {}
-            conf = it.get("confidence_score") or action.get("confidence") or 0.50
+            envelope = it.get("decision_envelope") or action.get("_decision_envelope") or {}
+            outcome = envelope.get("outcome") or {}
+            scenario_key = envelope.get("scenario_key")
+            conf = envelope.get("confidence") or it.get("confidence_score") or action.get("confidence") or 0.50
             req_review = it.get("requires_human_review", conf < 0.80)
 
             circuit = (it.get("circuit") or "green").lower()
@@ -191,12 +194,13 @@ async def handle_batch(args: Any) -> None:
 
             dup_badge = "[ДУБЛИКАТ]" if it.get("is_duplicate") else ""
             conf_badge = f"[LOW CONF: {conf:.2f} / ТРЕБУЕТСЯ ПРОВЕРКА]" if req_review else f"[CONF: {conf:.2f}]"
+            scenario_badge = f"[{scenario_key.upper()}]" if scenario_key else ""
 
-            status_text = action.get("name", "В работе")
-            status_id = action.get("status_id", 27)
-            expenses = action.get("expenses", 10)
+            status_text = outcome.get("target_status_name") or action.get("name") or "В работе"
+            status_id = outcome.get("target_status_id") or action.get("status_id", 27)
+            expenses = outcome.get("expenses_minutes") or action.get("expenses", 10)
 
-            badges = [b for b in [f"[STATUS: {status_text.upper()}]", host_badge, dup_badge, circuit_badge, conf_badge] if b]
+            badges = [b for b in [f"[STATUS: {status_text.upper()}]", scenario_badge, host_badge, dup_badge, circuit_badge, conf_badge] if b]
             badge_line = " | ".join(badges)
 
             print(f"\n[{idx}] [#{t_id}](https://servicedesk.corporate.loc/Task/View/{t_id}) | {badge_line}")
@@ -210,8 +214,9 @@ async def handle_batch(args: Any) -> None:
                 att_names = ", ".join(a.get("name") or a.get("FileName") or "файл" for a in attachments[:2])
                 print(f"    Вложение:   [ATTACHMENT: {att_names} -> вызовите 'скриншот {idx}']")
 
-            if action.get("comment"):
-                comment_text = action["comment"].strip()
+            comment = envelope.get("response_draft") or action.get("comment")
+            if comment:
+                comment_text = comment.strip()
                 print(f"    Ответ заявителю:")
                 print(f"    «{comment_text}»")
 

@@ -265,13 +265,69 @@ flowchart LR
 
 ---
 
-## 8. Итоговый статус перехода
+## 8. Детальный план и результаты Этапа 5: Устранение рудиментов и legacy cleanup (Legacy Deprecation)
 
-- **Этап 1:** Базовая инфраструктура, миграции, `GrantWlanHandler`, FSM-интеграция — **100%**.
-- **Этап 2:** Shadow/Canary раскатка, компаратор расхождений, Emergency Rollback, дашборд настроек — **100%**.
-- **Этап 3:** Полная миграция в `active`, зачистка рудиментов поллера и воркера, актуализация архитектуры — **100%**.
-- **Этап 4:** Адаптация и развитие UI (FactBag, Fact-Override, отвязка клиентского состояния) — **100%**.
-- **Этап 5:** Удаление рудиментов и legacy cleanup (Legacy Deprecation) — **Следующий шаг**.
+### Базовые задачи Этапа 5
+1. **5.1. Рефакторинг и депрекация `TicketRunRunner`:**
+   - Файл `core-api/app/services/ticket_run_runner.py` сокращен с 1212 до 169 строк (ликвидировано более 1000 строк устаревшего монолитного процедурного кода).
+   - `TicketRunRunner` трансформирован в тонкий фасад вокруг `TicketRunOrchestrator(self.db).advance(...)`.
+   - Режим `rollout_mode="legacy"` безопасно перенаправляется в оркестратор с записью предупреждения в журнал.
+   - Сохранена обратная совместимость вызова `advance` из `worker.py` и публичных хелперов `extract_printer_parameters` и `is_supported_printer_installation`.
+2. **5.2. Адаптация CLI-инструментария `helpdesk-cli` под `DecisionEnvelope`:**
+   - Модуль `helpdesk-cli/commands/triage.py` переведен на чтение `decision_envelope` (свойства `outcome`, `scenario_key`, `confidence`, `response_draft`) с отображением бейджа сценария и надежным fallback на `suggested_action`.
+   - Модуль `helpdesk-cli/commands/tasks.py` переведен на чтение `decision_envelope`, включая имя сценария, версию решения, причины блокировки (`blocked_reasons`) и визуализацию доказательной базы `FactBag`.
+3. **5.3. Актуализация и верификация тестов раннера:**
+   - Адаптирован тестовый набор `core-api/tests/test_ticket_run_user_creation.py` (5 из 5 тестов пройдены успешно). Прямые вызовы API заменены на проверку генерации `CommandRecord(action="create_user")`.
+   - Адаптирован тестовый набор `core-api/tests/test_ticket_run_runner.py` (6 из 6 тестов пройдены успешно) с проверкой делегирования в оркестратор и генерации команды `apply_triage`.
+   - Гарантирована целостность схемы БД (NOT NULL поля `trigger_kind`, `trigger_key` и очистка уникального индекса в фикстурах).
+
+---
+
+### Граничные случаи (Edge Cases) для Этапа 5
+- **EC-5.1: Вызов `advance` со старым `rollout_mode="legacy"`:**
+  - *Риск:* Если в БД осталась запись с `rollout_mode="legacy"`, отказ в обслуживании недопустим.
+  - *Решение:* `TicketRunRunner` логирует warning и направляет заявку в `TicketRunOrchestrator`, который обрабатывает её по сценарному контуру без сбоев.
+- **EC-5.2: Исторические заявки без `decision_envelope` в CLI:**
+  - *Риск:* Если оператор запрашивает старую заявку или триаж без сценарного конверта, CLI может упасть с `KeyError` / `AttributeError`.
+  - *Решение:* В `triage.py` и `tasks.py` реализован безопасный fallback: `envelope = task.get("decision_envelope") or {}`, при отсутствии которого отображаются традиционные поля `suggested_action` и `ai_suggested_resolution`.
+- **EC-5.3: Уникальный индекс `uq_ticket_run_trigger` в тестах:**
+  - *Риск:* Повторный запуск тестов на одной БД может вызывать нарушение уникальности `(task_id, trigger_key)`.
+  - *Решение:* В тестах обеспечена предварительная очистка существующих запусков перед выполнением проверки.
+
+---
+
+### Слепые зоны (Blind Spots) и их нейтрализация
+1. **Слепая зона №1: Прямые мутации состояния через сторонние HTTP-вызовы в монолите:**
+   - *Риск:* Монолитный раннер вызывал `update_task_full` и `add_task_comment` напрямую внутри процесса, создавая скрытые сайд-эффекты.
+   - *Нейтрализация:* Вся мутация во внешнем IntraService теперь осуществляется строго через `CommandRecord` в Outbox-шине (`action="apply_triage"`, `action="create_user"`), обеспечивая полный аудит и идемпотентность.
+2. **Слепая зона №2: Сломанные внешние импорты старых хелперов:**
+   - *Риск:* Внешние сервисы или тесты могли импортировать утилиты из `ticket_run_runner.py`.
+   - *Нейтрализация:* В `ticket_run_runner.py` сохранены чистые функции `extract_printer_parameters`, `is_supported_printer_installation` и экспорты `ExecutionCommandRecord`.
+
+---
+
+### Чек-лист готовности и приемки Этапа 5
+- [x] Рефакторинг `core-api/app/services/ticket_run_runner.py` в компактный фасад вокруг `TicketRunOrchestrator` (-1043 строки мертвого процедурного кода).
+- [x] Адаптация `helpdesk-cli/commands/triage.py` для чтения `decision_envelope` и отображения бейджей сценариев.
+- [x] Адаптация `helpdesk-cli/commands/tasks.py` для чтения `decision_envelope`, `blocked_reasons` и доказательств `FactBag`.
+- [x] Полный проход тестов раннера `test_ticket_run_runner.py` и `test_ticket_run_user_creation.py` (11 из 11 PASSED).
+- [x] Проверка всех модулей репозитория (`shared`, `core-api`, сборка фронтенда `intra-web`).
+- [x] Фиксация в архитектурной документации (`docs/architecture.md`, `docs/scenario-transition-roadmap.md`).
+
+---
+
+## 9. Итоговый статус перехода
+
+Все 5 этапов дорожной карты перехода на сценарный оркестратор **полностью выполнены**:
+
+| Этап | Наименование | Статус | Результат |
+|---|---|:---:|---|
+| **Этап 1** | Подготовка фундамента и устранение блокеров | ✅ **COMPLETED** | `GrantWlanHandler`, миграция `0011`, FSM интеграция (7/7 тестов) |
+| **Этап 2** | Ввод в эксплуатацию: Shadow и Canary | ✅ **COMPLETED** | Сравнение расхождений, эндпоинты метрик, Emergency Rollback, UI настроек |
+| **Этап 3** | Поэтапный перевод в Active (Full Cutover) | ✅ **COMPLETED** | 100% Active, удаление рудиментов поллера и воркера, SDK v2 |
+| **Этап 4** | Адаптация и развитие UI | ✅ **COMPLETED** | FactBag, Fact-Override модалка, оптимистичная блокировка, SingleFile SPA |
+| **Этап 5** | Устранение рудиментов и legacy cleanup | ✅ **COMPLETED** | Рефакторинг `TicketRunRunner` (-1000 строк), адаптация `helpdesk-cli`, чистые тесты |
+
 
 
 

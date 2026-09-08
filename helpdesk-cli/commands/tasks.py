@@ -91,8 +91,14 @@ async def handle_task(args: Any) -> None:
         history = card.get("history", [])
         kb_matches = card.get("kb_matches", [])
         action = card.get("suggested_action") or {}
-        conf = card.get("confidence_score") or action.get("confidence") or 0.50
+        envelope = card.get("decision_envelope") or action.get("_decision_envelope") or {}
+        outcome = envelope.get("outcome") or {}
+        scenario_key = envelope.get("scenario_key")
+        conf = envelope.get("confidence") or card.get("confidence_score") or action.get("confidence") or 0.50
         req_review = card.get("requires_human_review", conf < 0.80)
+        readiness = card.get("readiness") or {}
+        blocked = readiness.get("blocked_reasons") or []
+        facts = envelope.get("facts_summary") or {}
         conf_str = f"[LOW CONFIDENCE: {conf:.2f} / ТРЕБУЕТСЯ ПРОВЕРКА]" if req_review else f"[CONFIDENCE: {conf:.2f}]"
 
         meta = task.get("_field_meta") or {}
@@ -118,9 +124,20 @@ async def handle_task(args: Any) -> None:
                 print(f"  Решение: {m['solution'][:100]}...\n")
 
         print(f"Рекомендованное действие:")
-        print(f"  Шаблон:         {action.get('name')}")
-        print(f"  Целевой статус: {action.get('status_id')} ({action.get('expenses', 10)} мин)")
-        print(f"  Комментарий:\n    {action.get('comment')}\n")
+        if scenario_key:
+            print(f"  Сценарий:       {scenario_key} (v{envelope.get('scenario_version', 1)})")
+        print(f"  Исход (Kind):   {outcome.get('kind', action.get('rule_type', 'standard'))}")
+        print(f"  Шаблон:         {outcome.get('template_key') or action.get('name') or '—'}")
+        print(f"  Целевой статус: {outcome.get('target_status_id') or action.get('status_id')} ({outcome.get('expenses_minutes') or action.get('expenses', 10)} мин)")
+        if facts:
+            fact_items = [f"{k}={v.get('value')}" for k, v in facts.items() if isinstance(v, dict) and v.get("value")]
+            if fact_items:
+                print(f"  Факты (FactBag):{', '.join(fact_items)}")
+        if blocked:
+            print(f"  Блокировки:     {', '.join(blocked)}")
+        comment = envelope.get("response_draft") or action.get("comment")
+        if comment:
+            print(f"  Комментарий:\n    {comment}\n")
     finally:
         await client.close()
 

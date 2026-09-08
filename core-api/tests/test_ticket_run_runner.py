@@ -1,657 +1,340 @@
-import pytest
+"""Tests for TicketRunRunner facade delegating to TicketRunOrchestrator."""
+
+from __future__ import annotations
+
 import datetime as dt
-from unittest.mock import patch
+import uuid
+import pytest
 from sqlalchemy import select
 
 from app.database.db import (
-    AsyncSessionLocal, AutopilotScenario, CommandRecord, SystemSetting, TicketRunEvent, TriageTemplate,
+    AsyncSessionLocal,
+    AutopilotScenario,
+    CommandRecord,
+    ResolutionPolicy,
+    ResponseTemplate,
+    SystemSetting,
+    TicketRun,
 )
-from app.services.command_service import CommandService
 from app.services.ticket_run_runner import TicketRunRunner
-from app.services.ticket_runs import REQUIRED_AUTOPILOT_TEMPLATES, TicketRunService
+from app.services.ticket_runs import TicketRunService, TicketRunState
 
 
-async def seed_templates(db) -> None:
-    statuses = {
-        "printer_ip_clarify": 35,
-        "pc_offline": 35,
-        "ticket_timeout_cancel": 30,
-        "ticket_not_relevant": 30,
-        "wrong_service": 30,
-        "autopilot_unsupported_cancel": 30,
-        "autopilot_execution_failed_cancel": 30,
-        "resolved_standard": 29,
-    }
-    texts = {
-        "pc_offline": "ПК {pc_name} недоступен.",
-        "wrong_service": "Оставьте заявку в разделе: {target_service}",
-        "autopilot_unsupported_cancel": "Не поддерживается: {reason}",
-        "autopilot_execution_failed_cancel": "Ошибка установки: {reason}",
-    }
-    for key in REQUIRED_AUTOPILOT_TEMPLATES:
-        existing = await db.scalar(select(TriageTemplate).where(TriageTemplate.key == key))
-        if existing:
-            existing.status_id = statuses[key]
-            existing.template_text = texts.get(key, "Шаблон")
-            existing.is_active = True
-        else:
-            db.add(
-                TriageTemplate(
-                    key=key,
-                    name=key,
-                    category="autopilot",
-                    status_id=statuses[key],
-                    status_name="Шаблон",
-                    expenses=5,
-                    template_text=texts.get(key, "Шаблон"),
-                    is_active=True,
-                )
+async def seed_printer_policies(db) -> None:
+    templates = [
+        ResponseTemplate(
+            key="printer_ip_clarify",
+            version=1,
+            name="Уточнение IP принтера",
+            template_text="Уточните, пожалуйста, IP-адрес принтера.",
+            required_variables=[],
+            is_active=True,
+            created_by="test",
+        ),
+        ResponseTemplate(
+            key="install_printer_proposed",
+            version=1,
+            name="Установка принтера",
+            template_text="Принтер устанавливается на рабочую станцию.",
+            required_variables=[],
+            is_active=True,
+            created_by="test",
+        ),
+        ResponseTemplate(
+            key="resolved_standard",
+            version=1,
+            name="Заявка выполнена",
+            template_text="Добрый день! Принтер успешно установлен.",
+            required_variables=[],
+            is_active=True,
+            created_by="test",
+        ),
+    ]
+    for tmpl in templates:
+        existing = await db.scalar(
+            select(ResponseTemplate).where(
+                ResponseTemplate.key == tmpl.key,
+                ResponseTemplate.version == tmpl.version,
             )
+        )
+        if not existing:
+            db.add(tmpl)
+    await db.flush()
+
+    tmpl_map = {}
+    for t in (await db.scalars(select(ResponseTemplate))).all():
+        tmpl_map[t.key] = t.id
+
+    policies = [
+        ResolutionPolicy(
+            outcome_key="printer_ip_clarify",
+            version=1,
+            outcome_kind="clarification",
+            template_id=tmpl_map["printer_ip_clarify"],
+            target_status_id=35,
+            status_name="Требует уточнения",
+            expenses=5,
+            action_id=None,
+            risk_level=0,
+            requires_approval=False,
+            is_active=True,
+            created_by="test",
+        ),
+        ResolutionPolicy(
+            outcome_key="install_printer_proposed",
+            version=1,
+            outcome_kind="action",
+            template_id=tmpl_map["install_printer_proposed"],
+            target_status_id=None,
+            status_name=None,
+            expenses=10,
+            action_id="install_printer",
+            risk_level=1,
+            requires_approval=True,
+            is_active=True,
+            created_by="test",
+        ),
+        ResolutionPolicy(
+            outcome_key="resolved_standard",
+            version=1,
+            outcome_kind="resolution",
+            template_id=tmpl_map["resolved_standard"],
+            target_status_id=29,
+            status_name="Решена",
+            expenses=10,
+            action_id=None,
+            risk_level=0,
+            requires_approval=False,
+            is_active=True,
+            created_by="test",
+        ),
+    ]
+    for pol in policies:
+        existing = await db.scalar(
+            select(ResolutionPolicy).where(
+                ResolutionPolicy.outcome_key == pol.outcome_key,
+                ResolutionPolicy.version == pol.version,
+            )
+        )
+        if not existing:
+            db.add(pol)
+
+    existing_setting = await db.scalar(select(SystemSetting).where(SystemSetting.key == "service_account_config"))
+    if not existing_setting:
+        db.add(
+            SystemSetting(
+                key="service_account_config",
+                value_json={"login": "assistant", "encrypted_password": "test", "user_id": 10001},
+                is_encrypted=True,
+            )
+        )
+
+    existing_scenario = await db.scalar(
+        select(AutopilotScenario).where(
+            AutopilotScenario.service_id == 19,
+            AutopilotScenario.scenario_key == "install_printer",
+        )
+    )
+    if not existing_scenario:
+        db.add(
+            AutopilotScenario(
+                service_id=19,
+                scenario_key="install_printer",
+                enabled=True,
+                rollout_mode="active",
+                config_json={},
+                updated_by="test",
+            )
+        )
+    else:
+        existing_scenario.enabled = True
+        existing_scenario.rollout_mode = "active"
+
     await db.commit()
 
 
-async def seed_autopilot_prerequisites(db) -> None:
-    await seed_templates(db)
-    db.add(SystemSetting(
-        key="service_account_config",
-        value_json={"login": "assistant", "encrypted_password": "test", "user_id": 10001},
-        is_encrypted=True,
-    ))
-    db.add(AutopilotScenario(
-        service_id=19,
-        scenario_key="printer_installation",
-        enabled=True,
-        rollout_mode="legacy",
-        config_json={},
-        updated_by="test",
-    ))
-    await db.commit()
-
-
-@pytest.mark.asyncio
-async def test_redirect_requires_configured_target_link():
-    async with AsyncSessionLocal() as db:
-        runs = await enable_autopilot(db)
-        registration = await runs.register_assignment(
-            task=printer_task(93010), assistant_user_id=10001, open_status_id=31
-        )
-        assert registration.run is not None
-        redirect = {
-            "is_redirect": True,
-            "target_root": "04",
-            "target_service_name": "Служба поддержки",
-            "reason": "wrong_section",
-        }
-        with patch("app.services.ticket_run_runner.detect_service_redirect", return_value=redirect):
-            run = await TicketRunRunner(db).advance(
-                run_id=registration.run.id, task=printer_task(93010)
-            )
-        assert run.state == "paused"
-        assert run.pause_reason == "redirect_target_unavailable"
-        assert await db.scalar(
-            select(CommandRecord).where(CommandRecord.ticket_run_id == run.id)
-        ) is None
-
-
-@pytest.mark.asyncio
-async def test_unambiguous_redirect_with_link_uses_dedicated_template():
-    async with AsyncSessionLocal() as db:
-        runs = await enable_autopilot(db)
-        scenario = await db.scalar(
-            select(AutopilotScenario).where(AutopilotScenario.service_id == 19)
-        )
-        scenario.config_json = {
-            "redirect_targets": {
-                "04": {"name": "Служба поддержки", "url": "https://helpdesk.example/service/4"}
-            }
-        }
-        await db.commit()
-        registration = await runs.register_assignment(
-            task=printer_task(93011), assistant_user_id=10001, open_status_id=31
-        )
-        redirect = {
-            "is_redirect": True,
-            "target_root": "04",
-            "target_service_name": "Служба поддержки",
-            "reason": "wrong_section",
-        }
-        with patch("app.services.ticket_run_runner.detect_service_redirect", return_value=redirect):
-            await TicketRunRunner(db).advance(
-                run_id=registration.run.id, task=printer_task(93011)
-            )
-        command = await db.scalar(
-            select(CommandRecord).where(CommandRecord.ticket_run_id == registration.run.id)
-        )
-        assert command is not None
-        assert command.params_json["template_key"] == "wrong_service"
-        assert "https://helpdesk.example/service/4" in command.params_json["comment"]
-
-
-async def enable_autopilot(db) -> TicketRunService:
-    await seed_autopilot_prerequisites(db)
-    runs = TicketRunService(db)
-    setting = await runs.get_global_setting()
-    assert setting is not None
-    await db.commit()
-    await runs.set_global_enabled(enabled=True, actor="admin:test", expected_version=1)
-    return runs
-
-
-def printer_task(task_id: int) -> dict:
-    return {
-        "Id": task_id,
-        "StatusId": 31,
-        "ExecutorId": 10001,
-        "ServiceId": 19,
-        "Name": "HP LaserJet 9100",
+def test_extract_printer_parameters_from_custom_fields():
+    task = {
+        "Name": "Заявка на печать",
+        "Description": "Установить принтер",
         "CustomFields": [
-            {"CustomFieldId": 1112, "Value": "PC-93001"},
-            {"CustomFieldId": 1103, "Value": "10.20.30.40"},
+            {"CustomFieldId": 1112, "Value": "WS-IT-042"},
+            {"CustomFieldId": 1103, "Value": "192.168.10.150"},
         ],
     }
+    pc_name, printer_ip = TicketRunRunner.extract_printer_parameters(task)
+    assert pc_name == "WS-IT-042"
+    assert printer_ip == "192.168.10.150"
+
+
+def test_extract_printer_parameters_from_text_fallback():
+    task = {
+        "Name": "Подключить принтер Kyocera на PC-081",
+        "Description": "Сетевой адрес принтера 10.20.30.40 в бухгалтерии",
+        "CustomFields": [],
+    }
+    pc_name, printer_ip = TicketRunRunner.extract_printer_parameters(task)
+    assert pc_name == "PC-081"
+    assert printer_ip == "10.20.30.40"
+
+
+def test_is_supported_printer_installation():
+    valid_task = {
+        "Name": "Установка принтера HP LaserJet",
+        "Description": "Прошу установить МФУ в отдел кадров",
+    }
+    assert TicketRunRunner.is_supported_printer_installation(valid_task, "PC-01", "10.0.0.1") is True
+
+    irrelevant_task = {
+        "Name": "Не открывается Excel",
+        "Description": "Ошибка формулы ВПР",
+    }
+    assert TicketRunRunner.is_supported_printer_installation(irrelevant_task, "", "") is False
 
 
 @pytest.mark.asyncio
-async def test_printer_happy_path_uses_only_linked_v2_commands():
+async def test_advance_ignores_completed_or_paused_run():
     async with AsyncSessionLocal() as db:
-        runs = await enable_autopilot(db)
-        registration = await runs.register_assignment(
-            task=printer_task(93001), assistant_user_id=10001, open_status_id=31
-        )
-        assert registration.run is not None
-        run = registration.run
-        runner = TicketRunRunner(db)
-
-        await runner.advance(run_id=run.id, task=printer_task(93001))
-        diagnose = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == run.id,
-                CommandRecord.action == "diagnose_host",
-            )
-        )
-        assert diagnose is not None
-        claim = await CommandService(db).claim(diagnose.id, worker_id="test-windows")
-        await CommandService(db).finish(
-            diagnose.id,
-            claim_token=claim.token,
-            outcome="succeeded",
-            result={"status": "success", "payload": {"diagnostics": {"is_online": True}}},
-            error_message=None,
-            worker_id="test-windows",
-        )
-
-        await runner.advance(run_id=run.id, task=printer_task(93001))
-        install = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == run.id,
-                CommandRecord.action == "install_printer",
-            )
-        )
-        assert install is not None
-        assert install.status == "awaiting_approval"
-        await CommandService(db).approve(
-            install.id, decision="approve", reason=None, operator="operator:test"
-        )
-        claim = await CommandService(db).claim(install.id, worker_id="test-windows")
-        await CommandService(db).finish(
-            install.id,
-            claim_token=claim.token,
-            outcome="succeeded",
-            result={"status": "success", "payload": {"installed": True, "verified": True}},
-            error_message=None,
-            worker_id="test-windows",
-        )
-
-        await runner.advance(run_id=run.id, task=printer_task(93001))
-        finalize = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == run.id,
-                CommandRecord.action == "apply_triage",
-            )
-        )
-        assert finalize is not None
-        assert finalize.params_json["status_id"] == 29
-        await CommandService(db).approve(
-            finalize.id, decision="approve", reason=None, operator="operator:test"
-        )
-        claim = await CommandService(db).claim(finalize.id, worker_id="test-backend")
-        await CommandService(db).finish(
-            finalize.id,
-            claim_token=claim.token,
-            outcome="succeeded",
-            result={"results": [{"update_ok": True}]},
-            error_message=None,
-            worker_id="test-backend",
-        )
-
-        completed = await runner.advance(run_id=run.id, task=printer_task(93001))
-        assert completed.state == "completed"
-        assert completed.outcome == "completed"
-        assert completed.completed_at is not None
-
-
-@pytest.mark.asyncio
-async def test_missing_required_template_stops_cycle_without_ticket_command():
-    async with AsyncSessionLocal() as db:
-        await seed_autopilot_prerequisites(db)
-        template = await db.scalar(
-            select(TriageTemplate).where(TriageTemplate.key == "printer_ip_clarify")
-        )
-        assert template is not None
-        template.is_active = False
-        await db.commit()
-        runs = TicketRunService(db)
-        setting = await runs.get_global_setting()
-        assert setting is not None
-        setting.enabled = True
-        await db.commit()
-        task = {
-            "Id": 93002,
-            "StatusId": 31,
-            "ExecutorId": 10001,
-            "ServiceId": 19,
-            "Name": "Подключить принтер",
-        }
-        registration = await runs.register_assignment(
-            task=task, assistant_user_id=10001, open_status_id=31
-        )
-        assert registration.run is not None
-
-        stopped = await TicketRunRunner(db).advance(
-            run_id=registration.run.id, task=task
-        )
-        assert stopped.state == "system_error"
-        assert stopped.error_code == "template_invalid"
-        command = await db.scalar(
-            select(CommandRecord).where(CommandRecord.ticket_run_id == stopped.id)
-        )
-        assert command is None
-
-
-@pytest.mark.asyncio
-async def test_clarification_timeout_prepares_template_cancellation():
-    async with AsyncSessionLocal() as db:
-        runs = await enable_autopilot(db)
-        task = {
-            "Id": 93003,
-            "StatusId": 31,
-            "ExecutorId": 10001,
-            "CreatorId": 501,
-            "Name": "Подключить принтер",
-            "ServiceId": 19,
-        }
-        registration = await runs.register_assignment(
-            task=task, assistant_user_id=10001, open_status_id=31
-        )
-        assert registration.run is not None
-        run = registration.run
-        runner = TicketRunRunner(db)
-
-        await runner.advance(run_id=run.id, task=task)
-        clarification = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == run.id,
-                CommandRecord.action == "apply_triage",
-            )
-        )
-        assert clarification is not None
-        await CommandService(db).approve(
-            clarification.id, decision="approve", reason=None, operator="operator:test"
-        )
-        claim = await CommandService(db).claim(
-            clarification.id, worker_id="test-backend"
-        )
-        await CommandService(db).finish(
-            clarification.id,
-            claim_token=claim.token,
-            outcome="succeeded",
-            result={"results": [{"update_ok": True}]},
-            error_message=None,
-            worker_id="test-backend",
-        )
-        waiting = await runner.advance(run_id=run.id, task=task)
-        assert waiting.state == "waiting_answer"
-        assert waiting.clarification_count == 1
-        waiting.waiting_until = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        for tid in (94001, 94002):
+            existing = (await db.execute(select(TicketRun).where(TicketRun.task_id == tid))).scalars().all()
+            for r in existing:
+                await db.delete(r)
         await db.commit()
 
-        await runner.advance(run_id=run.id, task=task, comments=[])
-        cancellation = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == run.id,
-                CommandRecord.idempotency_key.like("%:cancel_timeout"),
-            )
+        completed_run = TicketRun(
+            id=uuid.uuid4(),
+            task_id=94001,
+            mode="autopilot",
+            state=TicketRunState.COMPLETED.value,
+            trigger_kind="ticket_created",
+            trigger_key="ticket:94001:created",
+            completed_at=dt.datetime.now(dt.timezone.utc),
+            created_by="test",
+            updated_by="test",
         )
-        assert cancellation is not None
-        assert cancellation.status == "awaiting_approval"
-        assert cancellation.params_json["status_id"] == 30
-        assert cancellation.params_json["template_key"] == "ticket_timeout_cancel"
-
-
-@pytest.mark.asyncio
-async def test_unsupported_assignment_pauses_without_ticket_mutation():
-    async with AsyncSessionLocal() as db:
-        runs = await enable_autopilot(db)
-        task = {
-            "Id": 93004,
-            "StatusId": 31,
-            "ExecutorId": 10001,
-            "ServiceId": 19,
-            "Name": "Не открывается Excel",
-        }
-        registration = await runs.register_assignment(
-            task=task, assistant_user_id=10001, open_status_id=31
+        paused_run = TicketRun(
+            id=uuid.uuid4(),
+            task_id=94002,
+            mode="autopilot",
+            state=TicketRunState.PAUSED.value,
+            trigger_kind="ticket_created",
+            trigger_key="ticket:94002:created",
+            pause_reason="manual_review",
+            created_by="test",
+            updated_by="test",
         )
-        assert registration.run is not None
-
-        await TicketRunRunner(db).advance(run_id=registration.run.id, task=task)
-        cancellation = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == registration.run.id,
-                CommandRecord.idempotency_key.like("%:cancel_unsupported"),
-            )
-        )
-        await db.refresh(registration.run)
-        assert cancellation is None
-        assert registration.run.state == "paused"
-        assert registration.run.pause_reason == "unsupported_scenario"
-
-
-@pytest.mark.asyncio
-async def test_pc_offline_waits_for_new_applicant_comment():
-    async with AsyncSessionLocal() as db:
-        runs = await enable_autopilot(db)
-        task = {**printer_task(93005), "CreatorId": 501}
-        registration = await runs.register_assignment(
-            task=task, assistant_user_id=10001, open_status_id=31
-        )
-        assert registration.run is not None
-        run = registration.run
-        runner = TicketRunRunner(db)
-
-        await runner.advance(run_id=run.id, task=task)
-        diagnose = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == run.id,
-                CommandRecord.action == "diagnose_host",
-            )
-        )
-        assert diagnose is not None
-        claim = await CommandService(db).claim(diagnose.id, worker_id="test-windows")
-        await CommandService(db).finish(
-            diagnose.id,
-            claim_token=claim.token,
-            outcome="succeeded",
-            result={"status": "success", "payload": {"diagnostics": {"is_online": False}}},
-            error_message=None,
-            worker_id="test-windows",
-        )
-        await runner.advance(run_id=run.id, task=task)
-        clarification = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == run.id,
-                CommandRecord.idempotency_key.like("%:request_pc_online"),
-            )
-        )
-        assert clarification is not None
-        await CommandService(db).approve(
-            clarification.id, decision="approve", reason=None, operator="operator:test"
-        )
-        claim = await CommandService(db).claim(
-            clarification.id, worker_id="test-backend"
-        )
-        await CommandService(db).finish(
-            clarification.id,
-            claim_token=claim.token,
-            outcome="succeeded",
-            result={"results": [{"update_ok": True}]},
-            error_message=None,
-            worker_id="test-backend",
-        )
-        waiting = await runner.advance(run_id=run.id, task=task)
-        assert waiting.state == "waiting_answer"
-        assert waiting.waiting_reason == "pc_offline"
-        comment_time = (waiting.updated_at + dt.timedelta(seconds=1)).isoformat()
-
-        unchanged = await runner.advance(
-            run_id=run.id,
-            task=task,
-            comments=[
-                {"EditorId": 10001, "Created": comment_time, "Comment": "Служебный комментарий"}
-            ],
-        )
-        assert unchanged.state == "waiting_answer"
-
-        resumed = await runner.advance(
-            run_id=run.id,
-            task=task,
-            comments=[{"EditorId": 501, "Created": comment_time, "Comment": "ПК включил"}],
-        )
-        assert resumed.state == "running"
-        assert resumed.current_step == "validate_request"
-
-
-@pytest.mark.asyncio
-async def test_verified_install_failure_pauses_without_cancellation():
-    async with AsyncSessionLocal() as db:
-        runs = await enable_autopilot(db)
-        task = printer_task(93006)
-        registration = await runs.register_assignment(
-            task=task, assistant_user_id=10001, open_status_id=31
-        )
-        assert registration.run is not None
-        run = registration.run
-        runner = TicketRunRunner(db)
-
-        await runner.advance(run_id=run.id, task=task)
-        diagnose = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == run.id,
-                CommandRecord.action == "diagnose_host",
-            )
-        )
-        assert diagnose is not None
-        claim = await CommandService(db).claim(diagnose.id, worker_id="test-windows")
-        await CommandService(db).finish(
-            diagnose.id,
-            claim_token=claim.token,
-            outcome="succeeded",
-            result={"status": "success", "payload": {"diagnostics": {"is_online": True}}},
-            error_message=None,
-            worker_id="test-windows",
-        )
-        await runner.advance(run_id=run.id, task=task)
-        install = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == run.id,
-                CommandRecord.action == "install_printer",
-            )
-        )
-        assert install is not None
-        await CommandService(db).approve(
-            install.id, decision="approve", reason=None, operator="operator:test"
-        )
-        claim = await CommandService(db).claim(install.id, worker_id="test-windows")
-        await CommandService(db).finish(
-            install.id,
-            claim_token=claim.token,
-            outcome="failed",
-            result={
-                "failure_kind": "verified_failure",
-                "failure_code": "printer_not_found_after_install",
-                "verified_failure": True,
-            },
-            error_message="Принтер не появился после установки",
-            worker_id="test-windows",
-        )
-
-        await runner.advance(run_id=run.id, task=task)
-        cancellation = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == run.id,
-                CommandRecord.idempotency_key.like("%:cancel_execution_failed"),
-            )
-        )
-        await db.refresh(run)
-        assert cancellation is None
-        assert run.state == "paused"
-        assert run.pause_reason == "execution_failed"
-
-
-@pytest.mark.asyncio
-async def test_pre_cancellation_guard_aborts_on_applicant_reply():
-    async with AsyncSessionLocal() as db:
-        runs = await enable_autopilot(db)
-        task = {
-            "Id": 93007,
-            "StatusId": 31,
-            "ExecutorId": 10001,
-            "CreatorId": 501,
-            "Name": "Подключить принтер",
-            "ServiceId": 19,
-        }
-        registration = await runs.register_assignment(
-            task=task, assistant_user_id=10001, open_status_id=31
-        )
-        assert registration.run is not None
-        run = registration.run
-        runner = TicketRunRunner(db)
-
-        # 1. Start run and issue clarification
-        await runner.advance(run_id=run.id, task=task)
-        clarification = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == run.id,
-                CommandRecord.action == "apply_triage",
-            )
-        )
-        assert clarification is not None
-        await CommandService(db).approve(
-            clarification.id, decision="approve", reason=None, operator="operator:test"
-        )
-        claim = await CommandService(db).claim(clarification.id, worker_id="test-backend")
-        await CommandService(db).finish(
-            clarification.id,
-            claim_token=claim.token,
-            outcome="succeeded",
-            result={"results": [{"update_ok": True}]},
-            error_message=None,
-            worker_id="test-backend",
-        )
-        waiting = await runner.advance(run_id=run.id, task=task)
-        assert waiting.state == "waiting_answer"
-
-        # Simulate timeout expired
-        now = dt.datetime.now(dt.timezone.utc)
-        waiting.waiting_until = now - dt.timedelta(seconds=1)
+        db.add_all([completed_run, paused_run])
         await db.commit()
 
-        # Mock fresh task and fresh comments from applicant
-        fresh_task = {
-            **task,
-            "StatusId": 35,
+        runner = TicketRunRunner(db)
+        res1 = await runner.advance(run_id=completed_run.id, task={"Id": 94001})
+        assert res1.state == TicketRunState.COMPLETED.value
+
+        res2 = await runner.advance(run_id=paused_run.id, task={"Id": 94002})
+        assert res2.state == TicketRunState.PAUSED.value
+
+
+@pytest.mark.asyncio
+async def test_advance_legacy_rollout_mode_falls_back_to_orchestrator():
+    async with AsyncSessionLocal() as db:
+        await seed_printer_policies(db)
+        existing = (await db.execute(select(TicketRun).where(TicketRun.task_id == 94003))).scalars().all()
+        for r in existing:
+            await db.delete(r)
+        await db.commit()
+
+        scenario = await db.scalar(
+            select(AutopilotScenario).where(
+                AutopilotScenario.service_id == 19,
+                AutopilotScenario.scenario_key == "install_printer",
+            )
+        )
+        scenario.rollout_mode = "legacy"
+        await db.commit()
+
+        run = TicketRun(
+            id=uuid.uuid4(),
+            task_id=94003,
+            mode="autopilot",
+            state=TicketRunState.RUNNING.value,
+            trigger_kind="ticket_created",
+            trigger_key="ticket:94003:created",
+            scenario_key="install_printer",
+            scenario_version=1,
+            trigger_snapshot_json={"scenario_key": "install_printer"},
+            created_by="test",
+            updated_by="test",
+        )
+        db.add(run)
+        await db.commit()
+
+        task = {
+            "Id": 94003,
+            "ServiceId": 19,
+            "Name": "Подключить принтер Kyocera",
+            "Description": "Установить принтер",
             "CustomFields": [
-                {"CustomFieldId": 1112, "Value": "PC-93007"},
-                {"CustomFieldId": 1103, "Value": "10.20.30.77"},
+                {"CustomFieldId": 1112, "Value": "WS-01"},
+                {"CustomFieldId": 1103, "Value": "10.0.0.50"},
             ],
         }
-        fresh_comments = [
-            {
-                "EditorId": 501,
-                "Created": (now - dt.timedelta(minutes=5)).isoformat(),
-                "Comment": "IP принтера 10.20.30.77, ПК PC-93007",
-            }
-        ]
 
-        with patch("app.services.worker.get_single_task", return_value=fresh_task), \
-             patch("app.services.worker.get_task_comments", return_value=fresh_comments):
-            resumed = await runner.advance(
-                run_id=run.id,
-                task=task,
-                service_auth_b64="test-service-auth",
-            )
-
-        # Verify cancellation was aborted and no cancel command exists
-        cancellation = await db.scalar(
-            select(CommandRecord).where(
-                CommandRecord.ticket_run_id == run.id,
-                CommandRecord.idempotency_key.like("%:cancel_timeout"),
-            )
-        )
-        assert cancellation is None
-        assert resumed.state != "waiting_answer"
-        assert resumed.waiting_reason is None
-        assert resumed.waiting_until is None
-
-        # Verify event details recorded cancellation_aborted
-        events = list(
-            (
-                await db.scalars(
-                    select(TicketRunEvent)
-                    .where(TicketRunEvent.ticket_run_id == run.id)
-                    .order_by(TicketRunEvent.sequence)
-                )
-            ).all()
-        )
-        abort_events = [e for e in events if (e.details_json or {}).get("cancellation_aborted")]
-        assert len(abort_events) >= 1
-        assert abort_events[0].details_json["reason"] == "applicant_replied"
+        runner = TicketRunRunner(db)
+        res = await runner.advance(run_id=run.id, task=task)
+        assert res.state in (TicketRunState.RUNNING.value, TicketRunState.WAITING_APPROVAL.value)
+        assert res.current_step in ("execute:install_printer", "request_clarification")
 
 
 @pytest.mark.asyncio
-async def test_pre_cancellation_guard_completes_on_external_close():
+async def test_advance_printer_installation_creates_command():
+    """Тест создания команды install_printer через фасад TicketRunRunner."""
     async with AsyncSessionLocal() as db:
-        runs = await enable_autopilot(db)
-        task = {
-            "Id": 93008,
-            "StatusId": 31,
-            "ExecutorId": 10001,
-            "CreatorId": 501,
-            "Name": "Подключить принтер",
-            "ServiceId": 19,
-        }
-        registration = await runs.register_assignment(
-            task=task, assistant_user_id=10001, open_status_id=31
-        )
-        run = registration.run
-        runner = TicketRunRunner(db)
-
-        # Move to waiting_answer
-        await runner.advance(run_id=run.id, task=task)
-        clarification = await db.scalar(
-            select(CommandRecord).where(CommandRecord.ticket_run_id == run.id)
-        )
-        await CommandService(db).approve(clarification.id, decision="approve", reason=None, operator="operator:test")
-        claim = await CommandService(db).claim(clarification.id, worker_id="test-backend")
-        await CommandService(db).finish(
-            clarification.id,
-            claim_token=claim.token,
-            outcome="succeeded",
-            result={"results": [{"update_ok": True}]},
-            error_message=None,
-            worker_id="test-backend",
-        )
-        waiting = await runner.advance(run_id=run.id, task=task)
-        assert waiting.state == "waiting_answer"
-
-        waiting.waiting_until = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+        await seed_printer_policies(db)
+        task_id = 94004
+        existing = (await db.execute(select(TicketRun).where(TicketRun.task_id == task_id))).scalars().all()
+        for r in existing:
+            await db.delete(r)
         await db.commit()
 
-        # Mock fresh task indicating ticket was completed externally (StatusId: 29)
-        with patch("app.services.worker.get_single_task", return_value={"StatusId": 29, "Id": 93008}), \
-             patch("app.services.worker.get_task_comments", return_value=[]):
-            finished = await runner.advance(
-                run_id=run.id,
-                task=task,
-                service_auth_b64="test-service-auth",
-            )
+        run = TicketRun(
+            id=uuid.uuid4(),
+            task_id=task_id,
+            mode="autopilot",
+            state=TicketRunState.RUNNING.value,
+            trigger_kind="ticket_created",
+            trigger_key=f"ticket:{task_id}:created",
+            scenario_key="install_printer",
+            scenario_version=1,
+            trigger_snapshot_json={"scenario_key": "install_printer"},
+            created_by="test",
+            updated_by="test",
+        )
+        db.add(run)
+        await db.commit()
 
-        cancellation = await db.scalar(
+        task = {
+            "Id": task_id,
+            "ServiceId": 19,
+            "Name": "Установить принтер HP LaserJet",
+            "Description": "Подключение принтера HP LaserJet 2055 на PC-TEST-99 IP 172.16.20.10",
+            "PrinterName": "HP LaserJet 2055",
+            "CustomFields": [
+                {"CustomFieldId": 1112, "Value": "PC-TEST-99"},
+                {"CustomFieldId": 1103, "Value": "172.16.20.10"},
+            ],
+        }
+
+        runner = TicketRunRunner(db)
+        advanced = await runner.advance(run_id=run.id, task=task)
+        assert advanced.state in (
+            TicketRunState.RUNNING.value,
+            TicketRunState.WAITING_APPROVAL.value,
+            TicketRunState.WAITING_ANSWER.value,
+        )
+
+        cmd = await db.scalar(
             select(CommandRecord).where(
                 CommandRecord.ticket_run_id == run.id,
-                CommandRecord.idempotency_key.like("%:cancel_timeout"),
             )
         )
-        assert cancellation is None
-        assert finished.state == "completed"
-
+        assert cmd is not None

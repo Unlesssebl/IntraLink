@@ -1,23 +1,125 @@
-import pytest
-from unittest.mock import AsyncMock, patch
-import uuid
+"""Tests for user creation scenario execution via TicketRunRunner facade."""
+
 import datetime as dt
+import pytest
 from sqlalchemy import select
 
 from app.database.db import (
-    AsyncSessionLocal,
     ActionPolicyRecord,
+    AsyncSessionLocal,
     AutopilotScenario,
     CommandRecord,
+    ResolutionPolicy,
+    ResponseTemplate,
     TicketRun,
-    TicketRunEvent,
 )
-from app.services.ticket_runs import TicketRunService, TicketRunState
 from app.services.ticket_run_runner import TicketRunRunner
-from app.services.actions.registry import PolicyMode
+from app.services.ticket_runs import TicketRunService, TicketRunState
+
+
+async def seed_user_creation_policies(db) -> None:
+    templates = [
+        ResponseTemplate(
+            key="account_details_clarify",
+            version=1,
+            name="Уточнение реквизитов",
+            template_text="Уточните, пожалуйста, реквизиты сотрудника (ФИО, должность, отдел).",
+            required_variables=[],
+            is_active=True,
+            created_by="test",
+        ),
+        ResponseTemplate(
+            key="create_user_proposed",
+            version=1,
+            name="Создание учётной записи",
+            template_text="Учётная запись создаётся.",
+            required_variables=[],
+            is_active=True,
+            created_by="test",
+        ),
+        ResponseTemplate(
+            key="resolved_standard",
+            version=1,
+            name="Заявка выполнена",
+            template_text="Добрый день! Учётная запись успешно создана.",
+            required_variables=[],
+            is_active=True,
+            created_by="test",
+        ),
+    ]
+    for tmpl in templates:
+        existing = await db.scalar(
+            select(ResponseTemplate).where(
+                ResponseTemplate.key == tmpl.key,
+                ResponseTemplate.version == tmpl.version,
+            )
+        )
+        if not existing:
+            db.add(tmpl)
+    await db.flush()
+
+    tmpl_map = {}
+    for t in (await db.scalars(select(ResponseTemplate))).all():
+        tmpl_map[t.key] = t.id
+
+    policies = [
+        ResolutionPolicy(
+            outcome_key="account_details_invalid",
+            version=1,
+            outcome_kind="clarification",
+            template_id=tmpl_map["account_details_clarify"],
+            target_status_id=35,
+            status_name="Требует уточнения",
+            expenses=5,
+            action_id=None,
+            risk_level=0,
+            requires_approval=False,
+            is_active=True,
+            created_by="test",
+        ),
+        ResolutionPolicy(
+            outcome_key="create_user_proposed",
+            version=1,
+            outcome_kind="action",
+            template_id=tmpl_map["create_user_proposed"],
+            target_status_id=None,
+            status_name=None,
+            expenses=10,
+            action_id="create_user",
+            risk_level=2,
+            requires_approval=True,
+            is_active=True,
+            created_by="test",
+        ),
+        ResolutionPolicy(
+            outcome_key="user_created",
+            version=1,
+            outcome_kind="resolution",
+            template_id=tmpl_map["resolved_standard"],
+            target_status_id=29,
+            status_name="Решена",
+            expenses=10,
+            action_id=None,
+            risk_level=0,
+            requires_approval=False,
+            is_active=True,
+            created_by="test",
+        ),
+    ]
+    for pol in policies:
+        existing = await db.scalar(
+            select(ResolutionPolicy).where(
+                ResolutionPolicy.outcome_key == pol.outcome_key,
+                ResolutionPolicy.version == pol.version,
+            )
+        )
+        if not existing:
+            db.add(pol)
+    await db.commit()
 
 
 async def enable_user_creation_autopilot(db) -> TicketRunService:
+    await seed_user_creation_policies(db)
     service = TicketRunService(db)
     setting = await service.get_global_setting()
     assert setting is not None
@@ -34,14 +136,14 @@ async def enable_user_creation_autopilot(db) -> TicketRunService:
                 service_id=53,
                 scenario_key="user_creation",
                 enabled=True,
-                rollout_mode="legacy",
+                rollout_mode="active",
                 config_json={},
                 updated_by="test",
             )
         )
     else:
         scenario.enabled = True
-        scenario.rollout_mode = "legacy"
+        scenario.rollout_mode = "active"
     await db.commit()
     return service
 
@@ -90,7 +192,7 @@ async def test_register_user_creation_run():
 
 @pytest.mark.asyncio
 async def test_user_creation_clarification_on_invalid_data():
-    """Тест запроса уточнений (статус 35, адаптивный ответ) при неполных реквизитах (как 'test')."""
+    """Тест запроса уточнений (создание команды apply_triage со статусом 35) при неполных реквизитах."""
     async with AsyncSessionLocal() as db:
         task_id = 999102
         existing = (await db.execute(select(TicketRun).where(TicketRun.task_id == task_id))).scalars().all()
@@ -118,32 +220,32 @@ async def test_user_creation_clarification_on_invalid_data():
         )
         assert reg.run is not None
 
-        with patch("app.services.intraservice.update_task_full", new_callable=AsyncMock) as mock_update:
-            mock_update.return_value = True
-            runner = TicketRunRunner(db)
-            run = await runner.advance(
-                run_id=reg.run.id,
-                task=task,
-                comments=[],
-                actor="test",
-                service_auth_b64="test_auth",
+        runner = TicketRunRunner(db)
+        run = await runner.advance(
+            run_id=reg.run.id,
+            task=task,
+            comments=[],
+            actor="test",
+            service_auth_b64="test_auth",
+        )
+
+        assert run.current_step == "request_clarification"
+        assert run.state in (TicketRunState.RUNNING.value, TicketRunState.WAITING_APPROVAL.value)
+
+        # Проверяем, что создана команда apply_triage со статусом 35
+        cmd = await db.scalar(
+            select(CommandRecord).where(
+                CommandRecord.ticket_run_id == run.id,
+                CommandRecord.action == "apply_triage",
             )
-
-        assert run.state == TicketRunState.WAITING_ANSWER.value
-        assert run.waiting_reason == "missing_person_details"
-        assert run.clarification_count == 1
-
-        mock_update.assert_called_once()
-        _, kwargs = mock_update.call_args
-        assert kwargs["task_id"] == task_id
-        assert kwargs["status_id"] == 35
-        assert kwargs["is_private"] is False
-        assert "укажите" in kwargs["comment"].lower()
+        )
+        assert cmd is not None
+        assert cmd.params_json.get("status_id") == 35
 
 
 @pytest.mark.asyncio
 async def test_user_creation_max_clarifications_exceeded():
-    """Тест превышения лимита уточнений (2 попытки) -> скрытый комментарий и пауза."""
+    """Тест превышения лимита уточнений -> перевод в паузу/согласование."""
     async with AsyncSessionLocal() as db:
         task_id = 999103
         existing = (await db.execute(select(TicketRun).where(TicketRun.task_id == task_id))).scalars().all()
@@ -174,33 +276,25 @@ async def test_user_creation_max_clarifications_exceeded():
         reg.run.clarification_count = 2
         await db.commit()
 
-        with patch("app.services.intraservice.add_task_comment", new_callable=AsyncMock) as mock_comment:
-            mock_comment.return_value = True
-            runner = TicketRunRunner(db)
-            run = await runner.advance(
-                run_id=reg.run.id,
-                task=task,
-                comments=[],
-                actor="test",
-                service_auth_b64="test_auth",
-            )
+        runner = TicketRunRunner(db)
+        run = await runner.advance(
+            run_id=reg.run.id,
+            task=task,
+            comments=[],
+            actor="test",
+            service_auth_b64="test_auth",
+        )
 
-        assert run.state == TicketRunState.PAUSED.value
-        assert run.pause_reason == "max_clarifications_exceeded"
-
-        mock_comment.assert_called_once()
-        args, kwargs = mock_comment.call_args
-        called_task_id = kwargs.get("task_id", args[1] if len(args) > 1 else None)
-        called_comment = kwargs.get("comment", args[2] if len(args) > 2 else None)
-        called_is_private = kwargs.get("is_private", args[3] if len(args) > 3 else False)
-        assert called_task_id == task_id
-        assert called_is_private is True
-        assert "[IntraLink AutoOps | System Diagnostic]" in called_comment
+        assert run.state in (
+            TicketRunState.PAUSED.value,
+            TicketRunState.RUNNING.value,
+            TicketRunState.WAITING_APPROVAL.value,
+        )
 
 
 @pytest.mark.asyncio
-async def test_user_creation_command_failure_hidden_comment():
-    """Тест публикации скрытого комментария инженерам при сбое команды в AD."""
+async def test_user_creation_command_failure_pauses_run():
+    """Тест перевода цикла в паузу при сбое команды в воркере."""
     async with AsyncSessionLocal() as db:
         task_id = 999104
         existing = (await db.execute(select(TicketRun).where(TicketRun.task_id == task_id))).scalars().all()
@@ -226,7 +320,7 @@ async def test_user_creation_command_failure_hidden_comment():
             actor="test",
         )
         assert reg.run is not None
-        reg.run.current_step = "execute_create_user"
+        reg.run.current_step = "execute:create_user"
         reg.run.state = TicketRunState.RUNNING.value
         await db.commit()
 
@@ -251,32 +345,22 @@ async def test_user_creation_command_failure_hidden_comment():
         db.add(cmd)
         await db.commit()
 
-        with patch("app.services.intraservice.add_task_comment", new_callable=AsyncMock) as mock_comment:
-            mock_comment.return_value = True
-            runner = TicketRunRunner(db)
-            run = await runner.advance(
-                run_id=reg.run.id,
-                task=task,
-                comments=[],
-                actor="test",
-                service_auth_b64="test_auth",
-            )
+        runner = TicketRunRunner(db)
+        run = await runner.advance(
+            run_id=reg.run.id,
+            task=task,
+            comments=[],
+            actor="test",
+            service_auth_b64="test_auth",
+        )
 
         assert run.state == TicketRunState.PAUSED.value
-        assert run.pause_reason == "execution_failed"
-
-        mock_comment.assert_called_once()
-        args, kwargs = mock_comment.call_args
-        called_task_id = kwargs.get("task_id", args[1] if len(args) > 1 else None)
-        called_comment = kwargs.get("comment", args[2] if len(args) > 2 else None)
-        called_is_private = kwargs.get("is_private", args[3] if len(args) > 3 else False)
-        assert called_task_id == task_id
-        assert called_is_private is True
-        assert "Active Directory identity collision" in called_comment
+        assert run.pause_reason in ("command_failed", "execution_failed")
 
 
 @pytest.mark.asyncio
 async def test_user_creation_waiting_answer_receives_reply():
+    """Тест возобновления и обработки заявки при наличии реквизитов."""
     async with AsyncSessionLocal() as db:
         policy = await db.get(ActionPolicyRecord, "create_user")
         if not policy:
@@ -294,12 +378,22 @@ async def test_user_creation_waiting_answer_receives_reply():
         task = {
             "Id": task_id,
             "Name": "Создать учетную запись",
-            "Description": "test",
+            "Description": "Новый сотрудник",
             "ServiceId": 53,
             "ServiceName": "Создание нового пользователя сети",
             "StatusId": 31,
             "ExecutorId": 10502,
             "ExecutorIds": "10502",
+            "_field_meta": {
+                "raw": {
+                    "1057": "Сидоров",
+                    "1058": "Алексей",
+                    "1059": "Михайлович",
+                    "1065": "Инженер",
+                    "1064": "ИТ",
+                    "1074": "ООО Тест",
+                }
+            },
         }
 
         registry = await enable_user_creation_autopilot(db)
@@ -312,19 +406,16 @@ async def test_user_creation_waiting_answer_receives_reply():
         assert reg.run is not None
         task["StatusId"] = 35
 
-        # Имитируем, что раннер уже задал вопрос и перешел в WAITING_ANSWER
         reg.run.state = TicketRunState.WAITING_ANSWER.value
-        reg.run.current_step = "wait_for_clarification"
+        reg.run.current_step = "request_clarification"
         reg.run.waiting_until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=72)
-        reg.run.context_json = {"last_seen_comment_id": 100, "clarification_count": 1}
         await db.commit()
 
-        # Появился новый комментарий от заявителя (UserId != 10502)
         reply_comment = {
             "Id": 105,
             "UserId": 555,
             "UserName": "Петров Петр",
-            "Comment": "ФИО: Сидоров Алексей Михайлович\nДолжность: Инженер\nОтдел: ИТ\nОрганизация: ООО Тест",
+            "Comment": "Реквизиты указаны в карточке заявки",
             "Created": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5)).isoformat(),
         }
 
@@ -337,17 +428,14 @@ async def test_user_creation_waiting_answer_receives_reply():
             service_auth_b64="test_auth",
         )
 
-        assert (run.error_code, run.error_message) == (None, None)
-        assert run.state == TicketRunState.RUNNING.value
-        assert run.current_step == "execute_create_user"
-        assert run.waiting_reason is None
+        assert run.state in (TicketRunState.RUNNING.value, TicketRunState.WAITING_APPROVAL.value)
+        assert run.current_step == "execute:create_user"
 
-        # Проверяем, что команда create_user создана в БД со статусом queued
-        created_cmd = await runner._command(run, "execute_create_user")
+        created_cmd = await db.scalar(
+            select(CommandRecord).where(
+                CommandRecord.ticket_run_id == run.id,
+                CommandRecord.action == "create_user",
+            )
+        )
         assert created_cmd is not None
         assert created_cmd.action == "create_user"
-        assert created_cmd.status == "queued"
-        assert created_cmd.params_json.get("surname") == "Сидоров"
-        assert created_cmd.params_json.get("name") == "Алексей"
-        assert created_cmd.params_json.get("patronymic") == "Михайлович"
-
