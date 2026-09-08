@@ -19,14 +19,12 @@ from app.services.ai_synthesis import calculate_confidence_score
 from app.services.deduplication import DuplicateDetector
 from app.services.fact_extractor import enrich_task_with_extracted_facts
 from app.services.typed_decision_adapter import materialize_typed_decision
+from app.services.decision_envelope import envelope_to_legacy
+from app.services.scenario_decision import ScenarioDecisionService
 from app.services.rules.credentials import CredentialsRule
 from app.services.rules.catalog import (
     ROOT_SERVICES,
     get_root_number_for_service_id,
-)
-from app.services.host_telemetry import (
-    get_task_telemetry,
-    prefetch_task_telemetry,
 )
 from app.services.template_engine import (
     auto_detect_template,
@@ -34,7 +32,6 @@ from app.services.template_engine import (
 )
 from app.services.rag import search_knowledge_base
 from app.services.triage_session import TriageSessionManager
-from app.services.worker import get_redis_client
 
 logger = logging.getLogger("core_api.services.triage_service")
 
@@ -555,6 +552,30 @@ class TriageService:
         if decision:
             decision["confidence"] = card_confidence
 
+        decision_envelope = None
+        try:
+            envelope = await ScenarioDecisionService(db).analyze(
+                task=task,
+                comments=history,
+                diagnostics=rule_diag,
+                kb_matches=kb_matches,
+                legacy_decision=decision,
+                generated_response=ai_resolution,
+                decision_version=int((decision or {}).get("version") or 1),
+            )
+            compiled_legacy = envelope_to_legacy(envelope)
+            decision = {**(decision or {}), **compiled_legacy}
+            ai_resolution = envelope.response_draft
+            decision_envelope = envelope.model_dump(mode="json")
+            decision["_decision_envelope"] = decision_envelope
+            card_confidence = envelope.confidence
+        except Exception:
+            # Compatibility window is fail-safe: a new envelope failure must not
+            # remove the already computed legacy operator recommendation.
+            logger.exception(
+                "Scenario decision envelope failed for task %s", task_id
+            )
+
         printer_address = ""
         for field in task.get("CustomFields", []) or []:
             field_id = field.get("CustomFieldId") or field.get("FieldId")
@@ -569,6 +590,23 @@ class TriageService:
             if extracted and extracted.extracted_ip:
                 printer_address = extracted.extracted_ip
 
+        blocked_reasons: list[str] = []
+        if decision_envelope:
+            envelope_outcome = decision_envelope.get("outcome") or {}
+            if envelope_outcome.get("kind") == "clarification":
+                blocked_reasons.extend(
+                    f"missing_fact:{field}"
+                    for field in envelope_outcome.get("missing_fields", [])
+                )
+                blocked_reasons.extend(
+                    f"invalid_fact:{field}"
+                    for field in envelope_outcome.get("invalid_fields", [])
+                )
+            elif envelope_outcome.get("kind") in {"manual_review", "no_match"}:
+                blocked_reasons.append(envelope_outcome.get("reason") or "manual_review")
+            if (decision_envelope.get("policy") or {}).get("resolution_error"):
+                blocked_reasons.append("resolution_policy_unavailable")
+
         return {
             "task": task,
             "history": history,
@@ -576,6 +614,7 @@ class TriageService:
             "telemetry": telemetry,
             "suggested_action": decision,
             "ai_suggested_resolution": ai_resolution,
+            "decision_envelope": decision_envelope,
             "ai_metadata": ai_metadata,
             "circuit": circuit_dec.circuit.value,
             "circuit_reason": circuit_dec.reason,
@@ -585,9 +624,14 @@ class TriageService:
                 "rag": bool(kb_matches),
                 "ai": bool(ai_metadata.get("ai_used")),
             },
-            "readiness": {"ready": bool(decision), "blocked_reasons": []},
+            "readiness": {
+                "ready": bool(decision) and not blocked_reasons,
+                "blocked_reasons": blocked_reasons,
+            },
             "confidence_score": card_confidence,
-            "requires_human_review": bool(card_confidence < 0.80),
+            "requires_human_review": bool(
+                card_confidence < 0.80 or blocked_reasons
+            ),
             "printer_address": printer_address,
         }
 
@@ -612,6 +656,8 @@ class TriageService:
         3. Списание трудозатрат от имени авторизованного оператора.
         4. Автообучение pgvector RAG при подтвержденном закрытии.
         """
+
+        import app.routers.triage as tr
 
         op_user_id = operator_user_id or settings.PRIMARY_EXECUTOR_ID
         exec_ids = executor_ids or (str(op_user_id) if op_user_id else settings.DEFAULT_EXECUTOR_IDS)

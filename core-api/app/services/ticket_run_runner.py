@@ -188,6 +188,67 @@ class TicketRunRunner:
         if run.state in {TicketRunState.PAUSED.value, TicketRunState.SYSTEM_ERROR.value}:
             return run
 
+        configured_key = run.scenario_key or (run.trigger_snapshot_json or {}).get(
+            "scenario_key"
+        )
+        service_id = int(task.get("ServiceId") or 0)
+        scenario_config = await self.db.scalar(
+            select(AutopilotScenario).where(
+                AutopilotScenario.service_id == service_id,
+                AutopilotScenario.scenario_key == configured_key,
+                AutopilotScenario.enabled.is_(True),
+            )
+        )
+        rollout_mode = (
+            scenario_config.rollout_mode if scenario_config is not None else "legacy"
+        )
+        use_scenario_orchestrator = rollout_mode == "active"
+        if rollout_mode == "canary":
+            from app.services.scenarios import get_scenario_registry
+
+            percent = int((scenario_config.config_json or {}).get("canary_percent", 10))
+            use_scenario_orchestrator = get_scenario_registry().canary_selected(
+                run.task_id, percent
+            )
+
+        if rollout_mode in {"shadow", "canary"} and not use_scenario_orchestrator:
+            try:
+                from app.services.scenario_orchestrator import TicketRunOrchestrator
+
+                shadow = await TicketRunOrchestrator(self.db).record_shadow(
+                    run_id=run.id,
+                    task=task,
+                    comments=comments,
+                    legacy_scenario_key=configured_key,
+                )
+                logger.info(
+                    "Scenario shadow task=%s legacy=%s scenario=%s outcome=%s confidence=%.3f",
+                    run.task_id,
+                    configured_key,
+                    shadow.scenario_key,
+                    shadow.outcome.kind,
+                    shadow.confidence,
+                )
+            except Exception:
+                logger.exception("Scenario shadow evaluation failed for task %s", run.task_id)
+
+        if use_scenario_orchestrator:
+            from app.services.scenario_orchestrator import TicketRunOrchestrator
+
+            result = await TicketRunOrchestrator(self.db).advance(
+                run_id=run.id,
+                task=task,
+                comments=comments,
+                service_auth_b64=service_auth_b64,
+                event_type=(
+                    "comment_added"
+                    if run.state == TicketRunState.WAITING_ANSWER.value
+                    else "ticket_changed"
+                ),
+                actor=actor,
+            )
+            return result.run
+
         scenario_key = (run.trigger_snapshot_json or {}).get("scenario_key")
         if scenario_key == "user_creation":
             if run.state == TicketRunState.WAITING_ANSWER.value:

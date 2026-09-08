@@ -42,8 +42,21 @@ class AutopilotSettingRequest(BaseModel):
 
 class AutopilotScenarioRequest(BaseModel):
     service_id: int = Field(gt=0)
-    scenario_key: Literal["printer_installation", "user_creation"]
+    scenario_key: Literal[
+        "printer_installation",
+        "user_creation",
+        "install_printer",
+        "create_user",
+        "offline_host",
+        "grant_wlan",
+        "redirect",
+        "physical_device",
+        "file_lock",
+        "rag_consultation",
+        "consultation",
+    ]
     enabled: bool = False
+    rollout_mode: Literal["legacy", "shadow", "canary", "active"] = "legacy"
     config: dict = Field(default_factory=dict)
     expected_version: int | None = Field(None, ge=1)
 
@@ -54,6 +67,7 @@ def serialize_scenario(item: AutopilotScenario) -> dict:
         "service_id": item.service_id,
         "scenario_key": item.scenario_key,
         "enabled": item.enabled,
+        "rollout_mode": item.rollout_mode,
         "version": item.version,
         "config": item.config_json,
         "updated_by": item.updated_by,
@@ -69,6 +83,11 @@ def serialize_run(run: TicketRun) -> dict:
         "state": run.state,
         "outcome": run.outcome,
         "current_step": run.current_step,
+        "scenario_key": run.scenario_key,
+        "scenario_version": run.scenario_version,
+        "fact_revision": run.fact_revision,
+        "context_fingerprint": run.context_fingerprint,
+        "decision_version": run.decision_version,
         "waiting_reason": run.waiting_reason,
         "waiting_until": run.waiting_until.isoformat() if run.waiting_until else None,
         "clarification_count": run.clarification_count,
@@ -87,6 +106,7 @@ def serialize_event(event: TicketRunEvent) -> dict:
     return {
         "id": str(event.id),
         "sequence": event.sequence,
+        "event_key": event.event_key,
         "event_type": event.event_type,
         "actor": event.actor,
         "details": event.details_json,
@@ -341,6 +361,7 @@ async def upsert_autopilot_scenario(
             service_id=payload.service_id,
             scenario_key=payload.scenario_key,
             enabled=payload.enabled,
+            rollout_mode=payload.rollout_mode,
             config=payload.config,
             actor=context.subject,
             expected_version=payload.expected_version,

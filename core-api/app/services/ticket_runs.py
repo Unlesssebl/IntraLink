@@ -21,7 +21,6 @@ from app.database.db import (
     CommandRecord,
     TicketRun,
     TicketRunEvent,
-    TriageTemplate,
 )
 from app.config import settings
 from app.services.template_engine import render_template_strict
@@ -256,9 +255,25 @@ class TicketRunService:
         config: dict[str, Any],
         actor: str,
         expected_version: int | None,
+        rollout_mode: str = "legacy",
     ) -> AutopilotScenario:
-        if scenario_key not in {"printer_installation", "user_creation"}:
+        supported = {
+            "printer_installation",
+            "user_creation",
+            "install_printer",
+            "create_user",
+            "offline_host",
+            "grant_wlan",
+            "redirect",
+            "physical_device",
+            "file_lock",
+            "rag_consultation",
+            "consultation",
+        }
+        if scenario_key not in supported:
             raise ValueError("unsupported_scenario_key")
+        if rollout_mode not in {"legacy", "shadow", "canary", "active"}:
+            raise ValueError("unsupported_rollout_mode")
         record = await self.db.scalar(
             select(AutopilotScenario)
             .where(
@@ -274,6 +289,7 @@ class TicketRunService:
                 service_id=service_id,
                 scenario_key=scenario_key,
                 enabled=enabled,
+                rollout_mode=rollout_mode,
                 config_json=config,
                 updated_by=actor,
             )
@@ -282,6 +298,7 @@ class TicketRunService:
             if expected_version is not None and record.version != expected_version:
                 raise ValueError("scenario_version_conflict")
             record.enabled = enabled
+            record.rollout_mode = rollout_mode
             record.config_json = config
             record.version += 1
             record.updated_by = actor
@@ -363,6 +380,9 @@ class TicketRunService:
                 "scenario_key": scenario.scenario_key,
                 "scenario_version": scenario.version,
             },
+            scenario_key=scenario.scenario_key,
+            scenario_version=scenario.version,
+            fact_revision=0,
             current_step="validate_request",
             pause_reason=None,
             created_by=actor,
@@ -458,6 +478,7 @@ class TicketRunService:
         event_type: str,
         actor: str,
         details: dict[str, Any],
+        event_key: str | None = None,
     ) -> None:
         sequence = (
             await self.db.scalar(
@@ -471,6 +492,7 @@ class TicketRunService:
             TicketRunEvent(
                 ticket_run_id=run.id,
                 sequence=sequence,
+                event_key=event_key,
                 event_type=event_type,
                 actor=actor,
                 details_json=details,

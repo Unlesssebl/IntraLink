@@ -264,6 +264,7 @@ class DecisionJournalService:
                     "risk_level": (decision or {}).get("risk_level", "normal"),
                     "risk_warning": (decision or {}).get("risk_warning"),
                     "typed_outcome": typed_outcome,
+                    "decision_envelope": (decision or {}).get("_decision_envelope"),
                     "action_parameters": (decision or {}).get("action_parameters"),
                 }
             ),
