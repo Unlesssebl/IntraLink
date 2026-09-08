@@ -1,7 +1,7 @@
 # Единый план: Промышленный асинхронный пакетный анализ заявок (Async Batch Triage Platform)
 
-> **Статус:** Утверждение архитектуры и детального плана  
-> **Основание:** [ADR 0003](docs/adr/0003-asynchronous-batch-triage-platform.md), аудит `/deep-reflect`
+> **Статус:** Реализован и верифицирован (коммит `96d4d03`)  
+> **Основание:** [ADR 0003](../../adr/0003-asynchronous-batch-triage-platform.md), аудит `/deep-reflect`
 
 ---
 

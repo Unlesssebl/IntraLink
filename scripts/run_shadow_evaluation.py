@@ -9,7 +9,6 @@ import asyncio
 import datetime as dt
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -36,7 +35,7 @@ async def run_evaluation(
     if engine.dialect.name == "sqlite":
         await init_db()
 
-    output_path = output_path or (REPO_ROOT / "docs" / "shadow_evaluation_report.md")
+    output_path = output_path or (REPO_ROOT / "docs" / "reports" / "evals" / "shadow_evaluation_report.md")
 
     async with AsyncSessionLocal() as db:
         query = select(TicketRun).order_by(TicketRun.created_at.desc()).limit(limit)

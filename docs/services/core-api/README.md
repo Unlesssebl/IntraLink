@@ -10,9 +10,11 @@
   * Проксирование и изоляция вызовов к REST API IntraService.
   * Безопасное хранение зашифрованных учетных данных пользователей и инфраструктуры (Fernet) через единый Credentials Vault (`vault.py` + PostgreSQL `system_settings` + авто-прогрев Redis).
   * Декомпозированный сервис триажа очереди `TriageService` и менеджер сессий `TriageSessionManager` (`core-api/app/services/`).
+  * **Сценарный оркестратор (`TicketRunOrchestrator`):** долговечный конечный автомат жизненного цикла заявок, типизированные сценарии (`create_user`, `install_printer`, `grant_wlan`, `redirect`, `offline_host`, `file_lock`, `physical_device`, `consultation`), реестр коллекторов фактов (`facts/`) с контролем источника правды (Provenance), компилятор решений `DecisionCompiler` и версионированные политики финализации (`resolution_policies`).
+  * **Промышленный асинхронный пакетный анализ (ADR 0003):** `POST /api/v1/triage/analyze-batch` с мгновенным ответом `202 Accepted` и `batch_id`, фоновая корутина с семафором `TRIAGE_ANALYSIS_MAX_CONCURRENCY=4`, Redis Job Queue (`triage:batch:{batch_id}`), Single-Flight блокировка `triage:batch:active_id`, публикация событий в Redis Pub/Sub и стриминг прогресса в браузер через SSE (`/api/v1/events/stream`).
   * Единая шина команд (Command Bus) и декларативный реестр действий `ActionRegistry` с Pydantic JSON-схемами и типами целей.
   * Динамический движок политик `PolicyEngine` с аппаратным Killswitch (`disabled` -> HTTP 403), HitL (`confirm`) и автоматическим режимом (`auto`).
-  * Централизованный Rule Engine и хранение канонических шаблонов триажа в PostgreSQL (`triage_templates` + `rules_admin.py`).
+  * Двухуровневая модель API: v1 для обратной совместимости и v2 для сценарного управления (`/api/v2/scenario`, `/api/v2/commands`, `/api/v2/response-templates`).
   * Двухэтапный Hybrid RAG (`bge-m3` 1024 dim + `pgvector` HNSW + нативный PostgreSQL FTS `tsvector russian` со `setweight` и GIN-индексом + Cross-Encoder `BAAI/bge-reranker-v2-m3` на FastEmbed ONNX Runtime с прогревом в Docker).
   * Строгий гейтинг источников рекомендаций `is_valid_solution_source` (отсечение статуса 30 «Отменена» и неинформативных отписок) и устранение обходов порогов реранкера.
   * Инвалидация кэша выдачи RAG по ревизии корпуса `kb:corpus:revision` в Redis.

@@ -22,6 +22,7 @@
 | **Shared (SSOT)** | Python, orjson, Pydantic | Единый пакет общих алгоритмов нормализации оборудования (`normalizer.py`), экспресс-диагностики (`diagnostics.py`), базы знаний принтеров (`printers.py`) и сериализации |
 | **Telegram Bot** | aiogram 3.x, aiohttp | Мобильный пейджер и HITL-согласования через Command Bus и персистентную доставку Redis Streams (`stream:intraservice_events`) |
 | **Intra Web UI** | React 19, Vite, Tailwind CSS v4 | Двухконтурный интерфейс: операторский центр очереди 1-й линии (`/operator-panel`), Skills Hub с Live SSE Terminal и защищенная консоль администратора (`/admin`) |
+| **Desktop Companion** | Tauri 2 (Rust), React 19, Windows API | Нативный Windows tray-helper инженера первой линии: запуск LiteManager, DameWare, RDP по одноразовым deep link Core API |
 
 ---
 
@@ -46,6 +47,7 @@ flowchart TB
     subgraph Interface_Layer ["Слой интерфейсов и SDK"]
         TG_Bot["💬 Telegram Bot (aiogram 3.x)"]:::clientStyle
         Intra_Web["🖥️ Intra Web SPA (/admin)"]:::clientStyle
+        Desktop_Comp["🖥️ Desktop Companion (Tauri 2)"]:::clientStyle
         HD_CLI["🛠️ helpdesk-cli (AGY Tooling SDK)"]:::clientStyle
     end
 
@@ -53,7 +55,7 @@ flowchart TB
         API_Main["⚡ FastAPI Gateway Hub"]:::coreStyle
         Command_Worker["📨 Command Outbox Worker"]:::coreStyle
         Poller_Daemon["👑 Poller Daemon (Leader Lock)"]:::coreStyle
-        Rule_Engine["⚙️ Rule Engine & SSOT Templates"]:::coreStyle
+        Rule_Engine["⚙️ Scenario Orchestrator & Rules"]:::coreStyle
         AI_Hub["🛡️ AI Hub & DLP Sanitizer"]:::coreStyle
         RAG_Engine["🧠 Hybrid RAG (pgvector + FastEmbed)"]:::coreStyle
     end
@@ -78,11 +80,14 @@ flowchart TB
     %% Клиенты к интерфейсам
     User <--> TG_Bot
     Admin_Web <--> Intra_Web
+    Admin_Web <--> Desktop_Comp
     AGY_Agent <--> HD_CLI
 
-    %% Интерфейсы к Core API
+    %% Интерфейсы к Core API и локальной среде
     TG_Bot <-->|HTTP REST (X-Bot-Api-Key)| API_Main
     Intra_Web <-->|REST API / JWT Session| API_Main
+    Intra_Web -.->|Deep Link / One-Time Grant| Desktop_Comp
+    Desktop_Comp -->|Direct Launch: RDP, DameWare, LM| AD_Domain
     HD_CLI <-->|HTTP REST (X-Bot-Api-Key)| API_Main
 
     %% Внутри Core
@@ -327,4 +332,16 @@ Poller читает активные циклы страницами по ста
   - `worker:domain_auth` (для воркера WinRM/SMB).
   - `worker:service_auth_b64` (для фонового опроса IntraService).
 - Это гарантирует отказоустойчивость: при перезапуске или аварийной очистке Redis опрос очередей и работа воркеров не прерываются.
+
+---
+
+## ⚡ 9. Промышленная асинхронная платформа пакетного анализа (ADR 0003)
+
+Для очередей первой линии (100–300+ заявок) система использует неблокирующую асинхронную модель **Job Queue + HTTP 202 Accepted + SSE Event Stream**:
+
+1. **Неблокирующий шлюз (< 30 мс):** `POST /api/v1/triage/analyze-batch` принимает список `task_ids`, проверяет права `triage:mutate`, регистрирует задание в Redis Hash `triage:batch:{batch_id}` и моментально возвращает `HTTP 202 Accepted` с `batch_id`.
+2. **Single Flight Lock:** Распределённый строковый ключ `triage:batch:active_id` в Redis (TTL 1800s) исключает параллельный запуск конкурирующих пакетных анализов.
+3. **Серверный оркестратор корутин:** Выполняется в фоне Core API с контролируемым семафором `TRIAGE_ANALYSIS_MAX_CONCURRENCY=4`. Процесс устойчив к закрытию вкладки браузера оператором.
+4. **Потоковая доставка через SSE:** По завершении анализа каждой заявки событие `task_analyzed` публикуется в Redis Pub/Sub (`events:all`) и транслируется всем активным веб-клиентам через единый Server-Sent Events стрим `/api/v1/events/stream`.
+5. **Кооперативная отмена:** Вызов `POST /api/v1/triage/batch/{batch_id}/cancel` устанавливает флаг `triage:batch:{batch_id}:abort`, позволяя оператору безопасно прервать обработку очереди.
 

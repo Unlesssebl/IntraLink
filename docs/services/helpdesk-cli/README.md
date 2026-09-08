@@ -18,7 +18,7 @@
 ## 🏗 Архитектура компонентов
 
 * **[`helpdesk.py`](../../../helpdesk-cli/helpdesk.py)** — единая CLI-точка входа для вызова команд.
-* **[`GEMINI.md`](../../../helpdesk-cli/GEMINI.md)** — системный контекст Helpdesk-оператора для AGY CLI (персона инженера, guardrails).
+* **[`SKILL.md`](../../../.agents/skills/intraservice-helpdesk/SKILL.md)** — системный контекст Helpdesk-оператора для AGY CLI (персона инженера, guardrails).
 * **[`core_api_client.py`](../../../helpdesk-cli/core_api_client.py)** — асинхронный HTTP REST-клиент к Core API Gateway (`X-Bot-Api-Key`).
 * **`commands/`** — модульные обработчики:
   * `triage.py` — пакетный разбор очереди (`batch`), отмена дубликатов (`duplicates`), редиректы каталога (`redirect`);

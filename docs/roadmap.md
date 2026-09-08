@@ -2,7 +2,10 @@
 
 Документ фиксирует стратегические горизонты, этапы технологической эволюции и архитектурные инварианты системы **IntraLink**.
 
-Ближайший этап AI-контура: [Roadmap качества RAG](plans/rag-quality-roadmap.md). В нём зафиксированы результаты аудита локального стека от 2026-09-08, минимальный объём изменений и критерии приёмки.
+Ближайшие этапы реализации:
+* [Переход на сценарный контур](plans/scenario-orchestration/transition-roadmap.md) — типизированные сценарии, сбор фактов с Provenance, Rollout Modes (Shadow/Canary/Active).
+* [Эволюция модульной Worker Platform](plans/worker-platform-evolution.md) — границы безопасного исполнения, масштабирование воркеров, принтерный пилот.
+* [Roadmap качества RAG](plans/rag-quality-roadmap.md) — этапы A–D реализованы и верифицированы (FastEmbed + BGE-Reranker-v2-m3 + PostgreSQL FTS).
 
 ---
 
@@ -160,14 +163,14 @@ timeline
    - Векторная семантическая кластеризация FastEmbed (косинусное сходство $\ge 0.78$) и анализ аварийных маркеров (`outage_detector.py`).
    - Автоматическое формирование **Master-инцидентов** (1С, сеть, интернет, телефония, печать) с сохранением в Redis и алертингом в SSE-шину `events:all`.
    - REST API управления инцидентами (`GET /api/v1/outages/active`, `POST /api/v1/outages/{id}/resolve`, `POST /api/v1/outages/{id}/broadcast`).
-   - Интерактивный алерт-баннер [`OutageAlertBanner.tsx`](intra-web/src/components/queue/OutageAlertBanner.tsx) в очереди Web UI с 1-клик фильтрацией аварийных заявок и массовым оповещением заявителей.
+   - Интерактивный алерт-баннер [`OutageAlertBanner.tsx`](../intra-web/src/components/queue/OutageAlertBanner.tsx) в очереди Web UI с 1-клик фильтрацией аварийных заявок и массовым оповещением заявителей.
 2. **Голосовой ввод (Faster-Whisper Voice-to-Ticket):**
    - Локальная транскрибация голосовых сообщений пользователей в Telegram-боте.
    - Извлечение именованных сущностей (ФИО, кабинет, имя ПК, суть проблемы) $\rightarrow$ структурированная карточка заявки.
 3. **Гибридная классификация намерений (Hybrid Intent Routing Cascade):**
    - Полный отказ от хрупких регулярных выражений в пользу трехуровневого каскада: `Regex Guard (Tier 1) ➔ FastEmbed Semantic Anchors (Tier 2) ➔ SLM Qwen-2.5 Intent Verifier (Tier 3)`.
    - Защита от ложных срабатываний на отрицаниях (*«пока не принес»*), нечувствительность к сленгу и опечаткам.
-   - Детальный план и архитектура: [**docs/roadmap_intent_classification.md**](roadmap_intent_classification.md).
+   - Детальный план и архитектура: [**plans/intent-classification.md**](plans/intent-classification.md).
 
 ---
 
