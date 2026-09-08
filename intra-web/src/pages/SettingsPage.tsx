@@ -190,13 +190,14 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
     }
   };
 
-  const handleToggleScenario = async (serviceId: number, scenarioKey: AutopilotScenarioKey, enabled: boolean, version: number, config: Record<string, unknown>) => {
+  const handleToggleScenario = async (serviceId: number, scenarioKey: AutopilotScenarioKey, enabled: boolean, version: number, config: Record<string, unknown>, rolloutMode: 'legacy' | 'shadow' | 'canary' | 'active') => {
     setSavingScenario(true);
     try {
       await saveAutopilotScenario({
         service_id: serviceId,
         scenario_key: scenarioKey,
         enabled,
+        rollout_mode: rolloutMode,
         config,
         expected_version: version,
       });
@@ -297,6 +298,12 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
               >
                 <option value="printer_installation">Установка принтера</option>
                 <option value="user_creation">Создание учётной записи</option>
+                <option value="offline_host">Недоступный ПК</option>
+                <option value="redirect">Перенаправление</option>
+                <option value="grant_wlan">Доступ WLAN</option>
+                <option value="file_lock">Блокировка файла</option>
+                <option value="physical_device">Физическое устройство</option>
+                <option value="rag_consultation">RAG-консультация</option>
               </select>
               <input
                 type="number"
@@ -314,9 +321,22 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
                   <span className="font-mono font-semibold">#{item.service_id}</span>
                   <span className="ml-2 text-neutral-500">{item.scenario_key === 'user_creation' ? 'Создание учётной записи' : 'Установка принтера'}</span>
                 </div>
-                <button type="button" disabled={!canManageAutopilot || savingScenario} onClick={() => handleToggleScenario(item.service_id, item.scenario_key, !item.enabled, item.version, item.config)} className={`rounded px-2 py-1 text-[11px] font-semibold ${item.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}>
-                  {item.enabled ? 'Включён' : 'Выключен'}
-                </button>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={item.rollout_mode}
+                    disabled={!canManageAutopilot || savingScenario}
+                    onChange={event => handleToggleScenario(item.service_id, item.scenario_key, item.enabled, item.version, item.config, event.target.value as 'legacy' | 'shadow' | 'canary' | 'active')}
+                    className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px] dark:border-neutral-700 dark:bg-neutral-950"
+                  >
+                    <option value="legacy">Legacy</option>
+                    <option value="shadow">Shadow</option>
+                    <option value="canary">Canary</option>
+                    <option value="active">Active</option>
+                  </select>
+                  <button type="button" disabled={!canManageAutopilot || savingScenario} onClick={() => handleToggleScenario(item.service_id, item.scenario_key, !item.enabled, item.version, item.config, item.rollout_mode)} className={`rounded px-2 py-1 text-[11px] font-semibold ${item.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}>
+                    {item.enabled ? 'Включён' : 'Выключен'}
+                  </button>
+                </div>
               </div>
             ))}
           </div>

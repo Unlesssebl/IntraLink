@@ -168,6 +168,9 @@ export default function UnifiedDecisionPanel({
 
   // 1. Вычисление параметров решения и Cold-Start
   const decision = details?.decision;
+  const envelope = details?.decision_envelope;
+  const envelopeOutcome = envelope?.outcome || {};
+  const envelopePolicy = envelope?.policy || {};
   const proposal = decision?.proposal;
   const readiness =
     details?.readiness ||
@@ -182,15 +185,25 @@ export default function UnifiedDecisionPanel({
   const readinessIsCurrent = !(readiness?.stale || isStale);
   const isReady = (readiness?.ready ?? true) && readinessIsCurrent;
   const blockedReasons: string[] = readiness?.blocked_reasons || [];
-  const missingData: string[] = readiness?.missing_data || [];
+  const missingData: string[] =
+    envelopeOutcome.missing_fields || readiness?.missing_data || [];
   const sources = details?.sources || decision?.sources || {
-    rule: Boolean(details?.suggested_action),
-    rag: Boolean(details?.kb_matches && details.kb_matches.length > 0),
-    ai: Boolean(details?.ai_suggested_resolution),
+    rule: envelope
+      ? envelope.candidates.some((candidate) => candidate.source === 'rule')
+      : Boolean(details?.suggested_action),
+    rag: envelope
+      ? envelope.candidates.some((candidate) => candidate.source === 'rag')
+      : Boolean(details?.kb_matches && details.kb_matches.length > 0),
+    ai: Boolean(envelope ? envelope.candidates.length > 1 : details?.ai_suggested_resolution),
   };
 
   // Оценка риска и обоснований
-  const riskLevel = proposal?.risk_level || details?.suggested_action?.risk_level || 'normal';
+  const riskLevel =
+    envelopeOutcome.risk_level ||
+    envelopePolicy.risk_level ||
+    proposal?.risk_level ||
+    details?.suggested_action?.risk_level ||
+    'normal';
   const riskWarning = proposal?.risk_warning || details?.suggested_action?.risk_warning || null;
   const triggerMarkers: string[] = proposal?.trigger_markers || details?.suggested_action?.trigger_markers || [];
   const ruleReason: string | undefined = details?.suggested_action?.reason;
@@ -216,6 +229,7 @@ export default function UnifiedDecisionPanel({
 
   const targetStatusId =
     selectedStatusOverride ||
+    envelopePolicy.status_id ||
     proposal?.status_id ||
     details?.suggested_action?.status_id ||
     27;
@@ -232,6 +246,7 @@ export default function UnifiedDecisionPanel({
       : selectedStatusOverride === 48
       ? 'Ожидание поставки'
       : proposal?.status_name ||
+        envelopePolicy.status_name ||
         details?.suggested_action?.status_name ||
         'В работе';
 
@@ -242,6 +257,9 @@ export default function UnifiedDecisionPanel({
 
   // Предлагаемое действие
   const actionTitle =
+    (envelopeOutcome.action
+      ? formatFriendlyAction(envelopeOutcome.action, targetStatusName, details?.suggested_action)
+      : undefined) ||
     proposal?.title ||
     details?.suggested_action?.name ||
     formatFriendlyAction(proposal?.action, targetStatusName, details?.suggested_action);
@@ -278,7 +296,8 @@ export default function UnifiedDecisionPanel({
       : 'Изменения подтверждены IntraService и появились в истории заявки.';
 
   const hasSnippets = Boolean(
-    details?.ai_suggested_resolution ||
+    envelope?.response_draft ||
+      details?.ai_suggested_resolution ||
       (details?.kb_matches && details.kb_matches.length > 0 && details.kb_matches[0]?.solution)
   );
 
@@ -392,6 +411,27 @@ export default function UnifiedDecisionPanel({
             </button>
           )}
         </div>
+
+        {envelope && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+            <span className="font-mono text-neutral-700 dark:text-neutral-300">
+              {envelope.scenario_key}@{envelope.scenario_version}
+            </span>
+            <span>Facts revision: {envelope.facts_revision}</span>
+            <span>Evidence: {envelope.evidence_refs.length}</span>
+            <span>Confidence: {Math.round(envelope.confidence * 100)}%</span>
+            {Object.entries(envelope.facts_summary)
+              .filter(([, fact]) => fact.state !== 'valid')
+              .map(([key, fact]) => (
+                <span
+                  key={key}
+                  className="rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+                >
+                  {key}: {fact.state}
+                </span>
+              ))}
+          </div>
+        )}
 
         {/* Блок HitL-подтверждения (если действие требует одобрения инженера) */}
         {(ticketRun?.state === 'waiting_approval' || pendingCommand) && (

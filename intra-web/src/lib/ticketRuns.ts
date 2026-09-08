@@ -25,6 +25,11 @@ export interface TicketRun {
   error_message: string | null;
   version: number;
   trigger_kind: string;
+  scenario_key: string | null;
+  scenario_version: number | null;
+  fact_revision: number;
+  context_fingerprint: string | null;
+  decision_version: number | null;
   created_at: string | null;
   updated_at: string | null;
   completed_at: string | null;
@@ -34,6 +39,7 @@ export interface TicketRunEvent {
   id: string;
   sequence: number;
   event_type: string;
+  event_key: string | null;
   actor: string;
   details: Record<string, unknown>;
   created_at: string | null;
@@ -56,6 +62,7 @@ export interface TicketRunCommand {
 
 export interface AutopilotSetting {
   enabled: boolean;
+  rollout_mode: 'legacy' | 'shadow' | 'canary' | 'active';
   version: number;
   updated_by: string;
   updated_at: string | null;
@@ -71,13 +78,25 @@ export interface AutopilotScenario {
   service_id: number;
   scenario_key: AutopilotScenarioKey;
   enabled: boolean;
+  rollout_mode: 'legacy' | 'shadow' | 'canary' | 'active';
   version: number;
   config: Record<string, unknown>;
   updated_by: string;
   updated_at: string | null;
 }
 
-export type AutopilotScenarioKey = 'printer_installation' | 'user_creation';
+export type AutopilotScenarioKey =
+  | 'printer_installation'
+  | 'user_creation'
+  | 'create_user'
+  | 'offline_host'
+  | 'redirect'
+  | 'install_printer'
+  | 'grant_wlan'
+  | 'file_lock'
+  | 'physical_device'
+  | 'rag_consultation'
+  | 'consultation';
 
 export const fetchTicketRun = (taskId: number) =>
   apiFetch<TicketRunView>(`/api/v2/ticket-runs/by-task/${taskId}`);
@@ -136,6 +155,7 @@ export const saveAutopilotScenario = (payload: {
   service_id: number;
   scenario_key: AutopilotScenarioKey;
   enabled: boolean;
+  rollout_mode?: AutopilotScenario['rollout_mode'];
   config?: Record<string, unknown>;
   expected_version?: number;
 }) =>

@@ -148,6 +148,7 @@ export interface TaskDetails {
   history?: any[];
   ai_suggested_resolution?: string;
   suggested_action?: any;
+  decision_envelope?: DecisionEnvelope | null;
   kb_matches?: RAGMatchItem[];
   telemetry?: any;
   circuit?: 'red' | 'yellow' | 'green';
@@ -157,6 +158,37 @@ export interface TaskDetails {
   decision?: DecisionRecord;
   sources?: DecisionSources;
   readiness?: DecisionReadiness;
+}
+
+export interface DecisionFactSummary {
+  state: 'missing' | 'valid' | 'invalid' | 'ambiguous' | 'conflicting' | 'stale';
+  value?: unknown;
+  source?: string | null;
+  source_ref?: string | null;
+}
+
+export interface DecisionEnvelope {
+  schema_version: number;
+  decision_id?: string | null;
+  decision_version: number;
+  scenario_key: string;
+  scenario_version: number;
+  facts_revision: number;
+  facts_summary: Record<string, DecisionFactSummary>;
+  candidates: Array<{
+    candidate_id: string;
+    source: string;
+    score: number;
+    evidence_refs: string[];
+    outcome: Record<string, any>;
+  }>;
+  outcome: Record<string, any>;
+  policy: Record<string, any>;
+  response_draft: string;
+  evidence_refs: string[];
+  confidence: number;
+  requires_approval: boolean;
+  status: string;
 }
 
 export interface DecisionSources {

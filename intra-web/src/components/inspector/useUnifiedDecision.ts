@@ -86,6 +86,7 @@ export function useUnifiedDecision({
     const cached = sessionStorage.getItem(getDraftKey(rawId));
     if (cached !== null) return cached;
     return (
+      details?.decision_envelope?.response_draft ||
       details?.ai_suggested_resolution ||
       ticket.aiPlan?.comment ||
       ticket.aiSuggestion ||
@@ -111,6 +112,7 @@ export function useUnifiedDecision({
       setReplyTextState(cached);
     } else {
       const init =
+        details?.decision_envelope?.response_draft ||
         details?.ai_suggested_resolution ||
         ticket.aiPlan?.comment ||
         ticket.aiSuggestion ||
@@ -119,14 +121,21 @@ export function useUnifiedDecision({
     }
   }, [rawId, getDraftKey]);
 
-  // Подстановка AI-черновика только если редактор был пуст
+  // Подстановка единого черновика только если редактор был пуст
   useEffect(() => {
-    if (details?.ai_suggested_resolution && !replyText.trim()) {
-      const text = details.ai_suggested_resolution;
+    const compiledDraft =
+      details?.decision_envelope?.response_draft || details?.ai_suggested_resolution;
+    if (compiledDraft && !replyText.trim()) {
+      const text = compiledDraft;
       setReplyTextState(text);
       if (rawId) sessionStorage.setItem(getDraftKey(rawId), text);
     }
-  }, [details?.ai_suggested_resolution, rawId, getDraftKey]);
+  }, [
+    details?.decision_envelope?.response_draft,
+    details?.ai_suggested_resolution,
+    rawId,
+    getDraftKey,
+  ]);
 
   const [replyMode, setReplyMode] = useState<'reply' | 'internal'>('reply');
   const [expenses, setExpenses] = useState<number>(
