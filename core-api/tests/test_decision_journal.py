@@ -453,3 +453,53 @@ async def test_decision_api_rbac_and_flow():
         )
         assert res_feedback.status_code == 201
         assert res_feedback.json()["verdict"] == "correct"
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_normalization_executor_ids_and_nulls():
+    """Проверяем, что null vs '' для ExecutorIds не приводит к ложному статусу stale."""
+    from app.services.decision_journal import ticket_snapshot_fingerprint
+
+    # Имитируем ответ одиночного запроса (/api/task/123) с ExecutorIds: None
+    task_single = {
+        "Id": 94099,
+        "StatusId": 31,
+        "ServiceId": 19,
+        "ExecutorId": None,
+        "ExecutorIds": None,
+        "Name": "Тестовая заявка",
+        "Description": "Кабинет 101",
+        "Changed": "2026-09-08 12:00:00",
+        "CustomFields": [],
+        "Attachments": None,
+    }
+
+    # Имитируем ответ фильтра (/api/task?filterid=...) с ExecutorIds: ""
+    task_filter = {
+        "Id": 94099,
+        "StatusId": 31,
+        "ServiceId": 19,
+        "ExecutorId": 0,
+        "ExecutorIds": "",
+        "Name": "Тестовая заявка ",
+        "Description": "Кабинет 101",
+        "Changed": "2026-09-08 12:00:00",
+        "CustomFields": None,
+        "Attachments": "",
+    }
+
+    fp1 = ticket_snapshot_fingerprint(task_single, [])
+    fp2 = ticket_snapshot_fingerprint(task_filter, [])
+    assert fp1 == fp2, "Хэши должны совпадать независимо от различий null vs пустая строка"
+
+    async with AsyncSessionLocal() as db:
+        journal = DecisionJournalService(db)
+        record = await journal.record_triage(
+            task_id=94099,
+            task=task_single,
+            history=[],
+            decision={"rule_type": "consultation", "status_id": 27},
+        )
+        state = analysis_state(record, task=task_filter)
+        assert state["freshness"] == "current"
+        assert state["can_quick_apply"] is True

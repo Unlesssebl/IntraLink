@@ -284,23 +284,20 @@ function getAnalysisBadge(ticket: Ticket) {
   }
 
   if (analysis.freshness === 'unknown') {
-
     return {
-
       label: 'Актуальность не проверена',
-
       className: 'bg-neutral-100 dark:bg-neutral-850 text-neutral-600 dark:text-neutral-300 border-neutral-300 dark:border-neutral-700',
-
     };
-
   }
 
+  const scenarioKey = ticket.scenarioKey || ticket.envelope?.scenario_key || ticket.ruleType;
+  const scenarioConfig = scenarioKey ? scenarioBadgeConfigs[scenarioKey] : undefined;
+  const label = scenarioConfig?.label || (ticket.isDuplicate ? 'Дубликат' : (scenarioKey ? String(scenarioKey) : 'Готово'));
+  const className = scenarioConfig?.badgeClass || 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-900';
+
   return {
-
-    label: 'Готово',
-
-    className: 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-900',
-
+    label,
+    className,
   };
 
 }

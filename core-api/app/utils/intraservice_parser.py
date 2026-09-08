@@ -182,6 +182,10 @@ def enrich_task_data(task: dict[str, Any] | None) -> dict[str, Any] | None:
             if k in raw_wrapper:
                 res[f"_{k}"] = raw_wrapper[k]
 
+    # Нормализуем ExecutorIds (IntraService в /task/{id} возвращает None, а в /task?filterid=... пустую строку "")
+    if "ExecutorIds" in res and res["ExecutorIds"] is None:
+        res["ExecutorIds"] = ""
+
     # Парсим кастомные поля
     custom_xml = res.get("Data")
     parsed_fields = parse_custom_fields(custom_xml)

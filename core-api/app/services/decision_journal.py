@@ -72,6 +72,35 @@ def context_fingerprint(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _normalize_fingerprint_task_field(key: str, val: Any) -> Any:
+    if key == "ExecutorIds":
+        if not val:
+            return ""
+        if isinstance(val, str):
+            parts = [p.strip() for p in val.split(",") if p.strip()]
+            return ",".join(sorted(parts))
+        if isinstance(val, (list, tuple, set)):
+            parts = [str(p).strip() for p in val if str(p).strip()]
+            return ",".join(sorted(parts))
+        return str(val).strip()
+    if key == "ExecutorId":
+        if val is None or val == "" or val == 0:
+            return None
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return None
+    if key in ("Name", "Description"):
+        return "" if val is None else str(val).strip()
+    if key in ("Attachments", "attachments"):
+        if not val:
+            return None
+    if key == "CustomFields":
+        if not val:
+            return []
+    return val
+
+
 def ticket_snapshot_fingerprint(
     task: dict[str, Any], history: list[dict[str, Any]] | None = None
 ) -> str:
@@ -101,8 +130,12 @@ def ticket_snapshot_fingerprint(
         "Date",
         "Changed",
     )
+    task_material = {}
+    for key in task_keys:
+        if key in task or key == "ExecutorIds":
+            task_material[key] = _normalize_fingerprint_task_field(key, task.get(key))
     material = {
-        "task": {key: task.get(key) for key in task_keys if key in task},
+        "task": task_material,
         "history": [
             {key: item.get(key) for key in history_keys if key in item}
             for item in (history or [])
