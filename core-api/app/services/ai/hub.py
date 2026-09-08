@@ -519,6 +519,7 @@ class AIHub:
         cache_hash = hashlib.sha256(
             (
                 f"{request.prompt}:{request.system_prompt}:{request.temperature}:"
+                f"{json.dumps(request.response_schema, sort_keys=True, default=str)}:"
                 f"{decision.circuit.value}:{decision.target_backend}:{decision.target_model}"
             ).encode()
         ).hexdigest()
@@ -555,6 +556,7 @@ class AIHub:
                 system_prompt=request.system_prompt,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
+                response_schema=request.response_schema,
             )
             final_text = raw_output
 
@@ -573,12 +575,17 @@ class AIHub:
             )
 
             # Пробуем облачный инференс
-            raw_output = await self.generate_cloud_completion(
-                prompt=san_res.sanitized_text,
-                system_prompt=request.system_prompt,
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-            )
+            try:
+                raw_output = await self.generate_cloud_completion(
+                    prompt=san_res.sanitized_text,
+                    system_prompt=request.system_prompt,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    response_schema=request.response_schema,
+                )
+            except Exception as exc:
+                logger.warning("Cloud inference failed in YELLOW circuit: %s", exc)
+                raw_output = None
 
             # Fallback на локальную Ollama, если облако недоступно
             if raw_output is None:
@@ -590,6 +597,7 @@ class AIHub:
                     system_prompt=request.system_prompt,
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
+                    response_schema=request.response_schema,
                 )
                 model_name = f"{self.ollama_model} (fallback)"
 
@@ -604,12 +612,17 @@ class AIHub:
         else:  # GREEN
             # ОТКРЫТЫЙ КОНТУР: прямой вызов Gemini
             logger.info("Маршрутизация в ОТКРЫТЫЙ контур (GREEN): %s", decision.reason)
-            raw_output = await self.generate_cloud_completion(
-                prompt=request.prompt,
-                system_prompt=request.system_prompt,
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-            )
+            try:
+                raw_output = await self.generate_cloud_completion(
+                    prompt=request.prompt,
+                    system_prompt=request.system_prompt,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    response_schema=request.response_schema,
+                )
+            except Exception as exc:
+                logger.warning("Cloud inference failed in GREEN circuit: %s", exc)
+                raw_output = None
 
             # Fallback на локальную Ollama
             if raw_output is None:
@@ -621,6 +634,7 @@ class AIHub:
                     system_prompt=request.system_prompt,
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
+                    response_schema=request.response_schema,
                 )
                 model_name = f"{self.ollama_model} (fallback)"
 

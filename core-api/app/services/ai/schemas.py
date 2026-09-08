@@ -87,6 +87,10 @@ class RoutedInferenceRequest(BaseModel):
     )
     max_tokens: int = Field(default=512, description="Максимум генерируемых токенов")
     temperature: float = Field(default=0.0, description="Температура генерации")
+    response_schema: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="JSON Schema для constrained output на любом выбранном backend",
+    )
     bypass_cache: bool = False
 
 

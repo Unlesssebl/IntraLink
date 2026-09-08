@@ -34,7 +34,7 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
-CURRENT_SCHEMA_REVISION = "20260908_0010"
+CURRENT_SCHEMA_REVISION = "20260908_0011"
 
 
 
@@ -365,6 +365,10 @@ class AutopilotScenario(Base):
     __tablename__ = "autopilot_scenarios"
     __table_args__ = (
         UniqueConstraint("service_id", "scenario_key", name="uq_autopilot_scenario_service"),
+        CheckConstraint(
+            "rollout_mode IN ('legacy', 'shadow', 'canary', 'active')",
+            name="ck_autopilot_scenario_rollout_mode",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
@@ -372,6 +376,9 @@ class AutopilotScenario(Base):
     scenario_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+    rollout_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="legacy", server_default="legacy"
     )
     version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
@@ -409,6 +416,11 @@ class TicketRun(Base):
     trigger_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     trigger_key: Mapped[str] = mapped_column(String(160), nullable=False)
     trigger_snapshot_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    scenario_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    scenario_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fact_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    context_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    decision_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     current_step: Mapped[str | None] = mapped_column(String(64), nullable=True)
     waiting_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     waiting_until: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -438,6 +450,7 @@ class TicketRunEvent(Base):
     __tablename__ = "ticket_run_events"
     __table_args__ = (
         UniqueConstraint("ticket_run_id", "sequence", name="uq_ticket_run_event_sequence"),
+        UniqueConstraint("ticket_run_id", "event_key", name="uq_ticket_run_event_key"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
@@ -445,11 +458,57 @@ class TicketRunEvent(Base):
         UUID_TYPE, ForeignKey("ticket_runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     actor: Mapped[str] = mapped_column(String(100), nullable=False)
     details_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
+class TicketFactObservation(Base):
+    """Append-only provenance for facts collected during a ticket run."""
+
+    __tablename__ = "ticket_fact_observations"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('missing','valid','invalid','ambiguous','conflicting','stale')",
+            name="ck_ticket_fact_observation_state",
+        ),
+        CheckConstraint(
+            "source_kind IN ('structured_field','directory','diagnostic','comment','parser','llm','operator')",
+            name="ck_ticket_fact_observation_source",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    ticket_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("ticket_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    fact_key: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    value_json: Mapped[dict | list | str | int | float | bool | None] = mapped_column(
+        JSON_TYPE, nullable=True
+    )
+    state: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    source_kind: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    source_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    evidence_span: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sensitivity: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="internal", server_default="internal"
+    )
+    metadata_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    observed_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+    expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    supersedes_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("ticket_fact_observations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
     )
 
 

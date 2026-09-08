@@ -114,45 +114,40 @@ async def _save_to_cache(cache_key: str, extracted: ExtractedTicketFacts, ttl: i
         logger.debug("Redis fact cache save failed: %s", exc)
 
 
-async def _call_llm_sensor(prompt: str, system_prompt: str) -> str | None:
-    """Invoke LLM sensor with Gemini as primary and Ollama as resilient fallback."""
-    preference = getattr(settings, "LLM_PROVIDER_PREFERENCE", "gemini_first").lower()
+async def _call_llm_sensor(
+    prompt: str, system_prompt: str, *, service_id: int | None = None
+) -> str | None:
+    """Invoke the schema-constrained sensor through the central DLP router."""
+    if settings.LLM_PROVIDER_PREFERENCE == "disabled":
+        return None
     schema = ExtractedTicketFacts.model_json_schema()
     timeout = settings.LLM_FACT_EXTRACTION_TIMEOUT
+    from app.services.ai.schemas import DataCircuit, RoutedInferenceRequest, RoutingMetadata
 
-    if preference == "gemini_first":
-        # 1. Primary: Cloud Gemini via LiteLLM
-        try:
-            raw = await asyncio.wait_for(
-                ai_hub.generate_cloud_completion(
-                    prompt,
+    try:
+        response = await asyncio.wait_for(
+            ai_hub.dispatch_routed_inference(
+                RoutedInferenceRequest(
+                    prompt=prompt,
                     system_prompt=system_prompt,
+                    metadata=RoutingMetadata(
+                        service_id=service_id,
+                        force_circuit=(
+                            DataCircuit.RED
+                            if settings.LLM_PROVIDER_PREFERENCE == "ollama_only"
+                            else None
+                        ),
+                    ),
                     temperature=0.0,
                     response_schema=schema,
-                ),
-                timeout=timeout,
-            )
-            if raw:
-                return raw
-        except Exception as exc:
-            logger.info("Gemini fact sensor fallback to Ollama: %s", exc)
-
-    # 2. Resilient Fallback: Local Ollama (Qwen)
-    if preference in {"gemini_first", "ollama_only"}:
-        try:
-            return await asyncio.wait_for(
-                ai_hub.generate_ollama_completion(
-                    prompt,
-                    system_prompt=system_prompt,
-                    temperature=0.0,
-                    response_schema=schema,
-                ),
-                timeout=timeout,
-            )
-        except Exception as exc:
-            logger.info("Ollama fact sensor abstained: %s", exc)
-
-    return None
+                )
+            ),
+            timeout=timeout,
+        )
+        return response.text if response else None
+    except Exception as exc:
+        logger.info("DLP-routed fact sensor abstained: %s", exc)
+        return None
 
 
 async def enrich_task_with_extracted_facts(
@@ -205,7 +200,11 @@ async def enrich_task_with_extracted_facts(
         )
 
         try:
-            raw = await _call_llm_sensor(prompt, system_prompt)
+            raw = await _call_llm_sensor(
+                prompt,
+                system_prompt,
+                service_id=task.get("ServiceId") or task.get("service_id"),
+            )
             if raw:
                 extracted = ExtractedTicketFacts.model_validate_json(raw)
                 extracted.comments_count_analyzed = comments_count
@@ -252,6 +251,11 @@ async def enrich_task_with_extracted_facts(
         "comments_count_analyzed": extracted.comments_count_analyzed,
     }
     enriched["_llm_fact_extraction"] = metadata
+
+    # Preserve the schema-validated proposal in both shadow and enabled modes.
+    # Consumers still decide whether it participates in merge; shadow values
+    # therefore remain observable without mutating legacy task fields.
+    enriched["_llm_extracted_facts"] = extracted.model_dump(mode="json")
 
     if mode == "enabled":
         if extracted.person:

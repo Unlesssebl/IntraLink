@@ -18,6 +18,23 @@ from shared.domain.models import (
     ValidationError,
 )
 from shared.domain.person import normalize_person_name, validate_person_candidate
+from shared.domain.scenario import (
+    CandidateOutcome,
+    DecisionEnvelope,
+    ExecutionPlan,
+    FactBag,
+    FactObservation,
+    FactRequirement,
+    FactSensitivity,
+    FactSource,
+    FactState,
+    PlanStep,
+    RejectedCandidate,
+    ResolvedFact,
+    ScenarioDefinition,
+    ScenarioMatch,
+    SynthesisProposal,
+)
 
 __all__ = [
     "ActionProposed",
@@ -35,6 +52,21 @@ __all__ = [
     "TicketFacts",
     "ValidPerson",
     "ValidationError",
+    "CandidateOutcome",
+    "DecisionEnvelope",
+    "ExecutionPlan",
+    "FactBag",
+    "FactObservation",
+    "FactRequirement",
+    "FactSensitivity",
+    "FactSource",
+    "FactState",
+    "PlanStep",
+    "RejectedCandidate",
+    "ResolvedFact",
+    "ScenarioDefinition",
+    "ScenarioMatch",
+    "SynthesisProposal",
     "normalize_person_name",
     "validate_person_candidate",
 ]
