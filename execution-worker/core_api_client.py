@@ -11,7 +11,10 @@ import aiohttp
 logger = logging.getLogger("execution_worker.core_client")
 
 CORE_API_URL = os.getenv("CORE_API_URL", "http://127.0.0.1:8000").rstrip("/")
-BOT_API_KEY = os.getenv("BOT_API_KEY", "dev_bot_api_key_tempo_2026")
+BOT_API_KEY = os.getenv("BOT_API_KEY", "")
+WORKER_API_KEY = os.getenv("WORKER_API_KEY", "")
+SERVICE_KEY_ID = os.getenv("WINDOWS_WORKER_SERVICE_KEY_ID") or os.getenv("SERVICE_KEY_ID", "")
+SERVICE_SECRET = os.getenv("WINDOWS_WORKER_SERVICE_SECRET") or os.getenv("SERVICE_SECRET", "")
 
 
 class CoreApiClient:
@@ -23,15 +26,21 @@ class CoreApiClient:
     ):
         self.base_url = (base_url or CORE_API_URL).rstrip("/")
         self.api_key = api_key or BOT_API_KEY
+        if not ((SERVICE_KEY_ID and SERVICE_SECRET) or self.api_key):
+            raise RuntimeError("SERVICE_KEY_ID and SERVICE_SECRET are required for the execution worker")
         self.timeout = aiohttp.ClientTimeout(total=timeout_sec)
         self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            headers = {
-                "X-Bot-Api-Key": self.api_key,
-                "Content-Type": "application/json",
-            }
+            headers = {"Content-Type": "application/json"}
+            if SERVICE_KEY_ID and SERVICE_SECRET:
+                headers.update({"X-Service-Key-Id": SERVICE_KEY_ID, "X-Service-Secret": SERVICE_SECRET})
+            else:
+                headers.update({
+                    "X-Bot-Api-Key": self.api_key,
+                    "X-Worker-Api-Key": WORKER_API_KEY or self.api_key,
+                })
             connector = aiohttp.TCPConnector(
                 limit=15, ttl_dns_cache=300, keepalive_timeout=30.0
             )
@@ -66,6 +75,7 @@ class CoreApiClient:
         status_id: int | None = None,
         expenses: int | None = None,
         is_service: bool = True,
+        verified_execution_job_id: str | None = None,
     ) -> bool:
         """Публикует отчетный комментарий и обновляет статус тикета через Core API."""
         session = await self._get_session()
@@ -76,6 +86,7 @@ class CoreApiClient:
             "status_id": status_id or 29,
             "expenses": expenses or 0,
             "confirmed_by_human": True,
+            "verified_execution_job_id": verified_execution_job_id,
         }
         try:
             async with session.post(url, json=payload) as resp:
@@ -109,3 +120,191 @@ class CoreApiClient:
         except Exception as e:
             logger.debug("Сбой отправки результата команды %s: %s", job_id, e)
             return False
+
+    async def claim_command_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        message_id: str,
+        outbox_id: str | None = None,
+        lease_seconds: int = 300,
+    ) -> tuple[int, dict[str, Any] | None]:
+        """Atomically lease a queued v2 command from the authoritative API."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/claim"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "message_id": message_id,
+                    "outbox_id": outbox_id,
+                    "lease_seconds": lease_seconds,
+                },
+            ) as resp:
+                data = await resp.json() if resp.content_type == "application/json" else None
+                return resp.status, data
+        except Exception as e:
+            logger.debug("Сбой lease команды %s: %s", command_id, e)
+            return 0, None
+
+    async def finish_command_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        claim_token: str,
+        outcome: str,
+        result: dict[str, Any] | None = None,
+        error_message: str | None = None,
+    ) -> bool:
+        """Persist a v2 result before the Redis message is acknowledged."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/finish"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "claim_token": claim_token,
+                    "outcome": outcome,
+                    "result": result or {},
+                    "error_message": error_message,
+                },
+            ) as resp:
+                return resp.status == 200
+        except Exception as e:
+            logger.debug("Сбой фиксации результата команды %s: %s", command_id, e)
+            return False
+
+    async def store_command_secret_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        claim_token: str,
+        name: str,
+        value: str,
+        ttl_seconds: int = 900,
+    ) -> dict[str, Any] | None:
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/secret-artifacts"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "claim_token": claim_token,
+                    "name": name,
+                    "value": value,
+                    "ttl_seconds": ttl_seconds,
+                },
+            ) as resp:
+                return await resp.json() if resp.status == 201 else None
+        except Exception as e:
+            logger.debug("Сбой сохранения secret artifact команды %s: %s", command_id, e)
+            return None
+
+    async def renew_command_lease_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        claim_token: str,
+        lease_seconds: int = 120,
+    ) -> tuple[int, dict[str, Any] | None]:
+        """Продлевает lease команды в Core API через POST /api/v2/commands/{id}/heartbeat."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/heartbeat"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "claim_token": claim_token,
+                    "lease_seconds": lease_seconds,
+                },
+            ) as resp:
+                data = await resp.json() if resp.content_type == "application/json" else None
+                return resp.status, data
+        except Exception as e:
+            logger.debug("Сбой продления lease команды %s: %s", command_id, e)
+            return 0, None
+
+    async def record_command_preflight_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        claim_token: str,
+        evidence: dict[str, Any],
+        ttl_seconds: int = 7200,
+    ) -> tuple[int, dict[str, Any] | None]:
+        """Фиксирует preflight evidence команды в Core API через POST /api/v2/commands/{id}/preflight."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/preflight"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "claim_token": claim_token,
+                    "evidence": evidence,
+                    "ttl_seconds": ttl_seconds,
+                },
+            ) as resp:
+                data = await resp.json() if resp.content_type == "application/json" else None
+                return resp.status, data
+        except Exception as e:
+            logger.debug("Сбой фиксации preflight команды %s: %s", command_id, e)
+            return 0, None
+
+    async def record_command_phase_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        claim_token: str,
+        phase: str,
+        details: dict[str, Any] | None = None,
+    ) -> tuple[int, dict[str, Any] | None]:
+        """Фиксирует фазу исполнения команды в Core API через POST /api/v2/commands/{id}/phase."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/phase"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "claim_token": claim_token,
+                    "phase": phase,
+                    "details": details or {},
+                },
+            ) as resp:
+                data = await resp.json() if resp.content_type == "application/json" else None
+                return resp.status, data
+        except Exception as e:
+            logger.debug("Сбой фиксации фазы команды %s: %s", command_id, e)
+            return 0, None
+
+    async def quarantine_command_v2(
+        self,
+        command_id: str,
+        worker_id: str,
+        missing_capability: str,
+        message_id: str,
+        reason: str | None = None,
+    ) -> bool:
+        """Изолирует команду в Routing Quarantine через POST /api/v2/commands/{id}/quarantine."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v2/commands/{command_id}/quarantine"
+        try:
+            async with session.post(
+                url,
+                json={
+                    "worker_id": worker_id,
+                    "missing_capability": missing_capability,
+                    "message_id": message_id,
+                    "reason": reason,
+                },
+            ) as resp:
+                return resp.status == 200
+        except Exception as e:
+            logger.warning("Сбой отправки команды %s в карантин: %s", command_id, e)
+            return False
+

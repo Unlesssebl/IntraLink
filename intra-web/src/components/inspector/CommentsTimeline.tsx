@@ -16,6 +16,15 @@ function formatTime(d: Date | string) {
   return dateObj.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
+function formatCommentsCount(count: number) {
+  const mod100 = count % 100;
+  const mod10 = count % 10;
+  if (mod100 >= 11 && mod100 <= 14) return `${count} комментариев`;
+  if (mod10 === 1) return `${count} комментарий`;
+  if (mod10 >= 2 && mod10 <= 4) return `${count} комментария`;
+  return `${count} комментариев`;
+}
+
 export default function CommentsTimeline({
   commentsList,
   loadingDetails,
@@ -31,14 +40,15 @@ export default function CommentsTimeline({
       <button
         type="button"
         onClick={onToggleCommentsExpanded}
-        className="w-full flex items-center justify-between text-left cursor-pointer group"
+        aria-expanded={isVisible}
+        className="group flex min-h-9 w-full items-center justify-between rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
       >
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-500 group-hover:text-neutral-800 dark:group-hover:text-neutral-200 transition-colors">
-            История переписки
+            Комментарии заявки
           </span>
           <span className="text-[10.5px] px-2 py-0.2 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 font-semibold font-mono">
-            {loadingDetails ? 'Загрузка...' : `${commentsList.length} ${commentsList.length === 1 ? 'сообщение' : 'сообщений'}`}
+            {loadingDetails ? 'Загрузка...' : formatCommentsCount(commentsList.length)}
           </span>
         </div>
         <div className="flex items-center gap-1 text-[11.5px] text-neutral-400 group-hover:text-neutral-600 dark:group-hover:text-neutral-200">
@@ -75,7 +85,7 @@ export default function CommentsTimeline({
                       <span className="font-semibold text-neutral-900 dark:text-neutral-100">{author}</span>
                       {isPrivate && (
                         <span className="text-[10px] bg-amber-100 text-amber-900 dark:bg-amber-900/80 dark:text-amber-200 px-1.5 py-0.2 rounded font-bold">
-                          Скрытый
+                          Служебный
                         </span>
                       )}
                     </div>

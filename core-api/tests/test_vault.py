@@ -5,6 +5,7 @@
 
 import json
 import pytest
+import pytest_asyncio
 from unittest.mock import AsyncMock, patch
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -13,7 +14,7 @@ from app.services import vault
 from app.services.crypto import decrypt_token
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_db():
     """Тестовая SQLite in-memory сессия базы данных с активным ключом Fernet."""
     from cryptography.fernet import Fernet
@@ -54,6 +55,7 @@ async def test_vault_save_and_sync_service_account(mock_redis_factory, test_db: 
         login="svc_intraservice",
         password="SuperSecretPassword123!",
         base_url="https://helpdesk.corporate.loc",
+        user_id=10001,
     )
 
     assert res["status"] == "success"
@@ -69,8 +71,9 @@ async def test_vault_save_and_sync_service_account(mock_redis_factory, test_db: 
 
     # Проверка вызова Redis (worker:service_auth_b64)
     mock_redis.set.assert_awaited()
-    redis_call_args = mock_redis.set.call_args[0]
-    assert redis_call_args[0] == vault.REDIS_KEY_SERVICE_AUTH
+    redis_keys = [call.args[0] for call in mock_redis.set.await_args_list]
+    assert vault.REDIS_KEY_SERVICE_AUTH in redis_keys
+    assert vault.REDIS_KEY_SERVICE_USER_ID in redis_keys
 
 
 @pytest.mark.asyncio
@@ -130,6 +133,7 @@ async def test_vault_warmup_from_postgres(mock_redis_factory, test_db: AsyncSess
         test_db,
         login="svc_test",
         password="Pwd1!",
+        user_id=10001,
     )
     await vault.save_domain_credentials(
         test_db,
@@ -143,7 +147,7 @@ async def test_vault_warmup_from_postgres(mock_redis_factory, test_db: AsyncSess
     sync_results = await vault.sync_vault_to_redis(test_db)
     assert sync_results["service_auth"] is True
     assert sync_results["domain_auth"] is True
-    assert mock_redis.set.call_count == 2
+    assert mock_redis.set.call_count == 3
 
 
 @pytest.mark.asyncio
@@ -154,10 +158,10 @@ async def test_vault_get_status_no_passwords(mock_redis_factory, test_db: AsyncS
     и имена пользователей, не раскрывая пароли.
     """
     mock_redis = AsyncMock()
-    mock_redis.get.side_effect = lambda k: b"encrypted_token" if k in (vault.REDIS_KEY_SERVICE_AUTH, vault.REDIS_KEY_DOMAIN_AUTH) else ("online" if k == vault.REDIS_KEY_WIN_DAEMON_HEALTH else None)
+    mock_redis.get.side_effect = lambda k: b"encrypted_token" if k in (vault.REDIS_KEY_SERVICE_AUTH, vault.REDIS_KEY_DOMAIN_AUTH, vault.REDIS_KEY_SERVICE_USER_ID) else ("online" if k == vault.REDIS_KEY_WIN_DAEMON_HEALTH else None)
     mock_redis_factory.return_value = mock_redis
 
-    await vault.save_service_account_credentials(test_db, "admin_user", "Secret1")
+    await vault.save_service_account_credentials(test_db, "admin_user", "Secret1", user_id=10001)
     await vault.save_domain_credentials(test_db, "ad_admin@corp.loc", "Secret2")
     await vault.save_local_admin_credentials(test_db, ".\\Administrator", "Secret3")
 

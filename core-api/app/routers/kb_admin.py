@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database.db import AsyncSessionLocal, TaskKnowledgeBase, get_db
 from app.routers.admin_settings import require_admin_auth
 from app.routers.deps import get_service_auth_b64
@@ -55,6 +56,12 @@ class KBExampleItem(BaseModel):
     service_id: int
     service_name: str
     status_name: str
+    root_cause: str | None = None
+    root_id: str | None = None
+    resolution_type: str | None = None
+    resolution_label: str | None = None
+    resolution_badge_color: str | None = None
+    quality_score: float = 1.0
 
 
 class KBExamplesResponse(BaseModel):
@@ -110,19 +117,26 @@ async def get_services_tree() -> list[dict[str, Any]]:
 async def get_kb_examples(
     page: int = Query(1, ge=1, description="Номер страницы"),
     limit: int = Query(20, ge=1, le=100, description="Количество на страницу"),
-    service_id: int | None = Query(None, description="Фильтр по ID услуги"),
+    service_id: int | None = Query(None, description="Фильтр по ID конкретной услуги"),
+    root_id: str | None = Query(None, description="Фильтр по корневому разделу каталога (01..16)"),
     search: str | None = Query(None, description="Текстовый поиск по проблеме или решению"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Просмотр проиндексированных прецедентов RAG (исключая черный список).
-    Поддерживает пагинацию, фильтр по разделу каталога и полнотекстовый поиск.
+    Поддерживает пагинацию, фильтр по корневому разделу или конкретной услуге и полнотекстовый поиск.
     """
     try:
         offset = (page - 1) * limit
         query = select(TaskKnowledgeBase).where(TaskKnowledgeBase.is_blacklisted.is_(False))
 
-        if service_id is not None:
+        # Фильтр по корневому разделу (все дочерние service_id)
+        if root_id:
+            from app.services.rag import get_subservice_ids_for_root
+            sub_ids = get_subservice_ids_for_root(root_id)
+            if sub_ids:
+                query = query.where(TaskKnowledgeBase.service_id.in_(sub_ids))
+        elif service_id is not None:
             query = query.where(TaskKnowledgeBase.service_id == service_id)
 
         if search and search.strip():
@@ -137,8 +151,14 @@ async def get_kb_examples(
         count_query = select(func.count(TaskKnowledgeBase.task_id)).where(
             TaskKnowledgeBase.is_blacklisted.is_(False)
         )
-        if service_id is not None:
+        if root_id:
+            from app.services.rag import get_subservice_ids_for_root
+            sub_ids = get_subservice_ids_for_root(root_id)
+            if sub_ids:
+                count_query = count_query.where(TaskKnowledgeBase.service_id.in_(sub_ids))
+        elif service_id is not None:
             count_query = count_query.where(TaskKnowledgeBase.service_id == service_id)
+
         if search and search.strip():
             term = f"%{search.strip()}%"
             count_query = count_query.where(
@@ -170,6 +190,7 @@ async def get_kb_examples(
         examples: list[KBExampleItem] = []
         for r in rows:
             s_name = r.service_name or service_names_map.get(r.service_id, f"Услуга #{r.service_id}")
+            c_data = r.classification_data or {}
             examples.append(
                 KBExampleItem(
                     task_id=r.task_id,
@@ -179,6 +200,12 @@ async def get_kb_examples(
                     service_id=r.service_id or 0,
                     service_name=s_name,
                     status_name=r.status_name or "",
+                    root_cause=c_data.get("root_cause"),
+                    root_id=c_data.get("root_id"),
+                    resolution_type=c_data.get("resolution_type"),
+                    resolution_label=c_data.get("resolution_label"),
+                    resolution_badge_color=c_data.get("resolution_badge_color"),
+                    quality_score=float(getattr(r, "quality_score", 1.0) or 1.0),
                 )
             )
 
@@ -257,14 +284,16 @@ async def purge_knowledge_base(
         deleted_count = result.rowcount
         await db.commit()
 
-        # Очистка кэша RAG в Redis
+        # Очистка кэша RAG и сброс состояния синхронизации в Redis
         try:
             redis = get_redis_client()
             keys = await redis.keys("rag:emb:*")
             if keys:
                 await redis.delete(*keys)
+            await redis.delete("lock:kb_sync")
+            await redis.delete("kb:sync_progress")
         except Exception as re:
-            logger.warning("Не удалось сбросить кэш эмбеддингов в Redis: %s", re)
+            logger.warning("Не удалось сбросить кэш эмбеддингов/прогресс в Redis: %s", re)
 
         logger.info("База знаний RAG успешно очищена. Удалено записей: %d", deleted_count)
         return {
@@ -287,10 +316,14 @@ async def purge_knowledge_base(
 
 
 @router.get("/stats", status_code=status.HTTP_200_OK)
-async def get_kb_statistics(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def get_kb_statistics(
+    db: AsyncSession = Depends(get_db),
+    admin_payload: dict = Depends(require_admin_auth),
+) -> dict[str, Any]:
     """
     Возвращает матрицу покрытия базы знаний: количество прецедентов
-    в разрезе услуг и статусов закрытия (исключая черный список).
+    в разрезе услуг и статусов закрытия (исключая черный список),
+    а также статус готовности учетных данных для синхронизации.
     """
     try:
         query = (
@@ -323,11 +356,75 @@ async def get_kb_statistics(db: AsyncSession = Depends(get_db)) -> dict[str, Any
         )
         blacklisted_count = await db.scalar(blacklisted_query) or 0
 
+        # Превентивная проверка доступности учетных данных для синхронизации
+        readiness = {
+            "ready": False,
+            "auth_source": "none",
+            "account_name": None,
+            "message": "Учетные данные IntraService не настроены. Для синхронизации войдите под учетной записью IntraService или настройте сервисный аккаунт в Хранилище.",
+        }
+
+        username = admin_payload.get("sub") if isinstance(admin_payload, dict) else None
+        redis = get_redis_client()
+        if username:
+            try:
+                op_auth = await redis.get(f"admin_auth:{username}")
+                if op_auth:
+                    readiness = {
+                        "ready": True,
+                        "auth_source": "operator_session",
+                        "account_name": str(username),
+                        "message": f"Синхронизация готова: используется активная сессия оператора '{username}'",
+                    }
+            except Exception:
+                pass
+
+        if not readiness["ready"]:
+            if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
+                readiness = {
+                    "ready": True,
+                    "auth_source": "service_account",
+                    "account_name": str(settings.INTRASERVICE_SERVICE_LOGIN),
+                    "message": f"Синхронизация готова: используется системный аккаунт '{settings.INTRASERVICE_SERVICE_LOGIN}'",
+                }
+            else:
+                try:
+                    svc_auth = await redis.get("worker:service_auth_b64")
+                    if svc_auth:
+                        readiness = {
+                            "ready": True,
+                            "auth_source": "service_account",
+                            "account_name": "Vault Service Account",
+                            "message": "Синхронизация готова: настроен сервисный аккаунт в Хранилище (Vault)",
+                        }
+                except Exception:
+                    pass
+
+        from app.services.rag import get_all_root_services, get_subservice_ids_for_root, check_embedding_health
+        roots = get_all_root_services()
+
+        root_counts: dict[str, int] = {}
+        for r in roots:
+            sids = get_subservice_ids_for_root(r["root_id"])
+            cnt = sum(services_stats.get(str(s), {}).get("total", 0) for s in sids)
+            root_counts[r["root_id"]] = cnt
+
+        embed_ok, embed_msg = await check_embedding_health()
+
         return {
             "total_active_examples": total_examples,
             "total_blacklisted_examples": blacklisted_count,
             "services_count": len(services_stats),
             "services": services_stats,
+            "sync_readiness": readiness,
+            "embedding_readiness": {
+                "ready": embed_ok,
+                "message": embed_msg,
+                "model": getattr(settings, "EMBEDDING_MODEL", "bge-m3"),
+                "dimension": getattr(settings, "EMBEDDING_DIMENSION", 1024),
+            },
+            "root_services": roots,
+            "root_counts": root_counts,
         }
     except Exception as e:
         logger.exception("Ошибка при сборе статистики базы знаний: %s", e)
@@ -338,7 +435,7 @@ async def get_kb_statistics(db: AsyncSession = Depends(get_db)) -> dict[str, Any
 
 
 # ---------------------------------------------------------------------------
-# 5. Прямая синхронизация базы знаний (In-Process Sync)
+# 5. Прямая и умная стратифицированная синхронизация базы знаний
 # ---------------------------------------------------------------------------
 
 
@@ -352,6 +449,15 @@ async def trigger_kb_sync(
     Запуск прямой синхронизации закрытых заявок из IntraService в векторную базу pgvector.
     Работает in-process в Core API без ожидания внешних сервисов.
     """
+    # Pre-flight Check работоспособности сервиса эмбеддингов
+    from app.services.rag import check_embedding_health
+    embed_ok, embed_msg = await check_embedding_health()
+    if not embed_ok:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=f"Служба генерации эмбеддингов недоступна ({embed_msg}). Синхронизация отменена во избежание холостого прогона.",
+        )
+
     try:
         result = await sync_historical_closed_tasks(
             auth_b64=service_auth_b64,
@@ -370,3 +476,145 @@ async def trigger_kb_sync(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка синхронизации базы знаний: {e}",
         )
+
+
+class KBStratifiedSyncRequest(BaseModel):
+    quota_per_service: int = Field(30, ge=5, le=100, description="Квота качественных прецедентов на раздел")
+    days: int = Field(60, ge=7, le=365, description="Глубина выборки в днях")
+    root_id: str | None = Field(None, description="ID конкретного корневого раздела (например '03') или None для всех")
+    status_ids: list[int] = Field(default=[28, 29, 43, 30], description="Список ID статусов для выборки заявок")
+    ai_eval: bool = Field(default=True, description="Включить AI-валидацию качества решений (Qwen 2.5)")
+
+
+@router.get("/available-statuses", status_code=status.HTTP_200_OK)
+async def get_available_statuses_endpoint(
+    service_auth_b64: str = Depends(get_service_auth_b64),
+) -> list[dict[str, Any]]:
+    """
+    Возвращает список доступных статусов заявок из IntraService с маркером рекомендованных.
+    """
+    from app.services import intraservice
+    try:
+        statuses = await intraservice.get_statuses(auth_b64=service_auth_b64)
+    except Exception as e:
+        logger.warning("Не удалось получить статусы из IntraService: %s", e)
+        statuses = None
+
+    recommended_ids = {28, 29, 43, 30}
+    result = []
+    for s in (statuses or []):
+        sid = s.get("Id")
+        if sid is not None:
+            result.append({
+                "id": sid,
+                "name": s.get("Name") or f"Статус #{sid}",
+                "is_recommended": sid in recommended_ids,
+            })
+    if not result:
+        result = [
+            {"id": 28, "name": "Закрыта", "is_recommended": True},
+            {"id": 29, "name": "Выполнена", "is_recommended": True},
+            {"id": 43, "name": "Обработано 1-й линией", "is_recommended": True},
+            {"id": 30, "name": "Отменена", "is_recommended": True},
+            {"id": 31, "name": "Открыта", "is_recommended": False},
+            {"id": 27, "name": "В работе", "is_recommended": False},
+            {"id": 35, "name": "Требует уточнения", "is_recommended": False},
+        ]
+    return result
+
+
+@router.post("/sync-stratified", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_stratified_kb_sync(
+    payload: KBStratifiedSyncRequest,
+    service_auth_b64: str = Depends(get_service_auth_b64),
+):
+    """
+    Асинхронный запуск фонового умного наполнения RAG по корневым разделам (01..17).
+    """
+    # Pre-flight Check работоспособности сервиса эмбеддингов
+    from app.services.rag import check_embedding_health
+    embed_ok, embed_msg = await check_embedding_health()
+    if not embed_ok:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=f"Служба генерации эмбеддингов недоступна ({embed_msg}). Синхронизация отменена во избежание холостого прогона.",
+        )
+
+    redis = get_redis_client()
+    lock = await redis.get("lock:kb_sync")
+    if lock:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Синхронизация базы знаний уже выполняется. Дождитесь завершения текущего процесса.",
+        )
+
+    from app.services.rag import sync_stratified_kb
+
+    asyncio.create_task(
+        sync_stratified_kb(
+            auth_b64=service_auth_b64,
+            quota_per_service=payload.quota_per_service,
+            days=payload.days,
+            target_root_id=payload.root_id,
+            status_ids=payload.status_ids,
+            ai_eval=payload.ai_eval,
+        )
+    )
+
+    return {
+        "status": "started",
+        "message": "Умная фоновая синхронизация базы знаний успешно запущена.",
+        "quota_per_service": payload.quota_per_service,
+        "days": payload.days,
+        "root_id": payload.root_id,
+        "status_ids": payload.status_ids,
+        "ai_eval": payload.ai_eval,
+    }
+
+
+@router.get("/sync-status", status_code=status.HTTP_200_OK)
+async def get_kb_sync_status_endpoint() -> dict[str, Any]:
+    """
+    Возвращает актуальный статус и прогресс умной синхронизации базы знаний из Redis.
+    """
+    from app.services.rag import get_kb_sync_progress
+
+    progress = await get_kb_sync_progress()
+    return progress
+
+
+@router.post("/nightly-audit", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_nightly_audit_endpoint(
+    service_auth_b64: str = Depends(get_service_auth_b64),
+) -> dict[str, Any]:
+    """
+    Ручной запуск тяжелого ночного аудита базы знаний RAG.
+    Проводит 100% глубокую проверку через локальный Qwen 2.5 без эвристик.
+    """
+    redis = get_redis_client()
+    lock = await redis.get("lock:nightly_rag_audit")
+    if lock:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ночной глубокий аудит базы знаний уже выполняется. Дождитесь завершения.",
+        )
+
+    from app.services.rag import run_nightly_deep_audit_kb
+
+    asyncio.create_task(run_nightly_deep_audit_kb(service_auth_b64=service_auth_b64))
+    return {
+        "status": "started",
+        "message": "Глубокий ночной аудит базы знаний успешно запущен в фоновом режиме.",
+    }
+
+
+@router.get("/nightly-audit-status", status_code=status.HTTP_200_OK)
+async def get_nightly_audit_status_endpoint() -> dict[str, Any]:
+    """
+    Возвращает актуальный статус и прогресс ночного глубокого аудита базы знаний из Redis.
+    """
+    from app.services.rag import get_nightly_audit_progress
+
+    progress = await get_nightly_audit_progress()
+    return progress
+

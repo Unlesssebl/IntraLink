@@ -8,11 +8,11 @@ from app.database.db import User, get_db
 from app.routers.deps import (
     get_service_auth_b64,
     get_user_by_tg_id,
-    verify_admin_or_api_key,
+    require_permission,
 )
 from app.services import intraservice
 
-router = APIRouter(tags=["Tasks"], dependencies=[Depends(verify_admin_or_api_key)])
+router = APIRouter(tags=["Tasks"], dependencies=[Depends(require_permission("task:read"))])
 
 
 class TaskCommentRequest(BaseModel):
@@ -31,7 +31,11 @@ class TaskExpensesRequest(BaseModel):
 
 
 @router.get("/tasks", response_model=Any, status_code=status.HTTP_200_OK)
-async def get_tasks(request: Request, user: User = Depends(get_user_by_tg_id)):
+async def get_tasks(
+    request: Request,
+    user: User = Depends(get_user_by_tg_id),
+    service_auth_b64: str = Depends(get_service_auth_b64),
+):
     """
     Получить список задач для конкретного пользователя.
     Принимает любые query-параметры фильтрации IntraService
@@ -42,7 +46,7 @@ async def get_tasks(request: Request, user: User = Depends(get_user_by_tg_id)):
         key: value for key, value in request.query_params.items() if key != "tg_user_id"
     }
 
-    tasks = await intraservice.get_tasks(user.is_password_b64, filters)
+    tasks = await intraservice.get_tasks(user.is_password_b64 or service_auth_b64, filters)
     if tasks is None:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -52,12 +56,16 @@ async def get_tasks(request: Request, user: User = Depends(get_user_by_tg_id)):
 
 
 @router.get("/tasks/{task_id}", response_model=Any, status_code=status.HTTP_200_OK)
-async def get_task_by_id(task_id: int, user: User = Depends(get_user_by_tg_id)):
+async def get_task_by_id(
+    task_id: int,
+    user: User = Depends(get_user_by_tg_id),
+    service_auth_b64: str = Depends(get_service_auth_b64),
+):
     """
     Получить детальную информацию по конкретной задаче, включая кастомные поля.
     Используется printer-worker для Fast-Track маршрутизации.
     """
-    task = await intraservice.get_single_task(user.is_password_b64, task_id)
+    task = await intraservice.get_single_task(user.is_password_b64 or service_auth_b64, task_id)
     if task is None:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -71,11 +79,15 @@ async def get_task_by_id(task_id: int, user: User = Depends(get_user_by_tg_id)):
     response_model=list[dict[str, Any]],
     status_code=status.HTTP_200_OK,
 )
-async def get_task_lifetime(task_id: int, user: User = Depends(get_user_by_tg_id)):
+async def get_task_lifetime(
+    task_id: int,
+    user: User = Depends(get_user_by_tg_id),
+    service_auth_b64: str = Depends(get_service_auth_b64),
+):
     """
     Получить историю изменений задачи.
     """
-    lifetime = await intraservice.get_task_lifetime(user.is_password_b64, task_id)
+    lifetime = await intraservice.get_task_lifetime(user.is_password_b64 or service_auth_b64, task_id)
     if lifetime is None:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -87,11 +99,14 @@ async def get_task_lifetime(task_id: int, user: User = Depends(get_user_by_tg_id
 @router.get(
     "/statuses", response_model=list[dict[str, Any]], status_code=status.HTTP_200_OK
 )
-async def get_statuses(user: User = Depends(get_user_by_tg_id)):
+async def get_statuses(
+    user: User = Depends(get_user_by_tg_id),
+    service_auth_b64: str = Depends(get_service_auth_b64),
+):
     """
     Получить справочник статусов.
     """
-    statuses = await intraservice.get_statuses(user.is_password_b64)
+    statuses = await intraservice.get_statuses(user.is_password_b64 or service_auth_b64)
     if statuses is None:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -102,7 +117,10 @@ async def get_statuses(user: User = Depends(get_user_by_tg_id)):
 
 @router.post("/tasks/{task_id}/comment", status_code=status.HTTP_200_OK)
 async def add_task_comment(
-    task_id: int, payload: TaskCommentRequest, db: AsyncSession = Depends(get_db)
+    task_id: int, payload: TaskCommentRequest,
+    _context=Depends(require_permission("task:mutate")),
+    db: AsyncSession = Depends(get_db),
+    service_auth_b64: str = Depends(get_service_auth_b64),
 ):
     """
     Добавить комментарий к задаче.
@@ -118,7 +136,7 @@ async def add_task_comment(
         )
 
     success = await intraservice.add_task_comment(
-        user.is_password_b64, task_id, payload.comment
+        user.is_password_b64 or service_auth_b64, task_id, payload.comment
     )
     if not success:
         raise HTTPException(
@@ -130,7 +148,10 @@ async def add_task_comment(
 
 @router.post("/tasks/{task_id}/status", status_code=status.HTTP_200_OK)
 async def update_task_status(
-    task_id: int, payload: TaskStatusRequest, db: AsyncSession = Depends(get_db)
+    task_id: int, payload: TaskStatusRequest,
+    _context=Depends(require_permission("task:mutate")),
+    db: AsyncSession = Depends(get_db),
+    service_auth_b64: str = Depends(get_service_auth_b64),
 ):
     """
     Обновить статус задачи.
@@ -146,7 +167,7 @@ async def update_task_status(
         )
 
     success = await intraservice.update_task_status(
-        user.is_password_b64, task_id, payload.status_id
+        user.is_password_b64 or service_auth_b64, task_id, payload.status_id
     )
     if not success:
         raise HTTPException(
@@ -158,7 +179,10 @@ async def update_task_status(
 
 @router.post("/tasks/{task_id}/expenses", status_code=status.HTTP_200_OK)
 async def add_task_expenses(
-    task_id: int, payload: TaskExpensesRequest, db: AsyncSession = Depends(get_db)
+    task_id: int, payload: TaskExpensesRequest,
+    _context=Depends(require_permission("task:mutate")),
+    db: AsyncSession = Depends(get_db),
+    service_auth_b64: str = Depends(get_service_auth_b64),
 ):
     """
     Добавить трудозатраты к задаче.
@@ -174,7 +198,7 @@ async def add_task_expenses(
         )
 
     success = await intraservice.add_task_expenses(
-        user.is_password_b64, task_id, payload.minutes
+        user.is_password_b64 or service_auth_b64, task_id, payload.minutes
     )
     if not success:
         raise HTTPException(

@@ -111,6 +111,16 @@ def register_parser(subparsers: Any) -> None:
     )
     p_q.add_argument("--json", action="store_true", help="Вывод в JSON")
 
+    # review-feedback
+    p_rf = subparsers.add_parser(
+        "review-feedback",
+        help="Журнал аудита решений и расхождений для контроля качества (Feedback Loop)",
+    )
+    p_rf.add_argument("--limit", type=int, default=15, help="Количество записей")
+    p_rf.add_argument("--min-diff", type=float, default=0.0, help="Минимальный diff_ratio")
+    p_rf.add_argument("--json", action="store_true", help="Вывод в JSON")
+
+
 
 async def handle_batch(args: Any) -> None:
     client = CoreApiClient()
@@ -138,12 +148,12 @@ async def handle_batch(args: Any) -> None:
         if args.service:
             title += f" [Раздел: {args.service}]"
 
-        print(
-            f"\n=== 📥 {title} (Всего в очереди: {total_open} | Пачка: {len(items)}) ==="
-        )
+        print(f"\n================================================================================")
+        print(f"{title.upper()} | Всего в очереди: {total_open} | Пачка: {len(items)}")
+        print(f"================================================================================")
 
         if not items:
-            print("🎉 Нет заявок, соответствующих критериям фильтрации.\n")
+            print("[INFO] Нет заявок, соответствующих критериям фильтрации.\n")
             return
 
         for idx, it in enumerate(items, 1):
@@ -156,32 +166,59 @@ async def handle_batch(args: Any) -> None:
             room = it.get("room") or "—"
             pc = it.get("pc_name") or "—"
             action = it.get("suggested_action") or {}
+            conf = it.get("confidence_score") or action.get("confidence") or 0.50
+            req_review = it.get("requires_human_review", conf < 0.80)
 
-            dup_badge = " 🔴 [ДУБЛИКАТ]" if it.get("is_duplicate") else ""
-            circuit = it.get("circuit", "green")
+            circuit = (it.get("circuit") or "green").lower()
             if circuit == "red":
-                circuit_badge = " 🔴 [RED/Local]"
+                circuit_badge = "[RED / ON-PREM]"
             elif circuit == "yellow":
-                circuit_badge = " 🟡 [YELLOW/Sanitized]"
+                circuit_badge = "[SANITIZED]"
             else:
-                circuit_badge = " 🟢 [GREEN/Cloud]"
+                circuit_badge = "[OPEN]"
 
-            print(
-                f"\n[{idx}] 🎫 [#{t_id}](https://servicedesk.corporate.loc/Task/View/{t_id}) | 📅 {created} | 📂 {s_name}{dup_badge}{circuit_badge}"
-            )
-            print(f"    • Тема: {name}")
-            print(
-                f"    • Заявитель: {creator} | 📍 {room} | 📞 `{phone}` | 💻 `{pc}`"
-            )
-            print(
-                f"    • 🎯 Рекомендация: **{action.get('name', 'В работе')}** ➔ Статус {action.get('status_id')} ({action.get('expenses', 10)} мин)"
-            )
+            tel = it.get("telemetry") or {}
+            ping = tel.get("ping_status")
+            if ping == "ONLINE":
+                rtt = tel.get("latency_ms")
+                host_badge = f"[HOST: {pc} - ONLINE {rtt}ms]" if rtt else f"[HOST: {pc} - ONLINE]"
+            elif ping == "OFFLINE":
+                host_badge = f"[HOST: {pc} - OFFLINE]"
+            elif pc and pc != "—":
+                host_badge = f"[HOST: {pc}]"
+            else:
+                host_badge = ""
+
+            dup_badge = "[ДУБЛИКАТ]" if it.get("is_duplicate") else ""
+            conf_badge = f"[LOW CONF: {conf:.2f} / ТРЕБУЕТСЯ ПРОВЕРКА]" if req_review else f"[CONF: {conf:.2f}]"
+
+            status_text = action.get("name", "В работе")
+            status_id = action.get("status_id", 27)
+            expenses = action.get("expenses", 10)
+
+            badges = [b for b in [f"[STATUS: {status_text.upper()}]", host_badge, dup_badge, circuit_badge, conf_badge] if b]
+            badge_line = " | ".join(badges)
+
+            print(f"\n[{idx}] [#{t_id}](https://servicedesk.corporate.loc/Task/View/{t_id}) | {badge_line}")
+            print(f"    Тема:       {name}")
+            print(f"    Заявитель:  {creator} (каб. {room} | тел. {phone}) | {created}")
+            print(f"    Раздел:     {s_name}")
+            print(f"    Регламент:  Статус {status_id} ({expenses} мин)")
+
+            attachments = it.get("attachments") or []
+            if attachments:
+                att_names = ", ".join(a.get("name") or a.get("FileName") or "файл" for a in attachments[:2])
+                print(f"    Вложение:   [ATTACHMENT: {att_names} -> вызовите 'скриншот {idx}']")
+
             if action.get("comment"):
-                first_line = action["comment"].split("\n")[0]
-                print(f"    • 💬 *«{first_line}»*")
+                comment_text = action["comment"].strip()
+                print(f"    Ответ заявителю:")
+                print(f"    «{comment_text}»")
 
-        print("\n---")
-        print("⚡ Шорткаты: `все` или `+` (применить все) | `1, 2` (выборочно) | `детали <N>`")
+        print("\n--------------------------------------------------------------------------------")
+        print("Действия: 'все' (авто-применение только проверенных >= 0.80) | '1, 3' (выборочно)")
+        print("          'детали N' | 'скриншот N' | 'шаблон <имя> для N'")
+        print("--------------------------------------------------------------------------------")
     finally:
         await client.close()
 
@@ -197,25 +234,22 @@ async def handle_duplicates(args: Any) -> None:
             return
 
         if not duplicates:
-            print(
-                f"\n=== 🔍 Поиск дубликатов в очереди 1-й линии (Фильтр #{args.filter}) ==="
-            )
-            print("✅ В проверенных открытых заявках дубликатов не обнаружено.\n")
+            print(f"\n=== ПОИСК ДУБЛИКАТОВ В ОЧЕРЕДИ 1-Й ЛИНИИ (Фильтр #{args.filter}) ===")
+            print("[INFO] В проверенных открытых заявках дубликатов не обнаружено.\n")
             return
 
-        print(
-            f"\n### 🗑️ Обнаружены заявки-дубликаты в очереди 1-й линии (Найдено: {len(duplicates)})\n"
-        )
+        print(f"\n================================================================================")
+        print(f"ОБНАРУЖЕНЫ ДУБЛИКАТЫ В ОЧЕРЕДИ 1-Й ЛИНИИ (Найдено: {len(duplicates)})")
+        print(f"================================================================================")
         for idx, d in enumerate(duplicates, 1):
             dup_id = d["duplicate_task_id"]
             m_id = d["master_task_id"]
             reason = d["reason"]
             action = d.get("action", {})
-            print(
-                f"### [{idx}] [#{dup_id}](https://servicedesk.corporate.loc/Task/View/{dup_id}) ➔ 🎯 **Отменена (Дубликат #{m_id})**"
-            )
-            print(f"- **Причина:** {reason}")
-            print(f"> 💬 *«{action.get('comment', '')}»*\n")
+            print(f"[{idx}] [#{dup_id}](https://servicedesk.corporate.loc/Task/View/{dup_id}) | [ДУБЛИКАТ #{m_id}] -> [STATUS: ОТМЕНЕНА]")
+            print(f"    Причина: {reason}")
+            if action.get("comment"):
+                print(f"    Ответ заявителю: «{action.get('comment')}»\n")
     finally:
         await client.close()
 
@@ -231,11 +265,42 @@ async def handle_queue(args: Any) -> None:
             return
 
         tasks = data.get("tasks", [])
-        print(f"=== Очередь заявок (Фильтр #{args.filter}, Показано: {len(tasks)}) ===")
+        print(f"=== ОЧЕРЕДЬ ЗАЯВОК (Фильтр #{args.filter}, Показано: {len(tasks)}) ===")
         for t in tasks:
             print(
-                f"• #{t['task_id']}: {t['name']} [{t.get('service_name')}] (от {t.get('creator')})"
+                f"[{t['task_id']}] {t['name']} [{t.get('service_name')}] (от {t.get('creator')})"
             )
+    finally:
+        await client.close()
+
+
+async def handle_review_feedback(args: Any) -> None:
+    client = CoreApiClient()
+    try:
+        data = await client.get_feedback_review(
+            limit=args.limit, min_diff=args.min_diff
+        )
+        if getattr(args, "json", False):
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
+
+        items = (data or {}).get("items", [])
+        print(f"\n================================================================================")
+        print(f"ЖУРНАЛ АУДИТА И ОБРАТНОЙ СВЯЗИ (FEEDBACK LOOP) | Всего записей: {len(items)}")
+        print(f"================================================================================")
+        if not items:
+            print("[INFO] Записей аудита не найдено.\n")
+            return
+
+        for idx, it in enumerate(items, 1):
+            tid = it.get("task_id")
+            score = it.get("confidence_score", 1.0)
+            diff = it.get("diff_ratio", 0.0)
+            op = it.get("operator_id") or "система"
+            date = (it.get("created_at") or "")[:16].replace("T", " ")
+            print(f"[{idx}] [#{tid}](https://servicedesk.corporate.loc/Task/View/{tid}) | [CONF: {score:.2f}] | [DIFF: {diff:.2f}] | Оператор: {op} | {date}")
+            print(f"    Финальный комментарий:")
+            print(f"    «{it.get('final_comment')}»\n")
     finally:
         await client.close()
 
@@ -247,3 +312,6 @@ async def handle(args: Any) -> None:
         await handle_duplicates(args)
     elif args.command == "queue":
         await handle_queue(args)
+    elif args.command == "review-feedback":
+        await handle_review_feedback(args)
+

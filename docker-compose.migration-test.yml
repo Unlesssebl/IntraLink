@@ -1,0 +1,13 @@
+services:
+  postgres:
+    container_name: intralink_migration_test_postgres
+    restart: "no"
+    ports: !override
+      - "127.0.0.1:55439:5432"
+  db-migrate:
+    volumes:
+      - ./core-api:/app
+    environment:
+      APP_ENV: test
+      BOT_API_KEY: migration-test-bot-key
+      WORKER_API_KEY: migration-test-worker-key

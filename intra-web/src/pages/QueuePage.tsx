@@ -27,6 +27,7 @@ import {
 
 import SmartBatchModal, { type SmartBatchItem } from '../components/queue/SmartBatchModal';
 import BulkConfirmModal, { type BulkConfirmModalState } from '../components/queue/BulkConfirmModal';
+import { fetchTicketRuns, type TicketRun, type ActiveExecutionStatus } from '../lib/ticketRuns';
 
 interface Props {
   tickets: Ticket[];
@@ -38,14 +39,77 @@ interface Props {
   selectedService: ServiceSelection;
   onResetService: () => void;
   searchQuery?: string;
+  activeExecution?: ActiveExecutionStatus | null;
+  onSelectActiveTask?: (taskId: number) => void;
 }
 
 type ViewMode = 'table' | 'kanban';
 type FilterTab = 'all' | 'duplicates' | 'redirects' | 'repair' | 'wifi';
+type AuditFilter = 'all' | 'needs_attention' | 'waiting_approval' | 'system_error' | 'fallback' | 'autopilot';
 
 interface SmartBatchModalState {
   open: boolean;
   items: SmartBatchItem[];
+}
+
+function getRunBadgeConfig(state: string, mode: string) {
+  switch (state) {
+    case 'running':
+      return {
+        label: mode === 'autopilot' ? 'Автопилот: в работе' : 'В работе',
+        className: 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-900',
+        dotClass: 'bg-blue-500 animate-pulse',
+      };
+    case 'waiting_approval':
+      return {
+        label: 'Ждёт подтверждения',
+        className: 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-900',
+        dotClass: 'bg-amber-500 animate-ping',
+      };
+    case 'waiting_answer':
+      return {
+        label: 'Ждёт ответа',
+        className: 'bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-900',
+        dotClass: 'bg-sky-500',
+      };
+    case 'paused':
+      return {
+        label: 'На паузе',
+        className: 'bg-orange-50 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 border-orange-200 dark:border-orange-900',
+        dotClass: 'bg-orange-500',
+      };
+    case 'system_error':
+      return {
+        label: 'Ошибка связи',
+        className: 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-900',
+        dotClass: 'bg-rose-500',
+      };
+    case 'completed':
+      return {
+        label: 'Завершён',
+        className: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border-neutral-200 dark:border-neutral-700',
+        dotClass: 'bg-neutral-400',
+      };
+    default:
+      return {
+        label: mode === 'autopilot' ? 'Автопилот' : 'Ожидает',
+        className: 'bg-neutral-50 dark:bg-neutral-850 text-neutral-600 dark:text-neutral-400 border-neutral-200 dark:border-neutral-750',
+        dotClass: 'bg-neutral-400',
+      };
+  }
+}
+
+function renderTicketRunPill(run: TicketRun) {
+  const cfg = getRunBadgeConfig(run.state, run.mode);
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border ${cfg.className}`}
+      title={`Цикл #${run.id} · шаг: ${run.current_step || '—'}`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cfg.dotClass}`} />
+      <span>{cfg.label}</span>
+    </span>
+  );
 }
 
 function getSlaClass(deadline: Date) {
@@ -84,11 +148,14 @@ export default function QueuePage({
   selectedService,
   onResetService,
   searchQuery = '',
+  activeExecution,
+  onSelectActiveTask,
 }: Props) {
   const [view, setView] = useState<ViewMode>('table');
   const [filterTab, setFilterTab] = useState<FilterTab>('all');
   const [showRuleEngineOnly, setShowRuleEngineOnly] = useState(false);
   const [showAiOnly, setShowAiOnly] = useState(false);
+  const [auditFilter, setAuditFilter] = useState<AuditFilter>('all');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [inlineStatusTicketId, setInlineStatusTicketId] = useState<string | null>(null);
   const [openHostTicketId, setOpenHostTicketId] = useState<string | null>(null);
@@ -104,6 +171,41 @@ export default function QueuePage({
   useEffect(() => {
     fetchActiveOutages().then(setOutages);
   }, []);
+
+  const [ticketRuns, setTicketRuns] = useState<Record<number, TicketRun>>({});
+  const [ticketRunsStaleAt, setTicketRunsStaleAt] = useState<Date | null>(null);
+
+  const ticketIdsKey = tickets.map(ticket => ticket.rawId).join(',');
+  useEffect(() => {
+    const taskIds = tickets.map(ticket => ticket.rawId).filter(Boolean).slice(0, 200);
+    if (taskIds.length === 0) {
+      setTicketRuns({});
+      return;
+    }
+    let cancelled = false;
+    const loadRuns = () => {
+      if (document.hidden) return;
+      void fetchTicketRuns(taskIds)
+        .then(({ items }) => {
+          if (!cancelled && Array.isArray(items)) {
+            setTicketRuns(prev => ({
+              ...prev,
+              ...Object.fromEntries(items.map(run => [run.task_id, run])),
+            }));
+            setTicketRunsStaleAt(null);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setTicketRunsStaleAt(new Date());
+        });
+    };
+    loadRuns();
+    const refreshTimer = window.setInterval(loadRuns, 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(refreshTimer);
+    };
+  }, [ticketIdsKey]);
 
   const selectedTicket = tickets.find(t => t.id === selectedTicketId) ?? null;
 
@@ -132,6 +234,16 @@ export default function QueuePage({
       t.templateKey === 'bring_pc_112'
   ).length;
   const countWifi = scopedTickets.filter(t => t.ruleType === 'wlan_access' || t.templateKey === 'wifi_access').length;
+
+  // Counts for audit status filter
+  const countAttention = scopedTickets.filter(t => {
+    const run = ticketRuns[t.rawId];
+    return run && (run.state === 'waiting_approval' || run.state === 'paused' || run.state === 'system_error');
+  }).length;
+  const countApproval = scopedTickets.filter(t => ticketRuns[t.rawId]?.state === 'waiting_approval').length;
+  const countSystemError = scopedTickets.filter(t => ticketRuns[t.rawId]?.state === 'system_error').length;
+  const countAutopilot = scopedTickets.filter(t => ticketRuns[t.rawId]?.mode === 'autopilot').length;
+  const countFallback = scopedTickets.filter(t => !t.hasRuleEngine && !t.hasAiSolution).length;
 
   // Adaptive smart tabs: hide tabs that have 0 items in selected service scope (Marks #3)
   const availableTabs: { key: FilterTab; label: string; count: number }[] = [
@@ -173,6 +285,22 @@ export default function QueuePage({
     )
       return false;
     if (filterTab === 'wifi' && t.ruleType !== 'wlan_access' && t.templateKey !== 'wifi_access') return false;
+
+    // Audit State Filter
+    if (auditFilter === 'needs_attention') {
+      const run = ticketRuns[t.rawId];
+      if (!run || !(run.state === 'waiting_approval' || run.state === 'paused' || run.state === 'system_error')) {
+        return false;
+      }
+    } else if (auditFilter === 'waiting_approval') {
+      if (ticketRuns[t.rawId]?.state !== 'waiting_approval') return false;
+    } else if (auditFilter === 'system_error') {
+      if (ticketRuns[t.rawId]?.state !== 'system_error') return false;
+    } else if (auditFilter === 'autopilot') {
+      if (ticketRuns[t.rawId]?.mode !== 'autopilot') return false;
+    } else if (auditFilter === 'fallback') {
+      if (t.hasRuleEngine || t.hasAiSolution) return false;
+    }
 
     // Search with null-guards (Audit E-5)
     if (searchQuery) {
@@ -287,9 +415,9 @@ export default function QueuePage({
 
       const res = await smartBulkApplyTasks(payload);
 
-      const failedIds = new Set(res.errors.map(e => String(e.task_id)));
+      const failedIds = new Set(res.errors.map(e => Number(e.task_id)));
       activeItems.forEach(item => {
-        if (failedIds.has(String(item.ticket.rawId))) return;
+        if (failedIds.has(item.ticket.rawId)) return;
         const plan = item.ticket.aiPlan;
         const targetStatusId = plan?.targetStatusId || 27;
         const newStatus = targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : (targetStatusId === 35 || targetStatusId === 48 ? 'waiting' : 'in_progress');
@@ -300,12 +428,20 @@ export default function QueuePage({
         });
       });
 
-      onToast({
-        type: res.failed_count === 0 ? 'success' : 'warning',
-        message: `Пакетное выполнение: ${res.success_count} успешно${res.failed_count > 0 ? `, ${res.failed_count} ошибок` : ''}`,
-      });
-
-      setSelected(new Set());
+      if (res.failed_count > 0) {
+        const errorDetails = res.errors.map(e => `#${e.task_id}: ${e.error}`).join('; ');
+        onToast({
+          type: 'warning',
+          message: `Частичное выполнение: ${res.success_count} успешно, ${res.failed_count} ошибок (${errorDetails})`,
+        });
+        setSelected(new Set(res.errors.map(e => String(e.task_id))));
+      } else {
+        onToast({
+          type: 'success',
+          message: `Пакетное выполнение: ${res.success_count} успешно`,
+        });
+        setSelected(new Set());
+      }
       setSmartBatchModal(null);
     } catch (err: any) {
       onToast({ type: 'error', message: `Ошибка пакетного выполнения: ${err.message || err}` });
@@ -426,14 +562,29 @@ export default function QueuePage({
       });
 
       const res = await bulkApplyTasks(payload);
+      const appliedSet = new Set((res.applied || []).map(a => Number(a.task_id)));
       const newStatus = targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : (targetStatusId === 35 ? 'waiting' : 'in_progress');
-      selectedTickets.forEach(t => onUpdateTicket(t.id, { status: newStatus, statusId: targetStatusId, statusName: statusLabelName }));
 
-      onToast({
-        type: 'success',
-        message: `Успешно обработано: ${res.success_count} из ${payload.length} заявок`,
+      selectedTickets.forEach(t => {
+        if (appliedSet.has(t.rawId)) {
+          onUpdateTicket(t.id, { status: newStatus, statusId: targetStatusId, statusName: statusLabelName });
+        }
       });
-      setSelected(new Set());
+
+      if (res.failed_count > 0) {
+        const errorDetails = (res.failed || []).map(f => `#${f.task_id}: ${f.error}`).join('; ');
+        onToast({
+          type: 'warning',
+          message: `Частично выполнено: ${res.success_count} успешно, ${res.failed_count} с ошибкой (${errorDetails})`,
+        });
+        setSelected(new Set((res.failed || []).map(f => String(f.task_id))));
+      } else {
+        onToast({
+          type: 'success',
+          message: `Успешно обработано: ${res.success_count} из ${payload.length} заявок`,
+        });
+        setSelected(new Set());
+      }
       setBulkModal(null);
     } catch (err: any) {
       onToast({ type: 'error', message: `Ошибка пакетного действия: ${err.message || err}` });
@@ -523,6 +674,12 @@ export default function QueuePage({
             </div>
 
             <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-800" />
+
+            {ticketRunsStaleAt && (
+              <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300" title={ticketRunsStaleAt.toLocaleString('ru-RU')}>
+                Состояния циклов временно недоступны · показаны последние данные
+              </span>
+            )}
 
             {/* Rule Engine Fast Toggle Button */}
             <button
@@ -678,10 +835,101 @@ export default function QueuePage({
           </div>
         )}
 
+        {/* Audit Filter Sub-bar */}
+        <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-2 border-b border-neutral-150 dark:border-neutral-850 bg-neutral-50/50 dark:bg-neutral-900/30 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[11px] uppercase tracking-wider font-bold text-neutral-400 dark:text-neutral-500 mr-1">
+              Аудит:
+            </span>
+            {([
+              { key: 'all' as AuditFilter, label: 'Все', count: scopedTickets.length },
+              { key: 'needs_attention' as AuditFilter, label: 'Внимание', count: countAttention, variant: 'alert' },
+              { key: 'waiting_approval' as AuditFilter, label: 'Подтверждение', count: countApproval, variant: 'warn' },
+              { key: 'system_error' as AuditFilter, label: 'Ошибка связи', count: countSystemError, variant: 'danger' },
+              { key: 'autopilot' as AuditFilter, label: 'Автопилот', count: countAutopilot },
+              { key: 'fallback' as AuditFilter, label: 'Fallback', count: countFallback },
+            ])
+              .filter(chip => chip.key === 'all' || chip.count > 0)
+              .map(chip => {
+                const isActive = auditFilter === chip.key;
+                return (
+                  <button
+                    key={chip.key}
+                    type="button"
+                    onClick={() => setAuditFilter(chip.key)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11.5px] font-semibold border transition-colors cursor-pointer ${
+                      isActive
+                        ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 border-neutral-900 dark:border-neutral-100 shadow-2xs'
+                        : chip.variant === 'danger'
+                        ? 'bg-rose-50/70 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-900 hover:bg-rose-100'
+                        : chip.variant === 'warn'
+                        ? 'bg-amber-50/70 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-900 hover:bg-amber-100'
+                        : chip.variant === 'alert'
+                        ? 'bg-orange-50/70 dark:bg-orange-950/40 text-orange-800 dark:text-orange-300 border-orange-200 dark:border-orange-900 hover:bg-orange-100'
+                        : 'bg-white dark:bg-neutral-850 text-neutral-600 dark:text-neutral-400 border-neutral-200/90 dark:border-neutral-750 hover:bg-neutral-100 dark:hover:bg-neutral-800'
+                    }`}
+                  >
+                    <span>{chip.label}</span>
+                    <span
+                      className={`text-[10.5px] tabular-nums font-mono px-1 rounded-full ${
+                        isActive
+                          ? 'bg-white/20 text-white dark:bg-neutral-900/20 dark:text-neutral-900'
+                          : 'bg-black/5 dark:bg-white/10'
+                      }`}
+                    >
+                      {chip.count}
+                    </span>
+                  </button>
+                );
+              })}
+          </div>
+        </div>
+
+        {/* Active Assistant Live Execution Banner (Zero-Emoji, Linear Standard) */}
+        {activeExecution?.has_active && activeExecution.task_id && (
+          <div className={`shrink-0 px-4 py-2 border-b flex items-center justify-between gap-3 text-xs transition-colors ${
+            activeExecution.state === 'waiting_approval'
+              ? 'bg-amber-50/90 dark:bg-amber-950/40 border-amber-200/80 dark:border-amber-900/60 text-amber-900 dark:text-amber-200'
+              : 'bg-blue-50/90 dark:bg-blue-950/40 border-blue-200/80 dark:border-blue-900/60 text-blue-900 dark:text-blue-200'
+          }`}>
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                  activeExecution.state === 'waiting_approval' ? 'bg-amber-400' : 'bg-blue-400'
+                }`}></span>
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${
+                  activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
+                }`}></span>
+              </span>
+              <div className="flex items-center gap-2 min-w-0 font-medium">
+                <span className="text-neutral-500 dark:text-neutral-400 shrink-0">Ассистент:</span>
+                <span className="font-mono font-bold shrink-0">
+                  #{activeExecution.task_id}
+                </span>
+                <span className="opacity-40 shrink-0">·</span>
+                <span className="truncate">
+                  {activeExecution.status_text}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onSelectActiveTask ? onSelectActiveTask(activeExecution.task_id!) : onSelectTicket(String(activeExecution.task_id))}
+              className={`shrink-0 px-3 py-1 rounded-md text-[11.5px] font-semibold transition-colors cursor-pointer border ${
+                activeExecution.state === 'waiting_approval'
+                  ? 'bg-amber-600 hover:bg-amber-500 text-white border-amber-500 shadow-2xs'
+                  : 'bg-white dark:bg-neutral-900 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950/60'
+              }`}
+            >
+              {activeExecution.state === 'waiting_approval' ? 'Подтвердить действие →' : 'Открыть карточку →'}
+            </button>
+          </div>
+        )}
+
         {/* Table View (Matching style and layout from image-2.png) */}
         {view === 'table' && (
           <div className="flex-1 overflow-auto bg-white dark:bg-neutral-950">
-            <table className="w-full min-w-[1040px] text-[14px] border-collapse table-fixed">
+            <table className="w-full min-w-[1360px] text-[14px] border-collapse table-fixed">
               <thead className="sticky top-0 z-10 bg-white dark:bg-neutral-950 border-b border-neutral-200 dark:border-neutral-800">
                 <tr>
                   <th className="w-12 px-3.5 py-3 text-center">
@@ -698,7 +946,7 @@ export default function QueuePage({
                   <th className="w-44 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     РЕШЕНИЕ AI
                   </th>
-                  <th className="w-auto px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                  <th className="w-[360px] px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
                     ЗАЯВКА
                   </th>
                   <th className="w-48 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
@@ -736,6 +984,16 @@ export default function QueuePage({
                   const primaryHost = hostList[0];
                   const otherHosts = hostList.slice(1);
                   const smartTagClass = "px-2 py-0.5 border border-neutral-200/80 dark:border-neutral-700/80 bg-neutral-100/80 dark:bg-neutral-800/80 text-neutral-600 dark:text-neutral-400 rounded text-[11.5px] font-medium";
+                  const ticketRun = ticketRuns[ticket.rawId];
+                  const runStateLabel: Record<string, string> = {
+                    pending: 'ожидает',
+                    running: 'выполняется',
+                    waiting_answer: 'ждёт ответа',
+                    waiting_approval: 'ждёт подтверждения',
+                              paused: 'нужно внимание',
+                              system_error: 'ошибка связи',
+                    completed: 'завершён',
+                  };
 
                   return (
                     <tr
@@ -764,13 +1022,37 @@ export default function QueuePage({
                         <div className="relative inline-block">
                           <button
                             type="button"
-                            className="group h-7.5 inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
+                            className="group h-7.5 max-w-full inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
                             title="Нажмите для изменения статуса"
                           >
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${statusConfig[ticket.status].dotClass}`} />
-                            <span>{ticket.statusName || statusConfig[ticket.status].label}</span>
+                            <span className="truncate">{ticket.statusName || statusConfig[ticket.status].label}</span>
                             <IconChevronDown size={10} className="opacity-40 group-hover:opacity-100 transition-opacity ml-0.5" />
                           </button>
+
+                          {activeExecution?.has_active && activeExecution.task_id === ticket.rawId ? (
+                            <div className="mt-1.5">
+                              <span
+                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border ${
+                                  activeExecution.state === 'waiting_approval'
+                                    ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-800'
+                                    : 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 border-blue-300 dark:border-blue-800'
+                                }`}
+                                title={activeExecution.status_text}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-ping ${
+                                  activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
+                                }`} />
+                                <span className="truncate max-w-[130px]">
+                                  {activeExecution.phase_title || (activeExecution.state === 'waiting_approval' ? 'Ожидает одобрения' : 'Выполняется')}
+                                </span>
+                              </span>
+                            </div>
+                          ) : ticketRun ? (
+                            <div className="mt-1.5">
+                              {renderTicketRunPill(ticketRun)}
+                            </div>
+                          ) : null}
 
                           {inlineStatusTicketId === ticket.id && (
                             <div className="absolute left-0 top-8 z-30 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-xl shadow-xl py-1.5 min-w-[170px] animate-in fade-in zoom-in-95 duration-100">
@@ -813,10 +1095,10 @@ export default function QueuePage({
                       </td>
 
                       {/* Unified Smart AI Solution & Action Button */}
-                      <td className="w-44 px-3.5 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                      <td className="w-44 overflow-hidden px-3.5 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
                         {ticket.statusId === 27 ? (
                           <div
-                            className="h-7.5 inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 shadow-2xs"
+                            className="h-7.5 max-w-full inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 dark:bg-neutral-850 text-neutral-700 dark:text-neutral-300 shadow-2xs"
                             title="Заявка уже переведена в статус «В работе»"
                           >
                             <span className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse shrink-0" />
@@ -825,7 +1107,7 @@ export default function QueuePage({
                         ) : (
                           <button
                             onClick={() => handleApplyTicketPlan(ticket)}
-                            className="group h-7.5 inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
+                            className="group h-7.5 max-w-full inline-flex items-center gap-1.5 px-3 rounded-lg text-[12px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50/80 hover:bg-neutral-100/90 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
                             title={ticket.aiPlan ? `${ticket.aiPlan.actionTitle}\nОтвет: «${ticket.aiPlan.comment}»\nСписание: ${ticket.aiPlan.expensesMinutes} мин` : 'Принять заявку в работу'}
                           >
                             <span
@@ -833,16 +1115,16 @@ export default function QueuePage({
                                 ticket.aiPlan?.targetStatusId ?? (ticket.ruleType === 'hardware_repair' ? 48 : 27)
                               )}`}
                             />
-                            <span>{ticket.aiPlan?.targetStatusName || (ticket.ruleType === 'hardware_repair' ? 'Ожидание устройства' : 'В работе')}</span>
+                            <span className="truncate">{ticket.aiPlan?.targetStatusName || (ticket.ruleType === 'hardware_repair' ? 'Ожидание устройства' : 'В работе')}</span>
                             <IconArrowRight size={10} className="text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-colors ml-0.5" />
                           </button>
                         )}
                       </td>
 
                       {/* Ticket Title (Top) & Requester Info (Bottom), Tags next to Description */}
-                      <td className="w-auto px-3.5 py-3 min-w-0">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-neutral-900 dark:text-neutral-100 font-bold text-[15px] truncate max-w-lg">
+                      <td className="w-[360px] min-w-0 overflow-hidden px-3.5 py-3">
+                        <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                          <span className="min-w-0 flex-1 truncate text-[15px] font-bold text-neutral-900 dark:text-neutral-100">
                             {ticket.title}
                           </span>
 
@@ -944,7 +1226,7 @@ export default function QueuePage({
                           )}
                         </div>
 
-                        <div className="text-[13px] text-neutral-500 dark:text-neutral-400 mt-1 flex items-center gap-1.5 font-normal">
+                        <div className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden text-[13px] font-normal text-neutral-500 dark:text-neutral-400">
                           <a
                             href={`/admin/api/tasks/${ticket.rawId}/open`}
                             target="_blank"
@@ -956,9 +1238,9 @@ export default function QueuePage({
                             #{ticket.rawId}
                           </a>
                           <span>·</span>
-                          <span>{ticket.requesterName}</span>
-                          {ticket.room && <span>· каб. {ticket.room}</span>}
-                          {ticket.department && <span className="truncate max-w-[200px]">· {ticket.department}</span>}
+                          <span className="min-w-0 truncate">{ticket.requesterName}</span>
+                          {ticket.room && <span className="shrink-0">· каб. {ticket.room}</span>}
+                          {ticket.department && <span className="min-w-0 truncate">· {ticket.department}</span>}
                         </div>
                       </td>
 
@@ -979,7 +1261,7 @@ export default function QueuePage({
                                 navigator.clipboard.writeText(primaryHost);
                                 onToast({ type: 'info', message: `Хост ${primaryHost} скопирован в буфер` });
                               }}
-                              className="font-mono font-semibold text-[12px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200/80 dark:border-neutral-700/80 px-2 py-0.5 rounded cursor-pointer hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors"
+                              className="max-w-[105px] truncate font-mono font-semibold text-[12px] bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200/80 dark:border-neutral-700/80 px-2 py-0.5 rounded cursor-pointer hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors"
                               title="Нажмите, чтобы скопировать хост"
                             >
                               {primaryHost}
@@ -1140,6 +1422,30 @@ export default function QueuePage({
                               {formatSla(t.slaDeadline)}
                             </span>
                           </div>
+
+                          {activeExecution?.has_active && activeExecution.task_id === t.rawId ? (
+                            <div className="mt-2 pt-1.5 border-t border-neutral-100 dark:border-neutral-700/60">
+                              <span
+                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border ${
+                                  activeExecution.state === 'waiting_approval'
+                                    ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-800'
+                                    : 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 border-blue-300 dark:border-blue-800'
+                                }`}
+                                title={activeExecution.status_text}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-ping ${
+                                  activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
+                                }`} />
+                                <span className="truncate max-w-[150px]">
+                                  {activeExecution.phase_title || (activeExecution.state === 'waiting_approval' ? 'Ожидает одобрения' : 'Выполняется')}
+                                </span>
+                              </span>
+                            </div>
+                          ) : ticketRuns[t.rawId] ? (
+                            <div className="mt-2 pt-1.5 border-t border-neutral-100 dark:border-neutral-700/60">
+                              {renderTicketRunPill(ticketRuns[t.rawId])}
+                            </div>
+                          ) : null}
                         </div>
                       ))}
 

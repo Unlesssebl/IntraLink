@@ -57,9 +57,10 @@ def load_printers_kb(force_reload: bool = False) -> PrintersKnowledgeBase:
         return _KB_CACHE
 
 
-def find_printer_by_name(printer_name: str) -> PrinterConfig | None:
+def find_printer_by_name(printer_name: str, allow_fallback: bool = False) -> PrinterConfig | None:
     """
     Интеллектуальный поиск профиля принтера по сетевому имени или модели.
+    Если allow_fallback=False (по умолчанию), generic fallback запрещен.
     """
     kb = load_printers_kb()
     p_lower = printer_name.lower().strip()
@@ -88,9 +89,11 @@ def find_printer_by_name(printer_name: str) -> PrinterConfig | None:
             if p.vendor == "xerox":
                 return p
 
-    # 4. Fallback на HP UPD по умолчанию
-    for p in kb.printers:
-        if p.model_key == "hp_universal_upd":
-            return p
+    if allow_fallback:
+        # 4. Fallback на HP UPD по умолчанию (только если явно разрешено)
+        for p in kb.printers:
+            if p.model_key == "hp_universal_upd":
+                return p
+        return kb.printers[0] if kb.printers else None
 
-    return kb.printers[0] if kb.printers else None
+    return None

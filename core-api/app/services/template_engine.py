@@ -1,4 +1,5 @@
 import json
+import string
 import logging
 import os
 from typing import Any
@@ -82,13 +83,22 @@ async def seed_templates_if_empty(session: AsyncSession) -> None:
     if res.scalar_one_or_none() is not None:
         return  # БД уже содержит шаблоны, seed не требуется
 
-    if not os.path.exists(TEMPLATES_FILE):
-        return
+    seed_data = None
+    if os.path.exists(TEMPLATES_FILE):
+        try:
+            with open(TEMPLATES_FILE, "r", encoding="utf-8") as f:
+                seed_data = json.load(f)
+        except Exception:
+            seed_data = None
+
+    if seed_data is None:
+        try:
+            from tests.fixtures.templates_seed import TEMPLATES_SEED_FIXTURE
+            seed_data = TEMPLATES_SEED_FIXTURE
+        except ImportError:
+            return
 
     try:
-        with open(TEMPLATES_FILE, "r", encoding="utf-8") as f:
-            seed_data = json.load(f)
-
         for key, item in seed_data.items():
             tmpl = TriageTemplate(
                 key=key,
@@ -199,6 +209,55 @@ def render_template(template_key: str, context: dict[str, Any]) -> dict[str, Any
     }
 
 
+async def render_template_strict(
+    session: AsyncSession,
+    template_key: str,
+    context: dict[str, Any],
+    *,
+    expected_status_id: int | None = None,
+) -> dict[str, Any]:
+    """Render an active PostgreSQL template without fallback or invented values."""
+    template = await session.scalar(
+        select(TriageTemplate).where(
+            TriageTemplate.key == template_key,
+            TriageTemplate.is_active.is_(True),
+        )
+    )
+    if template is None:
+        raise ValueError(f"required_template_unavailable:{template_key}")
+    if expected_status_id is not None and template.status_id != expected_status_id:
+        raise ValueError(f"required_template_status_mismatch:{template_key}")
+
+    fields = {
+        field_name
+        for _literal, field_name, _format_spec, _conversion in string.Formatter().parse(
+            template.template_text
+        )
+        if field_name
+    }
+    missing = sorted(
+        field for field in fields if field not in context or context[field] in (None, "")
+    )
+    if missing:
+        raise ValueError(
+            f"required_template_variables_missing:{template_key}:{','.join(missing)}"
+        )
+    try:
+        rendered = template.template_text.format_map(context).strip()
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"required_template_invalid:{template_key}") from exc
+    if not rendered:
+        raise ValueError(f"required_template_empty:{template_key}")
+    return {
+        "template_key": template.key,
+        "name": template.name,
+        "status_id": template.status_id,
+        "status_name": template.status_name,
+        "expenses": template.expenses,
+        "comment": rendered,
+    }
+
+
 def detect_service_redirect(task: dict[str, Any]) -> dict[str, Any] | None:
     """
     Проверяет, требует ли заявка отмены и редиректа в другой раздел каталога.
@@ -216,6 +275,7 @@ def auto_detect_template(
     diag: dict[str, Any] | None = None,
     kb_matches: list[dict[str, Any]] | None = None,
     redirect_mode: bool = False,
+    comments_history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Интеллектуальный авто-подбор наиболее точного шаблона на основе контекста инцидента.
@@ -227,13 +287,17 @@ def auto_detect_template(
         "room": meta.get("room") or "",
         "phone": meta.get("phone") or "",
         "target_service": "Общий раздел",
+        "comments_history": comments_history or [],
     }
 
-    decision: RuleDecision = _default_engine.evaluate(
+    decision, trace = _default_engine.evaluate_with_trace(
         task=task,
         diag=diag,
         kb_matches=kb_matches,
         redirect_mode=redirect_mode,
         context=context,
     )
-    return decision.to_dict()
+    result = decision.to_dict()
+    result["_rule_trace"] = trace
+    result["_rule_trace_complete"] = not any(item["status"] == "error" for item in trace)
+    return result

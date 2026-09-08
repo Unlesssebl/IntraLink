@@ -1,5 +1,6 @@
 import type { Page, Ticket } from '../data/mock';
 import type { SidebarMode, ServiceSelection } from './Sidebar';
+import type { ActiveExecutionStatus } from '../lib/ticketRuns';
 
 interface Props {
   currentPage: Page;
@@ -13,6 +14,8 @@ interface Props {
   searchQuery: string;
   onSearchChange: (query: string) => void;
   isLiveConnected?: boolean;
+  activeExecution?: ActiveExecutionStatus | null;
+  onSelectActiveTask?: (taskId: number) => void;
 }
 
 export default function Topbar({
@@ -26,6 +29,8 @@ export default function Topbar({
   searchQuery,
   onSearchChange,
   isLiveConnected = false,
+  activeExecution,
+  onSelectActiveTask,
 }: Props) {
   const getSidebarTitle = () => {
     if (sidebarMode === 'full') return 'Компактный вид (01..16)';
@@ -130,6 +135,65 @@ export default function Topbar({
             ⌘K
           </button>
         </div>
+      </div>
+
+      {/* Center/Right: Live Assistant Execution Pill (Zero-Emoji, Linear Standard) */}
+      <div className="flex items-center min-w-0">
+        {activeExecution?.has_active && activeExecution.task_id ? (
+          activeExecution.state === 'waiting_approval' ? (
+            <button
+              type="button"
+              onClick={() => onSelectActiveTask?.(activeExecution.task_id!)}
+              className="inline-flex items-center gap-2 h-8 px-2.5 rounded-lg text-xs font-medium bg-amber-50 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-800/80 text-amber-900 dark:text-amber-200 hover:bg-amber-100/90 dark:hover:bg-amber-900/40 transition-all cursor-pointer shadow-2xs group max-w-[340px]"
+              title={`Заявка #${activeExecution.task_id} требует подтверждения. Кликните для открытия карточки.`}
+            >
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+              </span>
+              <span className="font-mono font-semibold text-[11.5px] text-amber-700 dark:text-amber-300 shrink-0">
+                #{activeExecution.task_id}
+              </span>
+              <span className="text-amber-300 dark:text-amber-700">·</span>
+              <span className="truncate text-left text-[11.5px]">
+                Ожидает одобрения: {activeExecution.action_title || 'действие'}
+              </span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onSelectActiveTask?.(activeExecution.task_id!)}
+              className="inline-flex items-center gap-2 h-8 px-2.5 rounded-lg text-xs font-medium bg-blue-50 dark:bg-blue-950/40 border border-blue-200/80 dark:border-blue-800/80 text-blue-900 dark:text-blue-200 hover:bg-blue-100/90 dark:hover:bg-blue-900/40 transition-all cursor-pointer shadow-2xs group max-w-[360px]"
+              title={`Заявка #${activeExecution.task_id} в работе у ассистента. Кликните для перехода.`}
+            >
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+              </span>
+              <span className="font-mono font-semibold text-[11.5px] text-blue-700 dark:text-blue-300 shrink-0">
+                #{activeExecution.task_id}
+              </span>
+              <span className="text-blue-300 dark:text-blue-700">·</span>
+              <span className="truncate text-left text-[11.5px]">
+                {activeExecution.action_title || 'В работе'}
+                {activeExecution.target_host ? ` → ${activeExecution.target_host}` : ''}
+                {activeExecution.phase_title ? ` (${activeExecution.phase_title})` : ''}
+              </span>
+            </button>
+          )
+        ) : (
+          <div
+            className="hidden xl:inline-flex items-center gap-2 h-8 px-2.5 rounded-lg text-xs font-medium text-neutral-500 dark:text-neutral-400 bg-neutral-100/60 dark:bg-neutral-900/60 border border-neutral-200/70 dark:border-neutral-800/80"
+            title={activeExecution?.worker_online ? 'Воркер активен, ожидает новых задач' : 'Фоновый воркер не обнаружен'}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                activeExecution?.worker_online ? 'bg-emerald-500' : 'bg-neutral-400'
+              }`}
+            />
+            <span>{activeExecution?.worker_online ? 'Ассистент свободен' : 'Воркер оффлайн'}</span>
+          </div>
+        )}
       </div>
 
       {/* Right Controls */}

@@ -5,13 +5,16 @@
 
 import logging
 import os
+import uuid
 from typing import Any
 import aiohttp
 
 logger = logging.getLogger("helpdesk_agent.core_client")
 
 CORE_API_URL = os.getenv("CORE_API_URL", "http://127.0.0.1:8000").rstrip("/")
-BOT_API_KEY = os.getenv("BOT_API_KEY", "dev_bot_api_key_tempo_2026")
+BOT_API_KEY = os.getenv("BOT_API_KEY", "")
+SERVICE_KEY_ID = os.getenv("CLI_SERVICE_KEY_ID") or os.getenv("SERVICE_KEY_ID", "")
+SERVICE_SECRET = os.getenv("CLI_SERVICE_SECRET") or os.getenv("SERVICE_SECRET", "")
 
 
 class CoreApiClient:
@@ -28,10 +31,11 @@ class CoreApiClient:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            headers = {
-                "X-Bot-Api-Key": self.api_key,
-                "Content-Type": "application/json",
-            }
+            headers = {"Content-Type": "application/json"}
+            if SERVICE_KEY_ID and SERVICE_SECRET:
+                headers.update({"X-Service-Key-Id": SERVICE_KEY_ID, "X-Service-Secret": SERVICE_SECRET})
+            elif self.api_key:
+                headers["X-Bot-Api-Key"] = self.api_key
             connector = aiohttp.TCPConnector(
                 limit=20, ttl_dns_cache=300, keepalive_timeout=30.0
             )
@@ -262,21 +266,24 @@ class CoreApiClient:
     ) -> dict[str, Any]:
         """Отправляет команду в единую шину Command Bus."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/commands"
+        url = f"{self.base_url}/api/v2/commands"
+        request_key = idempotency_key or str(uuid.uuid4())
         payload = {
-            "type": command_type,
+            "action": command_type,
             "target": target or {},
-            "params": params or {},
-            "mode": mode,
+            "parameters": params or {},
             "priority": priority,
-            "idempotency_key": idempotency_key,
-            "initiator": initiator,
             "source": source,
-            "auto_close_ticket": auto_close_ticket,
         }
-        async with session.post(url, json=payload) as resp:
+        async with session.post(url, json=payload, headers={"Idempotency-Key": request_key}) as resp:
             if resp.status in (200, 202):
-                return await resp.json()
+                data = await resp.json()
+                return {
+                    **data,
+                    "job_id": data.get("command_id"),
+                    "current_status": data.get("status"),
+                    "status": "accepted",
+                }
             err_text = await resp.text()
             logger.error("Ошибка submit_command (HTTP %d): %s", resp.status, err_text)
             return {"status": "error", "error": err_text}
@@ -284,10 +291,14 @@ class CoreApiClient:
     async def get_command_status(self, job_id: str) -> dict[str, Any] | None:
         """Получает статус выполнения команды по job_id."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/commands/{job_id}"
+        url = f"{self.base_url}/api/v2/commands/{job_id}"
         async with session.get(url) as resp:
             if resp.status == 200:
-                return await resp.json()
+                data = await resp.json()
+                if data.get("status") == "succeeded":
+                    data["status"] = "success"
+                data["job_id"] = data.get("command_id")
+                return data
             return None
 
     async def confirm_command(
@@ -299,8 +310,8 @@ class CoreApiClient:
     ) -> dict[str, Any]:
         """Отправляет решение оператора (HITL) по ожидающей задаче."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/commands/{job_id}/confirm"
-        payload = {"decision": decision, "reason": reason, "operator": operator}
+        url = f"{self.base_url}/api/v2/commands/{job_id}/approval"
+        payload = {"decision": decision, "reason": reason}
         async with session.post(url, json=payload) as resp:
             if resp.status == 200:
                 return await resp.json()
@@ -317,12 +328,12 @@ class CoreApiClient:
     ) -> dict[str, Any]:
         """Получает историю выполнения команд из audit log."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/commands"
+        url = f"{self.base_url}/api/v2/commands"
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if status_filter:
             params["status"] = status_filter
         if command_type:
-            params["command_type"] = command_type
+            params["action"] = command_type
         if initiator:
             params["initiator"] = initiator
         if task_id:
@@ -382,5 +393,22 @@ class CoreApiClient:
         except Exception as e:
             logger.debug("Сбой запроса ai_analyze: %s", e)
             return None
+
+    async def get_feedback_review(
+        self, limit: int = 20, min_diff: float = 0.0
+    ) -> dict[str, Any]:
+        """Получает журнал аудита решений и контроля качества (Feedback Loop)."""
+        session = await self._get_session()
+        url = f"{self.base_url}/api/v1/triage/feedback-review"
+        params = {"limit": str(limit), "min_diff": str(min_diff)}
+        try:
+            async with session.get(url, params=params) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                return {"total": 0, "items": []}
+        except Exception as e:
+            logger.debug("Сбой запроса get_feedback_review: %s", e)
+            return {"total": 0, "items": []}
+
 
 

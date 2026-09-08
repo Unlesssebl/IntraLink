@@ -37,7 +37,7 @@ IntraLink/
 * **Шлюз инструментов FastMCP Hub (`intralink-mcp`)**: Автономный MCP-сервер инструментов для AI-агента Antigravity (пакетный триаж, карточки тикетов, телеметрия хостов, векторный RAG и постановка задач в Command Bus).
 * **Изолированный Poller с Leader Lock**: Независимый демон фонового опроса очереди от сервисного аккаунта под защитой распределенного замка (`lock:poller_leader`, TTL 15s) для предотвращения Split-Brain при масштабировании.
 * **Гарантированная доставка событий (Redis Streams)**: Поток `stream:intraservice_events` с Consumer Groups, подтверждением `XACK` и периодическим перехватом зависших сообщений `XAUTOCLAIM` (At-Least-Once).
-* **Исполнение в Windows-домене (Execution Worker)**: Фоновая обработка очереди `stream:execution_queue` на базе стандарта `BaseActionExecutor` (`Preflight ➔ Execute ➔ Verify`) — выдача сетевого доступа в AD (`WLAN-WORKNET`), создание учетных записей, удаленная установка принтеров через WinRM с WMI Bootstrap и защитой от коллизий сессий (`lock:host:<pc>`, TTL 30s).
+* **Исполнение в Windows-домене (Execution Worker)**: Фоновая обработка подтверждённых команд из `stream:execution_commands:v2` на базе стандарта `BaseActionExecutor` (`Preflight ➔ Execute ➔ Verify`) — выдача сетевого доступа в AD (`WLAN-WORKNET`), диагностика и удаленная установка принтеров через WinRM с WMI Bootstrap и защитой от коллизий сессий (`lock:host:<pc>`, TTL 30s).
 * **Многоконтурная безопасность данных (Zero Trust DLP)**:
   * 🔴 **RED Zone (On-Prem)**: пароли и заявки СБ обрабатываются локально (Ollama Qwen2.5 / bge-m3).
   * 🟡 **YELLOW Zone (Sanitized Cloud)**: ПДн, IP и имена хостов маскируются токенами через Redis PII Vault перед вызовом облачных моделей.
@@ -112,3 +112,57 @@ CLI-справка по всем командам инструментария:
 ```bash
 uv run python helpdesk-cli/helpdesk.py --help
 ```
+
+### Проверка в Docker
+
+Production-образы не содержат dev-зависимостей. Для воспроизводимого прогона
+тестов используется отдельный Docker target с зависимостями из `uv.lock`:
+
+Перед переключением трафика на новый образ обязательно передайте SHA в build-arg
+`GIT_SHA`, поднимите кандидат на отдельном порту и выполните fail-closed проверку:
+
+```powershell
+python core-api/scripts/rollout_check.py --base-url http://127.0.0.1:8001 --sha <commit-sha>
+```
+
+Проверка разрешает rollout только когда SHA Core API и встроенного Web UI совпадают
+с указанным коммитом и миграция `security_audit_log` доступна. Она не перезапускает
+основной Docker-стек и не включает трафик самостоятельно.
+
+```bash
+docker compose --profile test run --rm tests
+```
+
+Для запуска отдельного набора тестов передайте путь вместо стандартной команды:
+
+```bash
+docker compose --profile test run --rm tests tests/test_ai_sanitizer.py -q
+```
+
+Профиль поднимает изолированный Redis без постоянного тома. Чтобы не
+останавливать основной стек, после прогона удалите только тестовый контейнер:
+
+```bash
+docker compose --profile test rm --stop --force test-redis
+```
+
+### Offline eval AI-автоматизации
+
+Контур не выполняет заявки и не обращается к LLM: он проверяет уже сохранённые
+анонимизированные предсказания RAG/LLM. Исторический JSONL выгружается
+отдельным read-only процессом и хранится вне Git.
+
+```bash
+# Стабильная секретная соль не должна попадать в репозиторий.
+$env:EVAL_EXPORT_SALT = "<secret>"
+uv run python core-api/scripts/export_eval_dataset.py --source F:\eval\history.jsonl --output F:\eval\dataset.jsonl
+
+# Датасет должен быть дополнен retrieved_ids, predicted_status_id,
+# predicted_action, effective_mode и dlp_safe от проверяемой сборки.
+uv run python core-api/scripts/run_offline_eval.py --dataset F:\eval\predictions.jsonl --baseline F:\eval\baseline.json --report F:\eval\report.json
+```
+
+Gate возвращает `0` при успехе, `1` при нарушении safety или регрессии более
+1 п.п. от baseline, `2` при некорректном датасете. Он требует минимум 100
+кейсов и использует временное деление 70/15/15: прошлое — corpus, последнее —
+удерживаемый test-набор.

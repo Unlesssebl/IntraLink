@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+from shared.domain import DecisionOutcome, Evidence, NoMatch, ResolutionProposed
 from .base import BaseRule, RuleDecision
 from .credentials import CredentialsRule
 from .file_locks import FileLockRule
@@ -24,13 +25,18 @@ class RuleEngine:
     def __init__(self, rules: list[BaseRule] | None = None):
         if rules is None:
             self._rules = [
+                # Корректность каталога проверяется до тематических правил:
+                # заявка в неверном разделе не должна получить исполняемое
+                # решение (например, grant_wlan) вместо редиректа.
+                ServiceRedirectRule(priority=5),
                 CredentialsRule(priority=10),
+                # Сначала даем принтерному правилу сформировать специфичный
+                # ответ для недоступного МФУ, затем применяем общий offline gate.
+                PrinterRule(priority=12),
+                OfflineHostRule(priority=13),
                 PhysicalDeliveryRule(priority=15),
                 FileLockRule(priority=20),
-                PrinterRule(priority=25),
                 RemoteAccessRule(priority=30),
-                OfflineHostRule(priority=35),
-                ServiceRedirectRule(priority=50),
                 RAGConsensusRule(priority=60),
                 StandardInWorkRule(priority=999),
             ]
@@ -57,6 +63,49 @@ class RuleEngine:
         """
         Прогоняет контекст заявки через цепочку правил до первого совпадения.
         """
+        decision, _trace = self.evaluate_with_trace(
+            task=task,
+            diag=diag,
+            kb_matches=kb_matches,
+            redirect_mode=redirect_mode,
+            context=context,
+        )
+        return decision
+
+    def evaluate_with_trace(
+        self,
+        task: dict[str, Any],
+        diag: dict[str, Any] | None = None,
+        kb_matches: list[dict[str, Any]] | None = None,
+        redirect_mode: bool = False,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[RuleDecision, list[dict[str, Any]]]:
+        """Evaluate rules and return an audit-safe trace without model reasoning."""
+        def _apply_downtime_safety(dec: RuleDecision) -> RuleDecision:
+            name = task.get("Name") or ""
+            desc = task.get("Description") or ""
+            full_text = f"{name}. {desc}".lower()
+            from .redirect import DOWNTIME_KEYWORDS
+            found = [kw for kw in DOWNTIME_KEYWORDS if kw in full_text]
+            if found:
+                dec.risk_level = "critical"
+                dec.risk_warning = (
+                    f"Внимание: обнаружен риск производственного простоя ({', '.join(found)})! "
+                    "Автоматическая отмена запрещена регламентом безопасности."
+                )
+                if not dec.trigger_markers:
+                    dec.trigger_markers = found
+                else:
+                    for m in found:
+                        if m not in dec.trigger_markers:
+                            dec.trigger_markers.append(m)
+                if dec.status_id == 30:
+                    dec.status_id = 27
+                    dec.status_name = "В работе"
+                    dec.name = f"Приоритетная обработка ({', '.join(found[:2])})"
+            return dec
+
+        trace: list[dict[str, Any]] = []
         for rule in self._rules:
             try:
                 decision = rule.evaluate(
@@ -67,10 +116,97 @@ class RuleEngine:
                     context=context,
                 )
                 if decision is not None:
+                    decision = _apply_downtime_safety(decision)
+                    trace.append(
+                        {
+                            "rule": rule.name,
+                            "priority": rule.priority,
+                            "status": "matched",
+                            "template_key": decision.template_key,
+                        }
+                    )
                     logger.debug("Правило '%s' успешно сработало для заявки #%s", rule.name, task.get("Id") or task.get("id"))
-                    return decision
+                    return decision, trace
+                trace.append(
+                    {"rule": rule.name, "priority": rule.priority, "status": "not_matched"}
+                )
             except Exception as e:
+                trace.append(
+                    {
+                        "rule": rule.name,
+                        "priority": rule.priority,
+                        "status": "error",
+                        "error_type": type(e).__name__,
+                    }
+                )
                 logger.error("Ошибка при выполнении правила '%s': %s", rule.name, e)
 
         # Fallback по умолчанию, если ни одно правило не вернуло результат
-        return StandardInWorkRule().evaluate(task, diag, kb_matches, redirect_mode, context)
+        fallback = StandardInWorkRule().evaluate(task, diag, kb_matches, redirect_mode, context)
+        fallback = _apply_downtime_safety(fallback)
+        trace.append(
+            {
+                "rule": "StandardInWorkRule",
+                "priority": 999,
+                "status": "fallback",
+                "template_key": fallback.template_key,
+            }
+        )
+        return fallback, trace
+
+    def evaluate_typed(
+        self,
+        task: dict[str, Any],
+        diag: dict[str, Any] | None = None,
+        kb_matches: list[dict[str, Any]] | None = None,
+        redirect_mode: bool = False,
+        context: dict[str, Any] | None = None,
+    ) -> DecisionOutcome:
+        """
+        Ordered typed pipeline execution with upfront Downtime Safety Guard.
+        """
+        name = task.get("Name") or ""
+        desc = task.get("Description") or ""
+        full_text = f"{name}. {desc}".lower()
+        from .redirect import DOWNTIME_KEYWORDS
+        found = [kw for kw in DOWNTIME_KEYWORDS if kw in full_text]
+        if found:
+            return ResolutionProposed(
+                rule_key="safety.downtime_priority",
+                rule_version="2",
+                outcome_key="downtime_priority",
+                target_status_id=27,
+                evidence=[
+                    Evidence(
+                        source="rule",
+                        field="description",
+                        code="downtime_risk",
+                        span=kw,
+                    )
+                    for kw in found
+                ],
+                metadata={
+                    "risk_level": "critical",
+                    "trigger_markers": found,
+                    "risk_warning": (
+                        f"Внимание: обнаружен риск производственного простоя ({', '.join(found)})! "
+                        "Автоматическая отмена запрещена регламентом безопасности."
+                    ),
+                },
+            )
+
+        for rule in self._rules:
+            try:
+                outcome = rule.evaluate_typed(
+                    task=task,
+                    diag=diag,
+                    kb_matches=kb_matches,
+                    redirect_mode=redirect_mode,
+                    context=context,
+                )
+                if outcome is not None and not isinstance(outcome, NoMatch):
+                    return outcome
+            except Exception as e:
+                logger.error("Ошибка при выполнении типизированного правила '%s': %s", rule.name, e)
+
+        return StandardInWorkRule().evaluate_typed(task, diag, kb_matches, redirect_mode, context)

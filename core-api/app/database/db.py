@@ -2,7 +2,7 @@ import datetime
 import uuid
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, JSON, String, Text, Uuid, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, Uuid, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -32,6 +32,8 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
+CURRENT_SCHEMA_REVISION = "20260907_0008"
+
 
 
 # Базовый класс для моделей
@@ -54,9 +56,192 @@ class User(Base):
     )  # Храним в виде строки ISO, как было в боте
 
 
+class Principal(Base):
+    """A stable human or service identity used for authorization and audit."""
+
+    __tablename__ = "principals"
+    __table_args__ = (UniqueConstraint("type", "subject", name="uq_principal_type_subject"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    subject: Mapped[str] = mapped_column(String(160), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="active", server_default="active", index=True
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class Role(Base):
+    __tablename__ = "roles"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    description: Mapped[str] = mapped_column(String(300), nullable=False)
+
+
+class Permission(Base):
+    __tablename__ = "permissions"
+
+    name: Mapped[str] = mapped_column(String(100), primary_key=True)
+    description: Mapped[str] = mapped_column(String(300), nullable=False)
+
+
+class RolePermission(Base):
+    __tablename__ = "role_permissions"
+
+    role_name: Mapped[str] = mapped_column(
+        String(64), ForeignKey("roles.name", ondelete="CASCADE"), primary_key=True
+    )
+    permission_name: Mapped[str] = mapped_column(
+        String(100), ForeignKey("permissions.name", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class PrincipalRole(Base):
+    __tablename__ = "principal_roles"
+
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="CASCADE"), primary_key=True
+    )
+    role_name: Mapped[str] = mapped_column(
+        String(64), ForeignKey("roles.name", ondelete="CASCADE"), primary_key=True
+    )
+    assigned_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="SET NULL"), nullable=True
+    )
+    assigned_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ServiceCredential(Base):
+    __tablename__ = "service_credentials"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    key_id: Mapped[str] = mapped_column(String(80), unique=True, nullable=False, index=True)
+    secret_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    scopes_json: Mapped[list[str]] = mapped_column(JSON_TYPE, nullable=False, default=list)
+    expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    refresh_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    rotated_from_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("auth_sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TelegramLink(Base):
+    __tablename__ = "telegram_links"
+
+    tg_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="pending_reverification", server_default="pending_reverification"
+    )
+    verified_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TelegramLinkCode(Base):
+    __tablename__ = "telegram_link_codes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ApprovalChallenge(Base):
+    __tablename__ = "approval_challenges"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    allowed_decisions_json: Mapped[list[str]] = mapped_column(JSON_TYPE, nullable=False, default=list)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    used_decision: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SecurityEvent(Base):
+    """Append-only identity and authorization audit without credentials or tokens."""
+
+    __tablename__ = "security_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    outcome: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    auth_method: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    resource_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    details_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
 # Модель базы знаний RAG (датасета заявок)
 class TaskKnowledgeBase(Base):
     __tablename__ = "task_knowledge_base"
+    __table_args__ = (
+        Index(
+            "idx_task_kb_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+            postgresql_with={"m": 16, "ef_construction": 64},
+        ),
+    )
 
     task_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     original_name: Mapped[str] = mapped_column(String, nullable=False)
@@ -76,6 +261,11 @@ class TaskKnowledgeBase(Base):
 
     # Черный список (удаленные задачи)
     is_blacklisted: Mapped[bool] = mapped_column(default=False, server_default="false")
+
+    # Скоринг ценности решения (0.0 - 1.0), по умолчанию 1.0
+    quality_score: Mapped[float] = mapped_column(
+        Float, default=1.0, server_default="1.0", nullable=False, index=True
+    )
 
 
 # Модель журнала исполнения задач (Command Bus / Execution Hub)
@@ -118,6 +308,406 @@ class JobLog(Base):
     )
 
 
+class AutopilotSetting(Base):
+    """Database-backed global gate for all automatic ticket cycles."""
+
+    __tablename__ = "autopilot_settings"
+
+    key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class AutopilotSettingEvent(Base):
+    """Append-only audit trail for changes to the global autopilot gate."""
+
+    __tablename__ = "autopilot_setting_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    setting_key: Mapped[str] = mapped_column(
+        String(32), ForeignKey("autopilot_settings.key", ondelete="CASCADE"), nullable=False, index=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
+class AutopilotScenario(Base):
+    """Explicit allowlist of IntraService services supported by autopilot."""
+
+    __tablename__ = "autopilot_scenarios"
+    __table_args__ = (
+        UniqueConstraint("service_id", "scenario_key", name="uq_autopilot_scenario_service"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    service_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    scenario_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    config_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class TicketRun(Base):
+    """Durable manual or autopilot cycle for one IntraService ticket."""
+
+    __tablename__ = "ticket_runs"
+    __table_args__ = (
+        UniqueConstraint("task_id", "trigger_key", name="uq_ticket_run_trigger"),
+        Index(
+            "uq_ticket_run_active_task",
+            "task_id",
+            unique=True,
+            postgresql_where=text("completed_at IS NULL"),
+            sqlite_where=text("completed_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    trigger_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    trigger_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    trigger_snapshot_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    current_step: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    waiting_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    waiting_until: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    clarification_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    pause_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TicketRunEvent(Base):
+    """Append-only state and decision history for a ticket cycle."""
+
+    __tablename__ = "ticket_run_events"
+    __table_args__ = (
+        UniqueConstraint("ticket_run_id", "sequence", name="uq_ticket_run_event_sequence"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    ticket_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("ticket_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False)
+    details_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
+class DecisionRecord(Base):
+    """Durable, versioned explanation for a triage or autopilot decision."""
+
+    __tablename__ = "decision_records"
+    __table_args__ = (
+        UniqueConstraint("task_id", "version", name="uq_decision_task_version"),
+        UniqueConstraint(
+            "task_id", "context_fingerprint", "analysis_kind", name="uq_decision_context"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    ticket_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("ticket_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    previous_decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_records.id", ondelete="SET NULL"), nullable=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    analysis_kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    context_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    context_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    completeness_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    proposal_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    policy_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    build_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    finalized_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class DecisionStep(Base):
+    """Append-only facts produced by one component while making a decision."""
+
+    __tablename__ = "decision_steps"
+    __table_args__ = (
+        UniqueConstraint("decision_id", "sequence", name="uq_decision_step_sequence"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    component: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    input_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    output_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    metadata_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class DecisionFeedback(Base):
+    """Operator review tied to the exact version of a decision."""
+
+    __tablename__ = "decision_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_action_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
+class CommandRecord(Base):
+    """Authoritative v2 command state. Redis only transports its outbox events."""
+
+    __tablename__ = "commands"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    executor: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    target_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    params_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
+    initiator: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    initiator_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    task_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    ticket_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("ticket_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_records.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    result_json: Mapped[dict | None] = mapped_column(JSON_TYPE, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plan_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    preflight_evidence_json: Mapped[dict | None] = mapped_column(JSON_TYPE, nullable=True)
+    plan_expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CommandEvent(Base):
+    __tablename__ = "command_events"
+    __table_args__ = (UniqueConstraint("command_id", "sequence", name="uq_command_event_sequence"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    details_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class CommandSecretArtifact(Base):
+    """Encrypted, short-lived, one-time material produced by a command."""
+
+    __tablename__ = "command_secret_artifacts"
+    __table_args__ = (UniqueConstraint("command_id", "name", name="uq_command_secret_name"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    encrypted_value: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(String(100), nullable=False, default="text/plain")
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    consumed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class CommandOutbox(Base):
+    __tablename__ = "command_outbox"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True)
+    stream: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    available_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    published_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CommandInbox(Base):
+    """Durable record of a transport message accepted by a worker."""
+
+    __tablename__ = "command_inbox"
+    __table_args__ = (
+        UniqueConstraint("consumer", "message_id", name="uq_command_inbox_message"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    consumer: Mapped[str] = mapped_column(String(100), nullable=False)
+    message_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    outbox_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, nullable=True, index=True)
+    received_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class CommandAttempt(Base):
+    __tablename__ = "command_attempts"
+    __table_args__ = (UniqueConstraint("command_id", "attempt_no", name="uq_command_attempt_no"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_json: Mapped[dict | None] = mapped_column(JSON_TYPE, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CommandApproval(Base):
+    __tablename__ = "command_approvals"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, index=True)
+    decision: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    operator: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    approver_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("principals.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    command_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    plan_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ActionPolicyRecord(Base):
+    __tablename__ = "action_policies"
+
+    action: Mapped[str] = mapped_column(String(64), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SecurityAuditLog(Base):
+    """Append-only audit events for safety gates; never stores source prompts or PII."""
+
+    __tablename__ = "security_audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, primary_key=True, default=uuid.uuid4
+    )
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    details_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class DesktopLaunchLog(Base):
+    """Аудит безопасных локальных запусков из IntraLink Desktop Companion."""
+
+    __tablename__ = "desktop_launch_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    completion_hash: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    client: Mapped[str] = mapped_column(String(32), nullable=False)
+    initiator: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="issued", index=True)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    claimed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 # Модель шаблонов ответов триажа (SSOT)
 class TriageTemplate(Base):
     __tablename__ = "triage_templates"
@@ -149,27 +739,66 @@ class TriageTemplate(Base):
     )
 
 
-# Модель детерминированных правил триажа (Rule Engine)
-class TriageRule(Base):
-    __tablename__ = "triage_rules"
+class ResponseTemplate(Base):
+    """Versioned response text. Keys are immutable; versions are append-only."""
+
+    __tablename__ = "response_templates"
+    __table_args__ = (
+        UniqueConstraint("key", "version", name="uq_response_template_key_version"),
+        Index(
+            "uq_response_template_active_key",
+            "key",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+            sqlite_where=text("is_active = 1"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    priority: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=100, server_default="100", index=True
+    template_text: Mapped[str] = mapped_column(Text, nullable=False)
+    required_variables: Mapped[list] = mapped_column(JSON_TYPE, nullable=False, default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False, default="system:migration", server_default="system:migration")
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class ResolutionPolicy(Base):
+    """Versioned mapping from a domain outcome to presentation/action policy."""
+
+    __tablename__ = "resolution_policies"
+    __table_args__ = (
+        UniqueConstraint("outcome_key", "version", name="uq_resolution_policy_key_version"),
+        CheckConstraint("outcome_kind IN ('clarification','action','manual_review','resolution')", name="ck_resolution_policy_kind"),
+        CheckConstraint("risk_level BETWEEN 0 AND 3", name="ck_resolution_policy_risk"),
+        CheckConstraint("target_status_id IS NULL OR target_status_id IN (27,29,30,35,48)", name="ck_resolution_policy_status"),
+        Index(
+            "uq_resolution_policy_active_key",
+            "outcome_key",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+            sqlite_where=text("is_active = 1"),
+        ),
     )
-    conditions_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
-    target_template_key: Mapped[str] = mapped_column(String(64), nullable=False)
-    actions_override_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, default=True, server_default="true"
-    )
-    created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    outcome_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    outcome_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    template_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("response_templates.id", ondelete="RESTRICT"), nullable=True)
+    target_status_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    expenses: Mapped[int] = mapped_column(Integer, nullable=False, default=10, server_default="10")
+    action_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    risk_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False, default="system:migration", server_default="system:migration")
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
 # Журнал аудита изменений правил и шаблонов
@@ -217,42 +846,23 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
             await session.close()
 
 
-# Функция инициализации БД (создание таблиц)
+# SQLite-only schema bootstrap for isolated tests. PostgreSQL uses Alembic.
 async def init_db() -> None:
+    if not settings.DATABASE_URL.startswith("sqlite"):
+        raise RuntimeError("init_db is disabled for PostgreSQL; run 'alembic upgrade head'")
     async with engine.begin() as conn:
-        if not settings.DATABASE_URL.startswith("sqlite"):
-            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
-            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";"))
         await conn.run_sync(Base.metadata.create_all)
-        if not settings.DATABASE_URL.startswith("sqlite"):
-            # Гарантируем наличие колонки is_blacklisted в случае обновления схемы существующей БД
-            await conn.execute(
-                text(
-                    "ALTER TABLE task_knowledge_base ADD COLUMN IF NOT EXISTS is_blacklisted BOOLEAN NOT NULL DEFAULT false;"
-                )
-            )
-            # Гарантируем, что колонка embedding может принимать NULL значения
-            await conn.execute(
-                text(
-                    "ALTER TABLE task_knowledge_base ALTER COLUMN embedding DROP NOT NULL;"
-                )
-            )
 
-    # Создание индекса HNSW в отдельной транзакции (pgvector HNSW строго ограничен 2000 измерениями)
-    if not settings.DATABASE_URL.startswith("sqlite") and settings.EMBEDDING_DIMENSION <= 2000:
-        try:
-            async with engine.begin() as conn:
-                await conn.execute(
-                    text(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_task_kb_hnsw
-                        ON task_knowledge_base
-                        USING hnsw (embedding vector_cosine_ops)
-                        WITH (m = 16, ef_construction = 64);
-                        """
-                    )
-                )
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("Не удалось создать HNSW индекс для pgvector: %s", e)
+
+async def verify_schema() -> None:
+    """Fail closed when production migrations have not reached this build."""
+    async with engine.connect() as conn:
+        revision = await conn.scalar(text("SELECT version_num FROM alembic_version"))
+        if revision != CURRENT_SCHEMA_REVISION:
+            raise RuntimeError(
+                f"Database revision {revision!r} does not match {CURRENT_SCHEMA_REVISION!r}"
+            )
+        commands_table = await conn.scalar(text("SELECT to_regclass('public.commands')"))
+        if not commands_table:
+            raise RuntimeError("Required table 'commands' is missing")
 

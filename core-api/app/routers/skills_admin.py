@@ -9,20 +9,21 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.routers.deps import verify_admin_or_api_key
+from app.routers.deps import principal_subject, require_permission, verify_trusted_origin
 from app.services.actions import (
     ActionDefinition,
     PolicyMode,
     get_action_registry,
     get_policy_engine,
 )
+from app.services.actions.policy import AUTO_ELIGIBLE_ACTIONS
 
 logger = logging.getLogger("core_api.routers.skills_admin")
 
 router = APIRouter(
     prefix="/api/v1/skills",
     tags=["Skills Hub & Action Registry"],
-    dependencies=[Depends(verify_admin_or_api_key)],
+    dependencies=[Depends(require_permission("command:read"))],
 )
 
 
@@ -38,6 +39,7 @@ class ActionItemResponse(BaseModel):
     default_mode: PolicyMode
     effective_mode: PolicyMode
     target_type: str
+    auto_eligible: bool = Field(False, description="Разрешен ли автономный режим Auto")
     parameters_schema: dict[str, Any]
 
 
@@ -60,6 +62,7 @@ async def list_skills(
                 default_mode=a.default_mode,
                 effective_mode=eff_mode,
                 target_type=a.target_type,
+                auto_eligible=a.id in AUTO_ELIGIBLE_ACTIONS,
                 parameters_schema=a.parameters_schema,
             )
         )
@@ -88,15 +91,17 @@ async def get_skill_details(
         default_mode=a.default_mode,
         effective_mode=eff_mode,
         target_type=a.target_type,
+        auto_eligible=a.id in AUTO_ELIGIBLE_ACTIONS,
         parameters_schema=a.parameters_schema,
     )
 
 
-@router.patch("/{action_id}/policy", status_code=status.HTTP_200_OK)
+@router.patch("/{action_id}/policy", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("policy:manage"))])
 async def update_skill_policy(
     action_id: str,
     payload: UpdatePolicyRequest,
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
+    _origin: None = Depends(verify_trusted_origin),
     registry=Depends(get_action_registry),
     policy_engine=Depends(get_policy_engine),
 ):
@@ -111,11 +116,14 @@ async def update_skill_policy(
             detail=f"Действие '{action_id}' не зарегистрировано.",
         )
 
-    await policy_engine.set_action_policy(
-        action_id=action_id,
-        mode=payload.mode,
-        actor=operator,
-    )
+    try:
+        await policy_engine.set_action_policy(
+            action_id=action_id,
+            mode=payload.mode,
+            actor=operator,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return {
         "status": "success",
         "action_id": action_id,
@@ -124,9 +132,11 @@ async def update_skill_policy(
     }
 
 
-@router.delete("/{action_id}/policy", status_code=status.HTTP_200_OK)
+@router.delete("/{action_id}/policy", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("policy:manage"))])
 async def reset_skill_policy(
     action_id: str,
+    _operator: str = Depends(principal_subject),
+    _origin: None = Depends(verify_trusted_origin),
     registry=Depends(get_action_registry),
     policy_engine=Depends(get_policy_engine),
 ):

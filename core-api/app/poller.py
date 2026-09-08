@@ -16,6 +16,7 @@ from app.services.intraservice import close_session, init_session
 from app.services.worker import (
     check_updates,
     close_redis,
+    get_effective_polling_interval,
     get_redis_client,
     sync_service_catalog,
 )
@@ -27,7 +28,24 @@ logging.basicConfig(
 logger = logging.getLogger("intralink.poller")
 
 LEADER_LOCK_KEY = "lock:poller_leader"
-LEADER_LOCK_TTL = 15  # Секунд действия замка лидера
+# Lease должен переживать один обычный цикл внешних HTTP-вызовов. Атомарное
+# продление ниже защищает владельца, а увеличенный TTL не дает lock истечь
+# посреди медленного ответа IntraService.
+LEADER_LOCK_TTL = max(60, settings.POLLING_INTERVAL * 3)
+
+_RENEW_LOCK_SCRIPT = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('expire', KEYS[1], ARGV[2])
+end
+return 0
+"""
+
+_RELEASE_LOCK_SCRIPT = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('del', KEYS[1])
+end
+return 0
+"""
 
 
 class IntraServicePoller:
@@ -57,18 +75,21 @@ class IntraServicePoller:
                 self._is_leader = True
                 return True
 
-            # 2. Если замок уже наш — продлеваем TTL (Heartbeat)
-            current_owner = await redis.get(LEADER_LOCK_KEY)
-            if current_owner == self.worker_id:
-                await redis.expire(LEADER_LOCK_KEY, LEADER_LOCK_TTL)
+            # 2. Атомарное compare-and-expire: между проверкой владельца и
+            # продлением lock не может быть перехвачен другой репликой.
+            renewed = await redis.eval(
+                _RENEW_LOCK_SCRIPT,
+                1,
+                LEADER_LOCK_KEY,
+                self.worker_id,
+                LEADER_LOCK_TTL,
+            )
+            if renewed:
                 self._is_leader = True
                 return True
 
             if self._is_leader:
-                logger.warning(
-                    "⚠️ Потерян статус Лидера опроса! Текущий владелец: %s",
-                    current_owner,
-                )
+                logger.warning("⚠️ Потерян статус Лидера опроса!")
             self._is_leader = False
             return False
         except Exception as e:
@@ -79,9 +100,13 @@ class IntraServicePoller:
     async def _release_leader_lock(self, redis) -> None:
         """Освобождает замок лидера при штатной остановке."""
         try:
-            current_owner = await redis.get(LEADER_LOCK_KEY)
-            if current_owner == self.worker_id:
-                await redis.delete(LEADER_LOCK_KEY)
+            released = await redis.eval(
+                _RELEASE_LOCK_SCRIPT,
+                1,
+                LEADER_LOCK_KEY,
+                self.worker_id,
+            )
+            if released:
                 logger.info("Замок Лидера опроса успешно освобожден.")
         except Exception as e:
             logger.debug("Ошибка освобождения Leader Lock: %s", e)
@@ -106,6 +131,7 @@ class IntraServicePoller:
             logger.warning("Ошибка первичной синхронизации каталога: %s", e)
 
         while self.is_running:
+            sleep_interval = settings.POLLING_INTERVAL
             try:
                 # 1. Проверяем статус лидера
                 is_leader = await self._try_acquire_leader_lock(redis)
@@ -113,6 +139,10 @@ class IntraServicePoller:
                 if is_leader:
                     # 2. Выполняем опрос заявок
                     await check_updates()
+                    sleep_interval = get_effective_polling_interval()
+
+                    # 3. Проверяем расписание ночного аудита RAG (ежедневно в 19:00 MSK)
+                    await self._check_nightly_audit(redis)
                 else:
                     logger.debug(
                         "Реплика в режиме ожидания (Standby). Лидер активен."
@@ -126,7 +156,7 @@ class IntraServicePoller:
 
             # Ожидание следующей итерации
             try:
-                await asyncio.sleep(settings.POLLING_INTERVAL)
+                await asyncio.sleep(sleep_interval)
             except asyncio.CancelledError:
                 break
 
@@ -135,6 +165,24 @@ class IntraServicePoller:
         await close_session()
         await close_redis()
         logger.info("IntraService Poller Daemon остановлен.")
+
+    async def _check_nightly_audit(self, redis) -> None:
+        """
+        Проверяет расписание тяжелого ночного аудита RAG (ежедневно в 19:00 MSK / UTC+3).
+        """
+        try:
+            from datetime import datetime, timezone, timedelta
+            msk_now = datetime.now(timezone(timedelta(hours=3)))
+            if msk_now.hour == 19 and msk_now.minute < 10:
+                today_key = msk_now.strftime("%Y-%m-%d")
+                already_run = await redis.get(f"kb:nightly_audit_done:{today_key}")
+                if not already_run:
+                    await redis.set(f"kb:nightly_audit_done:{today_key}", "1", ex=72000)
+                    logger.info("Наступило 19:00 MSK: запуск планового тяжелого аудита базы знаний RAG...")
+                    from app.services.rag import run_nightly_deep_audit_kb
+                    asyncio.create_task(run_nightly_deep_audit_kb())
+        except Exception as e:
+            logger.debug("Ошибка проверки расписания ночного аудита в poller: %s", e)
 
     def stop(self) -> None:
         """Останавливает цикл опроса."""

@@ -1,22 +1,38 @@
 import asyncio
+import datetime as dt
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func, select
 
 from app.config import settings
-from app.database.db import AsyncSessionLocal, init_db
+from app.database.db import (
+    ApprovalChallenge,
+    CommandOutbox,
+    CommandRecord,
+    SecurityEvent,
+    ServiceCredential,
+    TicketRun,
+    AsyncSessionLocal,
+    init_db,
+    verify_schema,
+)
 from app.routers import (
     admin,
     admin_settings,
     ai,
     auth,
     commands,
+    commands_v2,
+    decisions,
+    desktop,
     events,
+    identity,
     kb_admin,
     outages,
     rules_admin,
@@ -24,6 +40,7 @@ from app.routers import (
     service_tasks,
     skills_admin,
     tasks,
+    ticket_runs,
     triage,
     users,
 )
@@ -35,6 +52,9 @@ from app.services.template_engine import (
     start_rules_invalidation_listener,
 )
 from app.services.worker import start_worker, stop_worker
+from app.services.rollout import rollout_readiness
+from app.services.identity import ensure_rbac_catalog
+from app.services.worker import get_redis_client
 
 # Настройка логирования
 logging.basicConfig(
@@ -48,14 +68,19 @@ async def lifespan(_app: FastAPI):
     # Действия при запуске приложения
     logger.info("Инициализация базы данных...")
     try:
-        await init_db()
+        if settings.DATABASE_URL.startswith("sqlite"):
+            await init_db()
+        else:
+            await verify_schema()
         logger.info("База данных успешно инициализирована.")
     except Exception as e:
         logger.exception("Ошибка при инициализации базы данных: %s", e)
+        raise
 
     # Database Seeding и прогрев L1 кэша шаблонов
     try:
         async with AsyncSessionLocal() as session:
+            await ensure_rbac_catalog(session)
             await seed_templates_if_empty(session)
             await get_templates_from_db(session)
         logger.info("L1 кэш шаблонов триажа инициализирован из PostgreSQL.")
@@ -132,10 +157,13 @@ app = FastAPI(
 # Разрешение CORS для локальных веб-клиентов и интерфейсов
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https?://.*$",
+    allow_origins=[origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization", "Content-Type", "Idempotency-Key", "X-Bot-Api-Key",
+        "X-Service-Key-Id", "X-Service-Secret",
+    ],
 )
 
 # Подключение роутеров с единым префиксом версии API v1
@@ -145,9 +173,18 @@ app.include_router(users.router, prefix="/api/v1")
 app.include_router(service_tasks.router, prefix="/api/v1")
 app.include_router(triage.router)
 app.include_router(rules_admin.router)
+app.include_router(rules_admin.router_v2)
 app.include_router(ai.router)
 app.include_router(commands.router)
+app.include_router(commands_v2.router)
+app.include_router(commands_v2.policy_router)
+app.include_router(commands_v2.workers_router)
+app.include_router(decisions.router)
+app.include_router(ticket_runs.router)
+app.include_router(ticket_runs.settings_router)
+app.include_router(desktop.router)
 app.include_router(events.router)
+app.include_router(identity.router)
 app.include_router(admin.router)
 app.include_router(admin_settings.router)
 app.include_router(kb_admin.router)
@@ -188,3 +225,123 @@ async def health_check():
     Не требует авторизации по API Key.
     """
     return {"status": "healthy", "service": "intraservice-core-api"}
+
+
+@app.get("/ready", tags=["System"])
+async def readiness_check():
+    checks: dict[str, str] = {}
+    try:
+        await verify_schema()
+        checks["database"] = "ready"
+    except Exception as exc:
+        checks["database"] = f"failed:{type(exc).__name__}"
+    try:
+        await get_redis_client().ping()
+        checks["redis"] = "ready"
+    except Exception as exc:
+        checks["redis"] = f"failed:{type(exc).__name__}"
+    ready = all(value == "ready" for value in checks.values())
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"status": "ready" if ready else "not_ready", "checks": checks},
+    )
+
+
+@app.get("/metrics", response_class=PlainTextResponse, tags=["System"])
+async def command_metrics():
+    async with AsyncSessionLocal() as db:
+        status_rows = (await db.execute(
+            select(CommandRecord.status, func.count(CommandRecord.id)).group_by(CommandRecord.status)
+        )).all()
+        pending_outbox = int(await db.scalar(
+            select(func.count(CommandOutbox.id)).where(CommandOutbox.published_at.is_(None))
+        ) or 0)
+        denied_authorizations = int(await db.scalar(
+            select(func.count(SecurityEvent.id)).where(
+                SecurityEvent.event_type == "authorization.denied"
+            )
+        ) or 0)
+        active_challenges = int(await db.scalar(
+            select(func.count(ApprovalChallenge.id)).where(
+                ApprovalChallenge.used_at.is_(None),
+                ApprovalChallenge.expires_at > func.now(),
+            )
+        ) or 0)
+        active_service_credentials = int(await db.scalar(
+            select(func.count(ServiceCredential.id)).where(
+                ServiceCredential.revoked_at.is_(None)
+            )
+        ) or 0)
+        ticket_run_rows = (await db.execute(
+            select(
+                TicketRun.state,
+                func.count(TicketRun.id),
+                func.min(TicketRun.created_at),
+            )
+            .where(TicketRun.completed_at.is_(None))
+            .group_by(TicketRun.state)
+        )).all()
+        oldest_active_run = await db.scalar(
+            select(func.min(TicketRun.created_at)).where(TicketRun.completed_at.is_(None))
+        )
+        oldest_pending_outbox = await db.scalar(
+            select(func.min(CommandOutbox.available_at)).where(
+                CommandOutbox.published_at.is_(None)
+            )
+        )
+
+    def age_seconds(value) -> int:
+        if value is None:
+            return 0
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt.timezone.utc)
+        return max(0, int((dt.datetime.now(dt.timezone.utc) - value).total_seconds()))
+    lines = [
+        "# HELP intralink_commands Commands by durable state",
+        "# TYPE intralink_commands gauge",
+    ]
+    lines.extend(
+        f'intralink_commands{{status="{command_status}"}} {count}'
+        for command_status, count in status_rows
+    )
+    lines.extend([
+        "# HELP intralink_command_outbox_pending Unpublished command messages",
+        "# TYPE intralink_command_outbox_pending gauge",
+        f"intralink_command_outbox_pending {pending_outbox}",
+        "# HELP intralink_authorization_denied_total Recorded authorization denials",
+        "# TYPE intralink_authorization_denied_total counter",
+        f"intralink_authorization_denied_total {denied_authorizations}",
+        "# HELP intralink_approval_challenges_active Unused non-expired approval challenges",
+        "# TYPE intralink_approval_challenges_active gauge",
+        f"intralink_approval_challenges_active {active_challenges}",
+        "# HELP intralink_service_credentials_active Non-revoked service credentials",
+        "# TYPE intralink_service_credentials_active gauge",
+        f"intralink_service_credentials_active {active_service_credentials}",
+        "# HELP intralink_ticket_runs_active Active ticket cycles by state",
+        "# TYPE intralink_ticket_runs_active gauge",
+    ])
+    lines.extend(
+        f'intralink_ticket_runs_active{{state="{run_state}"}} {count}'
+        for run_state, count, _oldest in ticket_run_rows
+    )
+    lines.extend([
+        "# HELP intralink_ticket_run_oldest_active_seconds Age of the oldest active ticket cycle",
+        "# TYPE intralink_ticket_run_oldest_active_seconds gauge",
+        f"intralink_ticket_run_oldest_active_seconds {age_seconds(oldest_active_run)}",
+        "# HELP intralink_command_outbox_oldest_pending_seconds Age of the oldest unpublished outbox item",
+        "# TYPE intralink_command_outbox_oldest_pending_seconds gauge",
+        f"intralink_command_outbox_oldest_pending_seconds {age_seconds(oldest_pending_outbox)}",
+        "# HELP intralink_ticket_run_oldest_state_seconds Age of the oldest active ticket cycle by state",
+        "# TYPE intralink_ticket_run_oldest_state_seconds gauge",
+    ])
+    lines.extend(
+        f'intralink_ticket_run_oldest_state_seconds{{state="{run_state}"}} {age_seconds(oldest)}'
+        for run_state, _count, oldest in ticket_run_rows
+    )
+    return "\n".join(lines) + "\n"
+
+
+@app.get("/health/rollout", status_code=status.HTTP_200_OK, tags=["System"])
+async def rollout_health_check(expected_sha: str | None = None):
+    """Fail-closed check for a new image before a proxy enables its traffic."""
+    return await rollout_readiness(expected_sha=expected_sha)

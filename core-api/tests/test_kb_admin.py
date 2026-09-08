@@ -1,12 +1,15 @@
 import json
+import jwt
 from unittest.mock import AsyncMock, patch
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.database.db import Base, TaskKnowledgeBase, get_db
 from app.main import app
+from app.routers.deps import get_service_auth_b64
 
 
 @pytest.fixture
@@ -14,7 +17,18 @@ def anyio_backend():
     return "asyncio"
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
+def override_service_auth():
+    """Изолирует KB-роуты от Redis/Vault с внешними учётными данными."""
+    async def _service_auth() -> str:
+        return "test_auth_b64"
+
+    app.dependency_overrides[get_service_auth_b64] = _service_auth
+    yield
+    app.dependency_overrides.pop(get_service_auth_b64, None)
+
+
+@pytest_asyncio.fixture
 async def test_db_session():
     """Тестовая in-memory база данных SQLite."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -147,3 +161,223 @@ async def test_kb_admin_services_tree():
             assert len(tree) == 1
             assert tree[0]["name"] == "Оборудование"
             assert len(tree[0]["children"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_kb_admin_sync_with_sso_and_cookie():
+    """Проверка работы /api/v1/admin/kb/sync при авторизации через sso_session и cookie admin_session."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with patch.object(settings, "ADMIN_LOGINS", "test_mock_admin"), \
+             patch("app.routers.admin.auth.verify_credentials", return_value=("mock_auth_b64", 8664)):
+            login_res = await client.post(
+                "/admin/api/login",
+                json={"username": "test_mock_admin", "password": "valid_password"},
+            )
+            assert login_res.status_code == 200
+            cookie_val = login_res.cookies.get("admin_session")
+            if cookie_val:
+                client.cookies.set("admin_session", cookie_val)
+
+        with patch("app.routers.kb_admin.sync_historical_closed_tasks", new_callable=AsyncMock) as mock_sync, \
+             patch("app.services.rag.check_embedding_health", new_callable=AsyncMock) as mock_health:
+            mock_sync.return_value = {"indexed": 5, "skipped": 2}
+            mock_health.return_value = (True, "OK")
+            res = await client.post(
+                "/api/v1/admin/kb/sync",
+                json={"days": 30, "limit": 100},
+                headers={"Authorization": "Bearer sso_session"},
+            )
+            assert res.status_code == 200
+            assert res.json()["status"] == "success"
+            assert res.json()["details"] == {"indexed": 5, "skipped": 2}
+
+
+@pytest.mark.asyncio
+async def test_kb_admin_stratified_sync_endpoints():
+    """Проверка работы эндпоинтов /sync-stratified и /sync-status."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with patch.object(settings, "ADMIN_LOGINS", "test_mock_admin"), \
+             patch("app.routers.admin.auth.verify_credentials", return_value=("mock_auth_b64", 8664)):
+            login_res = await client.post(
+                "/admin/api/login",
+                json={"username": "test_mock_admin", "password": "valid_password"},
+            )
+            assert login_res.status_code == 200
+            cookie_val = login_res.cookies.get("admin_session")
+            if cookie_val:
+                client.cookies.set("admin_session", cookie_val)
+
+        mock_redis = AsyncMock()
+        mock_redis.get.return_value = None  # no lock
+
+        with patch("app.routers.kb_admin.get_redis_client", return_value=mock_redis), \
+             patch("app.services.rag.check_embedding_health", new_callable=AsyncMock) as mock_health, \
+             patch("app.services.rag.sync_stratified_kb", new_callable=AsyncMock):
+            mock_health.return_value = (True, "OK")
+            res = await client.post(
+                "/api/v1/admin/kb/sync-stratified",
+                json={"quota_per_service": 20, "days": 60, "root_id": "03"},
+                headers={"Authorization": "Bearer sso_session"},
+            )
+            assert res.status_code == 202
+            data = res.json()
+            assert data["status"] == "started"
+            assert data["quota_per_service"] == 20
+            assert data["root_id"] == "03"
+
+            # Check status endpoint
+            status_res = await client.get(
+                "/api/v1/admin/kb/sync-status",
+                headers={"Authorization": "Bearer sso_session"},
+            )
+            assert status_res.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_kb_admin_preflight_check_blocks_when_embedder_fails():
+    """Тест: при сбое сервиса эмбеддингов запуск синхронизации отклоняется с кодом 424."""
+    cookie_val = jwt.encode(
+        {"sub": "admin_user", "role": "admin"},
+        "test-secret-key-12345678901234567890",
+        algorithm="HS256",
+    )
+
+    with patch.object(settings, "JWT_SECRET", "test-secret-key-12345678901234567890"), \
+         patch("app.services.rag.check_embedding_health", new_callable=AsyncMock) as mock_health:
+        mock_health.return_value = (False, "LiteLLM HTTP 400: Invalid model name")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"admin_session": cookie_val},
+        ) as client:
+            res = await client.post(
+                "/api/v1/admin/kb/sync-stratified",
+                json={"quota_per_service": 20, "days": 60, "root_id": "03"},
+                headers={"Authorization": "Bearer sso_session"},
+            )
+            assert res.status_code == 424
+            data = res.json()
+            assert "Служба генерации эмбеддингов недоступна" in data["detail"]
+            assert "LiteLLM HTTP 400" in data["detail"]
+
+
+
+
+
+@pytest.mark.asyncio
+async def test_kb_admin_available_statuses_endpoint():
+    """Тест эндпоинта получения доступных статусов IntraService."""
+    cookie_val = jwt.encode(
+        {"sub": "admin_user", "role": "admin"},
+        "test-secret-key-12345678901234567890",
+        algorithm="HS256",
+    )
+
+    mock_statuses = [
+        {"Id": 28, "Name": "Закрыта"},
+        {"Id": 29, "Name": "Выполнена"},
+        {"Id": 43, "Name": "Обработано 1-й линией"},
+        {"Id": 30, "Name": "Отменена"},
+        {"Id": 31, "Name": "Открыта"},
+    ]
+
+    with patch.object(settings, "JWT_SECRET", "test-secret-key-12345678901234567890"), \
+         patch("app.services.intraservice.get_statuses", new_callable=AsyncMock) as mock_get_statuses:
+        mock_get_statuses.return_value = mock_statuses
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"admin_session": cookie_val},
+        ) as client:
+            res = await client.get("/api/v1/admin/kb/available-statuses")
+            assert res.status_code == 200
+            data = res.json()
+            assert len(data) == 5
+            rec_ids = [s["id"] for s in data if s["is_recommended"]]
+            assert 28 in rec_ids
+            assert 29 in rec_ids
+            assert 43 in rec_ids
+            assert 30 in rec_ids
+
+
+@pytest.mark.asyncio
+async def test_kb_admin_sync_with_custom_statuses_and_ai_eval():
+    """Тест передачи кастомных статусов и флага AI-валидации в запуск умной синхронизации."""
+    cookie_val = jwt.encode(
+        {"sub": "admin_user", "role": "admin"},
+        "test-secret-key-12345678901234567890",
+        algorithm="HS256",
+    )
+
+    mock_redis = AsyncMock()
+    mock_redis.get.return_value = None
+
+    with patch.object(settings, "JWT_SECRET", "test-secret-key-12345678901234567890"), \
+         patch("app.routers.kb_admin.get_redis_client", return_value=mock_redis), \
+         patch("app.services.rag.check_embedding_health", new_callable=AsyncMock) as mock_health, \
+         patch("app.services.rag.sync_stratified_kb", new_callable=AsyncMock) as mock_sync:
+        mock_health.return_value = (True, "OK (bge-m3, 1024 dim)")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"admin_session": cookie_val},
+        ) as client:
+            res = await client.post(
+                "/api/v1/admin/kb/sync-stratified",
+                json={
+                    "quota_per_service": 25,
+                    "days": 45,
+                    "root_id": "01",
+                    "status_ids": [28, 29, 43],
+                    "ai_eval": True
+                },
+                headers={"Authorization": "Bearer sso_session"},
+            )
+            assert res.status_code == 202
+            data = res.json()
+            assert data["status_ids"] == [28, 29, 43]
+            assert data["ai_eval"] is True
+
+@pytest.mark.asyncio
+async def test_kb_admin_nightly_audit_endpoints():
+    """Тест эндпоинтов ручного запуска и статуса глубокого ночного аудита RAG."""
+    cookie_val = jwt.encode(
+        {"sub": "admin_user", "role": "admin"},
+        "test-secret-key-12345678901234567890",
+        algorithm="HS256",
+    )
+
+    mock_redis = AsyncMock()
+    mock_redis.get.return_value = None
+
+    with patch.object(settings, "JWT_SECRET", "test-secret-key-12345678901234567890"), \
+         patch("app.routers.kb_admin.get_redis_client", return_value=mock_redis), \
+         patch("app.services.rag.run_nightly_deep_audit_kb", new_callable=AsyncMock), \
+         patch("app.services.rag.get_nightly_audit_progress", new_callable=AsyncMock) as mock_prog:
+        mock_prog.return_value = {
+            "is_running": False,
+            "total_records": 100,
+            "total_audited": 100,
+            "high_quality_count": 85,
+            "blacklisted_count": 15,
+            "percent": 100,
+        }
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"admin_session": cookie_val},
+        ) as client:
+            res = await client.post("/api/v1/admin/kb/nightly-audit")
+            assert res.status_code == 202
+            assert res.json()["status"] == "started"
+
+            s_res = await client.get("/api/v1/admin/kb/nightly-audit-status")
+            assert s_res.status_code == 200
+            assert s_res.json()["total_records"] == 100
+            assert s_res.json()["high_quality_count"] == 85

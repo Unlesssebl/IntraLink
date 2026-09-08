@@ -191,13 +191,16 @@ async def async_ping(host: str, count: int = 2, timeout_sec: float = 1.0) -> dic
         return {"host": host, "is_online": False, "avg_rtt": None, "error": str(e)}
 
 
-async def check_tcp_port(host: str, port: int, timeout: float = 1.0) -> bool:
+async def check_tcp_port(
+    host: str, port: int, timeout: float = 1.0, timeout_sec: float | None = None
+) -> bool:
     """
     Проверяет доступность TCP-порта (SMB 445, WinRM 5985, RPC 135).
     """
+    effective_timeout = timeout_sec if timeout_sec is not None else timeout
     try:
         conn = asyncio.open_connection(host, port)
-        _, writer = await asyncio.wait_for(conn, timeout=timeout)
+        _, writer = await asyncio.wait_for(conn, timeout=effective_timeout)
         writer.close()
         try:
             await writer.wait_closed()

@@ -1100,6 +1100,8 @@ class TestCheckUpdatesServiceUser:
         # имитируем, что last_check_time уже задан
         # и service_last_task_id = 100
         mock_redis_client.get.side_effect = lambda key: {
+            "worker:service_auth_b64": "encrypted-auth",
+            "worker:service_user_id": "9999",
             "worker:last_check_time": "2025-06-01 10:00:00",
             "worker:service_last_task_id": "100",
         }.get(key)
@@ -1125,6 +1127,11 @@ class TestCheckUpdatesServiceUser:
 
         with (
             patch("app.services.worker.AsyncSessionLocal", return_value=mock_db_cm),
+            patch("app.services.crypto.decrypt_token", return_value="service-auth"),
+            patch(
+                "app.services.vault.get_raw_setting",
+                new=AsyncMock(return_value={"login": "intratest", "user_id": 9999}),
+            ),
         ):
             await worker_module.check_updates()
 
@@ -1204,7 +1211,9 @@ class TestCheckWaitingPrinterTasks:
         mock_get_tasks.return_value = [task]
 
         redis = AsyncMock()
-        redis.get = AsyncMock(return_value=None)
+        redis.get = AsyncMock(
+            side_effect=lambda key: "9891" if key == "worker:service_user_id" else None
+        )
 
         # Последний комментарий от сервисного аккаунта (EditorId = 9891)
         lifetime_event = make_lifetime_event(
@@ -1232,7 +1241,8 @@ class TestCheckWaitingPrinterTasks:
                 "mock_auth", redis, semaphore, users_by_is_id
             )
 
-        redis.get.assert_awaited_once_with("printer_resumed:123")
+        redis.get.assert_any_await("printer_resumed:123")
+        redis.get.assert_any_await("worker:service_user_id")
         redis.set.assert_not_awaited()
 
     @pytest.mark.asyncio

@@ -9,7 +9,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.routers.deps import get_service_auth_b64, verify_admin_or_api_key
+from app.routers.deps import (
+    get_service_auth_b64,
+    principal_subject,
+    require_permission,
+)
 from app.services import intraservice
 from app.services.outage_detector import OutageDetector
 from app.services.worker import get_redis_client
@@ -19,7 +23,7 @@ logger = logging.getLogger("core_api.routers.outages")
 router = APIRouter(
     prefix="/api/v1/outages",
     tags=["Outage Management (Real-time AIOps)"],
-    dependencies=[Depends(verify_admin_or_api_key)],
+    dependencies=[Depends(require_permission("triage:read"))],
 )
 
 
@@ -78,11 +82,11 @@ async def get_outage_details(outage_id: str):
         )
 
 
-@router.post("/{outage_id}/resolve", status_code=status.HTTP_200_OK)
+@router.post("/{outage_id}/resolve", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def resolve_outage_endpoint(
     outage_id: str,
     payload: ResolveOutageRequest = ResolveOutageRequest(),
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
 ):
     """
     Снимает инцидент из статуса активной аварии.
@@ -96,12 +100,12 @@ async def resolve_outage_endpoint(
     return {"status": "success", "message": f"Инцидент {outage_id} успешно закрыт"}
 
 
-@router.post("/{outage_id}/broadcast", status_code=status.HTTP_200_OK)
+@router.post("/{outage_id}/broadcast", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def broadcast_outage_comment(
     outage_id: str,
     payload: BroadcastOutageCommentRequest,
     service_auth_b64: str = Depends(get_service_auth_b64),
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
 ):
     """
     Массово добавляет комментарий инженера во все заявки, входящие в инцидент.

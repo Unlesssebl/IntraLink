@@ -143,6 +143,8 @@ class PrinterExecutor(BaseActionExecutor):
                 message=f"Ошибка установки принтера: {err_msg}",
                 error=err_msg,
                 log=log,
+                failure_kind="infrastructure",
+                failure_code="powershell_execution_failed",
             )
 
         log.append("Скрипт PowerShell выполнен успешно.")
@@ -159,7 +161,7 @@ class PrinterExecutor(BaseActionExecutor):
 
     async def verify(
         self, target_pc: str, log: list[str], **kwargs
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, bool, str | None]:
         printer_name = kwargs.get("printer_name", "")
         log.append(f"Проверка наличия принтера '{printer_name}' в системе {target_pc}...")
 
@@ -169,7 +171,7 @@ class PrinterExecutor(BaseActionExecutor):
         if res.get("success") and res.get("data"):
             found_name = res["data"]
             log.append(f"🟢 Подтверждено: принтер '{found_name}' обнаружен в списке устройств.")
-            return True, f"Принтер {found_name} активен."
+            return True, f"Принтер {found_name} активен.", False, None
 
         # Если имя отличается по маске, проверим общий список принтеров
         fallback_script = "Get-Printer | Select-Object -ExpandProperty Name"
@@ -181,9 +183,19 @@ class PrinterExecutor(BaseActionExecutor):
             for p in printers_list:
                 if printer_name.lower() in p.lower():
                     log.append(f"🟢 Подтверждено по совпадению: принтер '{p}' активен.")
-                    return True, f"Принтер {p} активен."
+                    return True, f"Принтер {p} активен.", False, None
 
-        return False, f"Принтер '{printer_name}' не найден в выводе Get-Printer после установки."
+        verification_available = bool(res.get("success") and fallback_res.get("success"))
+        return (
+            False,
+            f"Принтер '{printer_name}' не найден в выводе Get-Printer после установки."
+            if verification_available
+            else f"Не удалось проверить установку принтера '{printer_name}' через WinRM.",
+            verification_available,
+            "printer_not_found_after_install"
+            if verification_available
+            else "printer_verification_unavailable",
+        )
 
     # -----------------------------------------------------------------------
     # Главная точка входа для Windows Execution Worker

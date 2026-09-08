@@ -10,11 +10,11 @@ import logging
 import time
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.db import SystemSetting
+from app.database.db import AutopilotSetting, SystemSetting, TicketRun
 from app.services.active_directory import (
     ConnectionTestResult,
     LDAPSConfig,
@@ -34,6 +34,7 @@ KEY_LOCAL_ADMIN = "local_admin_config"
 
 # Ключи кэша в Redis
 REDIS_KEY_SERVICE_AUTH = "worker:service_auth_b64"
+REDIS_KEY_SERVICE_USER_ID = "worker:service_user_id"
 REDIS_KEY_DOMAIN_AUTH = "worker:domain_auth"
 REDIS_KEY_WIN_DAEMON_HEALTH = "worker:health:win_daemon"
 
@@ -78,7 +79,7 @@ async def sync_vault_to_redis(db: AsyncSession) -> dict[str, bool]:
     Синхронизирует и прогревает секреты из PostgreSQL (system_settings) в Redis.
     Вызывается при старте FastAPI (lifespan) и после каждого сохранения учетных записей.
     """
-    results = {"service_auth": False, "domain_auth": False}
+    results = {"service_auth": False, "service_identity": False, "domain_auth": False}
     try:
         r = get_redis_client()
     except Exception as e:
@@ -95,8 +96,13 @@ async def sync_vault_to_redis(db: AsyncSession) -> dict[str, bool]:
             auth_b64 = base64.b64encode(auth_plain.encode("utf-8")).decode("ascii")
             encrypted_b64 = encrypt_token(auth_b64)
             await r.set(REDIS_KEY_SERVICE_AUTH, encrypted_b64)
+            if service_cfg.get("user_id") is not None:
+                await r.set(REDIS_KEY_SERVICE_USER_ID, str(int(service_cfg["user_id"])))
+                results["service_identity"] = True
             results["service_auth"] = True
             logger.info("Vault: Учетные данные IntraService синхронизированы в Redis (%s)", REDIS_KEY_SERVICE_AUTH)
+        else:
+            await r.delete(REDIS_KEY_SERVICE_AUTH, REDIS_KEY_SERVICE_USER_ID)
     except Exception as e:
         logger.exception("Vault: Ошибка синхронизации сервисного аккаунта IntraService в Redis: %s", e)
 
@@ -130,8 +136,13 @@ async def get_vault_status(db: AsyncSession) -> dict[str, Any]:
     """
     # 1. IntraService
     service_cfg = await get_raw_setting(db, KEY_SERVICE_ACCOUNT) or {}
-    has_service_acc = bool(service_cfg.get("login") and service_cfg.get("encrypted_password"))
+    has_service_acc = bool(
+        service_cfg.get("login")
+        and service_cfg.get("encrypted_password")
+        and service_cfg.get("user_id") is not None
+    )
     service_login = service_cfg.get("login")
+    service_user_id = service_cfg.get("user_id")
 
     # 2. Доменная учетная запись (WinRM + LDAPS)
     domain_cfg = await get_raw_setting(db, KEY_DOMAIN)
@@ -154,26 +165,36 @@ async def get_vault_status(db: AsyncSession) -> dict[str, Any]:
 
     # 4. Redis статус синхронизации
     redis_service_synced = False
+    redis_identity_synced = False
     redis_domain_synced = False
     worker_daemon_online = False
 
     try:
         r = get_redis_client()
         redis_service_synced = bool(await r.get(REDIS_KEY_SERVICE_AUTH))
+        redis_identity_synced = bool(await r.get(REDIS_KEY_SERVICE_USER_ID))
         redis_domain_synced = bool(await r.get(REDIS_KEY_DOMAIN_AUTH))
         worker_status = await r.get(REDIS_KEY_WIN_DAEMON_HEALTH)
         worker_daemon_online = (worker_status == "online") if isinstance(worker_status, str) else False
     except Exception as e:
         logger.debug("Vault: Не удалось прочесть статусы Redis: %s", e)
 
-    is_all_ready = has_service_acc and has_domain and redis_service_synced and redis_domain_synced
+    is_all_ready = (
+        has_service_acc
+        and has_domain
+        and redis_service_synced
+        and redis_identity_synced
+        and redis_domain_synced
+    )
 
     return {
         "is_ready": is_all_ready,
         "service_account": {
             "is_configured": has_service_acc,
             "login": service_login,
+            "user_id": service_user_id,
             "redis_synced": redis_service_synced,
+            "identity_synced": redis_identity_synced,
             "base_url": service_cfg.get("base_url") or settings.INTRASERVICE_URL,
         },
         "domain": {
@@ -202,12 +223,19 @@ async def save_service_account_credentials(
     login: str,
     password: str | None,
     base_url: str | None = None,
+    user_id: int | None = None,
 ) -> dict[str, Any]:
     """
     Сохраняет сервисный аккаунт IntraService в PostgreSQL с шифрованием Fernet
     и выполняет автоматический прогрев Redis ключа worker:service_auth_b64.
     """
     current_raw = await get_raw_setting(db, KEY_SERVICE_ACCOUNT) or {}
+    current_user_id = current_raw.get("user_id")
+    if user_id is None:
+        if current_raw.get("login") != login.strip() or current_user_id is None:
+            raise ValueError("verified_service_user_id_required")
+        user_id = int(current_user_id)
+    await assert_service_identity_change_allowed(db, int(user_id), current_user_id)
     enc_pwd = current_raw.get("encrypted_password")
     if password and password.strip():
         enc_pwd = encrypt_token(password.strip())
@@ -216,6 +244,7 @@ async def save_service_account_credentials(
         "login": login.strip(),
         "encrypted_password": enc_pwd,
         "base_url": (base_url or current_raw.get("base_url") or settings.INTRASERVICE_URL).strip(),
+        "user_id": int(user_id),
     }
 
     await set_raw_setting(
@@ -227,14 +256,65 @@ async def save_service_account_credentials(
     )
 
     # Синхронизация в Redis
-    await sync_vault_to_redis(db)
+    sync_result = await sync_vault_to_redis(db)
 
     return {
         "status": "success",
         "login": payload["login"],
         "is_password_set": bool(enc_pwd),
         "base_url": payload["base_url"],
+        "user_id": payload["user_id"],
+        "redis_synced": bool(sync_result.get("service_auth")),
+        "identity_synced": bool(sync_result.get("service_identity")),
     }
+
+
+async def assert_service_identity_change_allowed(
+    db: AsyncSession, new_user_id: int | None, current_user_id: Any
+) -> None:
+    """Allow password rotation, but gate replacement/removal of the service identity."""
+    if current_user_id is not None and new_user_id is not None and int(current_user_id) == int(new_user_id):
+        return
+    setting = await db.get(AutopilotSetting, "global")
+    if setting is not None and setting.enabled:
+        raise ValueError("autopilot_must_be_disabled_before_service_identity_change")
+    active_count = await db.scalar(
+        select(func.count(TicketRun.id)).where(TicketRun.completed_at.is_(None))
+    )
+    if active_count:
+        raise ValueError("active_ticket_runs_block_service_identity_change")
+
+
+async def get_service_account_user_id(
+    db: AsyncSession | None = None, *, redis_client: Any | None = None
+) -> int | None:
+    """Resolve the verified service identity from Redis with PostgreSQL fallback."""
+    r = redis_client
+    if r is None:
+        try:
+            r = get_redis_client()
+        except Exception:
+            r = None
+    if r is not None:
+        try:
+            raw = await r.get(REDIS_KEY_SERVICE_USER_ID)
+            if raw is not None:
+                return int(raw)
+        except Exception:
+            pass
+    if db is None:
+        return None
+    config = await get_raw_setting(db, KEY_SERVICE_ACCOUNT) or {}
+    raw_id = config.get("user_id")
+    if raw_id is None:
+        return None
+    user_id = int(raw_id)
+    if r is not None:
+        try:
+            await r.set(REDIS_KEY_SERVICE_USER_ID, str(user_id))
+        except Exception:
+            pass
+    return user_id
 
 
 async def save_domain_credentials(

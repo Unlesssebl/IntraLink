@@ -1,47 +1,44 @@
+import logging
 import secrets
+from urllib.parse import urlsplit
 import jwt
 
-from fastapi import Depends, Header, HTTPException, Query, status, Cookie
+from fastapi import Cookie, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.db import User, get_db
+from app.database.db import Principal, TelegramLink, User, get_db
+from app.services.identity import (
+    PrincipalContext,
+    ROLE_PERMISSIONS,
+    authenticate_human_token,
+    authenticate_service,
+    record_security_event,
+    require_context_permission,
+)
+
+logger = logging.getLogger("core_api.routers.deps")
 
 
-async def verify_api_key(
-    x_bot_api_key: str | None = Header(
-        None, alias="X-Bot-Api-Key", description="API-ключ бота для доступа к Core API"
-    ),
-    api_key: str | None = Query(
-        None, description="API-ключ в query-параметрах для SSE"
-    ),
-) -> str:
-    """
-    Зависимость для проверки API-ключа бота.
-    Сравнивает переданный заголовок X-Bot-Api-Key или query-параметр api_key
-    с настроенным в конфигурации.
-    """
-    key_to_check = x_bot_api_key or api_key
-    if not key_to_check:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="API-ключ не предоставлен."
+def _decode_session_claims(token: str) -> dict:
+    try:
+        return jwt.decode(
+            token,
+            settings.JWT_SECRET or "",
+            algorithms=["HS256"],
+            issuer=settings.JWT_ISSUER,
+            audience=settings.JWT_AUDIENCE,
         )
-
-    if not settings.BOT_API_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Ключ авторизации BOT_API_KEY не сконфигурирован на сервере.",
+    except jwt.PyJWTError:
+        if not settings.ALLOW_LEGACY_SHARED_KEYS:
+            raise
+        return jwt.decode(
+            token,
+            settings.JWT_SECRET or "",
+            algorithms=["HS256"],
+            options={"verify_aud": False},
         )
-
-    # Используем secrets.compare_digest для предотвращения атак по времени
-    # (Timing Attacks)
-    if not secrets.compare_digest(key_to_check, settings.BOT_API_KEY):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверный или отсутствующий API-ключ.",
-        )
-    return key_to_check
 
 
 async def get_user_by_tg_id(
@@ -60,121 +57,251 @@ async def get_user_by_tg_id(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Пользователь с Telegram ID {tg_user_id} не найден.",
         )
+    if not settings.ALLOW_LEGACY_SHARED_KEYS:
+        link = await db.get(TelegramLink, tg_user_id)
+        principal = await db.get(Principal, link.principal_id) if link else None
+        if (
+            link is None
+            or link.status != "verified"
+            or link.revoked_at is not None
+            or principal is None
+            or principal.status != "active"
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Telegram identity must be linked to an active corporate principal",
+            )
     return user
 
 
-async def verify_admin_jwt(
-    authorization: str | None = Header(None, alias="Authorization"),
-    admin_session: str | None = Cookie(None),
-) -> str:
-    """
-    Зависимость для проверки сессии администратора по JWT токену из Cookie или Authorization Header.
-    Проверяет принадлежность пользователя к утвержденному списку ADMIN_LOGINS или роль 'admin'.
-    """
-    token = None
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-    elif admin_session:
-        token = admin_session.strip()
+async def verify_trusted_origin(
+    request: Request,
+    origin: str | None = Header(None, alias="Origin"),
+) -> None:
+    """Reject cross-site browser mutations while allowing non-browser service calls and same-origin browser requests."""
+    if not origin:
+        return
 
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Сессия не найдена. Требуется авторизация.",
-        )
+    origin_clean = origin.strip().rstrip("/")
 
-    secrets_to_try = [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]
-    payload = None
-    last_err = None
-    for sec in secrets_to_try:
-        if not sec:
-            continue
+    # 1. Проверяем explicit allowlist CORS_ORIGINS
+    allowed = {
+        value.strip().rstrip("/")
+        for value in settings.CORS_ORIGINS.split(",")
+        if value.strip()
+    }
+    if "*" in allowed or origin_clean in allowed:
+        return
+
+    # 2. Проверяем Same-Origin (браузер обращается к интерфейсу на том же хосте)
+    host_header = (request.headers.get("host") or "").strip()
+    if host_header:
+        proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
+        same_origin = f"{proto}://{host_header}".rstrip("/")
+        if origin_clean.lower() == same_origin.lower():
+            return
+
+        # Сверка netloc (хост:порт) на случай расхождения схем/reverse proxy
         try:
-            payload = jwt.decode(token, sec, algorithms=["HS256"])
-            break
-        except jwt.ExpiredSignatureError as e:
-            last_err = e
-            break
-        except jwt.InvalidTokenError as e:
-            last_err = e
-            continue
+            origin_netloc = urlsplit(origin_clean).netloc.lower()
+            if origin_netloc and origin_netloc == host_header.lower():
+                return
+        except Exception:
+            pass
 
-    if not payload:
-        if isinstance(last_err, jwt.ExpiredSignatureError):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Время действия сессии истекло.",
-            )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Невалидный токен сессии.",
-        )
+    # Сравнение с base_url
+    base_url_origin = str(request.base_url).rstrip("/")
+    if origin_clean.lower() == base_url_origin.lower():
+        return
 
-    username = payload.get("sub")
-    if not username:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Некорректный токен сессии.",
-        )
-
-    admin_logins = [
-        u.strip().lower() for u in (settings.ADMIN_LOGINS or "").split(",") if u.strip()
-    ]
-    is_admin = (payload.get("role") == "admin") or (str(username).lower() in admin_logins)
-    if not is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Недостаточно прав: учетная запись '{username}' не входит в список администраторов.",
-        )
-
-    return str(username)
+    logger.warning(
+        "verify_trusted_origin: отклонен запрос с недоверенным Origin '%s' (Host: '%s', CORS_ORIGINS: %s)",
+        origin,
+        host_header,
+        allowed,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Недоверенный Origin для изменяющего запроса.",
+    )
 
 
-async def verify_admin_or_api_key(
-    x_bot_api_key: str | None = Header(
-        None, alias="X-Bot-Api-Key", description="API-ключ бота для доступа к Core API"
-    ),
-    api_key: str | None = Query(
-        None, description="API-ключ в query-параметрах для SSE"
-    ),
+async def authenticate_request(
+    request: Request,
     authorization: str | None = Header(None, alias="Authorization"),
+    access_session: str | None = Cookie(None),
     admin_session: str | None = Cookie(None),
+    x_service_key_id: str | None = Header(None, alias="X-Service-Key-Id"),
+    x_service_secret: str | None = Header(None, alias="X-Service-Secret"),
+    x_bot_api_key: str | None = Header(None, alias="X-Bot-Api-Key"),
+    x_worker_api_key: str | None = Header(None, alias="X-Worker-Api-Key"),
+    api_key: str | None = Query(None),
     token_query: str | None = Query(None, alias="token"),
-) -> str:
-    """
-    Универсальная зависимость: принимает либо сессию администратора (JWT Header/Cookie/Query token),
-    либо API-ключ (X-Bot-Api-Key или query api_key).
-    """
+    db: AsyncSession = Depends(get_db),
+) -> PrincipalContext:
+    """Authenticate a human session or a scoped service principal."""
+    if bool(x_service_key_id) != bool(x_service_secret):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incomplete service credential")
+    if x_service_key_id and x_service_secret:
+        return await authenticate_service(db, key_id=x_service_key_id, secret=x_service_secret)
+
     token = None
     if authorization and authorization.lower().startswith("bearer "):
-        bearer_val = authorization[7:].strip()
-        if bearer_val and bearer_val != "sso_session":
-            token = bearer_val
-    elif admin_session:
+        bearer_token = authorization[7:].strip()
+        if bearer_token and bearer_token != "sso_session":
+            token = bearer_token
+    if token is None and access_session:
+        token = access_session.strip()
+    elif token is None and admin_session:
         token = admin_session.strip()
-    elif token_query:
+    elif token is None and settings.ALLOW_LEGACY_SHARED_KEYS and token_query:
         token = token_query.strip()
 
     if token:
-        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
-            if not sec:
-                continue
+        try:
+            return await authenticate_human_token(db, token)
+        except HTTPException:
+            if not settings.ALLOW_LEGACY_SHARED_KEYS:
+                raise
             try:
-                payload = jwt.decode(token, sec, algorithms=["HS256"])
-                username = payload.get("sub")
-                if username:
-                    return str(username)
-            except Exception:
-                pass
+                payload = jwt.decode(
+                    token,
+                    settings.JWT_SECRET or "",
+                    algorithms=["HS256"],
+                    options={"verify_aud": False},
+                )
+            except jwt.PyJWTError as exc:
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid access token") from exc
+            subject = str(payload.get("sub") or "").strip()
+            if not subject:
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid access token")
+            role = "system_admin" if payload.get("role") == "admin" else "helpdesk_operator"
+            return PrincipalContext(
+                principal_id=None,
+                principal_type="human",
+                subject=subject,
+                display_name=subject,
+                roles=frozenset({role}),
+                grants=ROLE_PERMISSIONS[role],
+                auth_method="legacy_jwt",
+            )
 
-    key_to_check = x_bot_api_key or api_key
-    if key_to_check and settings.BOT_API_KEY and secrets.compare_digest(key_to_check, settings.BOT_API_KEY):
-        return "bot_or_cli"
+    if settings.ALLOW_LEGACY_SHARED_KEYS:
+        legacy_bot = x_bot_api_key or api_key
+        if legacy_bot and settings.BOT_API_KEY and secrets.compare_digest(legacy_bot, settings.BOT_API_KEY):
+            return PrincipalContext(
+                principal_id=None,
+                principal_type="service",
+                subject="legacy-bot-client",
+                display_name="Legacy bot/CLI client",
+                scopes=frozenset({
+                    "task:read", "task:mutate", "triage:read", "triage:mutate", "ai:use",
+                    "command:read", "command:create", "command:approve:r1", "command:cancel",
+                    "diagnostic:run", "events:read", "rules:manage",
+                    "telegram:challenge:issue", "telegram:challenge:consume", "telegram:link",
+                    "policy:manage", "command:review",
+                }),
+                auth_method="legacy_shared_key",
+            )
+        if (
+            x_worker_api_key
+            and settings.WORKER_API_KEY
+            and secrets.compare_digest(x_worker_api_key, settings.WORKER_API_KEY)
+        ):
+            return PrincipalContext(
+                principal_id=None,
+                principal_type="service",
+                subject="legacy-worker",
+                display_name="Legacy worker",
+                scopes=frozenset({
+                    "command:claim:windows", "command:finish:windows",
+                    "command:claim:backend", "command:finish:backend",
+                }),
+                auth_method="legacy_shared_key",
+            )
 
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Требуется авторизация (сессия администратора или API-ключ).",
-    )
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required")
+
+
+def require_permission(permission: str):
+    async def dependency(
+        request: Request,
+        context: PrincipalContext = Depends(authenticate_request),
+        db: AsyncSession = Depends(get_db),
+    ) -> PrincipalContext:
+        if not context.has(permission):
+            await record_security_event(
+                db,
+                event_type="authorization.denied",
+                outcome="denied",
+                context=context,
+                resource_type="http_route",
+                resource_id=request.url.path,
+                ip_address=request.client.host if request.client else None,
+                details={"permission": permission, "method": request.method},
+                commit=True,
+            )
+            require_context_permission(context, permission)
+        return context
+
+    dependency.__name__ = f"require_{permission.replace(':', '_')}"
+    dependency.required_permission = permission
+    return dependency
+
+
+def require_service_scope(scope: str):
+    async def dependency(
+        request: Request,
+        context: PrincipalContext = Depends(authenticate_request),
+        db: AsyncSession = Depends(get_db),
+    ) -> PrincipalContext:
+        if context.principal_type != "service":
+            await record_security_event(
+                db,
+                event_type="authorization.denied",
+                outcome="denied",
+                context=context,
+                resource_type="http_route",
+                resource_id=request.url.path,
+                details={"scope": scope, "reason": "service_identity_required"},
+                commit=True,
+            )
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Service identity required")
+        if not context.has(scope):
+            await record_security_event(
+                db,
+                event_type="authorization.denied",
+                outcome="denied",
+                context=context,
+                resource_type="http_route",
+                resource_id=request.url.path,
+                details={"scope": scope},
+                commit=True,
+            )
+            require_context_permission(context, scope)
+        return context
+
+    dependency.__name__ = f"require_service_{scope.replace(':', '_')}"
+    dependency.required_permission = scope
+    return dependency
+
+
+async def principal_subject(
+    context: PrincipalContext = Depends(authenticate_request),
+) -> str:
+    return context.subject
+
+
+def require_object_permission(marker: str):
+    """Marks routes whose exact permission depends on the loaded resource."""
+    async def dependency(
+        context: PrincipalContext = Depends(authenticate_request),
+    ) -> PrincipalContext:
+        return context
+
+    dependency.__name__ = f"require_object_{marker.replace(':', '_')}"
+    dependency.required_permission = marker
+    return dependency
 
 
 from pydantic import BaseModel
@@ -197,25 +324,23 @@ async def get_service_auth_b64(
     1. Если запрос от авторизованного оператора (Authorization Header, Cookie admin_session или Query ?token=...) — берем его актуальный зашифрованный токен из Redis.
     2. Иначе используем глобальный сервисный аккаунт (из ENV или Redis).
     """
-    import base64
-    from app.services.crypto import encrypt_token
     from app.services.worker import get_redis_client
 
     redis = get_redis_client()
 
     token = None
-    if authorization and authorization.lower().startswith("bearer "):
+    if isinstance(authorization, str) and authorization.lower().startswith("bearer "):
         bearer_val = authorization[7:].strip()
         if bearer_val and bearer_val != "sso_session":
             token = bearer_val
-    elif admin_session:
+    if not token and isinstance(admin_session, str):
         token = admin_session.strip()
-    elif token_query:
+    if not token and isinstance(token_query, str):
         token = token_query.strip()
 
     # Проверяем, есть ли активная сессия оператора
     if token:
-        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
+        for sec in [settings.JWT_SECRET]:
             if not sec:
                 continue
             try:
@@ -224,17 +349,12 @@ async def get_service_auth_b64(
                 if username:
                     try:
                         op_auth = await redis.get(f"admin_auth:{username}")
-                        if op_auth:
+                        if op_auth and not op_auth.startswith("mock_"):
                             return op_auth
                     except Exception:
                         pass
             except Exception:
                 pass
-
-    if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
-        auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
-        plain_b64 = base64.b64encode(auth_str.encode()).decode()
-        return encrypt_token(plain_b64)
 
     try:
         service_auth_b64 = await redis.get("worker:service_auth_b64")
@@ -258,8 +378,6 @@ async def get_operator_context(
     - Если передан валидный JWT токен оператора, извлекает его реальный user_id и токен IntraService из Redis.
     - Иначе возвращает контекст сервисного аккаунта с первичным исполнителем по умолчанию.
     """
-    import base64
-    from app.services.crypto import encrypt_token
     from app.services.worker import get_redis_client
 
     redis = get_redis_client()
@@ -269,17 +387,17 @@ async def get_operator_context(
         bearer_val = authorization[7:].strip()
         if bearer_val and bearer_val != "sso_session":
             token = bearer_val
-    elif admin_session:
+    if not token and admin_session:
         token = admin_session.strip()
 
     if token:
-        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
+        for sec in [settings.JWT_SECRET]:
             if not sec:
                 continue
             try:
-                payload = jwt.decode(token, sec, algorithms=["HS256"])
+                payload = _decode_session_claims(token)
                 username = payload.get("sub")
-                user_id = payload.get("user_id")
+                user_id = payload.get("external_id") or payload.get("user_id")
                 if username:
                     op_auth = await redis.get(f"admin_auth:{username}")
                     if op_auth:
@@ -293,13 +411,7 @@ async def get_operator_context(
                 pass
 
     # Fallback на системный аккаунт
-    service_auth = None
-    if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
-        auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
-        plain_b64 = base64.b64encode(auth_str.encode()).decode()
-        service_auth = encrypt_token(plain_b64)
-    else:
-        service_auth = await redis.get("worker:service_auth_b64")
+    service_auth = await redis.get("worker:service_auth_b64")
 
     if not service_auth:
         raise HTTPException(
@@ -307,16 +419,18 @@ async def get_operator_context(
             detail="Сервисный аккаунт IntraService не настроен.",
         )
 
+    from app.services.vault import get_service_account_user_id
+
     return OperatorContext(
         username="system_service",
-        user_id=settings.PRIMARY_EXECUTOR_ID,
+        user_id=await get_service_account_user_id(redis_client=redis),
         auth_b64=service_auth,
         is_service_account=True,
     )
 
 
 async def get_operator_auth_b64(
-    username: str = Depends(verify_admin_jwt),
+    context: PrincipalContext = Depends(require_permission("identity:manage")),
 ) -> str:
     """
     Получает расшифрованный Basic Auth токен авторизованного оператора из Redis.
@@ -325,6 +439,7 @@ async def get_operator_auth_b64(
     from app.services.crypto import decrypt_token
     from app.services.worker import get_redis_client
 
+    username = context.subject
     r = get_redis_client()
     encrypted_auth = await r.get(f"admin_auth:{username}")
     if not encrypted_auth:

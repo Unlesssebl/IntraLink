@@ -64,7 +64,7 @@ export interface TaskClassification {
   category_label: string;
   target_service_name: string;
   is_redirect: boolean;
-  has_ai_solution?: boolean;
+  sources?: { rule: boolean; rag: boolean; ai: boolean };
   score: number;
   target_status_id: number;
   target_status_name: string;
@@ -88,10 +88,12 @@ export interface TaskItem {
   service_path?: string;
   target_service_name: string;
   is_redirect: boolean;
-  has_ai_solution?: boolean;
+  sources?: { rule: boolean; rag: boolean; ai: boolean };
+  readiness?: { ready: boolean; blocked_reasons?: string[] };
   status_id: number;
   status_name: string;
   pc_name: string;
+  printer_address?: string;
   phone: string;
   room: string;
   department: string;
@@ -134,6 +136,7 @@ export interface TaskDetails {
   status_id: number;
   status_name: string;
   pc_name: string;
+  printer_address?: string;
   phone: string;
   room: string;
   department: string;
@@ -150,6 +153,133 @@ export interface TaskDetails {
   circuit?: 'red' | 'yellow' | 'green';
   circuit_reason?: string;
   requires_sanitization?: boolean;
+  ai_suggestion?: AISuggestionState;
+  decision?: DecisionRecord;
+  sources?: DecisionSources;
+  readiness?: DecisionReadiness;
+}
+
+export interface DecisionSources {
+  rule: boolean;
+  rag: boolean;
+  ai: boolean;
+}
+
+export interface DecisionReadiness {
+  ready: boolean;
+  missing_data: string[];
+  blocked_reasons: string[];
+  stale: boolean;
+}
+
+export interface DecisionStep {
+  id: string;
+  sequence: number;
+  component: 'rule' | 'rag' | 'ai' | 'policy' | string;
+  status: string;
+  input: Record<string, any>;
+  output: Record<string, any>;
+  metadata: Record<string, any>;
+  error_code?: string | null;
+  duration_ms?: number | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+}
+
+export interface DecisionRecord {
+  id: string;
+  task_id: number;
+  ticket_run_id?: string | null;
+  version: number;
+  analysis_kind: string;
+  status: string;
+  outcome: string;
+  fingerprint: string;
+  sources: DecisionSources;
+  context: Record<string, any>;
+  completeness: {
+    complete: boolean;
+    missing_data: string[];
+    blocked_reasons: string[];
+    limitations?: string[];
+    history_total?: number;
+    history_used?: number;
+    attachments_total?: number;
+    attachments_read?: number;
+  };
+  proposal: {
+    action?: string;
+    title?: string;
+    comment?: string;
+    status_id?: number;
+    status_name?: string;
+    expenses?: number;
+    consequences?: string;
+    ready: boolean;
+    trigger_markers?: string[];
+    risk_level?: 'normal' | 'warning' | 'critical';
+    risk_warning?: string | null;
+  };
+  policy: Record<string, any>;
+  steps?: DecisionStep[];
+  feedback?: DecisionFeedbackRecord[];
+  created_by?: string;
+  created_at: string | null;
+}
+
+export type DecisionVerdict =
+  | 'accepted'
+  | 'modified'
+  | 'rejected'
+  | 'correct'
+  | 'partial'
+  | 'incorrect'
+  | 'insufficient_data';
+
+export type DecisionReasonCode =
+  | 'wrong_context'
+  | 'wrong_classification'
+  | 'wrong_rule'
+  | 'wrong_kb'
+  | 'wrong_ai_text'
+  | 'wrong_policy'
+  | 'execution_error'
+  | 'other';
+
+export interface DecisionFeedbackRecord {
+  id: string;
+  decision_id: string;
+  verdict: DecisionVerdict;
+  reason_code?: string | null;
+  comment?: string | null;
+  final_action?: Record<string, any>;
+  actor: string;
+  created_at: string | null;
+}
+
+export interface DecisionFeedbackPayload {
+  verdict: DecisionVerdict;
+  reason_code?: string | null;
+  comment?: string | null;
+  final_action?: Record<string, any>;
+}
+
+export interface AISuggestionState {
+  task_id: number;
+  state: 'current' | 'stale';
+  fingerprint: string;
+  source: string;
+  calculated_at: string;
+  stale_at?: string;
+  stale_reason?: string;
+  policy: {
+    action: string;
+    mode: 'auto' | 'confirm' | 'disabled' | 'dry_run';
+    allowed: boolean;
+    blocked: boolean;
+    reason: string;
+  };
+  missing_data: string[];
 }
 
 export interface TicketSummaryResult {
@@ -198,6 +328,10 @@ export interface SingleApplyPayload {
   minutes: number;
   executor_ids?: string;
   is_private?: boolean;
+  verified_execution_job_id?: string;
+  ticket_run_id?: string;
+  decision_id?: string;
+  decision_version?: number;
 }
 
 export interface BulkApplyItemPayload {

@@ -2,18 +2,21 @@
 Тесты для двухуровневого RAG и защиты векторизации по контурам данных (RED / YELLOW / GREEN).
 """
 import pytest
+import uuid
 from unittest.mock import AsyncMock, patch, MagicMock
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.ai import DataCircuit, RoutingMetadata
 from app.services import rag
+from app.services.ai import data_sanitizer
 
 
 @pytest.mark.asyncio
 async def test_get_embedding_vector_red_local_isolation():
     """Проверка, что для RED контура облачные LiteLLM / Gemini API никогда не вызываются."""
-    raw_text = "Пароль от рабочей станции NTEMW0144: SuperSecret123"
-    dummy_vec = [0.1] * 3072
+    rag._EMBED_MEMORY_CACHE.clear()
+    raw_text = f"Пароль от рабочей станции NTEMW0144: SuperSecret123-{uuid.uuid4().hex}"
+    dummy_vec = [0.1] * 1024
 
     # Мокируем локальную Ollama
     mock_resp = MagicMock()
@@ -38,11 +41,19 @@ async def test_get_embedding_vector_red_local_isolation():
         assert "generativelanguage" not in call_url
 
 
+def test_security_service_metadata_forces_red_circuit():
+    decision = data_sanitizer.evaluate_circuit(
+        "Общий текст без явного секрета",
+        RoutingMetadata(service_id=72),
+    )
+    assert decision.circuit == DataCircuit.RED
+
+
 @pytest.mark.asyncio
 async def test_get_embedding_vector_yellow_sanitization():
     """Проверка, что для YELLOW контура текст перед отправкой в облако маскируется."""
     raw_text = "Сотрудник Иванов Иван Иванович на хосте 10.244.12.55 не может войти"
-    dummy_vec = [0.2] * 3072
+    dummy_vec = [0.2] * 1024
 
     mock_resp = MagicMock()
     mock_resp.status = 200
@@ -72,7 +83,7 @@ async def test_get_embedding_vector_yellow_sanitization():
 async def test_get_embedding_vector_green_direct():
     """Проверка, что для GREEN контура запрос отправляется в LiteLLM без изменений."""
     raw_text = "Как переустановить службу диспетчера очереди печати Spooler в Windows?"
-    dummy_vec = [0.3] * 3072
+    dummy_vec = [0.3] * 1024
 
     mock_resp = MagicMock()
     mock_resp.status = 200
@@ -98,7 +109,7 @@ async def test_get_embedding_vector_green_direct():
 async def test_search_knowledge_base_auto_circuit():
     """Проверка автоматической оценки контура при семантическом поиске."""
     mock_db = AsyncMock(spec=AsyncSession)
-    dummy_vec = [0.4] * 3072
+    dummy_vec = [0.4] * 1024
 
     with patch("app.services.rag.get_embedding_vector", new=AsyncMock(return_value=dummy_vec)) as mock_get_vec:
         mock_result = MagicMock()
@@ -119,46 +130,49 @@ async def test_search_knowledge_base_auto_circuit():
 
 
 @pytest.mark.asyncio
-async def test_get_embedding_vector_gemini_fallback_when_litellm_fails():
-    """Проверка fallback на прямой вызов Gemini API при недоступности LiteLLM."""
+async def test_get_embedding_vector_ollama_bge_fallback_when_litellm_fails():
+    """Fallback сохраняет единое пространство BGE-M3 через локальный Ollama."""
+    rag._EMBED_MEMORY_CACHE.clear()
     raw_text = "Инструкция по настройке сканирования в сетевую папку SMB"
-    dummy_vec = [0.5] * 3072
+    dummy_vec = [0.5] * 1024
 
     litellm_resp = MagicMock()
     litellm_resp.status = 503
 
-    gemini_resp = MagicMock()
-    gemini_resp.status = 200
-    gemini_resp.json = AsyncMock(return_value={"embedding": {"values": dummy_vec}})
+    ollama_resp = MagicMock()
+    ollama_resp.status = 200
+    ollama_resp.json = AsyncMock(return_value={"embeddings": [dummy_vec]})
 
     mock_cm_litellm = AsyncMock()
     mock_cm_litellm.__aenter__.return_value = litellm_resp
 
-    mock_cm_gemini = AsyncMock()
-    mock_cm_gemini.__aenter__.return_value = gemini_resp
+    mock_cm_ollama = AsyncMock()
+    mock_cm_ollama.__aenter__.return_value = ollama_resp
 
     def post_side_effect(url, *args, **kwargs):
         if "embeddings" in url:
             return mock_cm_litellm
-        elif "generativelanguage" in url:
-            return mock_cm_gemini
+        if "/api/embed" in url:
+            return mock_cm_ollama
         raise ValueError(f"Unexpected url: {url}")
 
-    with patch("app.services.rag.get_rag_http_session") as mock_session_getter, \
-         patch("app.config.settings.GEMINI_API_KEY", "test-gemini-key"):
+    with patch("app.services.rag.get_rag_http_session") as mock_session_getter:
         mock_session = MagicMock()
         mock_session.post = MagicMock(side_effect=post_side_effect)
         mock_session_getter.return_value = mock_session
 
         vec = await rag.get_embedding_vector(raw_text, circuit=DataCircuit.GREEN)
         assert vec == dummy_vec
+        urls = [call.args[0] for call in mock_session.post.call_args_list]
+        assert any("/api/embed" in url for url in urls)
+        assert all("generativelanguage" not in url for url in urls)
 
 
 @pytest.mark.asyncio
 async def test_get_embedding_vector_caching_prevents_duplicate_http_calls():
     """Проверка, что повторные вызовы с одинаковым текстом обслуживаются из кэша без HTTP-запросов."""
     raw_text = "Тестовый текст для проверки многоуровневого кэширования эмбеддингов 12345"
-    dummy_vec = [0.42] * 3072
+    dummy_vec = [0.42] * 1024
 
     mock_resp = MagicMock()
     mock_resp.status = 200

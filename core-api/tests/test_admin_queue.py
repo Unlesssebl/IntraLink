@@ -1,5 +1,6 @@
 import pytest
-from unittest.mock import patch, AsyncMock
+import json
+from unittest.mock import patch, AsyncMock, MagicMock
 from app.services.triage_service import TriageService
 from app.services.triage_session import TriageSessionManager
 from app.routers.triage import ApplyTriageRequest, apply_triage_action, get_triage_batch
@@ -13,8 +14,8 @@ async def test_prepare_triage_batch(mock_get_tasks):
             "Id": 101,
             "Name": "Настройка Wi-Fi для ноутбука",
             "Description": "Прошу дать доступ к сети WLAN",
-            "ServiceName": "01. Доступ к сети Wi-Fi",
-            "ServiceId": 10,
+            "ServiceName": "04. Проблемы с сетью и интернетом",
+            "ServiceId": 20,
             "Creator": "Иванов Иван",
             "StatusId": 26,
             "StatusName": "Новая",
@@ -64,15 +65,23 @@ async def test_apply_triage_resolution(mock_add_expenses, mock_update_task, mock
     mock_update_task.return_value = True
     mock_add_expenses.return_value = True
 
-    mock_db = AsyncMock()
-    results = await TriageService.apply_triage_resolution(
-        service_auth_b64="dXNlcjpwYXNz",
-        db=mock_db,
-        task_ids=[101],
-        status_id=29,
-        comment="Доступ к WLAN предоставлен",
-        expenses=10,
-    )
+    # SQLAlchemy AsyncSession имеет синхронный add() и асинхронные операции I/O.
+    mock_db = MagicMock()
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock()
+    mock_db.execute = AsyncMock()
+    with patch(
+        "app.routers.triage.index_task_knowledge",
+        new_callable=AsyncMock,
+    ):
+        results = await TriageService.apply_triage_resolution(
+            service_auth_b64="dXNlcjpwYXNz",
+            db=mock_db,
+            task_ids=[101],
+            status_id=29,
+            comment="Доступ к WLAN предоставлен",
+            expenses=10,
+        )
 
     assert len(results) == 1
     assert results[0]["task_id"] == 101
@@ -129,3 +138,67 @@ async def test_get_task_card_details(mock_lifetime, mock_task):
     assert card["task"]["Id"] == 202
     assert len(card["history"]) == 1
     assert card["history"][0]["Comment"] == "Жду решения"
+
+
+@pytest.mark.asyncio
+async def test_execution_proof_is_bound_to_successful_job_and_ticket():
+    redis = AsyncMock()
+    redis.get.return_value = json.dumps({
+        "job_id": "job_verified",
+        "action": "grant_wlan",
+        "task_id": 101,
+        "status": "success",
+    })
+
+    with patch("app.routers.triage.get_redis_client", return_value=redis):
+        ok, error = await TriageService._validate_execution_proof(
+            "job_verified", 101, {"grant_wlan"}
+        )
+        wrong_ticket_ok, _ = await TriageService._validate_execution_proof(
+            "job_verified", 202, {"grant_wlan"}
+        )
+
+    assert ok is True
+    assert error is None
+    assert wrong_ticket_ok is False
+
+
+@pytest.mark.asyncio
+@patch("app.services.intraservice.get_tasks_by_filter")
+async def test_cached_offline_telemetry_reaches_rule_engine(mock_get_tasks):
+    mock_get_tasks.return_value = [{
+        "Id": 303,
+        "Name": "Не открывается приложение",
+        "Description": "На рабочем компьютере не запускается приложение",
+        "ServiceId": 18,
+        "ServiceName": "02. Установка и настройка программ",
+        "StatusId": 26,
+        "_field_meta": {"pc_name": "WS-OFFLINE"},
+    }]
+    telemetry = {
+        "task_id": 303,
+        "pc_name": "WS-OFFLINE",
+        "canonical_name": "WS-OFFLINE",
+        "status": "OFFLINE",
+        "ping_ok": False,
+        "winrm_port_5985": False,
+        "smb_port_445": False,
+    }
+
+    with patch(
+        "app.routers.triage.get_skipped_task_ids",
+        new_callable=AsyncMock,
+        return_value=set(),
+    ), patch(
+        "app.routers.triage.get_task_telemetry",
+        new_callable=AsyncMock,
+        return_value=telemetry,
+    ):
+        result = await TriageService.prepare_triage_batch(
+            service_auth_b64="dXNlcjpwYXNz",
+            db=AsyncMock(),
+            filter_id=984,
+            limit=5,
+        )
+
+    assert result["tasks"][0]["suggested_action"]["template_key"] == "pc_offline"

@@ -1,6 +1,6 @@
 import json
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -16,9 +16,10 @@ def override_deps():
     async def mock_get_db():
         session = AsyncMock()
         session.execute = AsyncMock()
+        session.scalar = AsyncMock(return_value=None)
         session.commit = AsyncMock()
         session.rollback = AsyncMock()
-        session.add = AsyncMock()
+        session.add = MagicMock()
         yield session
 
     app.dependency_overrides[get_db] = mock_get_db
@@ -115,6 +116,7 @@ async def test_confirm_command_approve():
                     "job_id": "job_hitl1",
                     "status": "confirm_required",
                     "action": "grant_wlan",
+                    "mode": "confirm",
                 }
             )
         )

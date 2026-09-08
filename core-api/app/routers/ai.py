@@ -6,7 +6,7 @@ import logging
 from typing import Dict
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.routers.deps import verify_admin_or_api_key
+from app.routers.deps import require_permission
 from app.services.ai import (
     AIAnalysisResult,
     AIHealthResponse,
@@ -26,7 +26,7 @@ logger = logging.getLogger("core_api.routers.ai")
 router = APIRouter(
     prefix="/api/v1/ai",
     tags=["Centralized AI Hub"],
-    dependencies=[Depends(verify_admin_or_api_key)],
+    dependencies=[Depends(require_permission("ai:use"))],
 )
 
 

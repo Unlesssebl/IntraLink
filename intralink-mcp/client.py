@@ -4,13 +4,16 @@ HTTP-клиент шлюза Core API Gateway для MCP сервера IntraLin
 
 import os
 import logging
+import uuid
 from typing import Any
 import httpx
 
 logger = logging.getLogger("intralink_mcp.client")
 
 CORE_API_URL = os.getenv("CORE_API_URL", "http://127.0.0.1:8000").rstrip("/")
-BOT_API_KEY = os.getenv("BOT_API_KEY", "default-dev-bot-key")
+BOT_API_KEY = os.getenv("BOT_API_KEY", "")
+SERVICE_KEY_ID = os.getenv("MCP_SERVICE_KEY_ID") or os.getenv("SERVICE_KEY_ID", "")
+SERVICE_SECRET = os.getenv("MCP_SERVICE_SECRET") or os.getenv("SERVICE_SECRET", "")
 
 
 class CoreApiClient:
@@ -18,11 +21,11 @@ class CoreApiClient:
 
     def __init__(self, base_url: str = CORE_API_URL, api_key: str = BOT_API_KEY):
         self.base_url = base_url
-        self.headers = {
-            "X-Bot-Api-Key": api_key,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
+        self.headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if SERVICE_KEY_ID and SERVICE_SECRET:
+            self.headers.update({"X-Service-Key-Id": SERVICE_KEY_ID, "X-Service-Secret": SERVICE_SECRET})
+        elif api_key:
+            self.headers["X-Bot-Api-Key"] = api_key
 
     async def get_triage_batch(
         self,
@@ -83,9 +86,9 @@ class CoreApiClient:
             return resp.json()
 
     async def search_kb(
-        self, query: str, limit: int = 3, threshold: float = 0.70
+        self, query: str, limit: int = 3, profile: str = "balanced"
     ) -> dict[str, Any]:
-        payload = {"query": query, "limit": limit, "threshold": threshold}
+        payload = {"query": query, "limit": limit, "profile": profile}
         async with httpx.AsyncClient(base_url=self.base_url, timeout=20.0) as client:
             resp = await client.post("/api/v1/triage/rag/search", headers=self.headers, json=payload)
             resp.raise_for_status()
@@ -99,17 +102,17 @@ class CoreApiClient:
         mode: str = "auto",
     ) -> dict[str, Any]:
         payload = {
-            "type": action_type,
+            "action": action_type,
             "target": target,
-            "params": params or {},
-            "mode": mode,
+            "parameters": params or {},
             "source": "mcp",
-            "initiator": "antigravity_agent",
         }
+        headers = {**self.headers, "Idempotency-Key": str(uuid.uuid4())}
         async with httpx.AsyncClient(base_url=self.base_url, timeout=30.0) as client:
-            resp = await client.post("/api/v1/commands/submit", headers=self.headers, json=payload)
+            resp = await client.post("/api/v2/commands", headers=headers, json=payload)
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            return {**data, "job_id": data.get("command_id")}
 
     async def list_skills(self) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(base_url=self.base_url, timeout=15.0) as client:

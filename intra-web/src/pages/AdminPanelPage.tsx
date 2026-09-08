@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   loginAdmin,
   checkCurrentAdminSession,
@@ -10,6 +10,8 @@ import {
   blacklistKbExample,
   purgeKnowledgeBase,
   triggerKbSync,
+  triggerStratifiedKbSync,
+  fetchKbSyncStatus,
   fetchVaultStatus,
   saveVaultServiceAccount,
   saveVaultDomain,
@@ -19,15 +21,35 @@ import {
   type ConnectionTestResult,
   type KBExampleItem,
   type KBStatsResponse,
+  type KBSyncProgressResponse,
+  fetchAvailableStatuses,
+  type KBStatusItem,
   type VaultStatusResponse,
+  triggerNightlyAudit,
+  fetchNightlyAuditStatus,
+  type KBNightlyAuditProgress,
 } from '../lib/adminApi';
 import SkillsHub from '../components/SkillsHub';
 import { IconShield } from '../components/Icons';
 import { fetchAIHealth, fetchSanitizePreview, purgeTriageCache } from '../lib/tasks';
 import type { AIHealthData, SanitizePreviewResult } from '../lib/types';
+import { fetchActiveExecution, type ActiveExecutionStatus } from '../lib/ticketRuns';
 
 interface AdminPanelPageProps {
   theme?: 'light' | 'dark';
+}
+
+function getPaginationPages(currentPage: number, totalPages: number): (number | string)[] {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  if (currentPage <= 4) {
+    return [1, 2, 3, 4, 5, '...', totalPages];
+  }
+  if (currentPage >= totalPages - 3) {
+    return [1, '...', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+  }
+  return [1, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages];
 }
 
 export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps) {
@@ -95,18 +117,43 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [vaultLocalAdminPassword, setVaultLocalAdminPassword] = useState('');
   const [savingVaultLocal, setSavingVaultLocal] = useState(false);
 
+  const [activeWorkerExec, setActiveWorkerExec] = useState<ActiveExecutionStatus | null>(null);
   const [showSecurityInfo, setShowSecurityInfo] = useState(false);
+
+  const loadActiveWorkerExec = useCallback(async () => {
+    try {
+      const data = await fetchActiveExecution();
+      setActiveWorkerExec(data);
+    } catch {
+      // Игнорируем ошибки сети
+    }
+  }, []);
 
   // Knowledge Base State
   const [kbStats, setKbStats] = useState<KBStatsResponse | null>(null);
   const [kbExamples, setKbExamples] = useState<KBExampleItem[]>([]);
   const [kbTotal, setKbTotal] = useState<number>(0);
   const [kbPage, setKbPage] = useState<number>(1);
-  const [kbLimit] = useState<number>(10);
+  const [kbLimit, setKbLimit] = useState<number>(10);
   const [kbSearch, setKbSearch] = useState<string>('');
+  const [kbSearchInput, setKbSearchInput] = useState<string>('');
+  const [kbSelectedRootFilter, setKbSelectedRootFilter] = useState<string | null>(null);
+  const [expandedTasks, setExpandedTasks] = useState<Record<number, boolean>>({});
+  const [copiedTaskId, setCopiedTaskId] = useState<number | null>(null);
+  const kbTableRef = useRef<HTMLDivElement>(null);
   const [kbLoading, setKbLoading] = useState<boolean>(false);
   const [kbSyncLoading, setKbSyncLoading] = useState<boolean>(false);
-  const [kbSyncDays, setKbSyncDays] = useState<number>(30);
+  const [kbSyncDays, setKbSyncDays] = useState<number>(60);
+  const [kbSyncQuota, setKbSyncQuota] = useState<number>(30);
+  const [kbSyncRootId, setKbSyncRootId] = useState<string>('');
+  const [availableStatuses, setAvailableStatuses] = useState<KBStatusItem[]>([]);
+  const [selectedStatusIds, setSelectedStatusIds] = useState<number[]>([28, 29, 43, 30]);
+  const [aiQualityEval, setAiQualityEval] = useState<boolean>(true);
+  const [nightlyAuditLoading, setNightlyAuditLoading] = useState<boolean>(false);
+  const [nightlyAuditProgress, setNightlyAuditProgress] = useState<KBNightlyAuditProgress | null>(null);
+  const [kbSyncProgress, setKbSyncProgress] = useState<KBSyncProgressResponse | null>(null);
+  const [showSyncConsole, setShowSyncConsole] = useState<boolean>(true);
+  const syncConsoleEndRef = useRef<HTMLDivElement | null>(null);
   const [blacklistingTaskId, setBlacklistingTaskId] = useState<number | null>(null);
   const [isPurgeModalOpen, setIsPurgeModalOpen] = useState<boolean>(false);
   const [purgeConfirmed, setPurgeConfirmed] = useState<boolean>(false);
@@ -293,12 +340,12 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
   // KB Handlers
   const loadKbData = useCallback(
-    async (authToken: string, page = 1, search = '') => {
+    async (authToken: string, page = 1, search = '', rootId: string | null = null, limit = 10) => {
       setKbLoading(true);
       try {
         const [stats, examplesData] = await Promise.all([
           fetchKbStats(authToken).catch(() => null),
-          fetchKbExamples(authToken, page, kbLimit, undefined, search),
+          fetchKbExamples(authToken, page, limit, undefined, search, rootId),
         ]);
         if (stats) setKbStats(stats);
         setKbExamples(examplesData.examples || []);
@@ -310,21 +357,48 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
         setKbLoading(false);
       }
     },
-    [kbLimit]
+    []
   );
+
+  // Мгновенный дебаунс-поиск 300мс
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setKbSearch(kbSearchInput.trim());
+      setKbPage(1);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [kbSearchInput]);
 
   useEffect(() => {
     if (token && activeTab === 'kb') {
-      loadKbData(token, kbPage, kbSearch);
+      loadKbData(token, kbPage, kbSearch, kbSelectedRootFilter, kbLimit);
     }
-  }, [token, activeTab, kbPage]);
+  }, [token, activeTab, kbPage, kbSearch, kbSelectedRootFilter, kbLimit, loadKbData]);
 
-  const handleSearchSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (token) {
-      setKbPage(1);
-      loadKbData(token, 1, kbSearch);
+  const handleCopySolution = async (taskId: number, solution: string) => {
+    try {
+      await navigator.clipboard.writeText(solution);
+      setCopiedTaskId(taskId);
+      setTimeout(() => setCopiedTaskId(null), 2000);
+    } catch {
+      // ignore
     }
+  };
+
+  const handleToggleExpand = (taskId: number) => {
+    setExpandedTasks(prev => ({ ...prev, [taskId]: !prev[taskId] }));
+  };
+
+  const handleResetFilters = () => {
+    setKbSearchInput('');
+    setKbSearch('');
+    setKbSelectedRootFilter(null);
+    setKbPage(1);
+  };
+
+  const handlePageChange = (newPage: number) => {
+    setKbPage(newPage);
+    kbTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   const handleBlacklistExample = async (taskId: number) => {
@@ -380,12 +454,145 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     }
   };
 
+  const handleTriggerStratifiedSync = async () => {
+    if (!token) return;
+    setKbSyncLoading(true);
+    setStatusMessage(null);
+    try {
+      const res = await triggerStratifiedKbSync(token, {
+        quota_per_service: kbSyncQuota,
+        days: kbSyncDays,
+        root_id: kbSyncRootId || null,
+        status_ids: selectedStatusIds,
+        ai_eval: aiQualityEval,
+      });
+      setStatusMessage({ type: 'success', text: res.message || 'Умная синхронизация запущена в фоне' });
+      const statusData = await fetchKbSyncStatus(token);
+      setKbSyncProgress(statusData);
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Ошибка запуска умной синхронизации' });
+      setKbSyncLoading(false);
+    }
+  };
+
+  const handleTriggerNightlyAudit = async () => {
+    if (!token) return;
+    setNightlyAuditLoading(true);
+    setStatusMessage(null);
+    try {
+      const res = await triggerNightlyAudit(token);
+      setStatusMessage({ type: 'success', text: res.message || 'Глубокий ночной аудит запущен' });
+      const statusData = await fetchNightlyAuditStatus(token);
+      setNightlyAuditProgress(statusData);
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Ошибка запуска ночного аудита' });
+      setNightlyAuditLoading(false);
+    }
+  };
+
+  // Загрузка доступных статусов IntraService при открытии вкладки базы знаний
+  useEffect(() => {
+    if (token && activeTab === 'kb') {
+      fetchAvailableStatuses(token).then(st => {
+        if (st && st.length > 0) {
+          setAvailableStatuses(st);
+        }
+      });
+    }
+  }, [token, activeTab]);
+
+  // Фоновый опрос прогресса умной синхронизации и ночного аудита в реальном времени (1 раз в секунду при активности)
+  const wasRunningRef = useRef<{ sync: boolean; audit: boolean }>({ sync: false, audit: false });
+
+  useEffect(() => {
+    if (!token || activeTab !== "kb") return;
+
+    let timer: any = null;
+    let isMounted = true;
+
+    const pollProgress = async () => {
+      try {
+        const [prog, nProg] = await Promise.all([
+          fetchKbSyncStatus(token).catch(() => null),
+          fetchNightlyAuditStatus(token).catch(() => null),
+        ]);
+
+        if (!isMounted) return;
+
+        let anyRunning = false;
+
+        if (prog) {
+          setKbSyncProgress(prog);
+          const isSyncRunning = !!prog.is_running;
+          setKbSyncLoading(isSyncRunning);
+
+          // Если синхронизация завершилась — автоматически обновляем таблицу прецедентов
+          if (wasRunningRef.current.sync && !isSyncRunning) {
+            loadKbData(token, kbPage, kbSearch, kbSelectedRootFilter, kbLimit);
+          }
+          wasRunningRef.current.sync = isSyncRunning;
+          if (isSyncRunning) anyRunning = true;
+        }
+
+        if (nProg) {
+          setNightlyAuditProgress(nProg);
+          const isAuditRunning = !!nProg.is_running;
+          setNightlyAuditLoading(isAuditRunning);
+
+          // Если глубокий аудит завершился — автоматически обновляем таблицу прецедентов
+          if (wasRunningRef.current.audit && !isAuditRunning) {
+            loadKbData(token, kbPage, kbSearch, kbSelectedRootFilter, kbLimit);
+          }
+          wasRunningRef.current.audit = isAuditRunning;
+          if (isAuditRunning) anyRunning = true;
+        }
+
+        // При активной работе опрашиваем каждую секунду (1000мс) для живой плавной анимации прогресс-бара и логов;
+        // В режиме ожидания — каждые 2.5 секунды для мгновенного подхвата ручного или ночного (19:00) запуска
+        const interval = anyRunning ? 1000 : 2500;
+        if (isMounted) {
+          timer = setTimeout(pollProgress, interval);
+        }
+      } catch (err) {
+        console.debug("Polling kb sync/audit error:", err);
+        if (isMounted) {
+          timer = setTimeout(pollProgress, 2500);
+        }
+      }
+    };
+
+    pollProgress();
+
+    return () => {
+      isMounted = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [token, activeTab, kbPage, kbSearch, kbSelectedRootFilter, kbLimit, loadKbData]);
+
+  // Auto-scroll sync console to bottom when new logs arrive
+  useEffect(() => {
+    if (showSyncConsole && kbSyncProgress?.logs?.length) {
+      syncConsoleEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [kbSyncProgress?.logs?.length, showSyncConsole]);
+
   useEffect(() => {
     if (token) {
       loadSettings(token);
       loadVault(token);
+      loadActiveWorkerExec();
     }
-  }, [token, loadSettings, loadVault]);
+  }, [token, loadSettings, loadVault, loadActiveWorkerExec]);
+
+  useEffect(() => {
+    if (!token) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        loadActiveWorkerExec();
+      }
+    }, 8000);
+    return () => clearInterval(timer);
+  }, [token, loadActiveWorkerExec]);
 
   // Test LDAPS
   const handleTestLdaps = async () => {
@@ -810,13 +1017,18 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                   <div className="text-sm font-semibold truncate">
                     {vaultStatus?.service_account.login || 'Не настроен'}
                   </div>
+                  {vaultStatus?.service_account.user_id && (
+                    <div className="mt-1 font-mono text-[11px] text-neutral-500">
+                      User ID {vaultStatus.service_account.user_id}
+                    </div>
+                  )}
                 </div>
                 <div className="mt-3 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px]">
                   <span className="text-neutral-500">Redis кэш:</span>
                   <span className="inline-flex items-center gap-1.5 font-mono">
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${vaultStatus?.service_account.redis_synced ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-                    <span className={vaultStatus?.service_account.redis_synced ? 'text-emerald-400' : 'text-amber-400'}>
-                      {vaultStatus?.service_account.redis_synced ? 'Прогрет' : 'Ожидает'}
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${vaultStatus?.service_account.redis_synced && vaultStatus?.service_account.identity_synced ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                    <span className={vaultStatus?.service_account.redis_synced && vaultStatus?.service_account.identity_synced ? 'text-emerald-400' : 'text-amber-400'}>
+                      {vaultStatus?.service_account.redis_synced && vaultStatus?.service_account.identity_synced ? 'Прогрет' : 'Ожидает'}
                     </span>
                   </span>
                 </div>
@@ -868,16 +1080,43 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                 <div>
                   <div className="flex items-center justify-between text-xs text-neutral-400 mb-1">
                     <span>Execution Worker</span>
-                    <span className={`w-2 h-2 rounded-full ${vaultStatus?.execution_worker.online ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-600'}`}></span>
+                    <span className={`w-2 h-2 rounded-full ${
+                      activeWorkerExec?.has_active
+                        ? (activeWorkerExec.state === 'waiting_approval' ? 'bg-amber-400 animate-pulse' : 'bg-blue-400 animate-pulse')
+                        : (vaultStatus?.execution_worker.online || activeWorkerExec?.worker_online ? 'bg-emerald-400' : 'bg-neutral-600')
+                    }`}></span>
                   </div>
                   <div className="text-sm font-semibold truncate flex items-center gap-1.5">
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${vaultStatus?.execution_worker.online ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-500'}`} />
-                    <span>{vaultStatus?.execution_worker.online ? 'Онлайн' : 'Ожидание воркера'}</span>
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${
+                      activeWorkerExec?.has_active
+                        ? (activeWorkerExec.state === 'waiting_approval' ? 'bg-amber-400 animate-pulse' : 'bg-blue-400 animate-pulse')
+                        : (vaultStatus?.execution_worker.online || activeWorkerExec?.worker_online ? 'bg-emerald-400' : 'bg-neutral-500')
+                    }`} />
+                    <span className="truncate">
+                      {activeWorkerExec?.has_active
+                        ? (activeWorkerExec.state === 'waiting_approval' ? `Ожидает одобрения #${activeWorkerExec.task_id}` : `В работе #${activeWorkerExec.task_id}`)
+                        : (vaultStatus?.execution_worker.online || activeWorkerExec?.worker_online ? 'Онлайн (свободен)' : 'Ожидание воркера')}
+                    </span>
                   </div>
+
+                  {activeWorkerExec?.has_active && (
+                    <div className="mt-2 text-[11.5px] text-neutral-300 leading-tight">
+                      <div className="font-medium text-neutral-200 truncate">
+                        {activeWorkerExec.action_title}
+                        {activeWorkerExec.target_host ? ` → ${activeWorkerExec.target_host}` : ''}
+                      </div>
+                      <div className="text-[10.5px] text-neutral-400 mt-0.5 truncate">
+                        Фаза: {activeWorkerExec.phase_title || 'Выполнение'}
+                        {activeWorkerExec.progress_pct !== null ? ` (${activeWorkerExec.progress_pct}%)` : ''}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="mt-3 pt-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px]">
-                  <span className="text-neutral-500">Heartbeat:</span>
-                  <span className="font-mono text-neutral-400 text-[10px]">win_daemon</span>
+                  <span className="text-neutral-500">Узлы воркера:</span>
+                  <span className="font-mono text-neutral-400 text-[10px]">
+                    {activeWorkerExec?.active_nodes_count ? `${activeWorkerExec.active_nodes_count} узел(а)` : 'win_daemon'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -1640,17 +1879,172 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
               </div>
             </div>
 
+            {/* Warning banner if IntraService credentials are not ready */}
+            {kbStats?.sync_readiness && !kbStats.sync_readiness.ready && (
+              <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-800/40 text-xs text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                <div className="flex items-start gap-3">
+                  <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold uppercase tracking-wider shrink-0 mt-0.5 border border-amber-500/30">
+                    ТРЕБУЕТСЯ АВТОРИЗАЦИЯ
+                  </span>
+                  <div>
+                    <p className="font-semibold text-amber-100">
+                      Синхронизация с IntraService недоступна
+                    </p>
+                    <p className="text-amber-300/80 text-[11.5px] mt-0.5 leading-relaxed">
+                      {kbStats.sync_readiness.message}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('vault')}
+                  className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 rounded-xl text-xs font-medium cursor-pointer transition-colors shrink-0 text-center"
+                >
+                  Настроить в Хранилище &rarr;
+                </button>
+              </div>
+            )}
+
+            {/* Warning banner if Embedding service is not ready */}
+            {kbStats?.embedding_readiness && !kbStats.embedding_readiness.ready && (
+              <div className="p-4 rounded-2xl bg-rose-950/20 border border-rose-800/40 text-xs text-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                <div className="flex items-start gap-3">
+                  <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-mono text-[10px] font-bold uppercase tracking-wider shrink-0 mt-0.5 border border-rose-500/30">
+                    СБОЙ AI HUB
+                  </span>
+                  <div>
+                    <p className="font-semibold text-rose-100">
+                      Служба генерации эмбеддингов недоступна
+                    </p>
+                    <p className="text-rose-300/80 text-[11.5px] mt-0.5 leading-relaxed font-mono">
+                      {kbStats.embedding_readiness.message}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => token && loadKbData(token, 1, '')}
+                  className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-500/40 rounded-xl text-xs font-medium cursor-pointer transition-colors shrink-0 text-center"
+                >
+                  Проверить связь
+                </button>
+              </div>
+            )}
+
             {/* Sync & Search Control Panel */}
             <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-sm space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
-                  <h2 className="text-base font-semibold">Синхронизация и Модерация</h2>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-semibold">Синхронизация и Модерация</h2>
+                    {kbStats?.sync_readiness?.ready && (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-mono">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                        <span>{kbStats.sync_readiness.auth_source === 'operator_session' ? `Сессия: ${kbStats.sync_readiness.account_name}` : 'Сервисный аккаунт'}</span>
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-neutral-400 mt-0.5">
                     Управление векторными знаниями pgvector: обучение по закрытым заявкам и удаление ошибок.
                   </p>
                 </div>
 
-                <div className="flex items-center gap-3">
+                {/* Мультистатусный отбор и AI-валидация качества */}
+                <div className="p-3 bg-neutral-900/60 border border-neutral-800 rounded-xl space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-neutral-300 flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+                      Статусы для выборки прецедентов:
+                    </span>
+                    <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none hover:text-white transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={aiQualityEval}
+                        onChange={e => setAiQualityEval(e.target.checked)}
+                        className="rounded border-neutral-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-0 bg-neutral-950 w-3.5 h-3.5 cursor-pointer"
+                      />
+                      <span className="flex items-center gap-1.5">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-purple-400 shrink-0">
+                          <rect x="4" y="4" width="16" height="16" rx="2" />
+                          <rect x="9" y="9" width="6" height="6" />
+                          <path d="M9 2v2M15 2v2M9 20v2M15 20v2M20 9h2M20 14h2M2 9h2M2 14h2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        <span>AI-валидация качества решений</span>
+                        <span className="text-[10px] px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-mono">Qwen 2.5</span>
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {(availableStatuses.length > 0 ? availableStatuses : [
+                      { id: 28, name: 'Закрыта', is_recommended: true },
+                      { id: 29, name: 'Выполнена', is_recommended: true },
+                      { id: 43, name: 'Обработано 1-й линией', is_recommended: true },
+                      { id: 30, name: 'Отменена', is_recommended: true },
+                      { id: 31, name: 'Открыта', is_recommended: false },
+                      { id: 27, name: 'В работе', is_recommended: false },
+                      { id: 35, name: 'Требует уточнения', is_recommended: false },
+                    ]).map(s => {
+                      const isSelected = selectedStatusIds.includes(s.id);
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedStatusIds(prev =>
+                              isSelected
+                                ? (prev.length > 1 ? prev.filter(id => id !== s.id) : prev)
+                                : [...prev, s.id]
+                            );
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all flex items-center gap-1.5 cursor-pointer ${
+                            isSelected
+                              ? 'bg-blue-600/20 text-blue-300 border-blue-500/60 shadow-sm'
+                              : 'bg-neutral-950 text-neutral-400 border-neutral-800 hover:border-neutral-700 hover:text-neutral-300'
+                          }`}
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-blue-400' : 'bg-neutral-600'}`}></span>
+                          <span>{s.name}</span>
+                          <span className="text-[10px] opacity-60 font-mono">#{s.id}</span>
+                          {s.is_recommended && (
+                            <span className="text-[9px] px-1 py-0.2 bg-blue-500/10 text-blue-400 rounded">rec</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-neutral-400">Раздел:</span>
+                    <select
+                      value={kbSyncRootId}
+                      onChange={e => setKbSyncRootId(e.target.value)}
+                      className="px-2.5 py-1.5 bg-neutral-950 border border-neutral-700 rounded-lg text-xs text-neutral-200 focus:outline-none focus:border-blue-500 cursor-pointer max-w-[200px] truncate"
+                    >
+                      <option value="">Все разделы (01–17)</option>
+                      {kbStats?.root_services?.map(r => (
+                        <option key={r.root_id} value={r.root_id}>
+                          {r.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-neutral-400">Квота:</span>
+                    <input
+                      type="number"
+                      min={5}
+                      max={100}
+                      value={kbSyncQuota}
+                      onChange={e => setKbSyncQuota(Math.max(5, Math.min(100, Number(e.target.value) || 30)))}
+                      className="w-14 px-2 py-1.5 bg-neutral-950 border border-neutral-700 rounded-lg text-xs text-neutral-200 text-center focus:outline-none focus:border-blue-500"
+                      title="Количество качественных прецедентов на каждый раздел"
+                    />
+                  </div>
+
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-neutral-400">Глубина:</span>
                     <select
@@ -1667,82 +2061,389 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                   </div>
 
                   <button
-                    onClick={handleTriggerSync}
-                    disabled={kbSyncLoading}
-                    className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-xs font-medium shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
+                    onClick={handleTriggerStratifiedSync}
+                    disabled={
+                      kbSyncLoading ||
+                      (kbStats?.sync_readiness ? !kbStats.sync_readiness.ready : false) ||
+                      (kbStats?.embedding_readiness ? !kbStats.embedding_readiness.ready : false)
+                    }
+                    title={
+                      kbStats?.embedding_readiness && !kbStats.embedding_readiness.ready
+                        ? `Сбой AI Hub: ${kbStats.embedding_readiness.message}`
+                        : kbStats?.sync_readiness && !kbStats.sync_readiness.ready
+                        ? kbStats.sync_readiness.message
+                        : 'Запустить умное квотирование по разделам каталога с дедупликацией'
+                    }
+                    className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-medium shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
                   >
                     {kbSyncLoading ? (
                       <>
                         <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-                        <span>Обучение...</span>
+                        <span>Синхронизация...</span>
                       </>
                     ) : (
                       <>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
                         </svg>
-                        <span>Запустить синхронизацию</span>
+                        <span>Умное наполнение</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleTriggerNightlyAudit}
+                    disabled={
+                      nightlyAuditLoading ||
+                      nightlyAuditProgress?.is_running ||
+                      (kbStats?.sync_readiness ? !kbStats.sync_readiness.ready : false)
+                    }
+                    title="Запустить глубокий аудит базы знаний через локальную модель Qwen 2.5 без эвристических срезок (расписание: 19:00)"
+                    className="px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 hover:border-neutral-600 disabled:opacity-40 disabled:cursor-not-allowed text-neutral-200 hover:text-white rounded-lg text-xs font-medium shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {nightlyAuditLoading || nightlyAuditProgress?.is_running ? (
+                      <>
+                        <span className="w-3.5 h-3.5 border-2 border-indigo-400/30 border-t-indigo-400 rounded-full animate-spin"></span>
+                        <span>Аудит...</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-indigo-400 shrink-0">
+                          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        <span>Глубокий аудит (19:00)</span>
                       </>
                     )}
                   </button>
                 </div>
               </div>
 
-              {/* Search input */}
-              <form onSubmit={handleSearchSubmit} className="flex gap-2">
-                <div className="relative flex-1">
-                  <input
-                    type="text"
-                    value={kbSearch}
-                    onChange={e => setKbSearch(e.target.value)}
-                    placeholder="Поиск по теме, сути проблемы или тексту решения..."
-                    className="w-full pl-9 pr-3.5 py-2 bg-neutral-950 border border-neutral-700 rounded-xl text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-blue-500"
-                  />
-                  <svg
-                    className="absolute left-3 top-2.5 text-neutral-500"
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <circle cx="11" cy="11" r="8"></circle>
-                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                  </svg>
+              {/* Live Nightly Deep Audit Progress Card */}
+              {nightlyAuditProgress && (nightlyAuditProgress.is_running || (nightlyAuditProgress.total_audited > 0 && nightlyAuditProgress.percent < 100) || (nightlyAuditProgress.logs && nightlyAuditProgress.logs.length > 0)) && (
+                <div className={`p-4 rounded-xl bg-neutral-950 border space-y-2.5 shadow-inner ${
+                  nightlyAuditProgress.error ? 'border-rose-800/60' : 'border-indigo-900/50'
+                }`}>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${nightlyAuditProgress.is_running ? 'bg-indigo-500 animate-ping' : 'bg-emerald-500'}`}></span>
+                      <span className="font-semibold text-indigo-300 flex items-center gap-1.5">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-indigo-400 shrink-0">
+                          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        <span>{nightlyAuditProgress.is_running ? 'Выполняется глубокий ночной аудит (Qwen 2.5)...' : 'Глубокий ночной аудит завершен'}</span>
+                      </span>
+                      <span className="text-[10px] px-1.5 py-0.2 bg-neutral-900 text-neutral-400 rounded border border-neutral-800">
+                        Ежедневно в 19:00
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 text-neutral-400 font-mono text-[11px]">
+                      <span>Проверено: <b className="text-neutral-200">{nightlyAuditProgress.total_audited}/{nightlyAuditProgress.total_records}</b></span>
+                      <span>Подтверждено: <b className="text-emerald-400">+{nightlyAuditProgress.high_quality_count}</b></span>
+                      <span>В Blacklist: <b className="text-rose-400">+{nightlyAuditProgress.blacklisted_count}</b></span>
+                      <span className="font-bold text-indigo-400">{nightlyAuditProgress.percent}%</span>
+                    </div>
+                  </div>
+
+                  <div className="w-full bg-neutral-900 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className="h-1.5 bg-gradient-to-r from-indigo-600 via-purple-500 to-indigo-400 transition-all duration-300 rounded-full"
+                      style={{ width: `${Math.max(2, nightlyAuditProgress.percent)}%` }}
+                    ></div>
+                  </div>
+
+                  {nightlyAuditProgress.logs && nightlyAuditProgress.logs.length > 0 && (
+                    <div className="max-h-24 overflow-y-auto font-mono text-[11px] p-2 bg-black/50 border border-neutral-900 rounded-lg space-y-1">
+                      {nightlyAuditProgress.logs.slice(-6).map((l, i) => (
+                        <div key={i} className="flex items-start gap-2">
+                          <span className="text-neutral-500 shrink-0">{l.time}</span>
+                          <span className={
+                            l.level === 'warn' ? 'text-amber-400' :
+                            l.level === 'error' ? 'text-rose-400' :
+                            l.level === 'success' ? 'text-emerald-400' :
+                            'text-neutral-300'
+                          }>
+                            {l.message}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <button
-                  type="submit"
-                  disabled={kbLoading}
-                  className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded-xl text-xs font-medium border border-neutral-700 transition-colors cursor-pointer"
-                >
-                  Найти
-                </button>
-                {kbSearch && (
+              )}
+
+              {/* Live Background Sync Progress Card */}
+              {kbSyncProgress && (kbSyncProgress.is_running || (kbSyncProgress.percent > 0 && kbSyncProgress.percent < 100) || kbSyncProgress.error || (kbSyncProgress.logs && kbSyncProgress.logs.length > 0)) && (
+                <div className={`p-4 rounded-xl bg-neutral-950 border space-y-2.5 shadow-inner ${
+                  kbSyncProgress.error ? 'border-rose-800/60' : 'border-blue-900/50'
+                }`}>
+                  <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      {kbSyncProgress.error ? (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                          <span className="font-semibold text-rose-300">
+                            Синхронизация остановлена (сбой)
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping"></span>
+                          <span className="font-semibold text-blue-300">
+                            {kbSyncProgress.current_service_name
+                              ? `Обработка: ${kbSyncProgress.current_service_name}`
+                              : 'Подготовка разделов каталога...'}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                    <span className="font-mono text-neutral-400">
+                      {kbSyncProgress.percent}% ({kbSyncProgress.processed_roots}/{kbSyncProgress.total_roots} разделов)
+                    </span>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div className="w-full bg-neutral-800 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className={`h-1.5 rounded-full transition-all duration-300 ease-out ${
+                        kbSyncProgress.error ? 'bg-rose-500' : 'bg-blue-500'
+                      }`}
+                      style={{ width: `${kbSyncProgress.percent}%` }}
+                    ></div>
+                  </div>
+
+                  {/* Prominent Circuit Breaker / Failure Alert Box */}
+                  {kbSyncProgress.error && (
+                    <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-800/50 text-[11.5px] font-mono text-rose-200 space-y-1">
+                      <div className="font-semibold flex items-center gap-1.5 text-rose-300">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <circle cx="12" cy="12" r="10"></circle>
+                          <line x1="12" y1="8" x2="12" y2="12"></line>
+                          <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                        </svg>
+                        <span>Причина остановки процесса:</span>
+                      </div>
+                      <p className="leading-relaxed break-words">{kbSyncProgress.error}</p>
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-between text-[11px] text-neutral-400 pt-0.5">
+                    <div className="flex items-center gap-3">
+                      <span>
+                        Добавлено: <strong className="text-emerald-400 font-mono">+{kbSyncProgress.total_indexed}</strong>
+                      </span>
+                      <span>
+                        Пропущено (отписки): <strong className="text-neutral-300 font-mono">{kbSyncProgress.total_skipped}</strong>
+                      </span>
+                      <span>
+                        Отсеяно дублей: <strong className="text-amber-400 font-mono">{kbSyncProgress.total_duplicates}</strong>
+                      </span>
+                      {(kbSyncProgress.total_ai_errors ?? 0) > 0 && (
+                        <span>
+                          Сбоев AI Hub: <strong className="text-rose-400 font-mono">{kbSyncProgress.total_ai_errors}</strong>
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-neutral-500 font-mono text-[10px]">
+                      Лимит: {kbSyncQuota} на раздел
+                    </span>
+                  </div>
+
+                  {/* Live Console Terminal */}
+                  {kbSyncProgress.logs && kbSyncProgress.logs.length > 0 && (
+                    <div className="mt-2.5 border-t border-neutral-800/80 pt-2.5">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setShowSyncConsole(!showSyncConsole)}
+                          className="flex items-center gap-1.5 text-neutral-400 hover:text-neutral-200 text-xs font-mono transition-colors cursor-pointer"
+                        >
+                          <span className="text-[10px] text-neutral-500">&gt;_</span>
+                          <span className="font-semibold text-[11px]">Терминал выполнения RAG</span>
+                          <span className="px-1.5 py-0.2 rounded bg-neutral-800 text-[9.5px] text-neutral-300 font-mono">
+                            {kbSyncProgress.logs.length}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowSyncConsole(!showSyncConsole)}
+                          className="text-[10px] text-neutral-500 hover:text-neutral-400 font-mono cursor-pointer inline-flex items-center gap-1"
+                        >
+                          <span>{showSyncConsole ? 'свернуть' : 'развернуть'}</span>
+                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5">
+                            {showSyncConsole ? <path d="M2 6.5l3-3 3 3" strokeLinecap="round" strokeLinejoin="round" /> : <path d="M2 3.5l3 3 3-3" strokeLinecap="round" strokeLinejoin="round" />}
+                          </svg>
+                        </button>
+                      </div>
+
+                      {showSyncConsole && (
+                        <div className="p-3 rounded-xl bg-black/95 border border-neutral-800/90 font-mono text-[11px] leading-relaxed max-h-48 overflow-y-auto scrollbar-thin scrollbar-thumb-neutral-800 space-y-1 shadow-inner">
+                          {kbSyncProgress.logs.map((l, lIdx) => (
+                            <div key={lIdx} className="flex items-start gap-2">
+                              <span className="text-neutral-600 shrink-0 select-none text-[10px]">[{l.time}]</span>
+                              <span className={
+                                l.level === 'error' ? 'text-rose-400 font-semibold' :
+                                l.level === 'warn' ? 'text-amber-400' :
+                                l.level === 'success' ? 'text-emerald-400 font-medium' :
+                                'text-neutral-300'
+                              }>
+                                {l.message}
+                              </span>
+                            </div>
+                          ))}
+                          <div ref={syncConsoleEndRef} />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Service Category Chips Filter (01..17) */}
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 scrollbar-thin scrollbar-thumb-neutral-800">
                   <button
                     type="button"
                     onClick={() => {
-                      setKbSearch('');
-                      if (token) {
-                        setKbPage(1);
-                        loadKbData(token, 1, '');
-                      }
+                      setKbSelectedRootFilter(null);
+                      setKbPage(1);
                     }}
-                    className="px-3 py-2 text-xs text-neutral-400 hover:text-neutral-200 transition-colors cursor-pointer"
+                    className={`px-3 py-1.5 rounded-xl text-xs font-medium shrink-0 transition-all cursor-pointer flex items-center gap-1.5 ${
+                      kbSelectedRootFilter === null
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'bg-neutral-950 hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200 border border-neutral-800'
+                    }`}
                   >
-                    Сброс
+                    <span>Все разделы</span>
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-black/30 text-neutral-300">
+                      {kbStats?.total_active_examples ?? 0}
+                    </span>
+                  </button>
+                  {kbStats?.root_services?.map(r => {
+                    const cnt = kbStats.root_counts?.[r.root_id] ?? 0;
+                    const isSelected = kbSelectedRootFilter === r.root_id;
+                    return (
+                      <button
+                        key={r.root_id}
+                        type="button"
+                        onClick={() => {
+                          setKbSelectedRootFilter(isSelected ? null : r.root_id);
+                          setKbPage(1);
+                        }}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-medium shrink-0 transition-all cursor-pointer flex items-center gap-1.5 ${
+                          isSelected
+                            ? 'bg-blue-600 text-white shadow-sm'
+                            : 'bg-neutral-950 hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200 border border-neutral-800'
+                        }`}
+                      >
+                        <span>{r.name}</span>
+                        <span
+                          className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                            isSelected
+                              ? 'bg-black/30 text-white'
+                              : cnt > 0
+                              ? 'bg-neutral-800 text-neutral-300'
+                              : 'bg-neutral-900 text-neutral-600'
+                          }`}
+                        >
+                          {cnt}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Active Filters Bar */}
+                {(kbSelectedRootFilter || kbSearch) && (
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    <span className="text-[11px] text-neutral-500 font-medium">Активные фильтры:</span>
+                    {kbSelectedRootFilter && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/30 text-xs">
+                        <span>
+                          Раздел: {kbStats?.root_services?.find(r => r.root_id === kbSelectedRootFilter)?.name || kbSelectedRootFilter}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setKbSelectedRootFilter(null);
+                            setKbPage(1);
+                          }}
+                          className="hover:text-white cursor-pointer ml-0.5 text-sm"
+                          title="Снять фильтр раздела"
+                        >
+                          &times;
+                        </button>
+                      </span>
+                    )}
+                    {kbSearch && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-neutral-800 text-neutral-300 border border-neutral-700 text-xs">
+                        <span>Поиск: "{kbSearch}"</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setKbSearchInput('');
+                            setKbSearch('');
+                            setKbPage(1);
+                          }}
+                          className="hover:text-white cursor-pointer ml-0.5 text-sm"
+                          title="Очистить поиск"
+                        >
+                          &times;
+                        </button>
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleResetFilters}
+                      className="text-[11px] text-neutral-400 hover:text-rose-400 underline cursor-pointer ml-1 transition-colors"
+                    >
+                      Сбросить все
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Instant Search input */}
+              <div className="relative">
+                <input
+                  type="text"
+                  value={kbSearchInput}
+                  onChange={e => setKbSearchInput(e.target.value)}
+                  placeholder="Мгновенный поиск по номеру заявки, теме, проблеме или решению..."
+                  className="w-full pl-9 pr-9 py-2.5 bg-neutral-950 border border-neutral-700 rounded-xl text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+                <svg
+                  className="absolute left-3 top-3 text-neutral-500"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                {kbSearchInput && (
+                  <button
+                    type="button"
+                    onClick={() => setKbSearchInput('')}
+                    className="absolute right-3 top-2.5 text-neutral-400 hover:text-neutral-200 cursor-pointer p-0.5"
+                    title="Очистить строку"
+                  >
+                    &times;
                   </button>
                 )}
-              </form>
+              </div>
             </div>
 
             {/* Knowledge Base Examples Table */}
-            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-sm overflow-hidden">
+            <div ref={kbTableRef} className="bg-neutral-900 border border-neutral-800 rounded-2xl shadow-sm overflow-hidden">
               <div className="px-6 py-4 border-b border-neutral-800 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm font-semibold">Проиндексированные прецеденты</h3>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-neutral-800 text-neutral-300">
-                    {kbTotal} записей
+                    {kbTotal} {kbTotal === 1 ? 'запись' : kbTotal < 5 ? 'записи' : 'записей'}
                   </span>
                 </div>
                 <div className="flex items-center gap-3">
@@ -1772,81 +2473,239 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
               {kbExamples.length === 0 && !kbLoading ? (
                 <div className="p-12 text-center text-neutral-500 text-xs">
-                  {kbSearch ? 'По вашему запросу прецедентов не найдено.' : 'База знаний пока пуста. Запустите синхронизацию выше.'}
+                  {kbSearch || kbSelectedRootFilter
+                    ? 'По выбранным фильтрам прецедентов не найдено.'
+                    : 'База знаний пока пуста. Запустите синхронизацию выше.'}
                 </div>
               ) : (
                 <div className="divide-y divide-neutral-800/60">
-                  {kbExamples.map(item => (
-                    <div key={item.task_id} className="p-5 hover:bg-neutral-800/30 transition-colors space-y-2.5">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex items-center gap-2.5">
-                          <span className="px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-mono font-semibold">
-                            #{item.task_id}
-                          </span>
-                          <span className="text-xs font-semibold text-neutral-200">
-                            {item.original_name || 'Без названия'}
-                          </span>
-                          <span className="px-2 py-0.5 rounded text-[10px] bg-neutral-800 text-neutral-400">
-                            {item.service_name}
-                          </span>
+                  {kbExamples.map(item => {
+                    const isExpanded = !!expandedTasks[item.task_id];
+                    const isLongText = (item.problem?.length || 0) > 180 || (item.solution?.length || 0) > 180;
+                    return (
+                      <div key={item.task_id} className="p-5 hover:bg-neutral-800/30 transition-colors space-y-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-mono font-semibold">
+                              #{item.task_id}
+                            </span>
+                            <span className="text-xs font-semibold text-neutral-200">
+                              {item.original_name || 'Без названия'}
+                            </span>
+                            <span className="px-2 py-0.5 rounded text-[10px] bg-neutral-800 text-neutral-400">
+                              {item.service_name}
+                            </span>
+                            {/* Resolution Outcome Badge */}
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-semibold border flex items-center gap-1 ${
+                              item.resolution_type === 'rejected' ? 'bg-rose-500/10 border-rose-500/30 text-rose-300' :
+                              item.resolution_type === 'cancelled' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' :
+                              item.resolution_type === 'redirected' ? 'bg-sky-500/10 border-sky-500/30 text-sky-300' :
+                              item.resolution_type === 'consultation' ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300' :
+                              item.resolution_type === 'duplicate' ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' :
+                              'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                            }`}>
+                              <span className="w-1.5 h-1.5 rounded-full bg-current opacity-80"></span>
+                              <span>{item.status_name ? `${item.status_name}: ` : ''}{item.resolution_label || 'Выполнено'}</span>
+                            </span>
+                            {item.root_cause && (
+                              <span className="px-2 py-0.5 rounded text-[10px] bg-neutral-800/80 text-neutral-400 border border-neutral-700/50">
+                                Причина: {item.root_cause}
+                              </span>
+                            )}
+                            {typeof item.quality_score === 'number' && (
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border flex items-center gap-1 ${
+                                  item.quality_score >= 0.8
+                                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                                    : item.quality_score >= 0.5
+                                    ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'
+                                    : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                                }`}
+                                title={`Скоринг ценности решения для Helpdesk: ${(item.quality_score * 100).toFixed(0)}%`}
+                              >
+                                {item.quality_score >= 0.8 && (
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="text-emerald-400 shrink-0">
+                                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                                  </svg>
+                                )}
+                                <span>Ценность: {(item.quality_score * 100).toFixed(0)}%</span>
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {/* Copy Solution button */}
+                            <button
+                              type="button"
+                              onClick={() => handleCopySolution(item.task_id, item.solution || '')}
+                              className="px-2.5 py-1 text-[11px] font-medium text-neutral-300 hover:text-white bg-neutral-800 hover:bg-neutral-700 rounded-lg border border-neutral-700 transition-colors flex items-center gap-1 cursor-pointer"
+                              title="Скопировать решение в буфер обмена"
+                            >
+                              {copiedTaskId === item.task_id ? (
+                                <span className="text-emerald-400 font-semibold">Скопировано!</span>
+                              ) : (
+                                <>
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                  </svg>
+                                  <span>Решение</span>
+                                </>
+                              )}
+                            </button>
+
+                            {/* IntraService direct link */}
+                            <a
+                              href={`/api/v1/tasks/${item.task_id}/open`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-2.5 py-1 text-[11px] font-medium text-blue-400 hover:text-blue-300 hover:bg-blue-950/40 rounded-lg border border-blue-900/40 transition-colors flex items-center gap-1 cursor-pointer"
+                              title="Открыть карточку заявки в IntraService"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                                <polyline points="15 3 21 3 21 9"></polyline>
+                                <line x1="10" y1="14" x2="21" y2="3"></line>
+                              </svg>
+                              <span>В тикет</span>
+                            </a>
+
+                            {/* Blacklist button */}
+                            <button
+                              onClick={() => handleBlacklistExample(item.task_id)}
+                              disabled={blacklistingTaskId === item.task_id}
+                              title="Скрыть прецедент из базы знаний RAG"
+                              className="px-2.5 py-1 text-[11px] font-medium text-amber-400 hover:text-amber-300 hover:bg-amber-950/40 rounded-lg border border-amber-900/40 transition-colors flex items-center gap-1 cursor-pointer"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                                <line x1="1" y1="1" x2="23" y2="23"></line>
+                              </svg>
+                              <span>{blacklistingTaskId === item.task_id ? 'Скрытие...' : 'Скрыть'}</span>
+                            </button>
+                          </div>
                         </div>
 
-                        <button
-                          onClick={() => handleBlacklistExample(item.task_id)}
-                          disabled={blacklistingTaskId === item.task_id}
-                          title="Скрыть прецедент из базы знаний RAG"
-                          className="px-2.5 py-1 text-[11px] font-medium text-amber-400 hover:text-amber-300 hover:bg-amber-950/40 rounded-lg border border-amber-900/40 transition-colors flex items-center gap-1 cursor-pointer"
-                        >
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
-                            <line x1="1" y1="1" x2="23" y2="23"></line>
-                          </svg>
-                          <span>{blacklistingTaskId === item.task_id ? 'Скрытие...' : 'Скрыть из базы знаний'}</span>
-                        </button>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                          <div className="p-3 bg-neutral-950/60 rounded-xl border border-neutral-800/80">
+                            <p className="text-[10px] uppercase font-semibold text-neutral-500 tracking-wider mb-1">
+                              Суть проблемы / Запрос
+                            </p>
+                            <p className={`text-neutral-300 leading-relaxed whitespace-pre-wrap ${!isExpanded ? 'line-clamp-3' : ''}`}>
+                              {item.problem || '—'}
+                            </p>
+                          </div>
+
+                          <div className={`p-3 rounded-xl border ${
+                            item.resolution_type === 'rejected' ? 'bg-rose-950/20 border-rose-900/30' :
+                            item.resolution_type === 'cancelled' ? 'bg-amber-950/20 border-amber-900/30' :
+                            item.resolution_type === 'redirected' ? 'bg-sky-950/20 border-sky-900/30' :
+                            item.resolution_type === 'consultation' ? 'bg-indigo-950/20 border-indigo-900/30' :
+                            'bg-emerald-950/20 border-emerald-900/30'
+                          }`}>
+                            <div className="flex items-center justify-between mb-1">
+                              <p className={`text-[10px] uppercase font-semibold tracking-wider ${
+                                item.resolution_type === 'rejected' ? 'text-rose-400' :
+                                item.resolution_type === 'cancelled' ? 'text-amber-400' :
+                                item.resolution_type === 'redirected' ? 'text-sky-400' :
+                                item.resolution_type === 'consultation' ? 'text-indigo-400' :
+                                'text-emerald-400'
+                              }`}>
+                                {item.resolution_type === 'rejected' ? 'Причина отказа / Резолюция' :
+                                 item.resolution_type === 'cancelled' ? 'Причина отмены' :
+                                 item.resolution_type === 'redirected' ? 'Маршрут перенаправления' :
+                                 item.resolution_type === 'duplicate' ? 'Дубликат заявки' :
+                                 'Решение / Ответ инженера'}
+                              </p>
+                              <span className="text-[9.5px] font-mono text-neutral-400">
+                                {item.status_name}
+                              </span>
+                            </div>
+                            <p className={`text-neutral-300 leading-relaxed whitespace-pre-wrap ${!isExpanded ? 'line-clamp-3' : ''}`}>
+                              {item.solution || '—'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {isLongText && (
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleExpand(item.task_id)}
+                              className="text-[11px] text-blue-400 hover:text-blue-300 font-medium cursor-pointer transition-colors flex items-center gap-1"
+                            >
+                              <span>{isExpanded ? 'Свернуть текст' : 'Развернуть полностью'}</span>
+                              <span>{isExpanded ? '↑' : '↓'}</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                        <div className="p-3 bg-neutral-950/60 rounded-xl border border-neutral-800/80">
-                          <p className="text-[10px] uppercase font-semibold text-neutral-500 tracking-wider mb-1">
-                            Суть проблемы / Запрос
-                          </p>
-                          <p className="text-neutral-300 leading-relaxed line-clamp-3">
-                            {item.problem || '—'}
-                          </p>
-                        </div>
-
-                        <div className="p-3 bg-emerald-950/10 rounded-xl border border-emerald-900/20">
-                          <p className="text-[10px] uppercase font-semibold text-emerald-500 tracking-wider mb-1">
-                            Решение / Ответ
-                          </p>
-                          <p className="text-neutral-300 leading-relaxed line-clamp-3">
-                            {item.solution || '—'}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
-              {/* Pagination Bar */}
-              {kbTotal > kbLimit && (
-                <div className="px-6 py-3 border-t border-neutral-800 flex items-center justify-between text-xs text-neutral-400">
-                  <span>
-                    Страница {kbPage} из {Math.ceil(kbTotal / kbLimit)}
-                  </span>
-                  <div className="flex items-center gap-2">
+              {/* Enhanced Pagination Bar */}
+              {kbTotal > 0 && (
+                <div className="px-6 py-3.5 border-t border-neutral-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-neutral-400">
+                  <div className="flex items-center gap-4">
+                    <span>
+                      Показано <strong className="text-neutral-200 font-mono">{(kbPage - 1) * kbLimit + 1}</strong>–
+                      <strong className="text-neutral-200 font-mono">{Math.min(kbPage * kbLimit, kbTotal)}</strong> из{' '}
+                      <strong className="text-neutral-200 font-mono">{kbTotal}</strong>
+                    </span>
+
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-neutral-500">На странице:</span>
+                      <select
+                        value={kbLimit}
+                        onChange={e => {
+                          setKbLimit(Number(e.target.value));
+                          setKbPage(1);
+                        }}
+                        className="px-2 py-1 bg-neutral-950 border border-neutral-700 rounded-lg text-xs text-neutral-200 focus:outline-none focus:border-blue-500 cursor-pointer"
+                      >
+                        <option value={10}>10</option>
+                        <option value={25}>25</option>
+                        <option value={50}>50</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
                     <button
-                      onClick={() => setKbPage(prev => Math.max(prev - 1, 1))}
+                      onClick={() => handlePageChange(Math.max(kbPage - 1, 1))}
                       disabled={kbPage <= 1 || kbLoading}
-                      className="px-3 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-300 rounded-lg border border-neutral-700 transition-colors cursor-pointer"
+                      className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-300 rounded-lg border border-neutral-700 transition-colors cursor-pointer"
                     >
                       ← Назад
                     </button>
+
+                    {/* Numeric page buttons */}
+                    {getPaginationPages(kbPage, Math.ceil(kbTotal / kbLimit)).map((p, idx) =>
+                      typeof p === 'number' ? (
+                        <button
+                          key={idx}
+                          onClick={() => handlePageChange(p)}
+                          className={`w-7 h-7 rounded-lg text-xs font-mono transition-colors cursor-pointer ${
+                            kbPage === p
+                              ? 'bg-blue-600 text-white font-semibold shadow-xs'
+                              : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700'
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      ) : (
+                        <span key={idx} className="px-1 text-neutral-600 font-mono">
+                          ...
+                        </span>
+                      )
+                    )}
+
                     <button
-                      onClick={() => setKbPage(prev => (prev * kbLimit < kbTotal ? prev + 1 : prev))}
+                      onClick={() => handlePageChange(kbPage * kbLimit < kbTotal ? kbPage + 1 : kbPage)}
                       disabled={kbPage * kbLimit >= kbTotal || kbLoading}
-                      className="px-3 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-300 rounded-lg border border-neutral-700 transition-colors cursor-pointer"
+                      className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-300 rounded-lg border border-neutral-700 transition-colors cursor-pointer"
                     >
                       Вперед →
                     </button>

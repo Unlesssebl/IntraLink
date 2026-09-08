@@ -167,6 +167,8 @@ helpdesk_agent/downloads/
 helpdesk-agent/downloads/
 *.log
 .secrets/
+eval/
+*.eval.jsonl
 
 # Node.js / Web
 node_modules/
@@ -174,3 +176,7 @@ intra-web/dist/
 
 # Codegraph / Agent artifacts
 .codegraph/
+
+# Backups and database dumps
+backups/
+*.dump

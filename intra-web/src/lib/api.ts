@@ -1,6 +1,27 @@
 export const AUTH_UNAUTHORIZED_EVENT = 'intralink:unauthorized';
 
-export async function apiFetch<T = any>(url: string, options: RequestInit = {}): Promise<T> {
+let refreshPromise: Promise<boolean> | null = null;
+
+async function refreshSession(): Promise<boolean> {
+  if (!refreshPromise) {
+    refreshPromise = fetch('/admin/api/refresh', {
+      method: 'POST',
+      credentials: 'include',
+    }).then(async response => {
+      if (!response.ok) return false;
+      const data = await response.json();
+      if (localStorage.getItem('intralink_admin_token') && data.access_token) {
+        localStorage.setItem('intralink_admin_token', data.access_token);
+      }
+      return true;
+    }).catch(() => false).finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+}
+
+export async function apiFetch<T = any>(url: string, options: RequestInit = {}, allowRefresh = true): Promise<T> {
   const defaultHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -27,6 +48,9 @@ export async function apiFetch<T = any>(url: string, options: RequestInit = {}):
     const response = await fetch(url, mergedOptions);
 
     if (response.status === 401) {
+      if (allowRefresh && url !== '/admin/api/refresh' && await refreshSession()) {
+        return apiFetch<T>(url, options, false);
+      }
       window.dispatchEvent(new CustomEvent(AUTH_UNAUTHORIZED_EVENT));
       throw new Error('Сессия завершена или неавторизован');
     }

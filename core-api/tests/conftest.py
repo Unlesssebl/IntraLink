@@ -9,6 +9,7 @@ pydantic-settings читает при инициализации.
 
 import os
 import pytest
+import pytest_asyncio
 from unittest.mock import AsyncMock
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -48,3 +49,48 @@ def mock_redis() -> AsyncMock:
 @pytest.fixture
 def base_web_url() -> str:
     return "http://intraservice.test"
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def initialize_test_database():
+    """Каждый изолированный тест видит актуальную SQLite-схему приложения."""
+    from app.database.db import init_db
+
+    await init_db()
+    yield
+    from app.main import app
+    from sqlalchemy import delete
+    from app.database.db import (
+        ActionPolicyRecord, ApprovalChallenge, AsyncSessionLocal, AuthSession, AutopilotScenario,
+        AutopilotSetting, AutopilotSettingEvent, CommandOutbox, CommandRecord,
+        CommandSecretArtifact, DecisionFeedback, DecisionStep, DecisionRecord, Principal, PrincipalRole, SecurityEvent,
+        ResolutionPolicy, ResponseTemplate,
+        ServiceCredential, SystemSetting, TelegramLink, TelegramLinkCode, TicketRun,
+        TicketRunEvent, get_db,
+    )
+    app.dependency_overrides.pop(get_db, None)
+    async with AsyncSessionLocal() as db:
+        for model in (
+            DecisionFeedback, DecisionStep, CommandSecretArtifact, CommandOutbox,
+            ResolutionPolicy, ResponseTemplate, CommandRecord, DecisionRecord,
+            TicketRunEvent, TicketRun, AutopilotScenario, AutopilotSettingEvent, AutopilotSetting,
+            SystemSetting,
+            ActionPolicyRecord,
+            ApprovalChallenge, TelegramLinkCode, TelegramLink, AuthSession,
+            ServiceCredential, SecurityEvent, PrincipalRole, Principal,
+        ):
+            await db.execute(delete(model))
+        await db.commit()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def close_shared_ai_hub_session():
+    """Закрывает общие HTTP-сессии AI-контура после каждого теста."""
+    yield
+    from app.services.ai import ai_hub
+    from app.services.intraservice import close_session
+    from app.services.rag import close_rag_session
+
+    await ai_hub.close()
+    await close_rag_session()
+    await close_session()

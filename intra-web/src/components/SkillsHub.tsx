@@ -263,6 +263,7 @@ export default function SkillsHub({ token }: SkillsHubProps) {
                   <button
                     onClick={() => handlePolicyChange(skill.id, 'auto')}
                     disabled={isUpdating}
+                    title="Автономный режим (автоматическое выполнение без подтверждения)"
                     className={`px-2.5 py-1 rounded font-medium transition-colors cursor-pointer ${
                       isAuto
                         ? 'bg-emerald-600 text-white shadow-sm'

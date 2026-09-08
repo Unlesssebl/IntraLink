@@ -201,3 +201,17 @@ async def test_ai_routed_cache_hit():
         assert resp.cached is True
         assert resp.text == "Закэшированный ответ"
 
+
+@pytest.mark.asyncio
+async def test_ai_dlp_failure_blocks_cloud_inference():
+    """Ошибка классификатора не имеет права перейти в GREEN/cloud fallback."""
+    from app.services.ai.schemas import RoutedInferenceRequest, RoutingMetadata
+
+    request = RoutedInferenceRequest(prompt="Any text", metadata=RoutingMetadata(), bypass_cache=True)
+    with patch("app.services.ai.hub.data_sanitizer.sanitize", side_effect=RuntimeError("DLP unavailable")), \
+         patch("app.services.ai.hub.record_security_event", new=AsyncMock()) as audit, \
+         patch.object(ai_hub, "generate_cloud_completion", new=AsyncMock()) as cloud:
+        assert await ai_hub.dispatch_routed_inference(request) is None
+        cloud.assert_not_awaited()
+        audit.assert_awaited_once()
+

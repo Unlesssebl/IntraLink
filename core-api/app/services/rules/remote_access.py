@@ -1,5 +1,7 @@
 from typing import Any
 
+from shared.domain import ClarificationRequired, DecisionOutcome, Evidence, NoMatch
+
 from .base import BaseRule, RuleDecision
 
 
@@ -63,3 +65,30 @@ class RemoteAccessRule(BaseRule):
             )
 
         return None
+
+    def evaluate_typed(
+        self,
+        task: dict[str, Any],
+        diag: dict[str, Any] | None = None,
+        kb_matches: list[dict[str, Any]] | None = None,
+        redirect_mode: bool = False,
+        context: dict[str, Any] | None = None,
+    ) -> DecisionOutcome:
+        dec = self.evaluate(task, diag, kb_matches, redirect_mode, context)
+        if dec is not None and dec.template_key == "anydesk_fallback_assistant":
+            return ClarificationRequired(
+                rule_key="remote_access.assistance",
+                rule_version="2",
+                outcome_key="anydesk_fallback_assistant",
+                missing_fields=["assistant_credentials"],
+                evidence=[
+                    Evidence(
+                        source="rule",
+                        field="diag.is_online",
+                        code="anydesk_connection_failed",
+                        detail="Host is online but AnyDesk connection failed",
+                    )
+                ],
+            )
+        return NoMatch(rule_key="remote_access.assistance", rule_version="2")
+

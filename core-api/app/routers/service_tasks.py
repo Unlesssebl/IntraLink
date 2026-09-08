@@ -3,13 +3,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from app.routers.deps import get_service_auth_b64, verify_api_key
+from app.routers.deps import get_service_auth_b64, require_permission, require_service_scope
 from app.services import intraservice
 
 router = APIRouter(
     prefix="/service",
     tags=["Service Tasks"],
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(require_service_scope("task:read"))],
 )
 
 
@@ -46,7 +46,7 @@ async def get_task_by_id(
     return task
 
 
-@router.post("/tasks/{task_id}/comment", status_code=status.HTTP_200_OK)
+@router.post("/tasks/{task_id}/comment", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("task:mutate"))])
 async def add_task_comment(
     task_id: int,
     payload: ServiceTaskCommentRequest,
@@ -66,7 +66,7 @@ async def add_task_comment(
     return {"status": "success"}
 
 
-@router.post("/tasks/{task_id}/status", status_code=status.HTTP_200_OK)
+@router.post("/tasks/{task_id}/status", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("task:mutate"))])
 async def update_task_status(
     task_id: int,
     payload: ServiceTaskStatusRequest,
@@ -86,7 +86,7 @@ async def update_task_status(
     return {"status": "success"}
 
 
-@router.post("/tasks/{task_id}/expenses", status_code=status.HTTP_200_OK)
+@router.post("/tasks/{task_id}/expenses", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("task:mutate"))])
 async def add_task_expenses(
     task_id: int,
     payload: ServiceTaskExpensesRequest,
@@ -106,7 +106,7 @@ async def add_task_expenses(
     return {"status": "success"}
 
 
-@router.put("/tasks/{task_id}/custom-fields", status_code=status.HTTP_200_OK)
+@router.put("/tasks/{task_id}/custom-fields", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("task:mutate"))])
 async def update_task_custom_fields(
     task_id: int,
     payload: ServiceTaskCustomFieldsRequest,

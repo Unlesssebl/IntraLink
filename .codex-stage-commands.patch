@@ -1,0 +1,51 @@
+diff --git a/core-api/app/routers/commands_v2.py b/core-api/app/routers/commands_v2.py
+--- a/core-api/app/routers/commands_v2.py
++++ b/core-api/app/routers/commands_v2.py
+@@ -25,6 +25,7 @@ from app.routers.deps import (
+     verify_trusted_origin,
+ )
+ from app.services.command_service import CommandService, serialize_command
++from app.services.command_secrets import CommandSecretService
+ from app.services.identity import PrincipalContext, require_context_permission
+ from app.services.identity import create_approval_challenge, consume_approval_challenge
+ from app.services.worker import get_redis_client
+@@ -95,6 +96,14 @@ class HeartbeatRequest(BaseModel):
+     lease_seconds: int = Field(120, ge=30, le=900)
+ 
+ 
++class SecretArtifactRequest(BaseModel):
++    worker_id: str = Field(min_length=1, max_length=100)
++    claim_token: str = Field(min_length=20)
++    name: Literal["temporary_password"]
++    value: str = Field(min_length=1, max_length=1024)
++    ttl_seconds: int = Field(900, ge=60, le=3600)
++
++
+ class QuarantineRequest(BaseModel):
+     worker_id: str = Field(min_length=1, max_length=100)
+     missing_capability: str = Field(min_length=1, max_length=100)
+@@ -295,1 +304,26 @@ async def finish_command(
+     return serialize_command(command)
++@router.post("/{command_id}/secret-artifacts", status_code=status.HTTP_201_CREATED)
++async def store_secret_artifact(
++    command_id: uuid.UUID,
++    payload: SecretArtifactRequest,
++    context: PrincipalContext = Depends(require_object_permission("command:finish:executor")),
++    db: AsyncSession = Depends(get_db),
++):
++    current = await CommandService(db).get(command_id)
++    if context.principal_type != "service":
++        raise HTTPException(status.HTTP_403_FORBIDDEN, "Service identity required")
++    require_context_permission(context, f"command:finish:{current.executor}")
++    artifact = await CommandSecretService(db).store(
++        command_id,
++        claim_token=payload.claim_token,
++        name=payload.name,
++        value=payload.value,
++        ttl_seconds=payload.ttl_seconds,
++    )
++    return {
++        "id": str(artifact.id),
++        "name": artifact.name,
++        "expires_at": artifact.expires_at.isoformat(),
++    }

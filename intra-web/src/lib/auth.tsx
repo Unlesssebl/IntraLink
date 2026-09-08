@@ -3,6 +3,10 @@ import { apiFetch, AUTH_UNAUTHORIZED_EVENT } from './api';
 
 export interface UserSession {
   username: string;
+  role?: string;
+  roles?: string[];
+  permissions?: string[];
+  is_admin?: boolean;
 }
 
 interface AuthContextType {

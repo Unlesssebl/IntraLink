@@ -7,10 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from app.database.db import AsyncSessionLocal
-from app.routers.deps import verify_admin_jwt
+from app.database.db import AsyncSessionLocal, get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.routers.deps import require_permission
 from app.services import intraservice
-from app.services.crypto import encrypt_token
 from app.services.worker import start_worker, stop_worker
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ class ServiceUserRequest(BaseModel):
     password: str
 
 
-@router.get("/admin/api/status", dependencies=[Depends(verify_admin_jwt)])
+@router.get("/admin/api/status", dependencies=[Depends(require_permission("audit:read"))])
 async def get_system_status():
     """
     Возвращает статус подключения всех систем: IntraService Circuit Breaker, Redis, PostgreSQL.
@@ -68,8 +68,8 @@ async def get_system_status():
     }
 
 
-@router.post("/admin/api/service-user", dependencies=[Depends(verify_admin_jwt)])
-async def set_service_user(payload: ServiceUserRequest):
+@router.post("/admin/api/service-user", dependencies=[Depends(require_permission("credentials:manage"))])
+async def set_service_user(payload: ServiceUserRequest, db: AsyncSession = Depends(get_db)):
     """
     Проверяет и сохраняет учетные данные сервисного аккаунта IntraService.
     """
@@ -85,47 +85,48 @@ async def set_service_user(payload: ServiceUserRequest):
             detail="Не удалось авторизовать сервисный аккаунт в IntraService",
         )
 
-    r = admin.get_redis_client()
-    encrypted = encrypt_token(auth_b64)
-    await r.set("worker:service_auth_b64", encrypted)
-
-    # Сохраняем в PostgreSQL (SSOT)
     try:
-        async with AsyncSessionLocal() as db:
-            await vault.save_service_account_credentials(
-                db, login=payload.login, password=payload.password
-            )
-    except Exception as e:
-        logger.warning("Не удалось сохранить сервисный аккаунт в PostgreSQL: %s", e)
+        result = await vault.save_service_account_credentials(
+            db, login=payload.login, password=payload.password, user_id=int(user_id)
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
     logger.info("Сервисный аккаунт %s успешно настроен", payload.login)
-    return {"status": "success", "login": payload.login, "user_id": user_id}
+    return result
 
 
 @router.delete(
-    "/admin/api/service-user", dependencies=[Depends(verify_admin_jwt)]
+    "/admin/api/service-user", dependencies=[Depends(require_permission("credentials:manage"))]
 )
-async def delete_service_user():
+async def delete_service_user(db: AsyncSession = Depends(get_db)):
     """
     Удаляет сервисный аккаунт из Redis и PostgreSQL.
     """
     import app.routers.admin as admin
-    from app.services.vault import set_raw_setting, KEY_SERVICE_ACCOUNT
+    from app.services import vault
+    from app.services.vault import (
+        KEY_SERVICE_ACCOUNT,
+        REDIS_KEY_SERVICE_AUTH,
+        REDIS_KEY_SERVICE_USER_ID,
+        assert_service_identity_change_allowed,
+        set_raw_setting,
+    )
 
     r = admin.get_redis_client()
-    await r.delete("worker:service_auth_b64")
-
     try:
-        async with AsyncSessionLocal() as db:
-            await set_raw_setting(db, KEY_SERVICE_ACCOUNT, {})
-    except Exception as e:
-        logger.warning("Не удалось очистить сервисный аккаунт в PostgreSQL: %s", e)
+        current = await vault.get_raw_setting(db, KEY_SERVICE_ACCOUNT) or {}
+        await assert_service_identity_change_allowed(db, None, current.get("user_id"))
+        await set_raw_setting(db, KEY_SERVICE_ACCOUNT, {})
+        await r.delete(REDIS_KEY_SERVICE_AUTH, REDIS_KEY_SERVICE_USER_ID)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
     return {"status": "success"}
 
 
 @router.post(
-    "/admin/api/worker/restart", dependencies=[Depends(verify_admin_jwt)]
+    "/admin/api/worker/restart", dependencies=[Depends(require_permission("policy:manage"))]
 )
 async def restart_worker_endpoint():
     """
@@ -140,7 +141,7 @@ async def restart_worker_endpoint():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/admin/api/worker-logs", dependencies=[Depends(verify_admin_jwt)])
+@router.get("/admin/api/worker-logs", dependencies=[Depends(require_permission("audit:read"))])
 async def get_worker_logs():
     """
     Возвращает последние системные логи воркера.

@@ -1,5 +1,6 @@
 import React from 'react';
 import { IconMonitor, IconCopy, IconSparkles } from '../Icons';
+import { getDesktopFallbackCommand, launchDesktopClient, type DesktopClient } from '../../lib/desktop';
 
 export type DiagStatus = 'ok' | 'fail' | 'checking' | 'idle';
 
@@ -82,33 +83,25 @@ export default function DiagnosticsSection({
                   <IconCopy size={12} />
                 </button>
 
-                {/* LiteManager Connect (Primary) */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard.writeText(`romviewer.exe /connect:${h}`).then(() =>
-                      onToast({ type: 'info', message: `Команда LiteManager скопирована: romviewer.exe /connect:${h}` })
-                    );
-                  }}
-                  className="px-1.5 py-0.5 text-[10.5px] font-semibold rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-200 dark:hover:bg-neutral-750 cursor-pointer transition-colors"
-                  title={`Подключиться через LiteManager: romviewer.exe /connect:${h}`}
-                >
-                  LiteManager
-                </button>
-
-                {/* DameWare Connect (Secondary) */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard.writeText(`dwrcc.exe -c: -m:${h}`).then(() =>
-                      onToast({ type: 'info', message: `Команда DameWare скопирована: dwrcc.exe -c: -m:${h}` })
-                    );
-                  }}
-                  className="px-1.5 py-0.5 text-[10.5px] font-medium rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-200 dark:hover:bg-neutral-750 cursor-pointer transition-colors"
-                  title={`Подключиться через DameWare: dwrcc.exe -c: -m:${h}`}
-                >
-                  DameWare
-                </button>
+                {(['litemanager', 'dameware', 'rdp'] as DesktopClient[]).map((client) => {
+                  const label = client === 'litemanager' ? 'LiteManager' : client === 'dameware' ? 'DameWare' : 'RDP';
+                  return <button
+                    key={client}
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await launchDesktopClient(rawId, h, client);
+                        onToast({ type: 'info', message: `${label}: запрос передан Desktop Companion` });
+                      } catch {
+                        const command = getDesktopFallbackCommand(client, h);
+                        await navigator.clipboard.writeText(command);
+                        onToast({ type: 'warning', message: `Desktop Companion недоступен. Команда скопирована: ${command}` });
+                      }
+                    }}
+                    className={`px-1.5 py-0.5 text-[10.5px] rounded border cursor-pointer transition-colors ${client === 'litemanager' ? 'font-semibold bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 border-neutral-900 dark:border-neutral-100' : 'font-medium bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border-neutral-200 dark:border-neutral-700 hover:bg-neutral-200 dark:hover:bg-neutral-750'}`}
+                    title={`Открыть ${label} через Desktop Companion`}
+                  >{label}</button>;
+                })}
               </div>
 
               {/* Diagnostics inline badges for this specific host */}

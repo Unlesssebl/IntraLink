@@ -64,7 +64,7 @@ graph TD
 ## 4. Модуль 2: Execution Broker (Windows Domain RPC)
 
 ### Назначение
-Асинхронная очередь задач в `Redis Streams` (`stream:execution_queue`) для удаленного исполнения PowerShell и WMI-скриптов на хостах домена Active Directory.
+Подтверждённые команды сохраняются в PostgreSQL и доставляются через `Redis Streams` (`stream:execution_commands:v2`) для удаленного исполнения PowerShell и WMI-скриптов на хостах домена Active Directory.
 
 ### Сценарии
 1. **Выдача доступа к Wi-Fi (`grant_wlan`):**

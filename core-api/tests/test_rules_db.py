@@ -2,28 +2,27 @@
 Тесты для PostgreSQL SSOT моделей шаблонов, правил триажа и аудит-лога.
 """
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.database.db import (
     Base,
-    RuleAuditLog,
-    TriageRule,
+    ResolutionPolicy,
+    ResponseTemplate,
     TriageTemplate,
     get_db,
 )
 from app.main import app
 from app.services.template_engine import (
-    _L1_TEMPLATES_CACHE,
     get_templates_from_db,
     invalidate_templates_cache,
-    load_templates,
     seed_templates_if_empty,
 )
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_db_session():
     """Тестовая in-memory база данных SQLite."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -100,6 +99,13 @@ async def test_rules_admin_crud(test_db_session: AsyncSession):
         items = list_resp.json()
         assert any(item["key"] == "custom_vpn_template" for item in items)
 
+        catalog_resp = await client.get(
+            "/api/v1/rules-admin/templates-catalog", headers=headers
+        )
+        catalog_item = catalog_resp.json()["map"]["custom_vpn_template"]
+        assert "template" in catalog_item
+        assert "template_text" not in catalog_item
+
         # 3. Обновление шаблона
         update_payload = dict(payload)
         update_payload["expenses"] = 20
@@ -110,6 +116,21 @@ async def test_rules_admin_crud(test_db_session: AsyncSession):
         )
         assert put_resp.status_code == 200
         assert put_resp.json()["expenses"] == 20
+
+        active_template = await test_db_session.scalar(
+            select(ResponseTemplate).where(
+                ResponseTemplate.key == "custom_vpn_template",
+                ResponseTemplate.is_active.is_(True),
+            )
+        )
+        active_policy = await test_db_session.scalar(
+            select(ResolutionPolicy).where(
+                ResolutionPolicy.outcome_key == "custom_vpn_template",
+                ResolutionPolicy.is_active.is_(True),
+            )
+        )
+        assert active_template is not None and active_template.version == 2
+        assert active_policy is not None and active_policy.version == 2
 
         # 4. Проверка записи аудит-лога
         audit_resp = await client.get(

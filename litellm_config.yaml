@@ -1,66 +1,32 @@
 model_list:
-  # =========================================================================
-  # 1. Основная актуальная модель (Gemini 3.5 Flash) с пулом ротации ключей
-  # =========================================================================
-  - model_name: gemini-3.5-flash
+  # Один стабильный публичный alias для текста. Провайдеры меняются здесь,
+  # а Core API и клиенты всегда используют intralink-chat.
+  - model_name: intralink-chat
     litellm_params:
       model: gemini/gemini-3.5-flash
       api_key: os.environ/GEMINI_API_KEY
       rpm: 15
-  # Резервные ключи для пула ротации (раскомментировать при наличии активных ключей):
-  # - model_name: gemini-3.5-flash
-  #   litellm_params:
-  #     model: gemini/gemini-3.5-flash
-  #     api_key: os.environ/GEMINI_API_KEY_2
-  #     rpm: 15
 
-  # =========================================================================
-  # 2. Облегченная модель (Gemini 3.5 Flash Lite) — 1-й уровень Fallback
-  # =========================================================================
-  - model_name: gemini-3.5-flash-lite
+  # Локальный резерв; RED-контур обращается к Ollama напрямую.
+  - model_name: intralink-local
     litellm_params:
-      model: gemini/gemini-3.5-flash-lite
-      api_key: os.environ/GEMINI_API_KEY
-      rpm: 30
+      model: ollama/qwen2.5:1.5b
+      api_base: http://host.docker.internal:11434
 
-  # =========================================================================
-  # 3. Стабильная проверенная модель (Gemini 2.5 Flash) — 2-й уровень Fallback
-  # =========================================================================
-  - model_name: gemini-2.5-flash
+  # Единственный профиль эмбеддингов: BGE-M3, 1024 измерения.
+  - model_name: bge-m3
     litellm_params:
-      model: gemini/gemini-2.5-flash
-      api_key: os.environ/GEMINI_API_KEY
-      rpm: 15
+      model: ollama/bge-m3
+      api_base: http://host.docker.internal:11434
 
-  # =========================================================================
-  # 4. Актуальная модель эмбеддингов Google Gemini 2 (3072 dim)
-  # =========================================================================
-  - model_name: gemini-embedding-2
-    litellm_params:
-      model: gemini/gemini-embedding-2
-      api_key: os.environ/GEMINI_API_KEY
-      rpm: 30
-
-  - model_name: gemini-embedding-001
-    litellm_params:
-      model: gemini/gemini-embedding-001
-      api_key: os.environ/GEMINI_API_KEY
-      rpm: 30
-
-# ===========================================================================
-# Умный роутинг, автоматический Cooldown и каскадные Fallback
-# ===========================================================================
 router_settings:
-  routing_strategy: "simple-shuffle"     # Ротация и балансировка по пулу доступных ключей
-  num_retries: 3                         # Автоповтор до 3 раз при ошибках 429/5xx
-  timeout: 30                            # Таймаут запроса в секундах
-  retry_after: 2                         # Интервал между ретраями
-  allowed_fails: 1                       # При 1 сбое ключ временно отправляется в кулдаун
-  cooldown_time: 60                      # Изоляция сбойного ключа на 60 секунд
+  routing_strategy: simple-shuffle
+  num_retries: 1
+  timeout: 30
+  allowed_fails: 2
+  cooldown_time: 30
   fallbacks:
-    - gemini-3.5-flash: ["gemini-3.5-flash-lite", "gemini-2.5-flash"]
-    - gemini-3.5-flash-lite: ["gemini-2.5-flash"]
-    - gemini-embedding-2: ["gemini-embedding-001"]
+    - intralink-chat: [intralink-local]
 
 general_settings:
   master_key: os.environ/LITELLM_API_KEY

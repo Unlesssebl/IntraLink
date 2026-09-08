@@ -13,7 +13,7 @@
   * Единая шина команд (Command Bus) и декларативный реестр действий `ActionRegistry` с Pydantic JSON-схемами и типами целей.
   * Динамический движок политик `PolicyEngine` с аппаратным Killswitch (`disabled` -> HTTP 403), HitL (`confirm`) и автоматическим режимом (`auto`).
   * Централизованный Rule Engine и хранение канонических шаблонов триажа в PostgreSQL (`triage_templates` + `rules_admin.py`).
-  * Двухэтапный Hybrid RAG (`LiteLLM` / `gemini-embedding-2` 3072 dim + `pgvector` HNSW + Cross-Encoder Reranker с адаптивным GPU-ускорением через ONNX Runtime CUDA/DirectML/CPU).
+  * Двухэтапный Hybrid RAG (`bge-m3` 1024 dim + `pgvector` HNSW + Cross-Encoder Reranker с адаптивным GPU-ускорением через ONNX Runtime CUDA/DirectML/CPU).
   * Многоконтурный адаптивный AI Hub (LiteLLM Proxy с ротацией ключей, Gemini 3.5 Flash, DLP-маскирование, Redis PII Vault, роутинг RED/YELLOW/GREEN).
   * Адаптивный поиск Ollama и телеметрия GPU: прозрачное подключение к хостовой Ollama (`host.docker.internal:11434`), Docker-сети или локальному порту, автодетект NVIDIA RTX 3050 (CUDA) и AMD (Vulkan/DirectML) в `/api/v1/ai/health`.
   * Защитные механизмы: `Distributed Host Concurrency Locks` (`safety.py`) и `Dead Man's Switch`.

@@ -117,6 +117,14 @@ def test_evaluate_circuit_force_override():
     assert decision.circuit == DataCircuit.RED
 
 
+def test_force_green_cannot_downgrade_sensitive_data():
+    decision = data_sanitizer.evaluate_circuit(
+        "Временный пароль: SecretPass2026!",
+        RoutingMetadata(force_circuit=DataCircuit.GREEN),
+    )
+    assert decision.circuit == DataCircuit.RED
+
+
 @pytest.mark.asyncio
 async def test_redis_vault_save_and_load():
     """Проверка сохранения и загрузки маппинга из Redis PII Vault."""

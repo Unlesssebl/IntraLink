@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 def read_secret_file(file_path_env: str) -> str | None:
     path = os.getenv(file_path_env)
-    if path and os.path.exists(path):
+    if path and os.path.exists(path) and os.path.isfile(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return f.read().strip()
@@ -22,6 +22,11 @@ def read_secret_file(file_path_env: str) -> str | None:
 
 
 class Settings(BaseSettings):
+    APP_ENV: str = Field("development", description="development | test | production")
+    CORS_ORIGINS: str = Field(
+        "http://localhost:3000,http://localhost:5173,http://localhost:8000,http://127.0.0.1:3000,http://127.0.0.1:5173,http://127.0.0.1:8000",
+        description="Разделённый запятыми список доверенных web origins",
+    )
     INTRASERVICE_URL: str = Field(..., description="URL-адрес API IntraService")
     DATABASE_URL: str = Field(
         "postgresql+asyncpg://postgres:postgres@localhost:5432/intraservice",
@@ -29,6 +34,12 @@ class Settings(BaseSettings):
     )
     BOT_API_KEY: str | None = Field(
         None, description="Предоставленный API-ключ для авторизации бота"
+    )
+    WORKER_API_KEY: str | None = Field(
+        None, description="Отдельный ключ только для claim/finish команд исполнителями"
+    )
+    ALLOW_LEGACY_SHARED_KEYS: bool | None = Field(
+        None, description="Временная совместимость общих BOT/WORKER ключей вне production"
     )
     SSL_VERIFY: bool = Field(
         False, description="Проверка SSL-сертификатов при запросах к IntraService"
@@ -60,6 +71,12 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_REQUESTS: int = Field(
         10, description="Лимит одновременных подключений к IntraService"
     )
+    AUTOPILOT_POLL_BATCH_SIZE: int = Field(
+        200, ge=10, le=1000, description="Размер устойчивой страницы активных циклов"
+    )
+    AUTOPILOT_MAX_CONCURRENCY: int = Field(
+        5, ge=1, le=50, description="Лимит параллельной сверки циклов автопилота"
+    )
     PRINTER_PC_CUSTOM_FIELD_ID: int = Field(
         1112, description="ID кастомного поля 'Имя ПК'"
     )
@@ -68,6 +85,10 @@ class Settings(BaseSettings):
     )
     STATUS_OPEN_ID: int = Field(31, description="ID статуса 'Открыта'")
     STATUS_WAITING_ID: int = Field(35, description="ID статуса 'Требует уточнения'")
+    STATUS_IN_PROGRESS_ID: int = Field(27, description="ID статуса 'В работе'")
+    STATUS_COMPLETED_ID: int = Field(29, description="ID статуса 'Выполнена'")
+    STATUS_CANCELLED_ID: int = Field(30, description="ID статуса 'Отменена'")
+    STATUS_CLOSED_ID: int = Field(28, description="ID статуса 'Закрыта'")
 
     # Параметры сервисного аккаунта и JWT
     INTRASERVICE_SERVICE_LOGIN: str | None = Field(
@@ -76,32 +97,33 @@ class Settings(BaseSettings):
     INTRASERVICE_SERVICE_PASSWORD: str | None = Field(
         None, description="Пароль сервисного аккаунта IntraService для фонового воркера"
     )
-    INTRASERVICE_SERVICE_USER_ID: int | None = Field(
-        None, description="ID сервисного аккаунта в IntraService"
-    )
     JWT_SECRET: str | None = Field(
         None, description="Секрет для подписи сессионных JWT токенов администратора"
     )
+    JWT_ISSUER: str = Field("intralink-core", description="JWT issuer")
+    JWT_AUDIENCE: str = Field("intralink", description="JWT audience")
+    ACCESS_TOKEN_TTL_MINUTES: int = Field(15, ge=5, le=60)
+    REFRESH_SESSION_TTL_HOURS: int = Field(8, ge=1, le=168)
 
     # Параметры LiteLLM и эмбеддингов
     GEMINI_API_KEY: str | None = Field(
-        None, description="API-ключ Google Gemini API для прямого доступа без прокси"
+        None, description="API-ключ Google Gemini, используемый шлюзом LiteLLM"
     )
-    LITELLM_API_KEY: str = Field(
-        "sk-intraservice-master-key",
+    LITELLM_API_KEY: str | None = Field(
+        None,
         description="API-ключ для авторизации в LiteLLM Proxy",
     )
     LITELLM_BASE_URL: str = Field(
         "http://localhost:4000/v1", description="Базовый URL для LiteLLM Proxy"
     )
     GEMINI_MODEL: str = Field(
-        "gemini-3.5-flash", description="Имя LLM модели для классификации и извлечения"
+        "intralink-chat", description="Стабильный alias текстовой модели в LiteLLM"
     )
     EMBEDDING_MODEL: str = Field(
-        "gemini-embedding-2", description="Имя модели эмбеддингов"
+        "bge-m3", description="Имя модели эмбеддингов"
     )
     EMBEDDING_DIMENSION: int = Field(
-        3072, description="Размерность векторов модели эмбеддингов"
+        1024, description="Размерность векторов модели эмбеддингов (BGE-M3)"
     )
 
     # Параметры Ollama (локальный AI инференс)
@@ -120,8 +142,18 @@ class Settings(BaseSettings):
     OLLAMA_NUM_PARALLEL: int = Field(
         2, description="Лимит параллельных сессий инференса Ollama"
     )
+    LLM_FACT_EXTRACTION_MODE: str = Field(
+        "off", description="Извлечение фактов: off | shadow | enabled"
+    )
+    LLM_PROVIDER_PREFERENCE: str = Field(
+        "gemini_first",
+        description="Приоритет LLM провайдера: gemini_first | ollama_only | disabled",
+    )
+    LLM_FACT_EXTRACTION_TIMEOUT: float = Field(
+        5.0, ge=0.5, le=30.0, description="Жесткий timeout extraction fallback"
+    )
     FASTEMBED_MODEL: str = Field(
-        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        "BAAI/bge-m3",
         description="Имя локальной модели FastEmbed для векторных эмбеддингов",
     )
     RERANKER_MODEL: str = Field(
@@ -179,9 +211,9 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str | None = Field(
         None, description="[DEPRECATED] Устаревший мастер-пароль администратора"
     )
-    ADMIN_JWT_SECRET: str = Field(
-        "intralink-admin-jwt-secret-key-32chars!",
-        description="Секретный ключ для подписи сессионных JWT токенов администратора",
+    ADMIN_JWT_SECRET: str | None = Field(
+        None,
+        description="[DEPRECATED] Используйте единый JWT_SECRET для подписи сессий",
     )
     PRIMARY_TRIAGE_FILTER_ID: int = Field(
         984, description="ID основного фильтра первой линии в IntraService"
@@ -212,6 +244,8 @@ class Settings(BaseSettings):
         if not self.JWT_SECRET:
             if secret := read_secret_file("JWT_SECRET_FILE"):
                 self.JWT_SECRET = secret
+            elif self.APP_ENV.lower() == "production":
+                raise ValueError("JWT_SECRET или JWT_SECRET_FILE обязателен в production")
             else:
                 generated_jwt_secret = secrets.token_hex(32)
                 logger.warning(
@@ -221,18 +255,26 @@ class Settings(BaseSettings):
                 self.JWT_SECRET = generated_jwt_secret
 
         if not self.BOT_API_KEY:
-            # TODO(security): В продакшене обязательно настроить BOT_API_KEY
-            # в переменных окружения.
-            # Для разработки сгенерируем временный ключ, чтобы сервис запустился,
-            # но выдадим предупреждение.
-            generated_key = secrets.token_hex(32)
-            logger.warning(
-                "ВНИМАНИЕ: BOT_API_KEY не задан в окружении! "
-                "Сгенерирован временный случайный ключ: %s. "
-                "Этот ключ будет сбрасываться при каждом перезапуске сервиса.",
-                generated_key,
-            )
-            self.BOT_API_KEY = generated_key
+            if self.APP_ENV.lower() != "production":
+                generated_key = secrets.token_hex(32)
+                logger.warning(
+                    "BOT_API_KEY не задан: создан временный ключ только для разработки.",
+                )
+                self.BOT_API_KEY = generated_key
+
+        if not self.WORKER_API_KEY:
+            self.WORKER_API_KEY = read_secret_file("WORKER_API_KEY_FILE")
+        if not self.WORKER_API_KEY:
+            if self.APP_ENV.lower() != "production":
+                self.WORKER_API_KEY = self.BOT_API_KEY
+
+        if self.ALLOW_LEGACY_SHARED_KEYS is None:
+            self.ALLOW_LEGACY_SHARED_KEYS = self.APP_ENV.lower() != "production"
+        if self.APP_ENV.lower() == "production" and self.ALLOW_LEGACY_SHARED_KEYS:
+            raise ValueError("ALLOW_LEGACY_SHARED_KEYS запрещён в production")
+
+        if not self.LITELLM_API_KEY and self.APP_ENV.lower() == "production":
+            raise ValueError("LITELLM_API_KEY обязателен в production")
 
 
 settings = Settings()

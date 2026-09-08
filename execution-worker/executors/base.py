@@ -33,6 +33,9 @@ class ActionResult:
     error: str | None = None
     log: list[str] = field(default_factory=list)
     payload: dict[str, Any] = field(default_factory=dict)
+    failure_kind: str | None = None
+    failure_code: str | None = None
+    verified_failure: bool = False
 
 
 class BaseActionExecutor(ABC):
@@ -208,7 +211,9 @@ class BaseActionExecutor(ABC):
         pass
 
     @abstractmethod
-    async def verify(self, target_pc: str, log: list[str], **kwargs) -> tuple[bool, str]:
+    async def verify(
+        self, target_pc: str, log: list[str], **kwargs
+    ) -> tuple[bool, str, bool, str | None]:
         """Фаза Verify: валидация примененного состояния."""
         pass
 
@@ -229,6 +234,8 @@ class BaseActionExecutor(ABC):
                 message=f"Рабочая станция {target_pc} занята другой операцией (Host Lock). Повторите позже.",
                 error="HostConcurrencyLockError: 0x80338029",
                 log=[f"❌ Не удалось захватить мьютекс хоста {target_pc}."],
+                failure_kind="infrastructure",
+                failure_code="host_lock_busy",
             )
 
         try:
@@ -237,7 +244,14 @@ class BaseActionExecutor(ABC):
             pre_ok, pre_msg = await self.preflight(target_pc, log, **kwargs)
             if not pre_ok:
                 log.append(f"[{time.strftime('%X')}] ❌ Preflight отклонен: {pre_msg}")
-                return ActionResult(success=False, message=pre_msg, error=pre_msg, log=log)
+                return ActionResult(
+                    success=False,
+                    message=pre_msg,
+                    error=pre_msg,
+                    log=log,
+                    failure_kind="infrastructure",
+                    failure_code="preflight_failed",
+                )
 
             # 2. Execute
             log.append(f"[{time.strftime('%X')}] Фаза 2: Execute...")
@@ -249,7 +263,9 @@ class BaseActionExecutor(ABC):
 
             # 3. Verify
             log.append(f"[{time.strftime('%X')}] Фаза 3: Verify...")
-            ver_ok, ver_msg = await self.verify(target_pc, log, **kwargs)
+            ver_ok, ver_msg, verified_failure, failure_code = await self.verify(
+                target_pc, log, **kwargs
+            )
             if not ver_ok:
                 log.append(f"[{time.strftime('%X')}] ❌ Verify не подтвердил результат: {ver_msg}")
                 return ActionResult(
@@ -258,6 +274,11 @@ class BaseActionExecutor(ABC):
                     error=ver_msg,
                     log=log,
                     payload=exec_res.payload,
+                    failure_kind=(
+                        "verified_failure" if verified_failure else "infrastructure"
+                    ),
+                    failure_code=failure_code or "verification_failed",
+                    verified_failure=verified_failure,
                 )
 
             log.append(f"[{time.strftime('%X')}] 🟢 Операция успешно завершена и проверена.")
@@ -276,6 +297,8 @@ class BaseActionExecutor(ABC):
                 message=f"Ошибка выполнения: {e}",
                 error=str(e),
                 log=log,
+                failure_kind="infrastructure",
+                failure_code="executor_exception",
             )
         finally:
             await self.release_host_lock(target_pc, owner_token)

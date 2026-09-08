@@ -23,6 +23,15 @@ class ActionDefinition(BaseModel):
         PolicyMode.CONFIRM, description="Политика исполнения по умолчанию"
     )
     target_type: str = Field(..., description="Тип целевого объекта: host | user | ticket | system")
+    executor: str = Field(
+        ...,
+        description="Исполнитель действия: windows | backend",
+    )
+    risk_level: int = Field(1, ge=0, le=3, description="Уровень риска R0-R3")
+    implemented: bool = Field(
+        True,
+        description="Есть ли в выбранном исполнителе проверенная реализация действия",
+    )
     parameters_schema: dict[str, Any] = Field(
         default_factory=dict, description="JSON-схема валидации входных параметров"
     )
@@ -54,6 +63,8 @@ class ActionRegistry:
                 description="Удаленная установка сетевого или USB-принтера через WinRM/WMI.",
                 default_mode=PolicyMode.CONFIRM,
                 target_type="host",
+                executor="windows",
+                risk_level=1,
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -75,6 +86,8 @@ class ActionRegistry:
                 description="Добавление доменной учетной записи в группу безопасности WLAN-WORKNET.",
                 default_mode=PolicyMode.CONFIRM,
                 target_type="user",
+                executor="windows",
+                risk_level=2,
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -94,6 +107,8 @@ class ActionRegistry:
                 description="Проверка доступности ПК (Ping, DNS, порты SMB:445, WinRM:5985, WMI:135).",
                 default_mode=PolicyMode.AUTO,
                 target_type="host",
+                executor="windows",
+                risk_level=0,
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -113,15 +128,22 @@ class ActionRegistry:
                 description="Автоматизированное создание учетной записи сотрудника в домене.",
                 default_mode=PolicyMode.CONFIRM,
                 target_type="user",
+                executor="windows",
+                risk_level=2,
+                implemented=True,
                 parameters_schema={
                     "type": "object",
                     "properties": {
-                        "username": {"type": "string"},
-                        "first_name": {"type": "string"},
-                        "last_name": {"type": "string"},
+                        "surname": {"type": "string"},
+                        "name": {"type": "string"},
+                        "patronymic": {"type": "string"},
+                        "company": {"type": "string"},
                         "department": {"type": "string"},
+                        "title": {"type": "string"},
+                        "phone": {"type": "string"},
+                        "pc_name": {"type": "string"},
                     },
-                    "required": ["username", "first_name", "last_name"],
+                    "required": ["surname", "name", "company", "department", "title"],
                 },
             )
         )
@@ -135,6 +157,9 @@ class ActionRegistry:
                 description="Генерация временного пароля и установка флага обязательной смены.",
                 default_mode=PolicyMode.CONFIRM,
                 target_type="user",
+                executor="windows",
+                risk_level=2,
+                implemented=False,
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -152,8 +177,11 @@ class ActionRegistry:
                 name="Применение решения триажа",
                 category="triage",
                 description="Атомарный перевод заявки в целевой статус со списанием трудозатрат.",
-                default_mode=PolicyMode.AUTO,
+                # Изменяет статус и комментарий в заявке: только через HITL.
+                default_mode=PolicyMode.CONFIRM,
                 target_type="ticket",
+                executor="backend",
+                risk_level=1,
                 parameters_schema={
                     "type": "object",
                     "properties": {
@@ -176,6 +204,8 @@ class ActionRegistry:
                 description="Выгрузка закрытых заявок из IntraService и индексация в pgvector.",
                 default_mode=PolicyMode.AUTO,
                 target_type="system",
+                executor="backend",
+                risk_level=0,
                 parameters_schema={
                     "type": "object",
                     "properties": {

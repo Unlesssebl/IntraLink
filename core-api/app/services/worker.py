@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
 from app.config import settings
@@ -14,6 +15,7 @@ from app.database.db import AsyncSessionLocal, User
 from app.utils.json_utils import json_dumps, json_loads
 from app.services.intraservice import (
     get_task_lifetime,
+    get_single_task,
     get_tasks,
     parse_api_date,
     get_tasks_by_status,
@@ -42,6 +44,16 @@ def reset_backoff_interval() -> None:
     """Сбрасывает счетчик ошибок API."""
     global _consecutive_api_errors
     _consecutive_api_errors = 0
+
+
+def get_effective_polling_interval() -> int:
+    """Текущий интервал poller с учетом уже зарегистрированных ошибок API."""
+    if _consecutive_api_errors <= 0:
+        return settings.POLLING_INTERVAL
+    return min(
+        settings.POLLING_INTERVAL * (2 ** min(_consecutive_api_errors - 1, 4)),
+        300,
+    )
 
 
 class VirtualServiceUser:
@@ -443,6 +455,130 @@ async def process_user(
                     )
 
 
+
+async def process_autonomous_lifecycle(service_auth_b64: str) -> None:
+    """Persist newly observed assistant assignments without executing legacy FSM steps."""
+    from app.database.db import AsyncSessionLocal
+    from app.services.vault import get_service_account_user_id
+
+    async with AsyncSessionLocal() as identity_db:
+        assistant_user_id = await get_service_account_user_id(identity_db)
+    if not assistant_user_id:
+        return
+    try:
+        status_ids_str = (
+            f"{settings.STATUS_OPEN_ID},"
+            f"{settings.STATUS_IN_PROGRESS_ID},"
+            f"{settings.STATUS_WAITING_ID}"
+        )
+        response = await get_tasks(
+            service_auth_b64,
+            {
+                "ExecutorId": assistant_user_id,
+                "StatusIds": status_ids_str,
+                "pagesize": 100,
+                "include": "executorids,status,customfields",
+            },
+        )
+        if isinstance(response, dict):
+            tasks = response.get("Tasks", [])
+        elif isinstance(response, list):
+            tasks = response
+        else:
+            tasks = []
+
+        from app.services.ticket_runs import register_observed_assignments
+
+        registrations = await register_observed_assignments(
+            tasks=tasks,
+            assistant_user_id=assistant_user_id,
+            open_status_id=settings.STATUS_OPEN_ID,
+        )
+        created = sum(1 for item in registrations if item.created)
+        if created:
+            logger.info("Зарегистрировано новых циклов автопилота: %d", created)
+
+        from app.services.ticket_run_runner import TicketRunRunner
+        from app.services.ticket_runs import TicketRunService, task_executor_ids
+
+        observed = {
+            int(task.get("Id") or 0): task
+            for task in tasks
+            if int(task.get("Id") or 0) > 0
+        }
+        semaphore = asyncio.Semaphore(settings.AUTOPILOT_MAX_CONCURRENCY)
+
+        async def reconcile_run(run) -> None:
+            async with semaphore:
+                try:
+                    task = observed.get(run.task_id)
+                    if task is None:
+                        task = await get_single_task(service_auth_b64, run.task_id)
+                    if not isinstance(task, dict):
+                        return
+                    current_status = int(task.get("StatusId") or 0)
+                    async with AsyncSessionLocal() as db:
+                        run_service = TicketRunService(db)
+                        if current_status in {
+                            settings.STATUS_COMPLETED_ID,
+                            settings.STATUS_CANCELLED_ID,
+                            settings.STATUS_CLOSED_ID,
+                        }:
+                            await run_service.finish_external(
+                                run_id=run.id,
+                                actor="poller",
+                                status_id=current_status,
+                            )
+                            return
+                        if (
+                            run.mode == "autopilot"
+                            and assistant_user_id not in task_executor_ids(task)
+                        ):
+                            await run_service.pause_automatic(
+                                run_id=run.id,
+                                actor="poller",
+                                reason="assistant_removed",
+                            )
+                            return
+                        if run.mode != "autopilot" or run.state not in {
+                            "running",
+                            "waiting_answer",
+                            "waiting_approval",
+                        }:
+                            return
+                        comments = None
+                        if run.state == "waiting_answer":
+                            comments = await get_task_comments(
+                                service_auth_b64, run.task_id
+                            )
+                        await TicketRunRunner(db).advance(
+                            run_id=run.id,
+                            task=task,
+                            comments=comments if isinstance(comments, list) else [],
+                            service_auth_b64=service_auth_b64,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Ошибка сверки цикла %s для заявки %s", run.id, run.task_id
+                    )
+
+        after_id = None
+        while True:
+            async with AsyncSessionLocal() as db:
+                active_runs = await TicketRunService(db).list_active(
+                    limit=settings.AUTOPILOT_POLL_BATCH_SIZE,
+                    after_id=after_id,
+                )
+            if not active_runs:
+                break
+            after_id = active_runs[-1].id
+            await asyncio.gather(*(reconcile_run(run) for run in active_runs))
+            if len(active_runs) < settings.AUTOPILOT_POLL_BATCH_SIZE:
+                break
+    except Exception as exc:
+        logger.exception("Ошибка регистрации назначений автопилота: %s", exc)
+
+
 async def check_waiting_printer_tasks(
     service_auth_b64: str,
     redis,
@@ -545,16 +681,11 @@ async def check_waiting_printer_tasks(
         editor_id = last_comment_event.get("EditorId")
         editor_name = last_comment_event.get("Editor") or ""
 
+        from app.services.vault import get_service_account_user_id
+
+        service_user_id = await get_service_account_user_id(redis_client=redis)
         is_service_comment = False
-        if (
-            settings.INTRASERVICE_SERVICE_USER_ID
-            and editor_id == settings.INTRASERVICE_SERVICE_USER_ID
-        ):
-            is_service_comment = True
-        elif (
-            settings.INTRASERVICE_SERVICE_LOGIN
-            and settings.INTRASERVICE_SERVICE_LOGIN.lower() in editor_name.lower()
-        ):
+        if service_user_id and editor_id == service_user_id:
             is_service_comment = True
 
         if is_service_comment:
@@ -624,17 +755,7 @@ async def sync_service_catalog() -> None:
     logger.info("Синхронизация каталога услуг...")
     redis = get_redis_client()
 
-    # Получаем учетные данные сервисного аккаунта
-    import base64
-    from app.services.crypto import encrypt_token
-
-    raw_auth = None
-    if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
-        auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
-        plain_b64 = base64.b64encode(auth_str.encode()).decode()
-        raw_auth = encrypt_token(plain_b64)
-    else:
-        raw_auth = await redis.get("worker:service_auth_b64")
+    raw_auth = await redis.get("worker:service_auth_b64")
 
     if not raw_auth:
         logger.warning(
@@ -642,10 +763,10 @@ async def sync_service_catalog() -> None:
         )
         return
 
-    if isinstance(raw_auth, bytes):
-        service_auth_b64: str = raw_auth.decode()
-    else:
-        service_auth_b64: str = raw_auth
+    from app.services.crypto import decrypt_token
+
+    encrypted_auth = raw_auth.decode() if isinstance(raw_auth, bytes) else str(raw_auth)
+    service_auth_b64 = decrypt_token(encrypted_auth)
 
     try:
         services = await get_services(service_auth_b64)
@@ -711,34 +832,21 @@ async def check_updates():
     Использует выделенный сервисный аккаунт IntraService или учетные данные,
     сохраненные при авторизации в веб-панели.
     """
-    # Импорты внутри для избежания циклических зависимостей
-    import base64
-    from app.services.crypto import encrypt_token
-
     redis = get_redis_client()
 
-    # Сначала пытаемся взять данные из настроек (переменных окружения)
-    raw_auth = None
-    if settings.INTRASERVICE_SERVICE_LOGIN and settings.INTRASERVICE_SERVICE_PASSWORD:
-        auth_str = f"{settings.INTRASERVICE_SERVICE_LOGIN}:{settings.INTRASERVICE_SERVICE_PASSWORD}"
-        plain_b64 = base64.b64encode(auth_str.encode()).decode()
-        raw_auth = encrypt_token(plain_b64)
-    else:
-        # Пытаемся получить сохраненные учетные данные администратора из Redis
-        raw_auth = await redis.get("worker:service_auth_b64")
+    raw_auth = await redis.get("worker:service_auth_b64")
 
     if not raw_auth:
         logger.warning(
             "Сервисный аккаунт IntraService не настроен! "
-            "Пожалуйста, авторизуйтесь в веб-панели или задайте "
-            "INTRASERVICE_SERVICE_LOGIN и INTRASERVICE_SERVICE_PASSWORD в .env."
+            "Сохраните и проверьте его в административной Web-панели."
         )
         return
 
-    if isinstance(raw_auth, bytes):
-        service_auth_b64: str = raw_auth.decode()
-    else:
-        service_auth_b64: str = raw_auth
+    from app.services.crypto import decrypt_token
+
+    encrypted_auth = raw_auth.decode() if isinstance(raw_auth, bytes) else str(raw_auth)
+    service_auth_b64 = decrypt_token(encrypted_auth)
 
     base_web_url = settings.INTRASERVICE_URL.replace("/api/", "")
 
@@ -785,8 +893,12 @@ async def check_updates():
                 str(u.is_user_id): u for u in users if u.is_user_id
             }
 
+            from app.services.vault import get_raw_setting, get_service_account_user_id, KEY_SERVICE_ACCOUNT
+
             service_user = None
-            if settings.INTRASERVICE_SERVICE_USER_ID:
+            service_user_id = await get_service_account_user_id(db, redis_client=redis)
+            if service_user_id:
+                service_config = await get_raw_setting(db, KEY_SERVICE_ACCOUNT) or {}
                 service_last_task_id_str = await redis.get(
                     "worker:service_last_task_id"
                 )
@@ -798,11 +910,11 @@ async def check_updates():
                     service_last_task_id = 0
 
                 service_user = VirtualServiceUser(
-                    is_user_id=settings.INTRASERVICE_SERVICE_USER_ID,
-                    is_login=settings.INTRASERVICE_SERVICE_LOGIN or "service",
+                    is_user_id=service_user_id,
+                    is_login=str(service_config.get("login") or "service"),
                     last_task_id=service_last_task_id,
                 )
-                users_by_is_id[str(settings.INTRASERVICE_SERVICE_USER_ID)] = (
+                users_by_is_id[str(service_user_id)] = (
                     service_user
                 )
 
@@ -908,14 +1020,13 @@ async def check_updates():
             # Сохраняем измененные last_task_id пользователей в БД
             await db.commit()
 
-            # Проверяем зависшие принтерные задачи
+            # Регистрация назначений в устойчивом PostgreSQL-цикле. Старый Redis FSM
+            # здесь не запускается, чтобы одна заявка не обрабатывалась двумя механизмами.
             try:
-                await check_waiting_printer_tasks(
-                    service_auth_b64, redis, semaphore, users_by_is_id
-                )
-            except Exception as e_waiting:
+                await process_autonomous_lifecycle(service_auth_b64)
+            except Exception as e_lifecycle:
                 logger.exception(
-                    "Ошибка при обработке зависших принтерных задач: %s", e_waiting
+                    "Ошибка в автономном оркестраторе жизненного цикла: %s", e_lifecycle
                 )
 
             # Сохраняем last_task_id сервисного аккаунта в Redis
@@ -976,6 +1087,18 @@ async def start_worker():
         "interval",
         days=1,
         id="sync_service_catalog_job",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Ежедневный ночной аудит базы знаний RAG в 19:00
+    from app.services.rag import run_nightly_deep_audit_kb
+
+    scheduler.add_job(
+        run_nightly_deep_audit_kb,
+        CronTrigger(hour=19, minute=0, timezone="Europe/Moscow"),
+        id="nightly_rag_deep_audit_job",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

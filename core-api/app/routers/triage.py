@@ -6,26 +6,22 @@
 import json
 import logging
 import time
-from typing import Any
+import uuid
+from typing import Any, Literal
 import jwt
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.db import get_db
+from app.database.db import DecisionRecord, DecisionStep, TicketRun, get_db
 from app.routers.deps import (
-    OperatorContext,
-    get_operator_context,
     get_service_auth_b64,
-    verify_admin_or_api_key,
+    principal_subject,
+    require_permission,
 )
 from app.services import intraservice
-from app.services.ai_synthesis import synthesize_triage_resolution
-from app.services.host_telemetry import (
-    get_task_telemetry,
-    prefetch_task_telemetry,
-)
 from app.services.rag import (
     index_task_knowledge,
     search_knowledge_base,
@@ -36,25 +32,32 @@ from app.services.safety import (
     DeadMansSwitchError,
     enforce_triage_apply_rate_limit,
 )
-from app.services.template_engine import (
-    auto_detect_template,
-    detect_service_redirect,
-    load_templates,
-)
+from app.services.template_engine import load_templates
 from app.services.triage_service import TriageService
 from app.services.triage_session import TriageSessionManager
 from app.services.worker import get_redis_client
+from app.services.ai_suggestions import build_suggestion_state, invalidate_suggestion
+from app.services.decision_journal import (
+    DecisionJournalService,
+    serialize_decision,
+    ticket_snapshot_fingerprint,
+)
 
 logger = logging.getLogger("core_api.routers.triage")
 
 router = APIRouter(
     prefix="/api/v1/triage",
     tags=["Unified Triage Hub"],
-    dependencies=[Depends(verify_admin_or_api_key)],
+    dependencies=[Depends(require_permission("triage:read"))],
 )
 
 # Экспорт для обратной совместимости с тестами
 get_skipped_task_ids = TriageSessionManager.get_skipped_task_ids
+from app.services.host_telemetry import (  # noqa: F401
+    get_task_telemetry,
+    prefetch_task_telemetry,
+)
+from app.services.ai_synthesis import synthesize_triage_resolution  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -66,8 +69,11 @@ class ApplyTriageRequest(BaseModel):
     task_ids: list[int] = Field(
         ..., description="Список ID заявок для применения решения"
     )
-    status_id: int = Field(..., description="Целевой ID статуса")
+    status_id: Literal[27, 29, 30, 35, 48] = Field(
+        ..., description="Разрешенный целевой ID статуса"
+    )
     comment: str = Field("", description="Текст комментария заявителю")
+    is_private: bool = Field(False, description="Внутренний комментарий")
     expenses: int = Field(0, description="Списание трудозатрат в минутах")
     executor_ids: str = Field(
         settings.DEFAULT_EXECUTOR_IDS,
@@ -78,6 +84,15 @@ class ApplyTriageRequest(BaseModel):
         False,
         description="Явное подтверждение оператора для обхода аварийного лимита (Dead Man's Switch)",
     )
+    verified_execution_job_id: str | None = Field(
+        None,
+        description=(
+            "ID успешно завершенной команды Execution Worker. Обязателен для "
+            "финализации заявок, требующих инфраструктурного действия."
+        ),
+    )
+    decision_id: str | None = Field(None, description="ID зафиксированного решения")
+    decision_version: int | None = Field(None, description="Версия зафиксированного решения")
 
 
 class SkipSessionRequest(BaseModel):
@@ -90,8 +105,10 @@ class SkipSessionRequest(BaseModel):
 
 class RAGSearchRequest(BaseModel):
     query: str = Field(..., description="Текст поискового запроса")
-    limit: int = Field(3, description="Лимит совпадений")
-    threshold: float = Field(0.70, description="Порог косинусного расстояния")
+    limit: int = Field(3, ge=1, le=20, description="Лимит совпадений")
+    profile: Literal["precise", "balanced", "broad"] = Field(
+        "balanced", description="Версионируемый профиль качества поиска"
+    )
 
 
 class RAGIndexRequest(BaseModel):
@@ -115,6 +132,54 @@ class RAGSyncRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+async def attach_durable_decision(
+    *,
+    card: dict[str, Any],
+    task_id: int,
+    db: AsyncSession,
+    actor: str,
+    force: bool = False,
+) -> None:
+    suggestion = card.get("ai_suggestion") or {}
+    record = await DecisionJournalService(db).record_triage(
+        task_id=task_id,
+        task=card.get("task") or {},
+        history=card.get("history") or [],
+        decision=card.get("suggested_action"),
+        kb_matches=card.get("kb_matches") or [],
+        ai_text=card.get("ai_suggested_resolution"),
+            ai_metadata=card.get("ai_metadata") or {
+                "model": None,
+                "backend": None,
+                "circuit": card.get("circuit"),
+                "input_tokens": None,
+                "output_tokens": None,
+            },
+        policy=(card.get("suggested_action") or {}).get("_resolution_policy")
+        or suggestion.get("policy")
+        or {},
+        actor=actor,
+        force=force,
+    )
+    steps = list(
+        (
+            await db.scalars(
+                select(DecisionStep)
+                .where(DecisionStep.decision_id == record.id)
+                .order_by(DecisionStep.sequence)
+            )
+        ).all()
+    )
+    card["decision"] = serialize_decision(record, steps=steps)
+    card["sources"] = record.source_json
+    card["readiness"] = {
+        "ready": bool(record.proposal_json.get("ready")),
+        "missing_data": record.completeness_json.get("missing_data", []),
+        "blocked_reasons": record.completeness_json.get("blocked_reasons", []),
+        "stale": suggestion.get("state") == "stale",
+    }
+
+
 @router.get("/batch", status_code=status.HTTP_200_OK)
 async def get_triage_batch(
     filter_id: int = Query(984, description="ID фильтра очереди 1-й линии"),
@@ -134,7 +199,7 @@ async def get_triage_batch(
         False, description="Выполнять семантический RAG-поиск по прецедентам для всей пачки"
     ),
     service_auth_b64: str = Depends(get_service_auth_b64),
-    username: str = Depends(verify_admin_or_api_key),
+    username: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """Возвращает подготовленную пачку заявок с авто-рекомендациями и телеметрией 0ms."""
@@ -166,6 +231,7 @@ async def get_triage_batch(
 async def get_task_details_card(
     task_id: int,
     service_auth_b64: str = Depends(get_service_auth_b64),
+    operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """Возвращает расширенную карточку задачи с историей, RAG и AI-синтезом решения."""
@@ -179,14 +245,24 @@ async def get_task_details_card(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Заявка #{task_id} не найдена в IntraService.",
         )
+    card["ai_suggestion"] = await build_suggestion_state(
+        redis_client=get_redis_client(),
+        task_id=task_id,
+        task=card.get("task") or {},
+        history=card.get("history"),
+        decision=card.get("suggested_action"),
+    )
+    await attach_durable_decision(
+        card=card, task_id=task_id, db=db, actor=operator
+    )
     return card
 
 
-@router.post("/tasks/{task_id}/reanalyze", status_code=status.HTTP_200_OK)
+@router.post("/tasks/{task_id}/reanalyze", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def reanalyze_task_endpoint(
     task_id: int,
     service_auth_b64: str = Depends(get_service_auth_b64),
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """Принудительно сбрасывает кэш и перезапускает RuleEngine/RAG/LLM анализ по заявке."""
@@ -201,6 +277,17 @@ async def reanalyze_task_endpoint(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Заявка #{task_id} не найдена в IntraService.",
         )
+    card["ai_suggestion"] = await build_suggestion_state(
+        redis_client=get_redis_client(),
+        task_id=task_id,
+        task=card.get("task") or {},
+        history=card.get("history"),
+        decision=card.get("suggested_action"),
+        force_recalculate=True,
+    )
+    await attach_durable_decision(
+        card=card, task_id=task_id, db=db, actor=operator, force=True
+    )
     return card
 
 
@@ -217,7 +304,7 @@ def extract_operator_user_id(
         token = admin_session.strip()
 
     if token:
-        for sec in [settings.ADMIN_JWT_SECRET, settings.JWT_SECRET, "intralink-admin-secret"]:
+        for sec in [settings.JWT_SECRET]:
             if not sec:
                 continue
             try:
@@ -230,7 +317,7 @@ def extract_operator_user_id(
     return None
 
 
-@router.post("/apply", status_code=status.HTTP_200_OK)
+@router.post("/apply", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def apply_triage_action(
     payload: ApplyTriageRequest,
     service_auth_b64: str = Depends(get_service_auth_b64),
@@ -244,6 +331,26 @@ async def apply_triage_action(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Список task_ids не может быть пустым.",
         )
+
+    if not payload.dry_run:
+        active_task_ids = list(
+            (
+                await db.scalars(
+                    select(TicketRun.task_id).where(
+                        TicketRun.task_id.in_(payload.task_ids),
+                        TicketRun.completed_at.is_(None),
+                    )
+                )
+            ).all()
+        )
+        if active_task_ids:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Заявка управляется активным TicketRun; создайте связанную "
+                    f"команду через /api/v2/commands: {sorted(active_task_ids)}"
+                ),
+            )
 
     # Проверка аварийного лимита Dead Man's Switch
     if not payload.dry_run:
@@ -260,6 +367,62 @@ async def apply_triage_action(
             )
 
     op_user_id = extract_operator_user_id(authorization, admin_session)
+    decision_by_task: dict[int, DecisionRecord] = {}
+    if not payload.dry_run:
+        journal = DecisionJournalService(db)
+        if payload.decision_id is not None:
+            if len(payload.task_ids) != 1 or payload.decision_version is None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "decision_version_required_for_single_task",
+                )
+            try:
+                parsed_decision_id = uuid.UUID(payload.decision_id)
+            except ValueError as exc:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_decision_id"
+                ) from exc
+            decision_by_task[payload.task_ids[0]] = await journal.require_current(
+                decision_id=parsed_decision_id,
+                task_id=payload.task_ids[0],
+                version=payload.decision_version,
+            )
+            current_task = await intraservice.get_single_task(
+                service_auth_b64, payload.task_ids[0]
+            )
+            current_history_payload = await intraservice.get_task_lifetime(
+                service_auth_b64, payload.task_ids[0]
+            )
+            current_history = (
+                current_history_payload.get("TaskLifetimes", [])
+                if isinstance(current_history_payload, dict)
+                else (current_history_payload or [])
+            )
+            expected_fingerprint = decision_by_task[payload.task_ids[0]].context_json.get(
+                "ticket_fingerprint"
+            )
+            if (
+                not current_task
+                or expected_fingerprint
+                != ticket_snapshot_fingerprint(current_task, current_history)
+            ):
+                raise HTTPException(status.HTTP_409_CONFLICT, "decision_stale")
+        else:
+            for task_id in payload.task_ids:
+                decision_by_task[task_id] = await journal.record_operational(
+                    task_id=task_id,
+                    ticket_run_id=None,
+                    action="apply_triage",
+                    target={"task_id": task_id},
+                    parameters={
+                        "status_id": payload.status_id,
+                        "comment": payload.comment,
+                        "expenses": payload.expenses,
+                        "executor_ids": payload.executor_ids,
+                    },
+                    actor=str(op_user_id or "operator"),
+                )
+            await db.commit()
     results = await TriageService.apply_triage_resolution(
         service_auth_b64=service_auth_b64,
         db=db,
@@ -270,6 +433,8 @@ async def apply_triage_action(
         executor_ids=payload.executor_ids,
         dry_run=payload.dry_run,
         operator_user_id=op_user_id,
+        verified_execution_job_id=payload.verified_execution_job_id,
+        is_private=payload.is_private,
     )
 
     # Если ни одна задача не была успешно обновлена в IntraService, возвращаем ошибку клиенту
@@ -280,21 +445,49 @@ async def apply_triage_action(
             detail=first_err,
         )
 
-    # Публикуем событие применения триажа в шину событий SSE
-    if not payload.dry_run and results and any(r.get("update_ok", False) for r in results):
-        try:
-            r = get_redis_client()
-            event_payload = {
-                "event": "triage_applied",
-                "task_ids": payload.task_ids,
-                "status_id": payload.status_id,
-                "operator_user_id": op_user_id,
-                "timestamp": time.time(),
-            }
-            await r.publish("events:all", json.dumps(event_payload, ensure_ascii=False))
-        except Exception as ex:
-            logger.debug("Не удалось опубликовать событие triage_applied в Redis: %s", ex)
+    if not payload.dry_run:
+        redis = get_redis_client()
+        for result in results:
+            if result.get("update_ok"):
+                decision = decision_by_task.get(int(result["task_id"]))
+                if decision is not None:
+                    proposal = decision.proposal_json or {}
+                    proposed_parameters = proposal.get("parameters") or proposal
+                    proposed_comment = proposed_parameters.get("comment")
+                    proposed_status = proposed_parameters.get("status_id")
+                    verdict = (
+                        "accepted"
+                        if proposed_comment == payload.comment
+                        and proposed_status == payload.status_id
+                        else "modified"
+                    )
+                    await DecisionJournalService(db).add_feedback(
+                        decision_id=decision.id,
+                        verdict=verdict,
+                        reason_code=None,
+                        comment=None,
+                        final_action={
+                            "status_id": payload.status_id,
+                            "comment": payload.comment,
+                            "expenses": payload.expenses,
+                        },
+                        actor=str(op_user_id or "operator"),
+                    )
+                await invalidate_suggestion(redis, int(result["task_id"]))
 
+        # Публикуем событие применения триажа в шину событий SSE
+        if results and any(r.get("update_ok", False) for r in results):
+            try:
+                event_payload = {
+                    "event": "triage_applied",
+                    "task_ids": payload.task_ids,
+                    "status_id": payload.status_id,
+                    "operator_user_id": op_user_id,
+                    "timestamp": time.time(),
+                }
+                await redis.publish("events:all", json.dumps(event_payload, ensure_ascii=False))
+            except Exception as ex:
+                logger.debug("Не удалось опубликовать событие triage_applied в Redis: %s", ex)
     return {"results": results}
 
 
@@ -318,10 +511,10 @@ async def get_duplicates_in_queue(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/session/skip", status_code=status.HTTP_200_OK)
+@router.post("/session/skip", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def skip_session_tasks(
     payload: SkipSessionRequest,
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
 ):
     """Помечает заявки как пропущенные в текущей смене оператора."""
     op = payload.operator_id or operator
@@ -336,10 +529,10 @@ async def skip_session_tasks(
     }
 
 
-@router.post("/session/reset", status_code=status.HTTP_200_OK)
+@router.post("/session/reset", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def reset_session_tasks(
     operator_id: str | None = Query(None, description="Идентификатор оператора"),
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
 ):
     """Сбрасывает сессионный кэш пропущенных заявок."""
     op = operator_id or operator
@@ -385,22 +578,29 @@ async def get_triage_templates():
 # ---------------------------------------------------------------------------
 
 
-@router.post("/rag/search", status_code=status.HTTP_200_OK)
+@router.post("/rag/search", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("ai:use"))])
 async def rag_search_endpoint(
     payload: RAGSearchRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """Поиск похожих решений в векторной базе PostgreSQL pgvector."""
+    profiles = {
+        "precise": {"distance": 0.35, "rerank": 0.90},
+        "balanced": {"distance": 0.70, "rerank": 0.85},
+        "broad": {"distance": 0.90, "rerank": 0.65},
+    }
+    profile = profiles[payload.profile]
     matches = await search_knowledge_base(
         db=db,
         query_text=payload.query,
         limit=payload.limit,
-        distance_threshold=payload.threshold,
+        distance_threshold=profile["distance"],
+        rerank_threshold=profile["rerank"],
     )
     return {"total": len(matches), "matches": matches}
 
 
-@router.post("/rag/index", status_code=status.HTTP_200_OK)
+@router.post("/rag/index", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def rag_index_endpoint(
     payload: RAGIndexRequest,
     db: AsyncSession = Depends(get_db),
@@ -425,7 +625,7 @@ async def rag_index_endpoint(
     return {"status": "success", "task_id": payload.task_id}
 
 
-@router.post("/rag/sync", status_code=status.HTTP_200_OK)
+@router.post("/rag/sync", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def rag_sync_endpoint(
     payload: RAGSyncRequest,
     service_auth_b64: str = Depends(get_service_auth_b64),
@@ -440,9 +640,9 @@ async def rag_sync_endpoint(
     )
 
 
-@router.post("/cache/purge", status_code=status.HTTP_200_OK)
+@router.post("/cache/purge", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
 async def purge_triage_cache_endpoint(
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
 ):
     """Глобальный сброс кэша вердиктов и резолюций AI/RuleEngine в Redis."""
     redis = get_redis_client()
@@ -464,4 +664,41 @@ async def purge_triage_cache_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка сброса кэша: {e}",
         )
+
+
+@router.get("/feedback-review", status_code=status.HTTP_200_OK)
+async def get_feedback_review_endpoint(
+    limit: int = Query(20, ge=1, le=100, description="Количество записей аудита"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compatibility view backed by the durable decision feedback journal."""
+    from sqlalchemy import desc, select
+    from app.database.db import DecisionFeedback, DecisionRecord
+
+    query = (
+        select(DecisionFeedback, DecisionRecord)
+        .join(DecisionRecord, DecisionRecord.id == DecisionFeedback.decision_id)
+        .order_by(desc(DecisionFeedback.created_at))
+        .limit(limit)
+    )
+    res = await db.execute(query)
+    entries = res.all()
+
+    return {
+        "total": len(entries),
+        "items": [
+            {
+                "id": str(feedback.id),
+                "decision_id": str(decision.id),
+                "task_id": decision.task_id,
+                "verdict": feedback.verdict,
+                "reason_code": feedback.reason_code,
+                "final_action": feedback.final_action_json,
+                "operator_id": feedback.actor,
+                "created_at": feedback.created_at.isoformat() if feedback.created_at else None,
+            }
+            for feedback, decision in entries
+        ],
+    }
+
 

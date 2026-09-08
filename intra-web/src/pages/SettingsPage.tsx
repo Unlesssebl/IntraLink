@@ -3,12 +3,19 @@ import {
   fetchSystemStatus,
   fetchDomainAuth,
   fetchTelegramUsers,
-  addTelegramUser,
   toggleTelegramUser,
   deleteTelegramUser,
   restartWorkerService,
 } from '../lib/tasks';
 import { IconSun, IconMoon } from '../components/Icons';
+import { apiFetch } from '../lib/api';
+import {
+  fetchAutopilotSetting,
+  saveAutopilotScenario,
+  updateAutopilotSetting,
+  type AutopilotSetting,
+} from '../lib/ticketRuns';
+import { useAuth } from '../lib/auth';
 
 interface Props {
   theme: 'light' | 'dark';
@@ -17,10 +24,18 @@ interface Props {
 }
 
 export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
+  const { user } = useAuth();
+  const canManageAutopilot = Boolean(
+    user?.permissions?.includes('autopilot:manage') || user?.permissions?.includes('*'),
+  );
   // System status state
   const [systemStatus, setSystemStatus] = useState<any>(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [restartingWorker, setRestartingWorker] = useState(false);
+  const [autopilot, setAutopilot] = useState<AutopilotSetting | null>(null);
+  const [savingAutopilot, setSavingAutopilot] = useState(false);
+  const [scenarioServiceId, setScenarioServiceId] = useState('');
+  const [savingScenario, setSavingScenario] = useState(false);
 
   // Domain auth state
   const [domainAuth, setDomainAuth] = useState<{ is_configured: boolean; username: string | null }>({
@@ -31,10 +46,8 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
   // Telegram users state
   const [tgUsers, setTgUsers] = useState<Array<{ tg_user_id: number; username?: string; full_name?: string; is_active: boolean }>>([]);
   const [loadingTgUsers, setLoadingTgUsers] = useState(false);
-  const [newTgId, setNewTgId] = useState('');
-  const [newTgName, setNewTgName] = useState('');
-  const [newTgUsername, setNewTgUsername] = useState('');
-  const [addingTgUser, setAddingTgUser] = useState(false);
+  const [telegramLinkCode, setTelegramLinkCode] = useState<string | null>(null);
+  const [creatingLinkCode, setCreatingLinkCode] = useState(false);
 
   // UI preferences state
   const [tableDensity, setTableDensity] = useState<'compact' | 'normal' | 'comfortable'>(() => {
@@ -49,10 +62,11 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
     setLoadingStatus(true);
     setLoadingTgUsers(true);
     try {
-      const [sys, dom, usersRes] = await Promise.allSettled([
+      const [sys, dom, usersRes, autopilotRes] = await Promise.allSettled([
         fetchSystemStatus(),
         fetchDomainAuth(),
         fetchTelegramUsers(),
+        fetchAutopilotSetting(),
       ]);
 
       if (sys.status === 'fulfilled') setSystemStatus(sys.value);
@@ -62,6 +76,7 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
       if (usersRes.status === 'fulfilled' && usersRes.value.users) {
         setTgUsers(usersRes.value.users);
       }
+      if (autopilotRes.status === 'fulfilled') setAutopilot(autopilotRes.value);
     } catch (err: any) {
       console.error('Ошибка загрузки настроек:', err);
     } finally {
@@ -73,35 +88,6 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
-
-  // Handle Telegram user add
-  const handleAddTgUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const tgId = parseInt(newTgId.trim(), 10);
-    if (isNaN(tgId) || tgId <= 0) {
-      onToast({ type: 'warning', message: 'Введите корректный числовой Telegram ID' });
-      return;
-    }
-
-    setAddingTgUser(true);
-    try {
-      await addTelegramUser({
-        tg_user_id: tgId,
-        username: newTgUsername.trim() || undefined,
-        full_name: newTgName.trim() || undefined,
-      });
-      onToast({ type: 'success', message: `Пользователь ID ${tgId} добавлен в список доступа бота` });
-      setNewTgId('');
-      setNewTgName('');
-      setNewTgUsername('');
-      const updated = await fetchTelegramUsers();
-      if (updated && updated.users) setTgUsers(updated.users);
-    } catch (err: any) {
-      onToast({ type: 'error', message: `Ошибка добавления пользователя: ${err.message || err}` });
-    } finally {
-      setAddingTgUser(false);
-    }
-  };
 
   // Handle Telegram user toggle
   const handleToggleTgUser = async (tgUserId: number) => {
@@ -131,6 +117,20 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
     }
   };
 
+  const handleCreateTelegramLinkCode = async () => {
+    setCreatingLinkCode(true);
+    try {
+      const data = await apiFetch<{ code: string }>('/api/v2/identities/telegram/link-code', { method: 'POST' });
+      setTelegramLinkCode(data.code);
+      await navigator.clipboard?.writeText(data.code).catch(() => undefined);
+      onToast({ type: 'success', message: 'Код создан и скопирован. Он действует 10 минут.' });
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Не удалось создать код: ${err.message || err}` });
+    } finally {
+      setCreatingLinkCode(false);
+    }
+  };
+
   // Handle Worker restart
   const handleRestartWorker = async () => {
     setRestartingWorker(true);
@@ -142,6 +142,67 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
       onToast({ type: 'error', message: `Ошибка перезапуска воркера: ${err.message || err}` });
     } finally {
       setRestartingWorker(false);
+    }
+  };
+
+  const handleToggleAutopilot = async () => {
+    if (!autopilot || savingAutopilot) return;
+    setSavingAutopilot(true);
+    try {
+      const enabled = !autopilot.enabled;
+      const updated = await updateAutopilotSetting(
+        enabled,
+        autopilot.version,
+        enabled ? 'Включено администратором из Web UI' : 'Выключено администратором из Web UI',
+      );
+      setAutopilot(updated);
+      onToast({
+        type: enabled ? 'success' : 'warning',
+        message: enabled ? 'Автопилот включён' : 'Автопилот выключен; автоматические циклы приостановлены',
+      });
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Не удалось изменить автопилот: ${err.message || err}` });
+      await loadAll();
+    } finally {
+      setSavingAutopilot(false);
+    }
+  };
+
+  const handleAddScenario = async () => {
+    if (!autopilot || !scenarioServiceId.trim()) return;
+    setSavingScenario(true);
+    try {
+      await saveAutopilotScenario({
+        service_id: Number(scenarioServiceId),
+        scenario_key: 'printer_installation',
+        enabled: true,
+        config: {},
+      });
+      setScenarioServiceId('');
+      await loadAll();
+      onToast({ type: 'success', message: 'Сервис добавлен в область автопилота' });
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Не удалось сохранить сценарий: ${err.message || err}` });
+    } finally {
+      setSavingScenario(false);
+    }
+  };
+
+  const handleToggleScenario = async (serviceId: number, enabled: boolean, version: number, config: Record<string, unknown>) => {
+    setSavingScenario(true);
+    try {
+      await saveAutopilotScenario({
+        service_id: serviceId,
+        scenario_key: 'printer_installation',
+        enabled,
+        config,
+        expected_version: version,
+      });
+      await loadAll();
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Не удалось изменить сценарий: ${err.message || err}` });
+    } finally {
+      setSavingScenario(false);
     }
   };
 
@@ -181,6 +242,76 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-4">
+          <div className="flex items-start justify-between gap-4 border-b border-neutral-100 pb-3 dark:border-neutral-800">
+            <div>
+              <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Автопилот заявок</h2>
+              <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                Цикл запускается только для настроенного сервиса после назначения проверенной сервисной учётной записи.
+              </p>
+            </div>
+            <span className={`rounded px-2 py-1 text-[11px] font-semibold ${autopilot?.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}>
+              {autopilot?.enabled ? 'Включён' : 'Выключен'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+              {autopilot ? `Версия ${autopilot.version} · ${autopilot.updated_by}` : 'Настройка недоступна'}
+              {autopilot && !autopilot.templates_ready && (
+                <div className="mt-1 text-amber-600 dark:text-amber-300">
+                  Не настроены шаблоны: {autopilot.missing_templates.join(', ')}
+                </div>
+              )}
+              {autopilot && !autopilot.service_identity_ready && (
+                <div className="mt-1 text-amber-600 dark:text-amber-300">Сервисная учётная запись не проверена</div>
+              )}
+              {autopilot?.service_user_id && (
+                <div className="mt-1 font-mono">IntraService user ID: {autopilot.service_user_id}</div>
+              )}
+            </div>
+            <button
+              type="button"
+              disabled={!canManageAutopilot || !autopilot || savingAutopilot || (!autopilot.enabled && (!autopilot.templates_ready || !autopilot.service_identity_ready || autopilot.scenarios.filter(item => item.enabled).length === 0))}
+              onClick={handleToggleAutopilot}
+              title={canManageAutopilot ? undefined : 'Требуется право autopilot:manage'}
+              className={`rounded px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 ${autopilot?.enabled ? 'bg-rose-600 hover:bg-rose-500' : 'bg-blue-600 hover:bg-blue-500'}`}
+            >
+              {savingAutopilot ? 'Сохранение…' : autopilot?.enabled ? 'Выключить' : 'Включить'}
+            </button>
+          </div>
+          <div className="space-y-2 border-t border-neutral-100 pt-3 dark:border-neutral-800">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs font-medium text-neutral-800 dark:text-neutral-200">Поддерживаемые сервисы</div>
+                <div className="text-[11px] text-neutral-500">Сценарий: установка принтера</div>
+              </div>
+              <span className="text-[11px] text-neutral-500">{autopilot?.scenarios.filter(item => item.enabled).length || 0} включено</span>
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="number"
+                min={1}
+                value={scenarioServiceId}
+                onChange={event => setScenarioServiceId(event.target.value)}
+                placeholder="ID сервиса IntraService"
+                className="min-w-0 flex-1 rounded border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-900 outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+              />
+              <button type="button" onClick={handleAddScenario} disabled={!canManageAutopilot || savingScenario || !scenarioServiceId.trim()} className="rounded bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900">Добавить</button>
+            </div>
+            {autopilot?.scenarios.map(item => (
+              <div key={item.id} className="flex items-center justify-between rounded border border-neutral-200/80 px-2.5 py-2 text-xs dark:border-neutral-800">
+                <div>
+                  <span className="font-mono font-semibold">#{item.service_id}</span>
+                  <span className="ml-2 text-neutral-500">Установка принтера</span>
+                </div>
+                <button type="button" disabled={!canManageAutopilot || savingScenario} onClick={() => handleToggleScenario(item.service_id, !item.enabled, item.version, item.config)} className={`rounded px-2 py-1 text-[11px] font-semibold ${item.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}>
+                  {item.enabled ? 'Включён' : 'Выключен'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
         {/* Card 1: System Integrations Health */}
         <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg p-5 space-y-4">
           <div className="flex items-center justify-between border-b border-neutral-100 dark:border-neutral-800 pb-3">
@@ -294,37 +425,29 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
           <span className="text-xs font-mono text-neutral-500">{tgUsers.length} операторов</span>
         </div>
 
-        {/* Add User Form */}
-        <form onSubmit={handleAddTgUser} className="grid grid-cols-1 sm:grid-cols-4 gap-2 bg-neutral-50 dark:bg-neutral-850 p-3 rounded-md border border-neutral-200 dark:border-neutral-750">
-          <input
-            type="number"
-            value={newTgId}
-            onChange={e => setNewTgId(e.target.value)}
-            placeholder="Telegram ID *"
-            className="px-2.5 py-1.5 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded text-xs focus:outline-none focus:border-blue-500"
-          />
-          <input
-            type="text"
-            value={newTgName}
-            onChange={e => setNewTgName(e.target.value)}
-            placeholder="ФИО / Имя"
-            className="px-2.5 py-1.5 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded text-xs focus:outline-none focus:border-blue-500"
-          />
-          <input
-            type="text"
-            value={newTgUsername}
-            onChange={e => setNewTgUsername(e.target.value)}
-            placeholder="@username"
-            className="px-2.5 py-1.5 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded text-xs focus:outline-none focus:border-blue-500"
-          />
-          <button
-            type="submit"
-            disabled={addingTgUser}
-            className="py-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded text-xs transition-colors cursor-pointer"
-          >
-            {addingTgUser ? 'Добавление...' : 'Добавить доступ'}
-          </button>
-        </form>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-md border border-blue-200 dark:border-blue-900 bg-blue-50/70 dark:bg-blue-950/20 p-3">
+          <div>
+            <div className="text-xs font-medium text-neutral-900 dark:text-neutral-100">Привязать мой Telegram</div>
+            <div className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-0.5">
+              Создайте код и отправьте его боту после команды /login. Код одноразовый и действует 10 минут.
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {telegramLinkCode && (
+              <code className="px-3 py-1.5 rounded bg-white dark:bg-neutral-900 border border-blue-200 dark:border-blue-800 text-sm font-semibold tracking-wide text-blue-700 dark:text-blue-300">
+                {telegramLinkCode}
+              </code>
+            )}
+            <button
+              type="button"
+              onClick={handleCreateTelegramLinkCode}
+              disabled={creatingLinkCode}
+              className="py-1.5 px-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-medium rounded text-xs transition-colors cursor-pointer"
+            >
+              {creatingLinkCode ? 'Создание...' : 'Создать код'}
+            </button>
+          </div>
+        </div>
 
         {/* Users Table */}
         <div className="overflow-x-auto">

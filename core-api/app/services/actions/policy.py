@@ -1,15 +1,28 @@
 """
-Динамический Policy Engine для управления режимами исполнения действий (Auto / Confirm / Disabled).
-Поддерживает оперативный Killswitch и хранение оверрайдов политик в Redis.
+Динамический Policy Engine для управления режимами исполнения действий.
+PostgreSQL является единственным источником политик и killswitch.
 """
 
 import logging
-from app.services.actions.registry import ActionDefinition, PolicyMode, get_action_registry
-from app.services.worker import get_redis_client
+from app.database.db import ActionPolicyRecord, AsyncSessionLocal
+from app.services.actions.registry import PolicyMode, get_action_registry
 
 logger = logging.getLogger("core_api.services.actions.policy")
 
-POLICY_KEY_PREFIX = "policy:action:"
+# Действия, допущенные к автономному выполнению (администратор может включить режим AUTO для любого зарегистрированного действия)
+AUTO_ELIGIBLE_ACTIONS = frozenset({
+    "diagnose_host",
+    "rag_sync",
+    "install_printer",
+    "grant_wlan",
+    "create_user",
+    "reset_password",
+    "apply_triage",
+})
+
+# Retry eligibility is intentionally narrower than autonomous execution.
+# Mutating printer and ticket updates require result reconciliation after failure.
+AUTO_RETRY_ELIGIBLE_ACTIONS = frozenset({"diagnose_host", "rag_sync"})
 
 
 class PolicyEngine:
@@ -23,17 +36,16 @@ class PolicyEngine:
     ) -> PolicyMode:
         """
         Возвращает действующую политику для действия.
-        Приоритет: 1. Оверрайд в Redis -> 2. default_mode в манифесте -> 3. CONFIRM.
+        Приоритет: 1. Оверрайд в PostgreSQL -> 2. default_mode в манифесте.
         """
-        r = redis_client or get_redis_client()
         try:
-            val = await r.get(f"{POLICY_KEY_PREFIX}{action_id}")
-            if val:
-                val_clean = str(val).lower().strip()
-                if val_clean in (m.value for m in PolicyMode):
-                    return PolicyMode(val_clean)
+            async with AsyncSessionLocal() as db:
+                record = await db.get(ActionPolicyRecord, action_id)
+                if record:
+                    return PolicyMode(record.mode)
         except Exception as e:
-            logger.debug("Ошибка чтения политики из Redis для %s: %s", action_id, e)
+            logger.warning("Ошибка чтения политики из PostgreSQL для %s: %s", action_id, e)
+            return PolicyMode.DISABLED
 
         action_def = self.registry.get(action_id)
         if action_def:
@@ -48,10 +60,17 @@ class PolicyEngine:
         actor: str = "admin",
         redis_client=None,
     ) -> None:
-        """Устанавливает динамический оверрайд политики действия в Redis."""
-        r = redis_client or get_redis_client()
-        key = f"{POLICY_KEY_PREFIX}{action_id}"
-        await r.set(key, mode.value)
+        """Устанавливает динамический оверрайд политики действия в PostgreSQL."""
+        if self.registry.get(action_id) is None:
+            raise ValueError(f"Неизвестное действие '{action_id}'.")
+        async with AsyncSessionLocal() as db:
+            record = await db.get(ActionPolicyRecord, action_id)
+            if record is None:
+                db.add(ActionPolicyRecord(action=action_id, mode=mode.value, updated_by=actor))
+            else:
+                record.mode = mode.value
+                record.updated_by = actor
+            await db.commit()
         logger.info(
             "Политика действия '%s' изменена на '%s' оператором %s",
             action_id,
@@ -63,8 +82,11 @@ class PolicyEngine:
         self, action_id: str, redis_client=None
     ) -> None:
         """Сбрасывает оверрайд политики действия к значению по умолчанию из манифеста."""
-        r = redis_client or get_redis_client()
-        await r.delete(f"{POLICY_KEY_PREFIX}{action_id}")
+        async with AsyncSessionLocal() as db:
+            record = await db.get(ActionPolicyRecord, action_id)
+            if record:
+                await db.delete(record)
+                await db.commit()
 
     async def evaluate_execution_mode(
         self,
@@ -77,16 +99,23 @@ class PolicyEngine:
         Returns:
             (effective_mode, is_allowed, reason)
         """
-        r = redis_client or get_redis_client()
+        action_def = self.registry.get(action_id)
+        if action_def is None:
+            return (
+                "disabled",
+                False,
+                f"Неизвестное действие '{action_id}' отсутствует в Action Registry.",
+            )
+
         admin_override = None
         try:
-            val = await r.get(f"{POLICY_KEY_PREFIX}{action_id}")
-            if val:
-                val_clean = str(val).lower().strip()
-                if val_clean in (m.value for m in PolicyMode):
-                    admin_override = PolicyMode(val_clean)
+            async with AsyncSessionLocal() as db:
+                record = await db.get(ActionPolicyRecord, action_id)
+                if record:
+                    admin_override = PolicyMode(record.mode)
         except Exception as e:
-            logger.debug("Ошибка чтения политики из Redis для %s: %s", action_id, e)
+            logger.warning("Ошибка чтения политики из PostgreSQL для %s: %s", action_id, e)
+            return ("disabled", False, "Не удалось проверить политику исполнения.")
 
         # 1. Если администратор установил Killswitch
         if admin_override == PolicyMode.DISABLED:
@@ -104,19 +133,31 @@ class PolicyEngine:
                 "Политика безопасности требует подтверждения оператора (Human-in-the-Loop).",
             )
 
-        # 3. Если администратор разрешил AUTO
+        # 3. Если администратор разрешил автономное выполнение AUTO
         if admin_override == PolicyMode.AUTO:
-            final = requested_mode.lower().strip() if requested_mode else "auto"
-            return (final, True, "Автономное выполнение разрешено администратором.")
+            return ("auto", True, "Автономное выполнение разрешено администратором.")
 
-        # 4. Нет оверрайда администратора: используем запрос клиента или default_mode
-        action_def = self.registry.get(action_id)
-        default_mode = action_def.default_mode.value if action_def else "confirm"
+        # 4. Нормализуем запрос. dry_run не меняет внешнее состояние и разрешён
+        # для любого зарегистрированного действия.
+        requested = (requested_mode or "").lower().strip()
+        if requested == "dry_run":
+            return ("dry_run", True, "Разрешена безопасная симуляция без изменений.")
 
-        if requested_mode and requested_mode.lower().strip() in ("auto", "confirm", "dry_run"):
-            return (requested_mode.lower().strip(), True, "Выполнение разрешено.")
+        # 5. Нет оверрайда администратора: используем статическую границу
+        # реестра. Запрос клиента не может повысить CONFIRM до AUTO.
+        default_mode = action_def.default_mode
 
-        return (default_mode, True, "Использован режим по умолчанию.")
+        if requested == "confirm":
+            return ("confirm", True, "Запрошено подтверждение оператора.")
+
+        if requested == "auto" and default_mode != PolicyMode.AUTO:
+            return (
+                "confirm",
+                True,
+                "Действие требует подтверждения оператора; запрос AUTO понижен до CONFIRM.",
+            )
+
+        return (default_mode.value, True, "Использован режим по умолчанию.")
 
 
 _policy_engine_instance: PolicyEngine | None = None

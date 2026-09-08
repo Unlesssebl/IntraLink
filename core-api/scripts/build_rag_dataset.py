@@ -23,7 +23,7 @@ from sqlalchemy import select
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import settings
-from app.database.db import AsyncSessionLocal, TaskKnowledgeBase, init_db
+from app.database.db import AsyncSessionLocal, TaskKnowledgeBase, verify_schema
 from app.services import intraservice
 from app.services.ai_synthesis import canonize_task_solution
 from app.services.rag import index_task_knowledge
@@ -137,8 +137,8 @@ async def main() -> None:
     limit_tasks = int(os.getenv("LIMIT_TASKS", "50"))
     statuses = [28, 30]  # 28: Закрыта, 30: Отменена
 
-    # Инициализация БД (pgvector) и HTTP сессии IntraService
-    await init_db()
+    # PostgreSQL schema is managed only by Alembic.
+    await verify_schema()
     await intraservice.init_session()
 
     try:

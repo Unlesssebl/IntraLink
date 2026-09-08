@@ -17,13 +17,12 @@ from app.services.ai.schemas import (
     AIAnalysisResult,
     AIHealthResponse,
     DataCircuit,
-    RouteDecision,
     RoutedInferenceRequest,
     RoutedInferenceResponse,
-    SanitizationResult,
     TicketSummaryResult,
 )
 from app.services.worker import get_redis_client
+from app.services.security_audit import record_security_event
 
 logger = logging.getLogger("core_api.ai_hub")
 
@@ -385,6 +384,7 @@ class AIHub:
         system_prompt: Optional[str] = None,
         max_tokens: int = 512,
         temperature: float = 0.0,
+        response_schema: dict[str, Any] | None = None,
     ) -> Optional[str]:
         """Прямой инференс через локальную Ollama (Закрытый контур RED)."""
         if not await self.is_ollama_available():
@@ -406,6 +406,8 @@ class AIHub:
                 "num_predict": max_tokens,
             },
         }
+        if response_schema is not None:
+            payload["format"] = response_schema
 
         async with self._semaphore:
             try:
@@ -426,6 +428,7 @@ class AIHub:
         system_prompt: Optional[str] = None,
         max_tokens: int = 512,
         temperature: float = 0.0,
+        response_schema: dict[str, Any] | None = None,
     ) -> Optional[str]:
         """Инференс строго через LiteLLM Proxy (Открытый контур GREEN/YELLOW с ротацией ключей)."""
         messages = []
@@ -438,12 +441,20 @@ class AIHub:
             "Authorization": f"Bearer {settings.LITELLM_API_KEY}",
             "Content-Type": "application/json",
         }
-        payload = {
+        payload: dict[str, Any] = {
             "model": settings.GEMINI_MODEL,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        if response_schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_response",
+                    "schema": response_schema,
+                },
+            }
 
         try:
             session = await self._get_session()
@@ -478,9 +489,38 @@ class AIHub:
         """
         start_time = time.perf_counter()
 
-        # 1. Проверяем L2 кэш по хэшу промпта
+        # 1. Сначала определяем контур. Кэш нельзя читать до DLP-решения:
+        # одинаковый prompt с force_circuit=RED не должен получить результат,
+        # ранее сгенерированный облачным контуром.
+        try:
+            san_res = data_sanitizer.sanitize(request.prompt)
+            decision = data_sanitizer.evaluate_circuit(
+                prompt=request.prompt,
+                metadata=request.metadata,
+                sanitization_result=san_res,
+            )
+            if decision.circuit not in {
+                DataCircuit.RED,
+                DataCircuit.YELLOW,
+                DataCircuit.GREEN,
+            }:
+                raise ValueError("unknown_data_circuit")
+        except Exception as exc:
+            # Fail closed: a classifier failure must never fall through to cloud.
+            logger.exception("DLP routing failed; cloud inference blocked")
+            await record_security_event(
+                "dlp_routing",
+                "blocked",
+                {"reason_code": type(exc).__name__},
+            )
+            return None
+
+        # 2. Проверяем L2 кэш по хэшу промпта и выбранного контура
         cache_hash = hashlib.sha256(
-            f"{request.prompt}:{request.system_prompt}:{request.temperature}".encode()
+            (
+                f"{request.prompt}:{request.system_prompt}:{request.temperature}:"
+                f"{decision.circuit.value}:{decision.target_backend}:{decision.target_model}"
+            ).encode()
         ).hexdigest()
         cache_key = f"cache:ai:routed:{cache_hash}"
 
@@ -497,14 +537,6 @@ class AIHub:
                     return RoutedInferenceResponse.model_validate(data)
             except Exception as e:
                 logger.debug("Промах кэша для routed AI: %s", e)
-
-        # 2. Выполняем инспекцию и десенсибилизацию
-        san_res = data_sanitizer.sanitize(request.prompt)
-        decision = data_sanitizer.evaluate_circuit(
-            prompt=request.prompt,
-            metadata=request.metadata,
-            sanitization_result=san_res,
-        )
 
         model_name = (
             self.ollama_model

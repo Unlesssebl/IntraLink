@@ -115,6 +115,12 @@ export interface KBExampleItem {
   service_id: number;
   service_name: string;
   status_name: string;
+  root_cause?: string | null;
+  root_id?: string | null;
+  resolution_type?: string | null;
+  resolution_label?: string | null;
+  resolution_badge_color?: string | null;
+  quality_score?: number;
 }
 
 export interface KBExamplesResponse {
@@ -124,11 +130,35 @@ export interface KBExamplesResponse {
   examples: KBExampleItem[];
 }
 
+export interface KBSyncReadiness {
+  ready: boolean;
+  auth_source: 'operator_session' | 'service_account' | 'none';
+  account_name?: string | null;
+  message: string;
+}
+
+export interface KBEmbeddingReadiness {
+  ready: boolean;
+  message: string;
+  model: string;
+  dimension: number;
+}
+
+export interface KBRootServiceItem {
+  root_id: string;
+  root_service_id: number;
+  name: string;
+}
+
 export interface KBStatsResponse {
   total_active_examples: number;
   total_blacklisted_examples: number;
   services_count: number;
   services: Record<string, { total: number; by_status: Record<string, number> }>;
+  sync_readiness?: KBSyncReadiness;
+  embedding_readiness?: KBEmbeddingReadiness;
+  root_services?: KBRootServiceItem[];
+  root_counts?: Record<string, number>;
 }
 
 export interface KBSyncResponse {
@@ -139,6 +169,7 @@ export interface KBSyncResponse {
 
 export async function fetchKbStats(token: string): Promise<KBStatsResponse> {
   const res = await fetch('/api/v1/admin/kb/stats', {
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -156,16 +187,19 @@ export async function fetchKbExamples(
   page = 1,
   limit = 20,
   serviceId?: number,
-  search?: string
+  search?: string,
+  rootId?: string | null
 ): Promise<KBExamplesResponse> {
   const params = new URLSearchParams({
     page: String(page),
     limit: String(limit),
   });
   if (serviceId) params.set('service_id', String(serviceId));
+  if (rootId) params.set('root_id', rootId);
   if (search && search.trim()) params.set('search', search.trim());
 
   const res = await fetch(`/api/v1/admin/kb/examples?${params.toString()}`, {
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -184,6 +218,7 @@ export async function blacklistKbExample(
 ): Promise<{ status: string; task_id: number; message: string }> {
   const res = await fetch(`/api/v1/admin/kb/examples/${taskId}`, {
     method: 'DELETE',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -201,6 +236,7 @@ export async function purgeKnowledgeBase(
 ): Promise<{ status: string; deleted: number; message: string }> {
   const res = await fetch('/api/v1/admin/kb/purge', {
     method: 'DELETE',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -216,6 +252,7 @@ export async function purgeKnowledgeBase(
 export async function triggerKbSync(token: string, days = 30, limit = 100): Promise<KBSyncResponse> {
   const res = await fetch('/api/v1/admin/kb/sync', {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
@@ -224,7 +261,118 @@ export async function triggerKbSync(token: string, days = 30, limit = 100): Prom
   });
   if (!res.ok) {
     if (res.status === 401) throw new Error('Сессия администратора истекла');
-    throw new Error('Не удалось запустить синхронизацию базы знаний');
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Не удалось запустить синхронизацию базы знаний');
+  }
+  return res.json();
+}
+
+export interface KBLogEntry {
+  time: string;
+  level: 'info' | 'warn' | 'error' | 'success';
+  message: string;
+}
+
+export interface KBSyncProgressResponse {
+  is_running: boolean;
+  started_at?: string | null;
+  updated_at?: string | null;
+  target_root_id?: string | null;
+  current_root?: string | null;
+  current_service_name?: string | null;
+  processed_roots: number;
+  total_roots: number;
+  percent: number;
+  total_indexed: number;
+  total_skipped: number;
+  total_duplicates: number;
+  total_ai_errors?: number;
+  service_stats?: Record<string, {
+    name: string;
+    existing: number;
+    indexed: number;
+    skipped: number;
+    duplicates: number;
+    quota: number;
+    status: string;
+  }>;
+  logs?: KBLogEntry[];
+  error?: string | null;
+  finished_at?: string | null;
+}
+
+export interface KBStatusItem {
+  id: number;
+  name: string;
+  is_recommended: boolean;
+}
+
+export interface KBStratifiedSyncRequest {
+  quota_per_service: number;
+  days: number;
+  root_id?: string | null;
+  status_ids?: number[];
+  ai_eval?: boolean;
+}
+
+export async function fetchAvailableStatuses(token: string): Promise<KBStatusItem[]> {
+  try {
+    const res = await fetch('/api/v1/admin/kb/available-statuses', {
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (e) {
+    console.warn('Не удалось загрузить доступные статусы:', e);
+  }
+  return [
+    { id: 28, name: 'Закрыта', is_recommended: true },
+    { id: 29, name: 'Выполнена', is_recommended: true },
+    { id: 43, name: 'Обработано 1-й линией', is_recommended: true },
+    { id: 30, name: 'Отменена', is_recommended: true },
+    { id: 31, name: 'Открыта', is_recommended: false },
+    { id: 27, name: 'В работе', is_recommended: false },
+    { id: 35, name: 'Требует уточнения', is_recommended: false },
+  ];
+}
+
+export async function triggerStratifiedKbSync(
+  token: string,
+  payload: KBStratifiedSyncRequest
+): Promise<{ status: string; message: string }> {
+  const res = await fetch('/api/v1/admin/kb/sync-stratified', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Сессия администратора истекла');
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Не удалось запустить умную синхронизацию');
+  }
+  return res.json();
+}
+
+export async function fetchKbSyncStatus(token: string): Promise<KBSyncProgressResponse> {
+  const res = await fetch('/api/v1/admin/kb/sync-status', {
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Сессия администратора истекла');
+    throw new Error('Не удалось получить статус синхронизации');
   }
   return res.json();
 }
@@ -238,7 +386,9 @@ export interface VaultStatusResponse {
   service_account: {
     is_configured: boolean;
     login: string | null;
+    user_id: number | null;
     redis_synced: boolean;
+    identity_synced: boolean;
     base_url: string;
   };
   domain: {
@@ -371,6 +521,7 @@ export interface SkillActionItem {
   default_mode: 'auto' | 'confirm' | 'disabled';
   effective_mode: 'auto' | 'confirm' | 'disabled';
   target_type: string;
+  auto_eligible?: boolean;
   parameters_schema: Record<string, any>;
 }
 
@@ -426,3 +577,46 @@ export async function resetSkillPolicy(token: string, actionId: string): Promise
   return res.json();
 }
 
+
+export interface KBNightlyAuditProgress {
+  is_running: boolean;
+  started_at?: string | null;
+  finished_at?: string | null;
+  percent: number;
+  total_records: number;
+  total_audited: number;
+  blacklisted_count: number;
+  high_quality_count: number;
+  logs: KBLogEntry[];
+  error?: string | null;
+}
+
+export async function triggerNightlyAudit(token: string): Promise<{ status: string; message: string }> {
+  const res = await fetch('/api/v1/admin/kb/nightly-audit', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Ошибка запуска ночного аудита' }));
+    throw new Error(err.detail || 'Не удалось запустить ночной аудит');
+  }
+  return await res.json();
+}
+
+export async function fetchNightlyAuditStatus(token: string): Promise<KBNightlyAuditProgress> {
+  const res = await fetch('/api/v1/admin/kb/nightly-audit-status', {
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    throw new Error('Не удалось получить статус ночного аудита');
+  }
+  return await res.json();
+}

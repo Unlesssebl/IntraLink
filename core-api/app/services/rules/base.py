@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from shared.domain import DecisionOutcome, NoMatch
+
 
 @dataclass
 class RuleDecision:
@@ -23,6 +25,9 @@ class RuleDecision:
     rag_applied: bool = False
     rag_task_id: int | None = None
     rag_similarity: float | None = None
+    trigger_markers: list[str] = field(default_factory=list)
+    risk_level: str = "normal"  # "normal" | "warning" | "critical"
+    risk_warning: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -45,6 +50,12 @@ class RuleDecision:
             res["rag_applied"] = True
             res["rag_task_id"] = self.rag_task_id
             res["rag_similarity"] = self.rag_similarity
+        if self.trigger_markers:
+            res["trigger_markers"] = self.trigger_markers
+        if self.risk_level != "normal":
+            res["risk_level"] = self.risk_level
+        if self.risk_warning:
+            res["risk_warning"] = self.risk_warning
         if self.extra:
             res.update(self.extra)
         return res
@@ -79,3 +90,17 @@ class BaseRule(ABC):
         иначе None (передавая управление следующему правилу в пайплайне).
         """
         pass
+
+    def evaluate_typed(
+        self,
+        task: dict[str, Any],
+        diag: dict[str, Any] | None = None,
+        kb_matches: list[dict[str, Any]] | None = None,
+        redirect_mode: bool = False,
+        context: dict[str, Any] | None = None,
+    ) -> DecisionOutcome:
+        """
+        Оценивает контекст заявки в терминах типизированных алгебраических исходов (DecisionOutcome).
+        """
+        return NoMatch(rule_key=self.name, rule_version="1")
+

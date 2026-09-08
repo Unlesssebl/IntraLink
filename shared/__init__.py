@@ -21,6 +21,12 @@ from shared.diagnostics import (
     check_tcp_port,
     resolve_dns,
 )
+from shared.domain import (
+    DecisionOutcome,
+    PersonCandidate,
+    TicketFacts,
+    validate_person_candidate,
+)
 
 __all__ = [
     "normalize_pc_name",
@@ -38,4 +44,8 @@ __all__ = [
     "async_ping",
     "check_tcp_port",
     "resolve_dns",
+    "DecisionOutcome",
+    "PersonCandidate",
+    "TicketFacts",
+    "validate_person_candidate",
 ]

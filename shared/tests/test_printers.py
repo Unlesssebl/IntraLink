@@ -34,3 +34,14 @@ def test_find_printer_by_name_xerox():
     assert p is not None
     assert p.vendor == "xerox"
     assert p.connection_type == "usb"
+
+
+def test_find_printer_by_name_no_fallback_by_default():
+    """По умолчанию fallback запрещен — неизвестная модель возвращает None."""
+    p = find_printer_by_name("TotallyUnknownPrinterModel999")
+    assert p is None
+
+    # При явном указании allow_fallback=True возвращается дефолтный HP UPD
+    p_fallback = find_printer_by_name("TotallyUnknownPrinterModel999", allow_fallback=True)
+    assert p_fallback is not None
+    assert p_fallback.model_key == "hp_universal_upd"

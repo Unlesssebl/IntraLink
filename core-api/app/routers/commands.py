@@ -15,9 +15,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.db import JobLog, get_db
-from app.routers.deps import verify_admin_or_api_key
+from app.database.db import JobLog, TicketRun, get_db
+from app.config import settings
+from app.routers.deps import principal_subject, require_permission
 from app.services.actions import get_policy_engine
+from app.services.ai_suggestions import require_current_suggestion
 from app.services.worker import get_redis_client
 
 logger = logging.getLogger("core_api.routers.commands")
@@ -25,10 +27,18 @@ logger = logging.getLogger("core_api.routers.commands")
 router = APIRouter(
     prefix="/api/v1/commands",
     tags=["Command Bus (Unified Execution Hub)"],
-    dependencies=[Depends(verify_admin_or_api_key)],
+    dependencies=[Depends(require_permission("command:read"))],
 )
 
 STREAM_EXECUTION_QUEUE = "stream:execution_queue"
+
+
+async def require_legacy_command_api() -> None:
+    if settings.APP_ENV == "production":
+        raise HTTPException(
+            status.HTTP_410_GONE,
+            "Legacy command API is disabled; use /api/v2/commands",
+        )
 
 
 class SubmitCommandRequest(BaseModel):
@@ -60,6 +70,12 @@ class SubmitCommandRequest(BaseModel):
     auto_close_ticket: bool = Field(
         True, description="Автоматически финализировать заявку в IntraService при успехе"
     )
+    suggestion_task_id: int | None = Field(
+        None, description="ID заявки, для которой используется AI-предложение"
+    )
+    suggestion_fingerprint: str | None = Field(
+        None, description="Версия актуального AI-предложения"
+    )
 
 
 class ConfirmDecisionRequest(BaseModel):
@@ -70,11 +86,11 @@ class ConfirmDecisionRequest(BaseModel):
     operator: str | None = Field(None, description="Идентификатор оператора")
 
 
-@router.post("", status_code=status.HTTP_202_ACCEPTED)
-@router.post("/submit", status_code=status.HTTP_202_ACCEPTED)
+@router.post("", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_permission("command:create")), Depends(require_legacy_command_api)])
+@router.post("/submit", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_permission("command:create")), Depends(require_legacy_command_api)])
 async def submit_command(
     payload: SubmitCommandRequest,
-    initiator_identity: str = Depends(verify_admin_or_api_key),
+    initiator_identity: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -114,6 +130,35 @@ async def submit_command(
             task_id = int(task_id)
         except (ValueError, TypeError):
             task_id = None
+
+    if payload.suggestion_task_id is not None:
+        if task_id != payload.suggestion_task_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="AI-предложение относится к другой заявке.",
+            )
+        try:
+            await require_current_suggestion(
+                get_redis_client(), payload.suggestion_task_id, payload.suggestion_fingerprint
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    if task_id is not None and payload.mode != "dry_run":
+        active_run_id = await db.scalar(
+            select(TicketRun.id).where(
+                TicketRun.task_id == task_id,
+                TicketRun.completed_at.is_(None),
+            )
+        )
+        if active_run_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Заявка управляется активным TicketRun; legacy-команда запрещена, "
+                    "используйте /api/v2/commands"
+                ),
+            )
 
     job_uuid = uuid.uuid4()
     job_id = f"job_{job_uuid.hex[:12]}"
@@ -165,6 +210,10 @@ async def submit_command(
     except Exception as e:
         logger.exception("Ошибка сохранения JobLog в PostgreSQL: %s", e)
         await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Команда не поставлена в очередь: PostgreSQL недоступен.",
+        ) from e
 
     # 3. Сохранение состояния в Redis
     job_data = {
@@ -182,6 +231,8 @@ async def submit_command(
         "auto_close_ticket": payload.auto_close_ticket,
         "status": "queued",
         "created_at": time.time(),
+        "suggestion_task_id": payload.suggestion_task_id,
+        "suggestion_fingerprint": payload.suggestion_fingerprint,
     }
 
     try:
@@ -202,7 +253,7 @@ async def submit_command(
                 "task_id": str(task_id or 0),
                 "payload": json.dumps(payload.params, ensure_ascii=False),
                 "target": json.dumps(payload.target, ensure_ascii=False),
-                "mode": payload.mode,
+                "mode": command_mode,
                 "auto_close": str(payload.auto_close_ticket).lower(),
                 "initiator": initiator_str,
             },
@@ -216,7 +267,7 @@ async def submit_command(
             "job_id": job_id,
             "command_type": payload.type,
             "target": payload.target,
-            "mode": payload.mode,
+            "mode": command_mode,
             "initiator": initiator_str,
             "timestamp": time.time(),
         }
@@ -229,14 +280,14 @@ async def submit_command(
             job_id,
             payload.type,
             initiator_str,
-            payload.mode,
+            command_mode,
         )
 
         return {
             "status": "accepted",
             "job_id": job_id,
             "command_type": payload.type,
-            "mode": payload.mode,
+            "mode": command_mode,
             "task_id": task_id,
             "initiator": initiator_str,
             "created_at": now_utc.isoformat(),
@@ -371,11 +422,11 @@ async def list_audit_log(
     }
 
 
-@router.post("/{job_id}/confirm", status_code=status.HTTP_200_OK)
+@router.post("/{job_id}/confirm", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("command:approve:r1")), Depends(require_legacy_command_api)])
 async def confirm_command(
     job_id: str,
     payload: ConfirmDecisionRequest,
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -398,6 +449,11 @@ async def confirm_command(
         )
 
     job_data = json.loads(raw)
+    if job_data.get("mode") != "confirm":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Подтверждение доступно только для команд в режиме HITL (confirm).",
+        )
 
     # 1. Отправляем решение в блокирующую очередь воркера
     confirm_msg = {
@@ -453,11 +509,11 @@ async def confirm_command(
     }
 
 
-@router.post("/{job_id}/cancel", status_code=status.HTTP_200_OK)
+@router.post("/{job_id}/cancel", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("command:cancel")), Depends(require_legacy_command_api)])
 async def cancel_command(
     job_id: str,
     reason: str = Query("Отменено пользователем", description="Причина отмены"),
-    operator: str = Depends(verify_admin_or_api_key),
+    operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
     """

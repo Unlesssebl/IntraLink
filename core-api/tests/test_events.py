@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -12,7 +12,7 @@ HEADERS = {"X-Bot-Api-Key": settings.BOT_API_KEY or "test-api-key"}
 @pytest.mark.asyncio
 async def test_events_stream_connected():
     with patch("app.routers.events.get_redis_client") as mock_redis_func:
-        mock_r = AsyncMock()
+        mock_r = MagicMock()
         mock_pubsub = AsyncMock()
         mock_pubsub.subscribe = AsyncMock()
         mock_pubsub.psubscribe = AsyncMock()
@@ -20,8 +20,9 @@ async def test_events_stream_connected():
         mock_pubsub.punsubscribe = AsyncMock()
         mock_pubsub.close = AsyncMock()
 
-        # Возвращаем None чтобы сработал таймаут или отмена
-        mock_pubsub.get_message = AsyncMock(return_value=None)
+        # Завершаем генератор после приветственного SSE-события. Мгновенный
+        # return None создаёт бесконечный цикл и не моделирует реальный таймаут.
+        mock_pubsub.get_message = AsyncMock(side_effect=asyncio.CancelledError)
         mock_r.pubsub.return_value = mock_pubsub
         mock_redis_func.return_value = mock_r
 

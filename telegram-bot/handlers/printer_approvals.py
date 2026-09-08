@@ -76,27 +76,28 @@ def get_start_keyboard(task_id: int) -> InlineKeyboardMarkup:
 
 
 async def _publish_response(task_id: int, action: str, tg_user_id: int, **kwargs):
-    # 1. Отправляем в Command Bus Core API
+    # 1. Решение относится только к уже созданной durable-команде.
     try:
-        target_pc = kwargs.get("target_pc", "")
-        printer_name = kwargs.get("printer_name", "") or kwargs.get("model_key", "")
         job_id = kwargs.get("job_id")
-        if job_id and action in ("approve", "reject"):
-            await api_client.confirm_command(
+        if not job_id and action in ("approve", "reject"):
+            lookup = await aioredis.from_url(REDIS_URL, decode_responses=True)
+            try:
+                job_id = await lookup.get(f"task:{task_id}:execution_job")
+            finally:
+                await lookup.close()
+        if action in ("approve", "reject"):
+            if not job_id:
+                return False
+            result = await api_client.confirm_command(
                 job_id=job_id,
                 decision=action,
                 operator=f"tg_{tg_user_id}",
+                tg_user_id=tg_user_id,
             )
-        elif action == "approve":
-            await api_client.submit_command(
-                command_type="install_printer",
-                target={"task_id": task_id, "host": target_pc, "printer_name": printer_name},
-                mode="auto",
-                initiator=f"tg_{tg_user_id}",
-                source="bot",
-            )
+            return bool(result)
     except Exception as e:
         logger.error("Ошибка отправки решения в Command Bus: %s", e)
+        return False
 
     # 2. Redis Pub/Sub fallback
     try:
@@ -110,8 +111,10 @@ async def _publish_response(task_id: int, action: str, tg_user_id: int, **kwargs
         payload.update(kwargs)
         await redis.publish("printer_actions", json.dumps(payload))
         await redis.close()
+        return True
     except Exception as e:
         logger.debug("Redis publish error: %s", e)
+        return False
 
 
 # ==========================================
@@ -258,12 +261,13 @@ async def process_approve_button(callback: CallbackQuery):
     if not callback.data:
         return
     task_id = int(callback.data.split(":")[1])
-    await _publish_response(task_id, action="approve", tg_user_id=callback.from_user.id)
+    sent = await _publish_response(task_id, action="approve", tg_user_id=callback.from_user.id)
     if isinstance(callback.message, Message):
         await callback.message.edit_text(
-            f"{callback.message.text}\n\n<b>Статус:</b> Отправлено на автоматическую установку."
+            f"{callback.message.text}\n\n<b>Статус:</b> "
+            + ("Команда подтверждена." if sent else "Не удалось подтвердить команду; откройте панель оператора.")
         )
-    await callback.answer("Заявка одобрена")
+    await callback.answer("Команда подтверждена" if sent else "Подтверждение не выполнено")
 
 
 @router.callback_query(F.data.startswith("printer_reject:"))
@@ -271,12 +275,13 @@ async def process_reject_button(callback: CallbackQuery):
     if not callback.data:
         return
     task_id = int(callback.data.split(":")[1])
-    await _publish_response(task_id, action="reject", tg_user_id=callback.from_user.id)
+    sent = await _publish_response(task_id, action="reject", tg_user_id=callback.from_user.id)
     if isinstance(callback.message, Message):
         await callback.message.edit_text(
-            f"{callback.message.text}\n\n<b>Статус:</b> Переведено в ручной режим разбора."
+            f"{callback.message.text}\n\n<b>Статус:</b> "
+            + ("Команда отклонена." if sent else "Не удалось отклонить команду; откройте панель оператора.")
         )
-    await callback.answer("Установка отменена")
+    await callback.answer("Команда отклонена" if sent else "Отклонение не выполнено")
 
 
 @router.callback_query(F.data.startswith("printer_edit:"))
