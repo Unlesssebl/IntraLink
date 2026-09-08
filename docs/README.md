@@ -47,7 +47,7 @@ docs/
 * **[Архитектура системы (`architecture.md`)](architecture.md)** — схемы компонентов, слои, каналы связи (HTTP REST, Redis Streams), контуры безопасности DLP и принципы надежного исполнения.
 * **[Руководство разработчика (`developer_guide.md`)](developer_guide.md)** — ключевые архитектурные инварианты («ПОЧЕМУ»), правила безопасности, межсервисные шины и стандарты кода.
 * **[Дорожная карта развития (`roadmap.md`)](roadmap.md)** — горизонты развития 2026–2027 (AIOps, Hybrid RAG, Outage Detection).
-* **[Roadmap качества RAG](plans/rag-quality-roadmap.md)** — компактная итерация: relevance gate, готовый reranker, PostgreSQL FTS и проверка качества до/после.
+* **[Roadmap качества RAG](plans/rag-quality-roadmap.md)** — этапы A–D реализованы и верифицированы: relevance gate, мультиязычный BGE-Reranker-v2-m3 на FastEmbed, нативный PostgreSQL FTS (russian + GIN), evals (Recall@5 97.5%, Hit@5 100%, Release Gate PASSED).
 * **[Брендбук и дизайн-система (`brandbook.md`)](brandbook.md)** — манифест информации, цветовые токены и Zero-Emoji Policy.
 * **[План эволюции Worker Platform](plans/worker-platform-evolution.md)** — модульные умения, безопасное масштабирование, наблюдаемость и принтерный пилот.
 

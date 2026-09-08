@@ -193,7 +193,10 @@ async def test_search_knowledge_base_hybrid_execution():
         "app.services.rag.sparse_text_search",
         new_callable=AsyncMock,
         return_value=sparse_mock,
-    ) as mock_sparse:
+    ) as mock_sparse, patch(
+        "app.services.worker.get_redis_client",
+        return_value=None,
+    ):
         results = await search_knowledge_base(
             db=mock_db,
             query_text="Здравствуйте! Срочно не работает Outlook почта, помогите!",
@@ -201,6 +204,7 @@ async def test_search_knowledge_base_hybrid_execution():
             hybrid=True,
             distill_query=True,
         )
+
 
         assert len(results) == 1
         res = results[0]
@@ -211,3 +215,64 @@ async def test_search_knowledge_base_hybrid_execution():
 
         mock_dense.assert_called_once()
         mock_sparse.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_search_knowledge_base_cache_invalidation_on_corpus_revision():
+    """Проверка инвалидации кэша RAG при изменении ревизии корпуса (после /sync)."""
+    mock_db = AsyncMock(spec=AsyncSession)
+
+    dense_mock = [{"task_id": 901, "name": "Тест", "distance": 0.1, "rank": 1}]
+    sparse_mock = [{"task_id": 901, "name": "Тест", "sparse_score": 5.0, "rank": 1}]
+
+    # Эмулируем Redis-хранилище в памяти
+    redis_store: dict[str, str] = {"kb:corpus:revision": "1"}
+
+    class FakeRedis:
+        async def get(self, key: str):
+            val = redis_store.get(key)
+            return val.encode() if val else None
+
+        async def set(self, key: str, val: str, ex: int | None = None):
+            redis_store[key] = val
+            return True
+
+    fake_redis = FakeRedis()
+
+    with patch("app.services.rag.dense_vector_search", new_callable=AsyncMock, return_value=dense_mock) as mock_dense, \
+         patch("app.services.rag.sparse_text_search", new_callable=AsyncMock, return_value=sparse_mock), \
+         patch("app.services.worker.get_redis_client", return_value=fake_redis):
+
+        # Первый вызов: кэша нет, dense_vector_search вызывается
+        res1 = await search_knowledge_base(
+            db=mock_db,
+            query_text="Тестовый запрос кэша",
+            limit=1,
+            rerank=False,
+        )
+        assert len(res1) == 1
+        assert mock_dense.call_count == 1
+
+        # Второй вызов при той же ревизии: берется из кэша, dense_vector_search НЕ вызывается повторно
+        res2 = await search_knowledge_base(
+            db=mock_db,
+            query_text="Тестовый запрос кэша",
+            limit=1,
+            rerank=False,
+        )
+        assert len(res2) == 1
+        assert mock_dense.call_count == 1  # Счетчик не увеличился
+
+        # Инкрементируем ревизию корпуса (симуляция sync)
+        redis_store["kb:corpus:revision"] = "2"
+
+        # Третий вызов: старый кэш невалиден из-за смены ревизии, dense_vector_search вызывается снова!
+        res3 = await search_knowledge_base(
+            db=mock_db,
+            query_text="Тестовый запрос кэша",
+            limit=1,
+            rerank=False,
+        )
+        assert len(res3) == 1
+        assert mock_dense.call_count == 2  # Вызван снова!
+

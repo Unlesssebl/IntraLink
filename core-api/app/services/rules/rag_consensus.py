@@ -34,16 +34,21 @@ class RAGConsensusRule(BaseRule):
         user_text = f"{name} {desc}".strip()
 
         top_kb = kb_matches[0]
+        from app.services.rag import is_valid_solution_source
+        if not is_valid_solution_source(top_kb):
+            return None
+
         sim = float(top_kb.get("similarity_pct", 0))
         sol = (top_kb.get("solution") or "").strip()
         status_name = top_kb.get("status_name", "")
+        res_type = (top_kb.get("resolution_type") or "").lower()
 
         is_troubleshooting_incident = any(w in user_text for w in [
             "не печатает", "не работает", "ошибка", "сбой", "тормозит", "зависает", "вылетает", "не сканирует", "не включается", "проблема"
         ])
 
         if sim >= 90.0 and sol and len(sol) >= 15:
-            if "выполнен" in status_name.lower() and not is_troubleshooting_incident:
+            if "выполнен" in status_name.lower() and res_type != "cancelled" and not is_troubleshooting_incident:
                 return RuleDecision(
                     template_key="rag_historical_solution",
                     name=f"🧠 Проверенный прецедент базы знаний (#{top_kb.get('task_id')}, сходство {sim}%)",

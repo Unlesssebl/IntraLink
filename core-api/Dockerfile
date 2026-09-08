@@ -34,6 +34,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY core-api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Прогрев весов модели Cross-Encoder для закрытого контура и быстрого холодного старта
+RUN python -c "from fastembed import TextCrossEncoder; TextCrossEncoder('BAAI/bge-reranker-v2-m3')" || true
+
 # Копирование единого пакета общих утилит (SSOT) и бэкенда
 COPY shared/ ./shared/
 COPY core-api/ .

@@ -3,7 +3,7 @@ import uuid
 from collections.abc import AsyncGenerator
 
 from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, Uuid, func, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID, TSVECTOR
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
@@ -13,6 +13,7 @@ from app.config import settings
 # Определение типов, совместимых и с PostgreSQL, и с SQLite (для unit-тестов)
 JSON_TYPE = JSON().with_variant(JSONB, "postgresql")
 UUID_TYPE = Uuid(as_uuid=True).with_variant(UUID(as_uuid=True), "postgresql")
+TSVECTOR_TYPE = Text().with_variant(TSVECTOR(), "postgresql")
 
 # Настройка асинхронного движка SQLAlchemy с устойчивым пулом соединений
 engine_kwargs: dict = {"echo": False}
@@ -32,7 +33,8 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
-CURRENT_SCHEMA_REVISION = "20260907_0008"
+CURRENT_SCHEMA_REVISION = "20260908_0009"
+
 
 
 
@@ -266,6 +268,12 @@ class TaskKnowledgeBase(Base):
     quality_score: Mapped[float] = mapped_column(
         Float, default=1.0, server_default="1.0", nullable=False, index=True
     )
+
+    # Полнотекстовый поисковый вектор (tsvector в PostgreSQL, Text в SQLite)
+    search_vector: Mapped[str | None] = mapped_column(
+        TSVECTOR_TYPE, nullable=True
+    )
+
 
 
 # Модель журнала исполнения задач (Command Bus / Execution Hub)

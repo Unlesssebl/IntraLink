@@ -104,7 +104,7 @@ def get_local_reranker_model():
     global _fastembed_reranker
     if _fastembed_reranker is None:
         model_name = getattr(
-            settings, "RERANKER_MODEL", "BAAI/bge-reranker-base"
+            settings, "RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"
         )
         try:
             from fastembed import TextCrossEncoder
@@ -116,7 +116,7 @@ def get_local_reranker_model():
                 _fastembed_reranker = TextCrossEncoder(model_name=model_name)
         except Exception as e:
             logger.debug(
-                "Ошибка инициализации FastEmbed TextCrossEncoder: %s", e
+                "Ошибка инициализации FastEmbed TextCrossEncoder (%s): %s", model_name, e
             )
     return _fastembed_reranker
 
@@ -468,6 +468,11 @@ async def dense_vector_search(
             if dist <= distance_threshold:
                 sim_pct = round(max(0.0, min(99.0, (1.0 - dist) * 100.0)), 1)
                 c_data = r.classification_data or {}
+                res_type = c_data.get("resolution_type")
+                if not res_type:
+                    st_lower = (r.status_name or "").lower()
+                    res_type = "cancelled" if any(w in st_lower for w in ("отменен", "отклон", "закрыт без")) else "resolved"
+
                 matches.append({
                     "task_id": r.task_id,
                     "name": r.original_name,
@@ -478,7 +483,7 @@ async def dense_vector_search(
                     "status_name": r.status_name,
                     "quality_score": float(getattr(r, "quality_score", 1.0) or 1.0),
                     "classification_data": c_data,
-                    "resolution_type": c_data.get("resolution_type", "resolved"),
+                    "resolution_type": res_type,
                     "resolution_label": c_data.get("resolution_label", "Успешно выполнено"),
                     "resolution_badge_color": c_data.get("resolution_badge_color", "emerald"),
                     "similarity_pct": sim_pct,
@@ -500,13 +505,89 @@ async def sparse_text_search(
 ) -> list[dict[str, Any]]:
     """
     Полнотекстовый sparse-поиск по ключевым словам и техническим идентификаторам в базе решений.
+    При наличии PostgreSQL search_vector использует нативный GIN-индекс и ts_rank('russian').
+    В средах тестирования (SQLite) автоматически переключается на токенный поиск.
     """
-    from sqlalchemy import or_
+    from sqlalchemy import or_, text
 
     clean_query = clean_html(query_text).strip()
     if not clean_query:
         return []
 
+    # 1. Попытка нативного полнотекстового поиска PostgreSQL tsvector
+    bind = getattr(db, "bind", None)
+    is_postgres = bool(
+        bind
+        and hasattr(bind, "dialect")
+        and getattr(bind.dialect, "name", "") == "postgresql"
+    )
+
+    if is_postgres and hasattr(TaskKnowledgeBase, "search_vector"):
+        try:
+            # Нормализация дефисов перед числами (KB-5005565 -> KB 5005565),
+            # чтобы дефис не интерпретировался tsquery как оператор отрицания
+            fts_query = re.sub(r"-(\d+)", r" \1", clean_query).strip()
+            ts_query_expr = func.plainto_tsquery("russian", fts_query)
+            rank_expr = func.ts_rank(TaskKnowledgeBase.search_vector, ts_query_expr).label("rank_score")
+
+            stmt = (
+                select(
+                    TaskKnowledgeBase.task_id,
+                    TaskKnowledgeBase.original_name,
+                    TaskKnowledgeBase.problem,
+                    TaskKnowledgeBase.solution,
+                    TaskKnowledgeBase.service_id,
+                    TaskKnowledgeBase.service_name,
+                    TaskKnowledgeBase.status_name,
+                    TaskKnowledgeBase.quality_score,
+                    TaskKnowledgeBase.classification_data,
+                    rank_expr,
+                )
+                .where(
+                    TaskKnowledgeBase.is_blacklisted.is_(False),
+                    TaskKnowledgeBase.quality_score >= 0.4,
+                    TaskKnowledgeBase.search_vector.op("@@")(ts_query_expr),
+                )
+                .order_by(text("rank_score DESC"))
+                .limit(limit * 3)
+            )
+            result = await db.execute(stmt)
+            rows = result.all()
+            if rows:
+                scored_matches = []
+                for r in rows:
+                    c_data = r.classification_data or {}
+                    res_type = c_data.get("resolution_type")
+                    if not res_type:
+                        st_lower = (r.status_name or "").lower()
+                        res_type = "cancelled" if any(w in st_lower for w in ("отменен", "отклон", "закрыт без")) else "resolved"
+
+                    rank_val = float(getattr(r, "rank_score", 0.0) or 0.0)
+                    scored_matches.append({
+                        "task_id": r.task_id,
+                        "name": r.original_name,
+                        "problem": r.problem,
+                        "solution": r.solution,
+                        "service_id": r.service_id,
+                        "service_name": r.service_name,
+                        "status_name": r.status_name,
+                        "quality_score": float(getattr(r, "quality_score", 1.0) or 1.0),
+                        "classification_data": c_data,
+                        "resolution_type": res_type,
+                        "resolution_label": c_data.get("resolution_label", "Успешно выполнено"),
+                        "resolution_badge_color": c_data.get("resolution_badge_color", "emerald"),
+                        "sparse_score": round(max(0.1, rank_val * 100.0), 2),
+                    })
+
+                scored_matches.sort(key=lambda x: x["sparse_score"], reverse=True)
+                top_matches = scored_matches[:limit]
+                for idx, m in enumerate(top_matches, start=1):
+                    m["rank"] = idx
+                return top_matches
+        except Exception as e:
+            logger.debug("Fallback sparse_text_search с tsvector на токенный поиск: %s", e)
+
+    # 2. Токенный поиск ILIKE (SQLite и fallback)
     raw_tokens = re.findall(r"[\w0-9xX\-_]+", clean_query)
     tokens = [
         t.lower()
@@ -569,6 +650,11 @@ async def sparse_text_search(
                 score += 5.0
 
             c_data = r.classification_data or {}
+            res_type = c_data.get("resolution_type")
+            if not res_type:
+                st_lower = (r.status_name or "").lower()
+                res_type = "cancelled" if any(w in st_lower for w in ("отменен", "отклон", "закрыт без")) else "resolved"
+
             scored_matches.append({
                 "task_id": r.task_id,
                 "name": r.original_name,
@@ -578,7 +664,7 @@ async def sparse_text_search(
                 "service_name": r.service_name,
                 "status_name": r.status_name,
                 "classification_data": c_data,
-                "resolution_type": c_data.get("resolution_type", "resolved"),
+                "resolution_type": res_type,
                 "resolution_label": c_data.get("resolution_label", "Успешно выполнено"),
                 "resolution_badge_color": c_data.get("resolution_badge_color", "emerald"),
                 "sparse_score": score,
@@ -593,6 +679,7 @@ async def sparse_text_search(
         return top_matches
     except Exception as e:
         logger.debug("Ошибка sparse_text_search: %s", e)
+
         return []
 
 
@@ -676,6 +763,24 @@ def normalize_rerank_score(raw_score: float) -> float:
         return 1.0 if raw_score > 0 else 0.0
 
 
+def is_valid_solution_source(candidate: dict[str, Any]) -> bool:
+    """
+    Проверяет, является ли прецедент подтвержденным техническим решением,
+    допустимым для формирования автоматических рекомендаций или ответов заявителю.
+    Отмененные, отклоненные или неразрешенные заявки не допускаются как решение.
+    """
+    res_type = (candidate.get("resolution_type") or "").lower()
+    if res_type in {"cancelled", "rejected", "unresolved", "failed"}:
+        return False
+    st_name = (candidate.get("status_name") or "").lower()
+    if any(w in st_name for w in ("отменен", "отклон", "дубликат", "закрыт без")):
+        return False
+    sol = (candidate.get("solution") or "").strip()
+    if len(sol) < 15:
+        return False
+    return True
+
+
 async def rerank_candidates(
     query_text: str,
     candidates: list[dict[str, Any]],
@@ -685,13 +790,11 @@ async def rerank_candidates(
 ) -> list[dict[str, Any]]:
     """
     Выполняет двухэтапную переоценку (Rerank) топ-кандидатов через локальный Cross-Encoder.
-    Отбирает наиболее семантически релевантные решения (порог score >= 0.85).
+    Отбирает наиболее семантически релевантные решения (порог score >= threshold).
+    Если ни один кандидат не превысил порог, возвращает пустой список (no-match).
     """
     if not candidates:
         return []
-    if len(candidates) == 1:
-        candidates[0]["rerank_score"] = candidates[0].get("similarity_pct", 85.0) / 100.0
-        return candidates[:top_n]
 
     clean_query = clean_html(query_text).strip()
     doc_texts = []
@@ -708,12 +811,13 @@ async def rerank_candidates(
         _rerank_fastembed_sync, clean_query, doc_texts
     )
 
-    if scores and len(scores) == len(candidates):
+    if scores is not None and len(scores) == len(candidates):
         for candidate, raw_score in zip(candidates, scores):
             norm_score = normalize_rerank_score(raw_score)
             candidate["rerank_score"] = norm_score
             candidate["similarity_pct"] = round(norm_score * 100.0, 1)
             candidate["search_type"] = "hybrid_reranked"
+            candidate["rerank_fallback"] = False
 
         sorted_candidates = sorted(
             candidates,
@@ -725,11 +829,11 @@ async def rerank_candidates(
             for c in sorted_candidates
             if c.get("rerank_score", 0.0) >= threshold
         ]
-        if not filtered:
-            filtered = sorted_candidates[:top_n]
+        # Gate: если ни один кандидат не превысил порог, возвращаем [] (no-match),
+        # ликвидируя выдачу нерелевантных решений заявителю.
         return filtered[:top_n]
 
-    # Fallback при отсутствии модели Cross-Encoder: сохраняем RRF / cosine порядок
+    # Fallback при отсутствии модели Cross-Encoder: сохраняем RRF / cosine порядок с явной фиксацией деградации
     for c in candidates:
         c["rerank_fallback"] = True
     return candidates[:top_n]
@@ -771,21 +875,33 @@ async def search_knowledge_base(
     if not search_query:
         search_query = clean_query
 
-    # Кэш результатов RAG в Redis (TTL 10 минут) для устранения повторных эмбеддингов
+    # Кэш результатов RAG в Redis (TTL 10 минут) с ревизией корпуса для предотвращения stale кэша
     import hashlib
     import json
     from app.services.worker import get_redis_client
 
+    corpus_rev = "0"
+    redis = None
+    try:
+        redis = get_redis_client()
+        if redis:
+            rev_val = await redis.get("kb:corpus:revision")
+            if rev_val:
+                corpus_rev = rev_val.decode() if isinstance(rev_val, bytes) else str(rev_val)
+    except Exception:
+        pass
+
     cache_key = (
         f"rag:cache:{hashlib.md5(search_query.encode()).hexdigest()}:"
+        f"rev:{corpus_rev}:"
         f"{eval_circuit.value if eval_circuit else 'auto'}:{limit}:"
         f"{distance_threshold}:{int(hybrid)}:{int(rerank)}:{rerank_threshold}"
     )
     try:
-        redis = get_redis_client()
-        cached = await redis.get(cache_key)
-        if cached:
-            return json.loads(cached)
+        if redis:
+            cached = await redis.get(cache_key)
+            if cached:
+                return json.loads(cached)
     except Exception:
         pass
 
@@ -794,7 +910,8 @@ async def search_knowledge_base(
     # 1. Если гибридный режим активен
     if hybrid:
         candidate_limit = max(limit * 5, 15) if rerank else limit * 3
-        dense_task = dense_vector_search(
+        # Последовательное выполнение для устранения состояния гонки в AsyncSession
+        dense_matches = await dense_vector_search(
             db=db,
             query_text=clean_query,
             limit=candidate_limit,
@@ -802,14 +919,10 @@ async def search_knowledge_base(
             circuit=eval_circuit,
             metadata=metadata,
         )
-        sparse_task = sparse_text_search(
+        sparse_matches = await sparse_text_search(
             db=db,
             query_text=search_query,
             limit=candidate_limit,
-        )
-
-        dense_matches, sparse_matches = await asyncio.gather(
-            dense_task, sparse_task
         )
 
         if dense_matches or sparse_matches:
@@ -834,9 +947,8 @@ async def search_knowledge_base(
                 final_matches = reranked
             else:
                 final_matches = fused_matches[:limit]
-
-    # 2. Dense-only поиск (fallback)
-    if not final_matches:
+    else:
+        # 2. Dense-only поиск (когда hybrid=False)
         dense_matches = await dense_vector_search(
             db=db,
             query_text=clean_query,
@@ -852,12 +964,13 @@ async def search_knowledge_base(
     # Сохранение в Redis кэш
     if final_matches:
         try:
-            redis = get_redis_client()
-            await redis.set(cache_key, json.dumps(final_matches), ex=600)
+            if redis:
+                await redis.set(cache_key, json.dumps(final_matches), ex=600)
         except Exception:
             pass
 
     return final_matches
+
 
 
 async def index_task_knowledge(
@@ -942,6 +1055,14 @@ async def index_task_knowledge(
             db.add(item)
 
         await db.commit()
+        try:
+            from app.services.worker import get_redis_client
+            redis = get_redis_client()
+            if redis:
+                await redis.incr("kb:corpus:revision")
+        except Exception:
+            pass
+
         logger.info(
             "Заявка #%d успешно проиндексирована в базе знаний RAG (контур: %s)",
             task_id,
@@ -1699,6 +1820,11 @@ async def sync_stratified_kb(
         progress_state["is_running"] = False
         progress_state["percent"] = 100
         progress_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            if redis:
+                await redis.incr("kb:corpus:revision")
+        except Exception:
+            pass
         add_log(f"Синхронизация RAG завершена! Всего добавлено: +{progress_state['total_indexed']} прецедентов", "success")
         await _save_sync_progress(redis, progress_state)
         logger.info(

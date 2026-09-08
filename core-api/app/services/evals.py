@@ -10,7 +10,14 @@ from typing import Any, Iterable
 from app.services.actions.policy import AUTO_ELIGIBLE_ACTIONS
 
 SAFE_AUTONOMOUS_ACTIONS = AUTO_ELIGIBLE_ACTIONS
-QUALITY_METRICS = ("recall_at_5", "mrr_at_5", "triage_accuracy", "safe_recommendation_precision")
+QUALITY_METRICS = (
+    "recall_at_5",
+    "hit_at_5",
+    "mrr_at_5",
+    "no_match_accuracy",
+    "triage_accuracy",
+    "safe_recommendation_precision",
+)
 
 
 class DatasetError(ValueError):
@@ -52,12 +59,11 @@ def validate_records(records: Iterable[dict[str, Any]], min_cases: int = 100) ->
         _timestamp(record.get("closed_at"))
         if not isinstance(record.get("query"), str) or not record["query"].strip():
             raise DatasetError("every row needs a sanitized query")
-        expected = _as_list(record.get("expected_ids"))
-        retrieved = _as_list(record.get("retrieved_ids"))
-        if not expected:
-            raise DatasetError("every row needs at least one expected_id")
-        if not retrieved:
-            raise DatasetError("every row needs retrieved_ids from the evaluated RAG build")
+        # Validate that expected_ids and retrieved_ids are valid arrays (can be empty for no-match cases)
+        if record.get("expected_ids") is not None and not isinstance(record["expected_ids"], list):
+            raise DatasetError("expected_ids must be an array")
+        if record.get("retrieved_ids") is None or not isinstance(record["retrieved_ids"], list):
+            raise DatasetError("every row needs retrieved_ids (array) from the evaluated RAG build")
     return valid
 
 
@@ -82,7 +88,9 @@ def evaluate(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Calculate retrieval, triage, recommendation and safety metrics without I/O."""
     rows = list(records)
     recalls: list[float] = []
+    hits: list[float] = []
     mrrs: list[float] = []
+    no_match_correct: list[float] = []
     triage: list[float] = []
     safe_recommendations: list[float] = []
     dlp_failures = 0
@@ -91,9 +99,17 @@ def evaluate(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     for row in rows:
         expected = set(_as_list(row.get("expected_ids")))
         retrieved = _as_list(row.get("retrieved_ids"))[:5]
-        recalls.append(float(bool(expected.intersection(retrieved))))
-        rank = next((idx for idx, item in enumerate(retrieved, start=1) if item in expected), None)
-        mrrs.append(0.0 if rank is None else 1.0 / rank)
+
+        if expected:
+            intersection = expected.intersection(retrieved)
+            # Истинный Recall@5: доля найденных релевантных документов от всех ожидаемых
+            recalls.append(len(intersection) / len(expected))
+            hits.append(float(bool(intersection)))
+            rank = next((idx for idx, item in enumerate(retrieved, start=1) if item in expected), None)
+            mrrs.append(0.0 if rank is None else 1.0 / rank)
+        else:
+            # No-match кейс: ожидается отсутствие рекомендаций
+            no_match_correct.append(float(len(retrieved) == 0))
 
         if row.get("expected_status_id") is not None:
             triage.append(float(row.get("predicted_status_id") == row["expected_status_id"]))
@@ -110,11 +126,16 @@ def evaluate(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
         if row.get("dlp_safe") is not True:
             dlp_failures += 1
 
+    no_match_count = len(no_match_correct)
     return {
         "cases": len(rows),
+        "positive_cases": len(rows) - no_match_count,
+        "no_match_cases": no_match_count,
         "metrics": {
             "recall_at_5": _mean(recalls),
+            "hit_at_5": _mean(hits),
             "mrr_at_5": _mean(mrrs),
+            "no_match_accuracy": _mean(no_match_correct) if no_match_correct else None,
             "triage_accuracy": _mean(triage),
             "safe_recommendation_precision": _mean(safe_recommendations),
         },

@@ -157,8 +157,8 @@ class Settings(BaseSettings):
         description="Имя локальной модели FastEmbed для векторных эмбеддингов",
     )
     RERANKER_MODEL: str = Field(
-        "BAAI/bge-reranker-base",
-        description="Имя локальной Cross-Encoder модели для реранкинга кандидатов RAG",
+        "BAAI/bge-reranker-v2-m3",
+        description="Имя локальной Cross-Encoder модели для реранкинга кандидатов RAG (multilingual)",
     )
 
     AUTO_REPLY_SERVICE_IDS: list[int] = Field(

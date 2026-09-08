@@ -13,7 +13,10 @@
   * Единая шина команд (Command Bus) и декларативный реестр действий `ActionRegistry` с Pydantic JSON-схемами и типами целей.
   * Динамический движок политик `PolicyEngine` с аппаратным Killswitch (`disabled` -> HTTP 403), HitL (`confirm`) и автоматическим режимом (`auto`).
   * Централизованный Rule Engine и хранение канонических шаблонов триажа в PostgreSQL (`triage_templates` + `rules_admin.py`).
-  * Двухэтапный Hybrid RAG (`bge-m3` 1024 dim + `pgvector` HNSW + Cross-Encoder Reranker с адаптивным GPU-ускорением через ONNX Runtime CUDA/DirectML/CPU).
+  * Двухэтапный Hybrid RAG (`bge-m3` 1024 dim + `pgvector` HNSW + нативный PostgreSQL FTS `tsvector russian` со `setweight` и GIN-индексом + Cross-Encoder `BAAI/bge-reranker-v2-m3` на FastEmbed ONNX Runtime с прогревом в Docker).
+  * Строгий гейтинг источников рекомендаций `is_valid_solution_source` (отсечение статуса 30 «Отменена» и неинформативных отписок) и устранение обходов порогов реранкера.
+  * Инвалидация кэша выдачи RAG по ревизии корпуса `kb:corpus:revision` в Redis.
+  * Офлайн-модуль оценки качества поиска и безопасности действий `evals.py` (Recall@5, Hit@5, MRR@5, no_match_accuracy, Release Gate).
   * Многоконтурный адаптивный AI Hub (LiteLLM Proxy с ротацией ключей, Gemini 3.5 Flash, DLP-маскирование, Redis PII Vault, роутинг RED/YELLOW/GREEN).
   * Адаптивный поиск Ollama и телеметрия GPU: прозрачное подключение к хостовой Ollama (`host.docker.internal:11434`), Docker-сети или локальному порту, автодетект NVIDIA RTX 3050 (CUDA) и AMD (Vulkan/DirectML) в `/api/v1/ai/health`.
   * Защитные механизмы: `Distributed Host Concurrency Locks` (`safety.py`) и `Dead Man's Switch`.

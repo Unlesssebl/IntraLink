@@ -139,7 +139,11 @@ async def test_search_knowledge_base_with_reranker():
     ), patch(
         "app.services.rag._rerank_fastembed_sync",
         return_value=[0.95, 0.88],
+    ), patch(
+        "app.services.worker.get_redis_client",
+        return_value=None,
     ):
+
         results = await search_knowledge_base(
             db=mock_db,
             query_text="Ошибка подключения к принтеру",
@@ -152,3 +156,92 @@ async def test_search_knowledge_base_with_reranker():
         assert len(results) == 2
         assert results[0]["rerank_score"] >= 0.80
         assert results[0]["search_type"] == "hybrid_reranked"
+
+
+@pytest.mark.asyncio
+async def test_rerank_candidates_single_candidate_gate():
+    """Проверка устранения Gate Bypass #1: одиночный кандидат обязан проходить оценку порогом."""
+    candidate = [{
+        "task_id": 601,
+        "name": "Непохожая заявка",
+        "problem": "Проблема А",
+        "solution": "Решение А",
+        "similarity_pct": 50.0,
+    }]
+
+    # 1. Если кросс-энкодер оценил ниже порога -> кандидат отсеивается (возврат [])
+    with patch("app.services.rag._rerank_fastembed_sync", return_value=[0.30]):
+        res_low = await rerank_candidates(
+            query_text="Запрос Б",
+            candidates=candidate,
+            top_n=1,
+            threshold=0.80,
+        )
+        assert res_low == []
+
+    # 2. Если кросс-энкодер оценил выше порога -> кандидат проходит
+    with patch("app.services.rag._rerank_fastembed_sync", return_value=[0.92]):
+        res_high = await rerank_candidates(
+            query_text="Запрос А",
+            candidates=candidate,
+            top_n=1,
+            threshold=0.80,
+        )
+        assert len(res_high) == 1
+        assert res_high[0]["task_id"] == 601
+
+
+@pytest.mark.asyncio
+async def test_rerank_candidates_all_below_threshold_returns_empty():
+    """Проверка устранения Gate Bypass #2: при скорах ниже порога возвращается пустой список (no-match)."""
+    candidates = [
+        {"task_id": 701, "name": "Кандидат 1", "similarity_pct": 60.0},
+        {"task_id": 702, "name": "Кандидат 2", "similarity_pct": 55.0},
+    ]
+
+    with patch("app.services.rag._rerank_fastembed_sync", return_value=[0.45, 0.50]):
+        res = await rerank_candidates(
+            query_text="Специфический запрос",
+            candidates=candidates,
+            top_n=2,
+            threshold=0.80,
+        )
+        assert res == []
+
+
+def test_is_valid_solution_source():
+    """Проверка единого фильтра допуска источников решений."""
+    from app.services.rag import is_valid_solution_source
+
+    valid = {
+        "task_id": 801,
+        "status_name": "Выполнена",
+        "resolution_type": "resolved",
+        "solution": "Удалить обновление Windows и перезапустить службу Spooler",
+    }
+    assert is_valid_solution_source(valid) is True
+
+    cancelled_status = {
+        "task_id": 802,
+        "status_name": "Отменена заявителем",
+        "resolution_type": "resolved",
+        "solution": "Удалить обновление Windows и перезапустить службу Spooler",
+    }
+    assert is_valid_solution_source(cancelled_status) is False
+
+    cancelled_type = {
+        "task_id": 803,
+        "status_name": "Закрыта",
+        "resolution_type": "cancelled",
+        "solution": "Удалить обновление Windows и перезапустить службу Spooler",
+    }
+    assert is_valid_solution_source(cancelled_type) is False
+
+    short_sol = {
+        "task_id": 804,
+        "status_name": "Выполнена",
+        "resolution_type": "resolved",
+        "solution": "Ок",
+    }
+    assert is_valid_solution_source(short_sol) is False
+

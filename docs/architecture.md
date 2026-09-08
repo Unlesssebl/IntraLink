@@ -226,11 +226,11 @@ flowchart TD
     subgraph Search ["Гибридное ранжирование (Retrieval)"]
         Q["Запрос заявителя"] --> QD["Query Distillation (<10ms)"]
         QD --> Dense["Dense pgvector (1024-dim, BGE-M3)"]
-        QD --> Sparse["Sparse tsvector (Коды ошибок, Службы)"]
+        QD --> Sparse["Sparse tsvector (FTS russian + GIN)"]
         Dense --> RRF["RRF + Quality-Score Weighting"]
         Sparse --> RRF
-        RRF --> Filter["Фильтр: quality_score >= 0.4"]
-        Filter --> CE["Cross-Encoder Reranker (bge-reranker-base)"]
+        RRF --> Filter["Фильтр: quality_score >= 0.4 & is_valid_solution_source"]
+        Filter --> CE["Cross-Encoder Reranker (bge-reranker-v2-m3 via FastEmbed)"]
         CE --> Synth["Response Synthesis"]
     end
 ```
@@ -252,19 +252,22 @@ flowchart TD
    * **Действия:** Вычисление `quality_score` (0.0–1.0), извлечение структурированных `key_steps`, автоматический блэклист неинформативных записей (`quality_score < 0.4`), онлайн-трансляция логов и прогресса в Redis (`kb:nightly_audit_progress`).
 
 ### 6.2. Скоринг ценности и гибридное ранжирование
-* **PostgreSQL Schema:** Таблица `task_knowledge_base` оснащена выделенной колонкой `quality_score FLOAT NOT NULL DEFAULT 1.0` с B-tree индексом `ix_task_kb_quality_score`.
+* **PostgreSQL Schema:** Таблица `task_knowledge_base` оснащена выделенной колонкой `quality_score FLOAT NOT NULL DEFAULT 1.0` с B-tree индексом `ix_task_kb_quality_score` и хранимой генерируемой колонкой `search_vector tsvector GENERATED ALWAYS AS (setweight(...) STORED)` с GIN-индексом `idx_tkb_search_vector`.
 * **Взвешенная формула выдачи:**
   1. Жесткое отсечение неинформативных записей: `WHERE is_blacklisted = false AND quality_score >= 0.4`.
   2. Модуляция сходства весом полезности решения:
      $$\text{FinalScore} = \text{CosineSimilarity} \times (0.7 + 0.3 \times \text{QualityScore})$$
      Эталонные пошаговые инструкции (score 0.85–1.0) получают преимущество в выдаче перед краткими типовыми записями (score 0.4–0.5).
 
-### 6.3. Конвейер извлечения и синтеза ответа
+### 6.3. Конвейер извлечения, верификации и синтеза ответа
 1. **Query Distillation:** отсечение эмоционального шума и выделение кодов ошибок (`0x80070005`, `0x0000011b`), моделей оборудования и служб.
-2. **Hybrid Retrieval (Dense + Sparse RRF):** параллельный векторный поиск в `pgvector` (BGE-M3 1024-dim) и полнотекстовый поиск по техническим термам.
-3. **Cross-Encoder Reranking:** локальная переоценка пар `(query, document)` через `BAAI/bge-reranker-base` в неблокирующем потоке (`asyncio.to_thread`) с порогом $\ge 0.85$.
-4. **Auto-KB Canonization (`canonize_task_solution`):** автоматическое извлечение триады `[Проблема] ➔ [Первопричина] ➔ [Решение]`, очистка подписей по `_SIGNATURE_CLEANUP_RE` и сбор диагностических шагов из `lifetime`.
-5. **Strict Grounding Synthesis (`synthesize_triage_resolution`):** синтез ответа строго на основе фактов RAG и телеметрии хоста в закрытом контуре.
+2. **Hybrid Retrieval (Dense + Sparse RRF):** последовательный вызов векторного поиска в `pgvector` (BGE-M3 1024-dim) и нативного полнотекстового поиска PostgreSQL `search_vector @@ plainto_tsquery('russian', :query)` с ранжированием `ts_rank` (последовательное выполнение исключает гонки на `AsyncSession` в `asyncpg`).
+3. **Corpus Revision Cache Invalidation:** ключи кэша поиска версионируются через `rev:{corpus_rev}` (счётчик `kb:corpus:revision` в Redis), что гарантирует мгновенную инвалидацию при `/sync` или индексации новых заявок.
+4. **Cross-Encoder Reranking (`FastEmbed`):** мультиязычная модель `BAAI/bge-reranker-v2-m3` на ONNX Runtime с прогревом в Dockerfile. Нормализация логитов через сигмоиду. Полное устранение gate bypasses: одиночные кандидаты проходят порог, а при скорах ниже порога возвращается строго пустой список (no-match).
+5. **Strict Source Quality Gate (`is_valid_solution_source`):** отсечение отменённых заявок (`cancelled`, статус `30`) и неинформативных текстов (<15 символов) во всех контурах (AI-синтез, детерминированный fallback, RAG Consensus).
+6. **Auto-KB Canonization (`canonize_task_solution`):** автоматическое извлечение триады `[Проблема] ➔ [Первопричина] ➔ [Решение]`, очистка подписей по `_SIGNATURE_CLEANUP_RE` и сбор диагностических шагов из `lifetime`.
+7. **Strict Grounding Synthesis (`synthesize_triage_resolution`):** синтез ответа строго на основе фактов RAG и телеметрии хоста в закрытом контуре. Запрет на формулировки о завершении действий по текущей заявке на основе закрытого исторического прецедента.
+8. **Offline Quality Evals & Release Gate (`evals.py`):** регулярная валидация качества на хронологических сплитах (corpus/validation/test) с расчётом истинного `Recall@5`, `Hit@5`, `MRR@5`, `no_match_accuracy` и контролем безопасности действий (`safe_recommendation_precision`).
 
 ---
 

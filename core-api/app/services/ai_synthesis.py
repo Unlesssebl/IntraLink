@@ -848,9 +848,16 @@ def _synthesize_deterministic_fallback(
             f"Пожалуйста, обратитесь в АХО."
         )
 
-    # 1. Если есть RAG прецедент с высоким сходством
-    if kb_matches and len(kb_matches) > 0:
-        top_match = kb_matches[0]
+    # 1. Если есть валидный RAG прецедент с высоким сходством (Gate)
+    from app.services.rag import is_valid_solution_source
+
+    valid_matches = [
+        m for m in (kb_matches or [])
+        if is_valid_solution_source(m) and float(m.get("similarity_pct") if m.get("similarity_pct") is not None else 100.0) >= 80.0
+    ]
+    if valid_matches:
+
+        top_match = valid_matches[0]
         top_sol = top_match.get("solution") or ""
         if top_sol and len(top_sol) > 15:
             clean_sol = re.sub(
@@ -868,6 +875,7 @@ def _synthesize_deterministic_fallback(
                 f"Здравствуйте! Для похожей проблемы ранее применялось решение: {clean_sol} "
                 f"Я проверю его применимость к заявке #{task_id}."
             )
+
 
     # 2. Пароли и учетные записи Active Directory (RED контур)
     ad_keywords = ["парол", "учетн", "разблокиров", "блокировк", "active directory", "логин"]
@@ -1005,10 +1013,22 @@ async def synthesize_triage_resolution(
                 rule_fact = f"ПОДТВЕРЖДЕННЫЙ РЕГЛАМЕНТ КОМПАНИИ (ДЕЙСТВИЕ {r_key}): {r_comment}"
 
     fact_block = ""
-    if kb_matches and len(kb_matches) > 0:
-        top_sol = kb_matches[0].get("solution", "").strip()
+    from app.services.rag import is_valid_solution_source
+
+    valid_matches = [
+        m for m in (kb_matches or [])
+        if is_valid_solution_source(m) and float(m.get("similarity_pct") if m.get("similarity_pct") is not None else 100.0) >= 75.0
+    ]
+
+    if valid_matches:
+        top_sol = valid_matches[0].get("solution", "").strip()
+        tid = valid_matches[0].get("task_id")
         if top_sol:
-            fact_block = f"ПОДТВЕРЖДЕННЫЙ ФАКТ РЕШЕНИЯ (ИЗ БАЗЫ ЗНАНИЙ): {top_sol}"
+            fact_block = (
+                f"ИСТОРИЧЕСКИЙ ПРЕЦЕДЕНТ РЕШЕНИЯ (Заявка #{tid}, ранее применялось): {top_sol}\n"
+                "ВНИМАНИЕ: Это решение по аналогичной прошлой заявке. "
+                "Запрещено утверждать, что это действие уже выполнено по текущей поступившей заявке!"
+            )
 
     telemetry_fact = ""
     if telemetry:
@@ -1052,9 +1072,11 @@ async def synthesize_triage_resolution(
         "   - ПРИОРИТЕТ РЕГЛАМЕНТА: Если указан 'ПОДТВЕРЖДЕННЫЙ РЕГЛАМЕНТ КОМПАНИИ', ОБЯЗАТЕЛЬНО опирайся на него!\n"
         "   - ЗАПРЕТ НА ВЫДУМЫВАНИЕ ДЕЙСТВИЙ: Если в блоке 'ПОДТВЕРЖДЕННЫЙ ФАКТ' указано 'Отсутствует' и нет регламента, "
         "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать, что проблема решена! Сообщи о проведении диагностики и предложи 1-2 первичных действия для проверки.\n"
-        "   - ЕСЛИ ЕСТЬ ФАКТ РЕШЕНИЯ ИЗ БАЗЫ ЗНАНИЙ: Опирайся строго на него.\n"
+        "   - ЕСЛИ ЕСТЬ ИСТОРИЧЕСКИЙ ПРЕЦЕДЕНТ: Опирайся на него как на ранее подтвержденное решение аналогичной проблемы, "
+        "но не утверждай, что оно уже выполнено в текущей поступившей заявке.\n"
         f"{greeting_instruction}\n"
     )
+
 
     context_lines = [line for line in [rule_fact, fact_block, telemetry_fact, thread_fact] if line]
     context_text = "\n".join(context_lines)
