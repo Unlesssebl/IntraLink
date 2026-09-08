@@ -2,6 +2,8 @@
 
 Документ фиксирует стратегические горизонты, этапы технологической эволюции и архитектурные инварианты системы **IntraLink**.
 
+Ближайший этап AI-контура: [Roadmap качества RAG](plans/rag-quality-roadmap.md). В нём зафиксированы результаты аудита локального стека от 2026-09-08, минимальный объём изменений и критерии приёмки.
+
 ---
 
 ## 🏛️ Ключевой архитектурный принцип: Детерминизм vs Гибкий ИИ
@@ -40,7 +42,7 @@ flowchart TD
 timeline
     title План развития IntraLink
     section Текущий базис (Внедрено)
-        Production Baseline : Core API, Redis Streams, DLP Vault, Pre-fetch, Hybrid RAG + Reranker
+        Production Baseline : Core API, Redis Streams, DLP Vault, Pre-fetch, Dense RAG
     section Активный этап (Q3–Q4 2026)
         Action Platform & MCP Hub : Санация кодовой базы, SSOT Credentials Vault, MCP Server, Web Command Center
     section Надёжность AI и UX оператора (Q4 2026)
@@ -64,7 +66,7 @@ timeline
 * **Безопасность (Zero Trust DLP):** Трехконтурная маршрутизация инференса (🔴 RED On-Prem / 🟡 YELLOW PII Vault / 🟢 GREEN Cloud).
 * **Фоновая телеметрия (0ms latency):** Fail-Fast сетевой опрос (Ping 400ms, SMB:445, WinRM:5985, CIM Spooler/1C) с защитой подсетей и кэшем в Redis.
 * **Защитные контуры:** Distributed Host Concurrency Lock (`lock:host:<pc>`, TTL 30s) и аварийный тормоз Dead Man's Switch (Rate-Limiter).
-* **База знаний (Hybrid RAG):** Dense pgvector (1024-dim, BGE-M3) + Sparse tsvector + Reciprocal Rank Fusion (RRF $k=60$) + локальный Cross-Encoder Reranker (`bge-reranker-base`).
+* **База знаний (RAG):** Dense pgvector (1024-dim, BGE-M3), лексический поиск через `ILIKE` и RRF. Адаптер Cross-Encoder существует, но в проверенном runtime от 2026-09-08 отсутствует FastEmbed. Настоящий FTS и работоспособный reranker входят в [ближайший roadmap](plans/rag-quality-roadmap.md).
 * **Клиенты:** React SPA (`/operator-panel`), Telegram-бот (aiogram 3.x) и Tooling SDK `helpdesk-cli` для AI-агента Antigravity.
 
 ---
@@ -198,6 +200,6 @@ timeline
 |---|:---:|:---:|:---:|
 | **Среднее время первичного триажа (MTTA)** | 15–30 мин | **< 1 мин** (пакетный разбор) | **< 10 сек** (авто-триаж + pre-fetch) |
 | **Время закрытия типовых заявок (MTTR)** | 20–40 мин | **3–5 мин** (AD / Wi-Fi CLI) | **< 1 мин** (Zero-Touch execution) |
-| **Точность RAG-рекомендаций** | — | **~70%** (косинусный поиск) | **95%+** (Hybrid + Reranker) |
+| **Качество RAG-рекомендаций** | — | Baseline не подтверждён; см. аудит 2026-09-08 | Измеряемое улучшение retrieval и отсутствие ложных рекомендаций на контрольном наборе; критерии в [RAG roadmap](plans/rag-quality-roadmap.md) |
 | **Утечки конфиденциальных данных (DLP)** | Высокий риск | **0%** (DLP Sanitizer + Vault) | **0%** (Формально верифицировано) |
 | **Доля рутинных операций (Zero-Touch)** | 0% | **25%** | **65%+** |
