@@ -1618,7 +1618,10 @@ async def sync_stratified_kb(
     target_root_id: str | None = None,
     status_ids: list[int] | None = None,
     ai_eval: bool = True,
+    service_quotas: dict[int | str, int] | None = None,
+    target_service_ids: list[int] | None = None,
 ) -> dict[str, Any]:
+
     """
     Умное фоновое наполнение RAG по корневым разделам IntraService (01..17).
     - Защита от перегрузки (Rate Limiting + троттлинг).
@@ -1669,6 +1672,16 @@ async def sync_stratified_kb(
         target_services = leaf_services
         target_roots = all_roots
 
+    if target_service_ids:
+        target_ids_set = {int(x) for x in target_service_ids}
+        if use_leaf_mode:
+            target_services = [s for s in target_services if s.id in target_ids_set]
+        else:
+            target_roots = [
+                r for r in target_roots
+                if any(sid in target_ids_set for sid in get_subservice_ids_for_root(r["root_id"]))
+            ]
+
     items_to_process = target_services if use_leaf_mode else target_roots
 
     if not status_ids:
@@ -1680,6 +1693,7 @@ async def sync_stratified_kb(
         "started_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "target_root_id": target_root_id,
+        "target_service_ids": target_service_ids,
         "status_ids": status_ids,
         "ai_eval": ai_eval,
         "current_root": None,
@@ -1708,7 +1722,7 @@ async def sync_stratified_kb(
             progress_state["logs"] = progress_state["logs"][-100:]
 
     mode_title = f"{len(items_to_process)} детальных сервисов" if use_leaf_mode else f"{len(items_to_process)} разделов"
-    add_log(f"Старт наполнения RAG: {mode_title}, квота {quota_per_service}, глубина {days} дн., статусы [{status_ids_str}], AI-фильтр: {'ВКЛ' if ai_eval else 'ВЫКЛ'}", "info")
+    add_log(f"Старт наполнения RAG: {mode_title}, базовая квота {quota_per_service}, глубина {days} дн., статусы [{status_ids_str}], AI-фильтр: {'ВКЛ' if ai_eval else 'ВЫКЛ'}", "info")
     await _save_sync_progress(redis, progress_state)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -1729,8 +1743,16 @@ async def sync_stratified_kb(
                     r_name = item_info.root_name or s_name
                     stat_key = f"{r_id}:{s_id}"
                     item_display_name = s_path
-                    effective_quota = quota_per_service
+                    # Индивидуальная регулируемая квота на конкретный лист
+                    if service_quotas:
+                        custom_q = service_quotas.get(s_id)
+                        if custom_q is None:
+                            custom_q = service_quotas.get(str(s_id))
+                        effective_quota = int(custom_q) if custom_q is not None else quota_per_service
+                    else:
+                        effective_quota = quota_per_service
                 else:
+
 
                     # Режим корневых разделов (fallback для окружений без Redis)
                     r_id = item_info["root_id"]

@@ -114,6 +114,8 @@ export interface KBExampleItem {
   solution: string;
   service_id: number;
   service_name: string;
+  service_path?: string | null;
+  service_path_ids?: number[] | null;
   status_name: string;
   root_cause?: string | null;
   root_id?: string | null;
@@ -150,16 +152,29 @@ export interface KBRootServiceItem {
   name: string;
 }
 
+export interface KBLeafServiceItem {
+  id: number;
+  name: string;
+  service_path: string;
+  root_num: string;
+  root_id: string;
+  root_service_id?: number | null;
+  root_name: string;
+  count: number;
+}
+
 export interface KBStatsResponse {
   total_active_examples: number;
   total_blacklisted_examples: number;
   services_count: number;
   services: Record<string, { total: number; by_status: Record<string, number> }>;
+  leaf_services?: KBLeafServiceItem[];
   sync_readiness?: KBSyncReadiness;
   embedding_readiness?: KBEmbeddingReadiness;
   root_services?: KBRootServiceItem[];
   root_counts?: Record<string, number>;
 }
+
 
 export interface KBSyncResponse {
   status: string;
@@ -313,7 +328,10 @@ export interface KBStratifiedSyncRequest {
   root_id?: string | null;
   status_ids?: number[];
   ai_eval?: boolean;
+  service_quotas?: Record<number, number>;
+  target_service_ids?: number[];
 }
+
 
 export async function fetchAvailableStatuses(token: string): Promise<KBStatusItem[]> {
   try {

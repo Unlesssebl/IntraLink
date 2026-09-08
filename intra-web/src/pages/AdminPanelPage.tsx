@@ -21,6 +21,7 @@ import {
   type ConnectionTestResult,
   type KBExampleItem,
   type KBStatsResponse,
+  type KBLeafServiceItem,
   type KBSyncProgressResponse,
   fetchAvailableStatuses,
   type KBStatusItem,
@@ -138,6 +139,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [kbSearch, setKbSearch] = useState<string>('');
   const [kbSearchInput, setKbSearchInput] = useState<string>('');
   const [kbSelectedRootFilter, setKbSelectedRootFilter] = useState<string | null>(null);
+  const [kbSelectedLeafFilter, setKbSelectedLeafFilter] = useState<number | null>(null);
   const [expandedTasks, setExpandedTasks] = useState<Record<number, boolean>>({});
   const [copiedTaskId, setCopiedTaskId] = useState<number | null>(null);
   const kbTableRef = useRef<HTMLDivElement>(null);
@@ -158,6 +160,42 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
   const [isPurgeModalOpen, setIsPurgeModalOpen] = useState<boolean>(false);
   const [purgeConfirmed, setPurgeConfirmed] = useState<boolean>(false);
   const [purgingKb, setPurgingKb] = useState<boolean>(false);
+
+  // Состояния для детализированных лимитов по 45 листьям каталога
+  const [isLeafQuotasModalOpen, setIsLeafQuotasModalOpen] = useState<boolean>(false);
+  const [customLeafQuotas, setCustomLeafQuotas] = useState<Record<number, number>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('intralink_kb_leaf_quotas') || '{}');
+    } catch {
+      return {};
+    }
+  });
+  const [excludedLeafIds, setExcludedLeafIds] = useState<number[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('intralink_kb_excluded_leaves') || '[]');
+    } catch {
+      return [];
+    }
+  });
+  const [leafModalSearch, setLeafModalSearch] = useState<string>('');
+  const [leafModalRootFilter, setLeafModalRootFilter] = useState<string>('');
+  const [batchQuotaInput, setBatchQuotaInput] = useState<number>(30);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('intralink_kb_leaf_quotas', JSON.stringify(customLeafQuotas));
+    } catch (e) {
+      console.warn('Ошибка сохранения customLeafQuotas:', e);
+    }
+  }, [customLeafQuotas]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('intralink_kb_excluded_leaves', JSON.stringify(excludedLeafIds));
+    } catch (e) {
+      console.warn('Ошибка сохранения excludedLeafIds:', e);
+    }
+  }, [excludedLeafIds]);
 
   const [helpdeskConfig, setHelpdeskConfig] = useState<HelpdeskConfigDTO>({
     primary_executor_id: 8664,
@@ -340,12 +378,19 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
   // KB Handlers
   const loadKbData = useCallback(
-    async (authToken: string, page = 1, search = '', rootId: string | null = null, limit = 10) => {
+    async (
+      authToken: string,
+      page = 1,
+      search = '',
+      rootId: string | null = null,
+      limit = 10,
+      leafId: number | null = null
+    ) => {
       setKbLoading(true);
       try {
         const [stats, examplesData] = await Promise.all([
           fetchKbStats(authToken).catch(() => null),
-          fetchKbExamples(authToken, page, limit, undefined, search, rootId),
+          fetchKbExamples(authToken, page, limit, leafId ?? undefined, search, rootId),
         ]);
         if (stats) setKbStats(stats);
         setKbExamples(examplesData.examples || []);
@@ -371,9 +416,9 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
 
   useEffect(() => {
     if (token && activeTab === 'kb') {
-      loadKbData(token, kbPage, kbSearch, kbSelectedRootFilter, kbLimit);
+      loadKbData(token, kbPage, kbSearch, kbSelectedRootFilter, kbLimit, kbSelectedLeafFilter);
     }
-  }, [token, activeTab, kbPage, kbSearch, kbSelectedRootFilter, kbLimit, loadKbData]);
+  }, [token, activeTab, kbPage, kbSearch, kbSelectedRootFilter, kbLimit, kbSelectedLeafFilter, loadKbData]);
 
   const handleCopySolution = async (taskId: number, solution: string) => {
     try {
@@ -393,6 +438,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     setKbSearchInput('');
     setKbSearch('');
     setKbSelectedRootFilter(null);
+    setKbSelectedLeafFilter(null);
     setKbPage(1);
   };
 
@@ -459,12 +505,22 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
     setKbSyncLoading(true);
     setStatusMessage(null);
     try {
+      const allLeaves = kbStats?.leaf_services || [];
+      const targetIds =
+        excludedLeafIds.length > 0
+          ? allLeaves.filter(l => !excludedLeafIds.includes(l.id)).map(l => l.id)
+          : undefined;
+
+      const hasCustomQuotas = Object.keys(customLeafQuotas).length > 0;
+
       const res = await triggerStratifiedKbSync(token, {
         quota_per_service: kbSyncQuota,
         days: kbSyncDays,
         root_id: kbSyncRootId || null,
         status_ids: selectedStatusIds,
         ai_eval: aiQualityEval,
+        service_quotas: hasCustomQuotas ? customLeafQuotas : undefined,
+        target_service_ids: targetIds,
       });
       setStatusMessage({ type: 'success', text: res.message || 'Умная синхронизация запущена в фоне' });
       const statusData = await fetchKbSyncStatus(token);
@@ -2033,7 +2089,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-neutral-400">Квота:</span>
+                    <span className="text-xs text-neutral-400">Базовая квота:</span>
                     <input
                       type="number"
                       min={5}
@@ -2041,9 +2097,39 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                       value={kbSyncQuota}
                       onChange={e => setKbSyncQuota(Math.max(5, Math.min(100, Number(e.target.value) || 30)))}
                       className="w-14 px-2 py-1.5 bg-neutral-950 border border-neutral-700 rounded-lg text-xs text-neutral-200 text-center focus:outline-none focus:border-blue-500"
-                      title="Количество качественных прецедентов на каждый раздел"
+                      title="Базовое количество качественных прецедентов на каждый подраздел каталога"
                     />
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsLeafQuotasModalOpen(true)}
+                    className="px-3 py-1.5 bg-neutral-950 hover:bg-neutral-800 border border-neutral-700 hover:border-neutral-600 rounded-lg text-xs text-neutral-300 hover:text-white flex items-center gap-1.5 cursor-pointer transition-colors"
+                    title="Индивидуальная настройка лимитов для каждого из 45 подразделов каталога"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                      <line x1="4" y1="21" x2="4" y2="14"></line>
+                      <line x1="4" y1="10" x2="4" y2="3"></line>
+                      <line x1="12" y1="21" x2="12" y2="12"></line>
+                      <line x1="12" y1="8" x2="12" y2="3"></line>
+                      <line x1="20" y1="21" x2="20" y2="16"></line>
+                      <line x1="20" y1="12" x2="20" y2="3"></line>
+                      <line x1="1" y1="14" x2="7" y2="14"></line>
+                      <line x1="9" y1="8" x2="15" y2="8"></line>
+                      <line x1="17" y1="16" x2="23" y2="16"></line>
+                    </svg>
+                    <span>Лимиты подразделов (45)</span>
+                    {Object.keys(customLeafQuotas).length > 0 && (
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-blue-500/20 text-blue-400 font-mono">
+                        {Object.keys(customLeafQuotas).length} кастом
+                      </span>
+                    )}
+                    {excludedLeafIds.length > 0 && (
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-rose-500/20 text-rose-400 font-mono">
+                        -{excludedLeafIds.length} откл
+                      </span>
+                    )}
+                  </button>
 
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-neutral-400">Глубина:</span>
@@ -2354,7 +2440,7 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                 </div>
 
                 {/* Active Filters Bar */}
-                {(kbSelectedRootFilter || kbSearch) && (
+                {(kbSelectedRootFilter || kbSelectedLeafFilter || kbSearch) && (
                   <div className="flex flex-wrap items-center gap-2 pt-0.5">
                     <span className="text-[11px] text-neutral-500 font-medium">Активные фильтры:</span>
                     {kbSelectedRootFilter && (
@@ -2370,6 +2456,24 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                           }}
                           className="hover:text-white cursor-pointer ml-0.5 text-sm"
                           title="Снять фильтр раздела"
+                        >
+                          &times;
+                        </button>
+                      </span>
+                    )}
+                    {kbSelectedLeafFilter && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 text-xs">
+                        <span>
+                          Подраздел: {kbStats?.leaf_services?.find(l => l.id === kbSelectedLeafFilter)?.service_path || `#${kbSelectedLeafFilter}`}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setKbSelectedLeafFilter(null);
+                            setKbPage(1);
+                          }}
+                          className="hover:text-white cursor-pointer ml-0.5 text-sm"
+                          title="Снять фильтр подраздела"
                         >
                           &times;
                         </button>
@@ -2492,9 +2596,23 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                             <span className="text-xs font-semibold text-neutral-200">
                               {item.original_name || 'Без названия'}
                             </span>
-                            <span className="px-2 py-0.5 rounded text-[10px] bg-neutral-800 text-neutral-400">
-                              {item.service_name}
-                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (item.service_id) {
+                                  setKbSelectedLeafFilter(item.service_id);
+                                  setKbPage(1);
+                                  kbTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                }
+                              }}
+                              title={`Кликните для фильтрации по подразделу: ${item.service_path || item.service_name}`}
+                              className="px-2 py-0.5 rounded text-[10px] bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white border border-neutral-700/60 transition-colors flex items-center gap-1 cursor-pointer"
+                            >
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-neutral-500 shrink-0">
+                                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                              </svg>
+                              <span className="truncate max-w-[280px]">{item.service_path || item.service_name}</span>
+                            </button>
                             {/* Resolution Outcome Badge */}
                             <span className={`px-2 py-0.5 rounded text-[10px] font-semibold border flex items-center gap-1 ${
                               item.resolution_type === 'rejected' ? 'bg-rose-500/10 border-rose-500/30 text-rose-300' :
@@ -2766,6 +2884,362 @@ export default function AdminPanelPage({ theme = 'light' }: AdminPanelPageProps)
                 className="px-4 py-2 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white shadow-lg shadow-rose-900/30 transition-all cursor-pointer flex items-center gap-1.5"
               >
                 {purgingKb ? 'Очистка...' : 'Очистить всё'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Leaf Service Quotas Configuration Modal */}
+      {isLeafQuotasModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-neutral-800 flex items-center justify-between bg-neutral-900/90 backdrop-blur-xs shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shrink-0">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="text-blue-400">
+                    <line x1="4" y1="21" x2="4" y2="14"></line>
+                    <line x1="4" y1="10" x2="4" y2="3"></line>
+                    <line x1="12" y1="21" x2="12" y2="12"></line>
+                    <line x1="12" y1="8" x2="12" y2="3"></line>
+                    <line x1="20" y1="21" x2="20" y2="16"></line>
+                    <line x1="20" y1="12" x2="20" y2="3"></line>
+                    <line x1="1" y1="14" x2="7" y2="14"></line>
+                    <line x1="9" y1="8" x2="15" y2="8"></line>
+                    <line x1="17" y1="16" x2="23" y2="16"></line>
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-neutral-100 flex items-center gap-2">
+                    <span>Лимиты по подразделам каталога</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full font-mono bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                      {kbStats?.leaf_services?.length ?? 0} услуг
+                    </span>
+                  </h3>
+                  <p className="text-xs text-neutral-400">
+                    Индивидуальная квота обучающих прецедентов на каждый конкретный лист каталога. Базовая квота: {kbSyncQuota}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsLeafQuotasModalOpen(false)}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer text-lg leading-none"
+                title="Закрыть окно"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Quick Actions and Filters Bar */}
+            <div className="px-6 py-3 border-b border-neutral-800/80 bg-neutral-950/60 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[260px]">
+                {/* Search input */}
+                <div className="relative min-w-[180px] max-w-[240px] flex-1">
+                  <input
+                    type="text"
+                    value={leafModalSearch}
+                    onChange={e => setLeafModalSearch(e.target.value)}
+                    placeholder="Поиск по названию или ID..."
+                    className="w-full pl-8 pr-7 py-1.5 bg-neutral-900 border border-neutral-700 rounded-lg text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-blue-500"
+                  />
+                  <svg className="absolute left-2.5 top-2 text-neutral-500" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  {leafModalSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setLeafModalSearch('')}
+                      className="absolute right-2 top-1.5 text-neutral-400 hover:text-white text-xs cursor-pointer"
+                    >
+                      &times;
+                    </button>
+                  )}
+                </div>
+
+                {/* Root section selector */}
+                <select
+                  value={leafModalRootFilter}
+                  onChange={e => setLeafModalRootFilter(e.target.value)}
+                  className="px-2.5 py-1.5 bg-neutral-900 border border-neutral-700 rounded-lg text-xs text-neutral-200 focus:outline-none focus:border-blue-500 cursor-pointer max-w-[180px] truncate"
+                >
+                  <option value="">Все разделы (01–17)</option>
+                  {kbStats?.root_services?.map(r => (
+                    <option key={r.root_id} value={r.root_id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Batch quota assignment & bulk tools */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5 bg-neutral-900 px-2 py-1 rounded-lg border border-neutral-700">
+                  <span className="text-[11px] text-neutral-400">Квота:</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={batchQuotaInput}
+                    onChange={e => setBatchQuotaInput(Math.max(1, Math.min(200, Number(e.target.value) || 30)))}
+                    className="w-12 px-1 py-0.5 bg-neutral-950 border border-neutral-700 rounded text-xs text-neutral-100 text-center focus:outline-none focus:border-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const quotaVal = Math.max(1, Math.min(200, batchQuotaInput || kbSyncQuota));
+                      const targets = (kbStats?.leaf_services || []).filter(l => {
+                        const q = leafModalSearch.trim().toLowerCase();
+                        const matchSearch =
+                          !q ||
+                          l.name.toLowerCase().includes(q) ||
+                          l.service_path.toLowerCase().includes(q) ||
+                          String(l.id).includes(q);
+                        const matchRoot = !leafModalRootFilter || l.root_id === leafModalRootFilter;
+                        return matchSearch && matchRoot;
+                      });
+                      setCustomLeafQuotas(prev => {
+                        const next = { ...prev };
+                        targets.forEach(t => {
+                          next[t.id] = quotaVal;
+                        });
+                        return next;
+                      });
+                    }}
+                    className="px-2 py-0.5 text-[11px] font-medium bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 border border-blue-500/40 rounded transition-colors cursor-pointer"
+                    title="Установить это значение квоты для всех отфильтрованных строк"
+                  >
+                    Применить
+                  </button>
+                </div>
+
+                {Object.keys(customLeafQuotas).length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setCustomLeafQuotas({})}
+                    className="px-2.5 py-1 text-[11px] font-medium text-neutral-400 hover:text-rose-400 bg-neutral-900 hover:bg-rose-950/20 border border-neutral-800 hover:border-rose-900/40 rounded-lg transition-colors cursor-pointer"
+                    title="Сбросить все индивидуальные настройки и использовать базовую квоту"
+                  >
+                    Сбросить кастомные
+                  </button>
+                )}
+
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setExcludedLeafIds([])}
+                    className="px-2 py-1 text-[11px] font-medium text-neutral-400 hover:text-white bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 rounded-lg transition-colors cursor-pointer"
+                    title="Включить все подразделы в синхронизацию"
+                  >
+                    Включить все
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const zeroIds = (kbStats?.leaf_services || []).filter(l => l.count === 0).map(l => l.id);
+                      setExcludedLeafIds(prev => Array.from(new Set([...prev, ...zeroIds])));
+                    }}
+                    className="px-2 py-1 text-[11px] font-medium text-neutral-400 hover:text-amber-300 bg-neutral-900 hover:bg-amber-950/20 border border-neutral-800 rounded-lg transition-colors cursor-pointer"
+                    title="Исключить подразделы без прецедентов (0)"
+                  >
+                    Исключить пустые (0)
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Leaves List */}
+            <div className="flex-1 overflow-y-auto px-6 py-3 divide-y divide-neutral-800/50 space-y-1.5 scrollbar-thin scrollbar-thumb-neutral-800">
+              {(() => {
+                const leaves = (kbStats?.leaf_services || []).filter(l => {
+                  const q = leafModalSearch.trim().toLowerCase();
+                  const matchSearch =
+                    !q ||
+                    l.name.toLowerCase().includes(q) ||
+                    l.service_path.toLowerCase().includes(q) ||
+                    String(l.id).includes(q);
+                  const matchRoot = !leafModalRootFilter || l.root_id === leafModalRootFilter;
+                  return matchSearch && matchRoot;
+                });
+
+                if (leaves.length === 0) {
+                  return (
+                    <div className="py-12 text-center text-xs text-neutral-500">
+                      Подразделы не найдены по указанным критериям фильтрации.
+                    </div>
+                  );
+                }
+
+                return leaves.map(leaf => {
+                  const isExcluded = excludedLeafIds.includes(leaf.id);
+                  const hasCustom = leaf.id in customLeafQuotas;
+                  const effQuota = customLeafQuotas[leaf.id] ?? kbSyncQuota;
+                  const percent = Math.min(100, Math.round((leaf.count / Math.max(1, effQuota)) * 100));
+
+                  return (
+                    <div
+                      key={leaf.id}
+                      className={`pt-2 pb-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl px-3 transition-colors ${
+                        isExcluded
+                          ? 'opacity-40 bg-neutral-950/40 hover:opacity-75'
+                          : 'hover:bg-neutral-800/40'
+                      }`}
+                    >
+                      {/* Left: Checkbox + Badges + Path */}
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={!isExcluded}
+                          onChange={() => {
+                            setExcludedLeafIds(prev =>
+                              prev.includes(leaf.id) ? prev.filter(x => x !== leaf.id) : [...prev, leaf.id]
+                            );
+                          }}
+                          className="w-4 h-4 rounded border-neutral-700 text-blue-600 focus:ring-blue-500 bg-neutral-950 cursor-pointer shrink-0"
+                          title={isExcluded ? 'Подраздел исключен из синхронизации (кликните для включения)' : 'Подраздел включен в синхронизацию (кликните для исключения)'}
+                        />
+
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-neutral-800 text-neutral-300 border border-neutral-700/60 shrink-0">
+                          {leaf.root_num}
+                        </span>
+
+                        <span className="text-[11px] font-mono text-neutral-500 shrink-0">
+                          #{leaf.id}
+                        </span>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-medium text-neutral-200 truncate" title={leaf.service_path}>
+                            {leaf.service_path}
+                          </div>
+                          {leaf.root_name && (
+                            <div className="text-[10px] text-neutral-500 truncate">
+                              Раздел: {leaf.root_name}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Right: Progress bar + Quota Input + Actions */}
+                      <div className="flex items-center gap-3 shrink-0">
+                        {/* Fill Progress Bar */}
+                        <div className="flex flex-col items-end min-w-[90px]">
+                          <div className="flex items-center gap-1 text-[11px] font-mono">
+                            <span className={leaf.count > 0 ? 'text-neutral-200 font-semibold' : 'text-neutral-500'}>
+                              {leaf.count}
+                            </span>
+                            <span className="text-neutral-500">/</span>
+                            <span className="text-neutral-400">{effQuota}</span>
+                            <span className="text-[10px] text-neutral-500 font-sans">({percent}%)</span>
+                          </div>
+                          <div className="w-20 h-1.5 bg-neutral-800 rounded-full overflow-hidden mt-1">
+                            <div
+                              className={`h-full transition-all duration-300 ${
+                                percent >= 100
+                                  ? 'bg-emerald-500'
+                                  : percent > 0
+                                  ? 'bg-blue-500'
+                                  : 'bg-transparent'
+                              }`}
+                              style={{ width: `${percent}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Individual Quota Input */}
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min={1}
+                            max={200}
+                            value={hasCustom ? customLeafQuotas[leaf.id] : ''}
+                            placeholder={String(kbSyncQuota)}
+                            onChange={e => {
+                              const val = e.target.value.trim();
+                              if (!val) {
+                                setCustomLeafQuotas(prev => {
+                                  const next = { ...prev };
+                                  delete next[leaf.id];
+                                  return next;
+                                });
+                              } else {
+                                const num = Math.max(1, Math.min(200, parseInt(val, 10) || kbSyncQuota));
+                                setCustomLeafQuotas(prev => ({ ...prev, [leaf.id]: num }));
+                              }
+                            }}
+                            className={`w-14 px-2 py-1 bg-neutral-950 border rounded-lg text-xs text-center focus:outline-none transition-colors ${
+                              hasCustom
+                                ? 'border-blue-500/70 text-blue-300 font-semibold bg-blue-950/20'
+                                : 'border-neutral-700 text-neutral-400 placeholder-neutral-600'
+                            }`}
+                            title={hasCustom ? `Индивидуальный лимит: ${customLeafQuotas[leaf.id]}` : `Используется базовая квота: ${kbSyncQuota}`}
+                          />
+                          {hasCustom && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCustomLeafQuotas(prev => {
+                                  const next = { ...prev };
+                                  delete next[leaf.id];
+                                  return next;
+                                });
+                              }}
+                              className="text-neutral-500 hover:text-neutral-300 text-xs p-1 cursor-pointer"
+                              title="Сбросить на базовую квоту"
+                            >
+                              &times;
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Direct Filter button */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setKbSelectedLeafFilter(leaf.id);
+                            setKbPage(1);
+                            setIsLeafQuotasModalOpen(false);
+                            kbTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                          }}
+                          className="px-2 py-1 text-[10px] font-medium text-neutral-400 hover:text-neutral-200 bg-neutral-800 hover:bg-neutral-700 rounded-lg border border-neutral-700 transition-colors cursor-pointer"
+                          title="Показать прецеденты этого подраздела в таблице"
+                        >
+                          Тикеты ({leaf.count})
+                        </button>
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3.5 border-t border-neutral-800 bg-neutral-950 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="flex flex-wrap items-center gap-3 text-xs text-neutral-400 font-mono">
+                <span>Всего: <strong className="text-neutral-200">{kbStats?.leaf_services?.length ?? 0}</strong></span>
+                <span>•</span>
+                <span>Активных: <strong className="text-blue-400">{(kbStats?.leaf_services?.length ?? 0) - excludedLeafIds.length}</strong></span>
+                {excludedLeafIds.length > 0 && (
+                  <>
+                    <span>•</span>
+                    <span className="text-rose-400">Исключено: <strong>{excludedLeafIds.length}</strong></span>
+                  </>
+                )}
+                {Object.keys(customLeafQuotas).length > 0 && (
+                  <>
+                    <span>•</span>
+                    <span className="text-indigo-300">Кастомных лимитов: <strong>{Object.keys(customLeafQuotas).length}</strong></span>
+                  </>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsLeafQuotasModalOpen(false)}
+                className="px-5 py-1.5 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white shadow-sm transition-colors cursor-pointer"
+              >
+                Готово
               </button>
             </div>
           </div>

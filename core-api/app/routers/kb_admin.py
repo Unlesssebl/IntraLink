@@ -55,6 +55,8 @@ class KBExampleItem(BaseModel):
     solution: str
     service_id: int
     service_name: str
+    service_path: str | None = None
+    service_path_ids: list[int] | None = None
     status_name: str
     root_cause: str | None = None
     root_id: str | None = None
@@ -62,6 +64,7 @@ class KBExampleItem(BaseModel):
     resolution_label: str | None = None
     resolution_badge_color: str | None = None
     quality_score: float = 1.0
+
 
 
 class KBExamplesResponse(BaseModel):
@@ -199,6 +202,8 @@ async def get_kb_examples(
                     solution=r.solution or "",
                     service_id=r.service_id or 0,
                     service_name=s_name,
+                    service_path=getattr(r, "service_path", None) or s_name,
+                    service_path_ids=list(getattr(r, "service_path_ids", []) or []),
                     status_name=r.status_name or "",
                     root_cause=c_data.get("root_cause"),
                     root_id=c_data.get("root_id"),
@@ -208,6 +213,7 @@ async def get_kb_examples(
                     quality_score=float(getattr(r, "quality_score", 1.0) or 1.0),
                 )
             )
+
 
         return KBExamplesResponse(
             total=total,
@@ -409,6 +415,23 @@ async def get_kb_statistics(
             cnt = sum(services_stats.get(str(s), {}).get("total", 0) for s in sids)
             root_counts[r["root_id"]] = cnt
 
+        # Детализированная информация по всем 45 конечным сервисам (листьям каталога)
+        from app.services.service_catalog import ServiceCatalogService
+        leaf_services_info = await ServiceCatalogService.get_leaf_services(redis_client=redis)
+        leaves_data = [
+            {
+                "id": s.id,
+                "name": s.name,
+                "service_path": s.service_path,
+                "root_num": s.root_num or "99",
+                "root_id": s.root_num or "99",
+                "root_service_id": s.root_id,
+                "root_name": s.root_name or s.name,
+                "count": services_stats.get(str(s.id), {}).get("total", 0),
+            }
+            for s in leaf_services_info
+        ]
+
         embed_ok, embed_msg = await check_embedding_health()
 
         return {
@@ -416,6 +439,7 @@ async def get_kb_statistics(
             "total_blacklisted_examples": blacklisted_count,
             "services_count": len(services_stats),
             "services": services_stats,
+            "leaf_services": leaves_data,
             "sync_readiness": readiness,
             "embedding_readiness": {
                 "ready": embed_ok,
@@ -426,6 +450,7 @@ async def get_kb_statistics(
             "root_services": roots,
             "root_counts": root_counts,
         }
+
     except Exception as e:
         logger.exception("Ошибка при сборе статистики базы знаний: %s", e)
         raise HTTPException(
@@ -479,11 +504,13 @@ async def trigger_kb_sync(
 
 
 class KBStratifiedSyncRequest(BaseModel):
-    quota_per_service: int = Field(30, ge=5, le=100, description="Квота качественных прецедентов на раздел")
+    quota_per_service: int = Field(30, ge=1, le=100, description="Базовая квота качественных прецедентов на раздел или лист")
     days: int = Field(60, ge=7, le=365, description="Глубина выборки в днях")
     root_id: str | None = Field(None, description="ID конкретного корневого раздела (например '03') или None для всех")
     status_ids: list[int] = Field(default=[28, 29, 43, 30], description="Список ID статусов для выборки заявок")
     ai_eval: bool = Field(default=True, description="Включить AI-валидацию качества решений (Qwen 2.5)")
+    service_quotas: dict[int | str, int] | None = Field(default=None, description="Индивидуальные квоты для каждого service_id (листа каталога)")
+    target_service_ids: list[int] | None = Field(default=None, description="Список ID конкретных конечных сервисов для выборочной синхронизации")
 
 
 @router.get("/available-statuses", status_code=status.HTTP_200_OK)
@@ -529,7 +556,7 @@ async def trigger_stratified_kb_sync(
     service_auth_b64: str = Depends(get_service_auth_b64),
 ):
     """
-    Асинхронный запуск фонового умного наполнения RAG по корневым разделам (01..17).
+    Асинхронный запуск фонового умного наполнения RAG по корневым разделам или детальным листьям.
     """
     # Pre-flight Check работоспособности сервиса эмбеддингов
     from app.services.rag import check_embedding_health
@@ -558,6 +585,8 @@ async def trigger_stratified_kb_sync(
             target_root_id=payload.root_id,
             status_ids=payload.status_ids,
             ai_eval=payload.ai_eval,
+            service_quotas=payload.service_quotas,
+            target_service_ids=payload.target_service_ids,
         )
     )
 
@@ -569,7 +598,10 @@ async def trigger_stratified_kb_sync(
         "root_id": payload.root_id,
         "status_ids": payload.status_ids,
         "ai_eval": payload.ai_eval,
+        "service_quotas": payload.service_quotas,
+        "target_service_ids": payload.target_service_ids,
     }
+
 
 
 @router.get("/sync-status", status_code=status.HTTP_200_OK)
