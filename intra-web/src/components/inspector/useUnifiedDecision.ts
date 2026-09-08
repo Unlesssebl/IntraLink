@@ -9,7 +9,7 @@ import {
   type TicketRunEvent,
   type TicketRunCommand,
 } from '../../lib/ticketRuns';
-import { applyTask, reanalyzeTask, confirmExecutionJob } from '../../lib/tasks';
+import { analyzeTask, applyTask, reanalyzeTask, confirmExecutionJob } from '../../lib/tasks';
 import { submitDecisionFeedback, overrideTaskFacts } from '../../lib/decisionsApi';
 import {
   captureInitialDecisionVersion,
@@ -24,7 +24,7 @@ export interface UseUnifiedDecisionProps {
   onUpdateTicket: (id: string, changes: Partial<Ticket>) => void;
   onToast: (t: { type: 'success' | 'error' | 'warning' | 'info'; message: string }) => void;
   onClose?: () => void;
-  onRefreshDetails?: () => Promise<void>;
+  onRefreshDetails?: (updated?: TaskDetails) => Promise<void> | void;
 }
 
 export interface UseUnifiedDecisionReturn {
@@ -58,6 +58,7 @@ export interface UseUnifiedDecisionReturn {
   handleCancelTicket: () => Promise<void>;
   handleTakeTicket: () => Promise<void>;
   handleReanalyze: () => Promise<void>;
+  handleAnalyze: () => Promise<void>;
   handleOverrideFacts: (facts: Record<string, any>) => Promise<boolean>;
   handleHitlApprove: () => Promise<void>;
   handleHitlReject: () => Promise<void>;
@@ -344,7 +345,7 @@ export function useUnifiedDecision({
     try {
       const updated = await reanalyzeTask(rawId);
       if (onRefreshDetails) {
-        await onRefreshDetails();
+        await onRefreshDetails(updated);
       }
       if (updated.ai_suggested_resolution && !replyText.trim()) {
         setReplyText(updated.ai_suggested_resolution);
@@ -354,12 +355,37 @@ export function useUnifiedDecision({
         : null;
       onToast({
         type: 'success',
-        message: `Предложение по заявке #${rawId} обновлено по актуальным данным`,
+        message: `Заявка #${rawId} проанализирована повторно`,
       });
     } catch (err: any) {
       onToast({
         type: 'error',
-        message: `Не удалось обновить предложение: ${err.message || err}`,
+        message: `Не удалось выполнить повторный анализ: ${err.message || err}`,
+      });
+    } finally {
+      setReanalyzing(false);
+    }
+  }, [rawId, reanalyzing, onRefreshDetails, replyText, setReplyText, onToast]);
+
+  const handleAnalyze = useCallback(async () => {
+    if (!rawId || reanalyzing) return;
+    setReanalyzing(true);
+    try {
+      const updated = await analyzeTask(rawId);
+      if (onRefreshDetails) {
+        await onRefreshDetails(updated);
+      }
+      if (updated.ai_suggested_resolution && !replyText.trim()) {
+        setReplyText(updated.ai_suggested_resolution);
+      }
+      initialDecisionRef.current = updated.decision?.version
+        ? { taskId: rawId, version: updated.decision.version }
+        : null;
+      onToast({ type: 'success', message: `Заявка #${rawId} проанализирована` });
+    } catch (err: any) {
+      onToast({
+        type: 'error',
+        message: `Не удалось выполнить анализ: ${err.message || err}`,
       });
     } finally {
       setReanalyzing(false);
@@ -555,6 +581,7 @@ export function useUnifiedDecision({
     handleCancelTicket,
     handleTakeTicket,
     handleReanalyze,
+    handleAnalyze,
     handleOverrideFacts,
     handleHitlApprove,
     handleHitlReject,

@@ -42,7 +42,7 @@ interface UnifiedDecisionPanelProps {
   onUpdateTicket: (id: string, changes: Partial<Ticket>) => void;
   onToast: (t: { type: 'success' | 'error' | 'warning' | 'info'; message: string }) => void;
   onClose?: () => void;
-  onRefreshDetails?: () => Promise<void>;
+  onRefreshDetails?: (updated?: TaskDetails) => Promise<void> | void;
   diagStatus?: Record<string, 'idle' | 'checking' | 'ok' | 'fail'>;
 }
 
@@ -130,6 +130,7 @@ export default function UnifiedDecisionPanel({
     feedbackSubmitted,
     handleApplyDecision,
     handleTakeTicket,
+    handleAnalyze,
     handleReanalyze,
     handleOverrideFacts,
     handleHitlApprove,
@@ -177,6 +178,8 @@ export default function UnifiedDecisionPanel({
   const envelopeOutcome = envelope?.outcome || {};
   const envelopePolicy = envelope?.policy || {};
   const proposal = decision?.proposal;
+  const analysis = details?.analysis;
+  const hasAnalysisResult = analysis?.has_result ?? Boolean(decision);
   const readiness =
     details?.readiness ||
     (decision?.completeness
@@ -187,9 +190,16 @@ export default function UnifiedDecisionPanel({
           stale: false,
         }
       : undefined);
-  const readinessIsCurrent = !(readiness?.stale || isStale);
-  const isReady = (readiness?.ready ?? true) && readinessIsCurrent;
-  const blockedReasons: string[] = readiness?.blocked_reasons || [];
+  const readinessIsCurrent = analysis
+    ? analysis.freshness === 'current'
+    : !(readiness?.stale || isStale);
+  const isReady = hasAnalysisResult && (readiness?.ready ?? true) && readinessIsCurrent;
+  const blockedReasons: string[] = Array.from(
+    new Set([
+      ...(readiness?.blocked_reasons || []),
+      ...(analysis?.blocked_reason ? [analysis.blocked_reason] : []),
+    ])
+  );
   const missingData: string[] =
     envelopeOutcome.missing_fields || readiness?.missing_data || [];
   const sources = details?.sources || decision?.sources || {
@@ -587,11 +597,28 @@ export default function UnifiedDecisionPanel({
       {/* ========================================================================= */}
       {/* 2. STALENESS BANNER (появляется только при изменении заявки на сервере)    */}
       {/* ========================================================================= */}
-      {!readinessIsCurrent && (
+      {!hasAnalysisResult && (
+        <div className="p-3 rounded-xl bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 flex items-center justify-between gap-3 text-xs text-neutral-700 dark:text-neutral-300">
+          <div className="flex items-center gap-2">
+            <IconAlertCircle size={15} className="text-neutral-500 shrink-0" />
+            <span>Эта заявка ещё не анализировалась AI.</span>
+          </div>
+          <button
+            type="button"
+            onClick={handleAnalyze}
+            disabled={reanalyzing}
+            className="px-2.5 py-1 bg-neutral-900 hover:bg-neutral-800 dark:bg-neutral-100 dark:hover:bg-white text-white dark:text-neutral-900 rounded-lg font-semibold text-[11px] shrink-0 transition-colors cursor-pointer disabled:opacity-50"
+          >
+            {reanalyzing ? 'Анализ...' : 'Проанализировать'}
+          </button>
+        </div>
+      )}
+
+      {hasAnalysisResult && !readinessIsCurrent && (
         <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 flex items-center justify-between gap-3 text-xs text-amber-900 dark:text-amber-200">
           <div className="flex items-center gap-2">
             <IconAlertCircle size={15} className="text-amber-600 shrink-0" />
-            <span>Заявка обновилась на сервере. Ваш черновик сохранён.</span>
+            <span>{analysis?.blocked_reason || 'Результат анализа устарел. Ваш черновик сохранён.'}</span>
           </div>
           <button
             type="button"
@@ -599,7 +626,7 @@ export default function UnifiedDecisionPanel({
             disabled={reanalyzing}
             className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-semibold text-[11px] shrink-0 transition-colors cursor-pointer shadow-xs disabled:opacity-50"
           >
-            {reanalyzing ? 'Обновление...' : 'Обновить предложение'}
+            {reanalyzing ? 'Анализ...' : 'Проанализировать повторно'}
           </button>
         </div>
       )}

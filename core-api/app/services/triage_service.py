@@ -85,7 +85,9 @@ class TriageService:
             from app.database.db import CommandRecord
 
             command = (
-                await db.get(CommandRecord, uuid.UUID(str(job_id))) if db is not None else None
+                await db.get(CommandRecord, uuid.UUID(str(job_id)))
+                if db is not None
+                else None
             )
         except (TypeError, ValueError):
             command = None
@@ -99,6 +101,7 @@ class TriageService:
             return True, None
         try:
             import app.routers.triage as tr
+
             raw = await tr.get_redis_client().get(f"execution_job:{job_id}")
             if not raw:
                 return False, f"Команда исполнения '{job_id}' не найдена."
@@ -123,7 +126,9 @@ class TriageService:
         return True, None
 
     @classmethod
-    async def get_service_catalog_map(cls, service_auth_b64: str) -> dict[int, dict[str, Any]]:
+    async def get_service_catalog_map(
+        cls, service_auth_b64: str
+    ) -> dict[int, dict[str, Any]]:
         """Кэширует справочник сервисов IntraService (ID -> {Name, RootNum, RootName, RootId})."""
         now = time.monotonic()
         if cls._catalog_cache and (now - cls._catalog_cache_ts < 300.0):
@@ -149,7 +154,9 @@ class TriageService:
                 if sid:
                     root_num = get_root_number_for_service_id(sid)
                     if not root_num and parent_id:
-                        root_num = get_root_number_for_service_id(parent_id) or root_id_to_num.get(parent_id)
+                        root_num = get_root_number_for_service_id(
+                            parent_id
+                        ) or root_id_to_num.get(parent_id)
 
                     root_info = ROOT_SERVICES.get(root_num) if root_num else None
                     if not root_info and parent_id and parent_id in root_id_to_num:
@@ -161,8 +168,12 @@ class TriageService:
                         "name": sname,
                         "parent_id": parent_id,
                         "root_num": root_num,
-                        "root_id": root_info.get("id") if root_info else (parent_id or sid),
-                        "root_name": root_info.get("name") if root_info else (sname if not parent_id else "Общие вопросы"),
+                        "root_id": root_info.get("id")
+                        if root_info
+                        else (parent_id or sid),
+                        "root_name": root_info.get("name")
+                        if root_info
+                        else (sname if not parent_id else "Общие вопросы"),
                     }
             if cat_map:
                 cls._catalog_cache = cat_map
@@ -185,6 +196,7 @@ class TriageService:
         include_skipped: bool = False,
         include_rag: bool = False,
         operator_id: str | None = None,
+        compute_recommendations: bool = False,
     ) -> dict[str, Any]:
         """
         Возвращает подготовленную пачку заявок с авто-подбором шаблонов Rule Engine,
@@ -242,7 +254,9 @@ class TriageService:
             for t in active_tasks:
                 s_id = t.get("ServiceId")
                 root_num = get_root_number_for_service_id(s_id)
-                s_name = (t.get("ServiceName") or catalog_map.get(s_id, {}).get("name") or "").lower()
+                s_name = (
+                    t.get("ServiceName") or catalog_map.get(s_id, {}).get("name") or ""
+                ).lower()
                 if root_num and root_num == p_clean:
                     filtered.append(t)
                 elif p_clean.lower() in s_name:
@@ -271,13 +285,17 @@ class TriageService:
                 metadata=routing_metadata,
             )
 
-            # Решение использует уже закэшированную телеметрию. Если кэша нет,
-            # запускаем prefetch; результат войдет в решение при следующем чтении.
-            import app.routers.triage as tr
-            telemetry = await tr.get_task_telemetry(t_id)
-            if telemetry is None:
-                asyncio.create_task(tr.prefetch_task_telemetry(t))
-            rule_diag = cls._telemetry_to_rule_diag(telemetry)
+            telemetry = None
+            rule_diag: dict[str, Any] = {}
+            if compute_recommendations:
+                # Вычисление рекомендаций разрешено только из явного mutating
+                # endpoint. Обычная загрузка очереди остаётся read-only.
+                import app.routers.triage as tr
+
+                telemetry = await tr.get_task_telemetry(t_id)
+                if telemetry is None:
+                    asyncio.create_task(tr.prefetch_task_telemetry(t))
+                rule_diag = cls._telemetry_to_rule_diag(telemetry)
 
             is_dup = t_id in dup_map
             dup_info = dup_map.get(t_id)
@@ -285,12 +303,16 @@ class TriageService:
             kb_matches = []
             decision = None
 
-            # 1. Приоритет #1: Дубликат (Транзакционный дедупликатор БД)
-            if is_dup:
+            envelope = None
+            # Compatibility mode remains available to non-HTTP callers while
+            # they migrate to explicit analyse endpoints.
+            if compute_recommendations and is_dup:
                 master_id = (dup_info or {}).get("master_task_id", "")
                 decision = {
                     "template_key": "duplicate_task",
-                    "name": f"Отмена дубликата (привязка к #{master_id})" if master_id else "Отмена дубликата",
+                    "name": f"Отмена дубликата (привязка к #{master_id})"
+                    if master_id
+                    else "Отмена дубликата",
                     "status_id": 30,
                     "status_name": "Отменена",
                     "expenses": 5,
@@ -300,7 +322,7 @@ class TriageService:
                     "confidence": 0.99,
                     "decision_source": "db_dedup",
                 }
-            else:
+            elif compute_recommendations:
                 # 2. Единая доменная точка принятия решений: ScenarioDecisionService (SSOT)
                 is_redirect_hint = bool(detect_service_redirect(t))
                 if include_rag and not is_redirect_hint and not redirect_only:
@@ -314,7 +336,6 @@ class TriageService:
                         service_id=t.get("ServiceId"),
                     )
 
-                envelope = None
                 try:
                     envelope = await ScenarioDecisionService(db).analyze(
                         task=t,
@@ -330,7 +351,11 @@ class TriageService:
                     else:
                         decision["decision_source"] = "scenario_engine"
                 except Exception as exc:
-                    logger.warning("ScenarioDecisionService failed for task %s, fallback to rule engine: %s", t_id, exc)
+                    logger.warning(
+                        "ScenarioDecisionService failed for task %s, fallback to rule engine: %s",
+                        t_id,
+                        exc,
+                    )
                     decision = auto_detect_template(
                         task=t,
                         diag=rule_diag,
@@ -341,7 +366,15 @@ class TriageService:
                     decision["decision_source"] = "rule_engine"
 
             sources = {
-                "rule": bool(decision and decision.get("rule_type") not in ("rule.standard_in_work", "standard_in_work", "scenario.consultation")),
+                "rule": bool(
+                    decision
+                    and decision.get("rule_type")
+                    not in (
+                        "rule.standard_in_work",
+                        "standard_in_work",
+                        "scenario.consultation",
+                    )
+                ),
                 "rag": bool(kb_matches),
                 "ai": False,
             }
@@ -350,13 +383,16 @@ class TriageService:
             pc_name = meta.get("pc_name") or t.get("pc_name") or ""
             if not pc_name and t.get("Data"):
                 from shared.normalizer import extract_pc_names_from_text
+
                 pcs = extract_pc_names_from_text(t["Data"])
                 if pcs:
                     pc_name = pcs[0]
 
             s_id = t.get("ServiceId")
             s_info = catalog_map.get(s_id, {})
-            resolved_service_name = t.get("ServiceName") or s_info.get("name") or "Общие вопросы"
+            resolved_service_name = (
+                t.get("ServiceName") or s_info.get("name") or "Общие вопросы"
+            )
             root_service_id = s_info.get("root_id")
             root_service_name = s_info.get("root_name") or "Общие вопросы"
 
@@ -369,49 +405,57 @@ class TriageService:
                     telemetry=telemetry,
                     rule_decision=decision,
                 )
+                if compute_recommendations
+                else 0.0
             )
             if decision:
                 decision["confidence"] = confidence
 
-            result_items.append({
-                "task": t,
-                "task_id": t_id,
-                "name": t.get("Name"),
-                "created": t.get("Created"),
-                "status_id": t.get("StatusId"),
-                "status_name": t.get("StatusName"),
-                "service_id": s_id,
-                "service_name": resolved_service_name,
-                "root_service_id": root_service_id,
-                "root_service_name": root_service_name,
-                "creator": t.get("Creator"),
-                "creator_phone": meta.get("phone") or t.get("CreatorPhone") or "—",
-                "executors": t.get("Executors") or t.get("Executor") or "",
-                "executor_ids": t.get("ExecutorIds") or ([t["ExecutorId"]] if t.get("ExecutorId") else []),
-                "pc_name": pc_name,
-                "room": meta.get("room") or "",
-                "has_attachments": t.get("_has_attachments", False),
-                "attachments_count": len(t.get("_attachments_list", [])),
-                "attachments": t.get("_attachments_list", []),
-                "suggested_action": decision,
-                "is_duplicate": is_dup,
-                "duplicate_info": dup_info,
-                "kb_matches": kb_matches,
-                "telemetry": telemetry,
-                "circuit": circuit_dec.circuit.value,
-                "circuit_reason": circuit_dec.reason,
-                "requires_sanitization": circuit_dec.requires_sanitization,
-                "sources": sources,
-                "readiness": {
-                    "ready": bool(decision),
-                    "blocked_reasons": [],
-                },
-                "confidence_score": confidence,
-                "requires_human_review": bool(confidence < 0.80),
-            })
+            result_items.append(
+                {
+                    "task": t,
+                    "task_id": t_id,
+                    "name": t.get("Name"),
+                    "created": t.get("Created"),
+                    "status_id": t.get("StatusId"),
+                    "status_name": t.get("StatusName"),
+                    "service_id": s_id,
+                    "service_name": resolved_service_name,
+                    "root_service_id": root_service_id,
+                    "root_service_name": root_service_name,
+                    "creator": t.get("Creator"),
+                    "creator_phone": meta.get("phone") or t.get("CreatorPhone") or "—",
+                    "executors": t.get("Executors") or t.get("Executor") or "",
+                    "executor_ids": t.get("ExecutorIds")
+                    or ([t["ExecutorId"]] if t.get("ExecutorId") else []),
+                    "pc_name": pc_name,
+                    "room": meta.get("room") or "",
+                    "has_attachments": t.get("_has_attachments", False),
+                    "attachments_count": len(t.get("_attachments_list", [])),
+                    "attachments": t.get("_attachments_list", []),
+                    "suggested_action": decision,
+                    "is_duplicate": is_dup,
+                    "duplicate_info": dup_info,
+                    "kb_matches": kb_matches,
+                    "telemetry": telemetry,
+                    "circuit": circuit_dec.circuit.value,
+                    "circuit_reason": circuit_dec.reason,
+                    "requires_sanitization": circuit_dec.requires_sanitization,
+                    "sources": sources,
+                    "readiness": {
+                        "ready": bool(decision),
+                        "blocked_reasons": [],
+                    },
+                    "confidence_score": confidence,
+                    "requires_human_review": bool(confidence < 0.80),
+                }
+            )
 
         return {
             "total_open": len(active_tasks),
+            "scope_task_ids": [
+                int(task["Id"]) for task in active_tasks if task.get("Id")
+            ],
             "filter_id": filter_id,
             "page": page,
             "tasks": result_items,
@@ -423,6 +467,38 @@ class TriageService:
             "services_catalog": list(catalog_map.values()),
             "is_truncated": len(tasks) >= fetch_limit,
         }
+
+    @classmethod
+    async def get_task_card_snapshot(
+        cls,
+        service_auth_b64: str,
+        task_id: int,
+    ) -> dict[str, Any] | None:
+        """Read current IntraService data without Rule Engine, RAG or AI."""
+        task = await intraservice.get_single_task(service_auth_b64, task_id)
+        if not task:
+            return None
+
+        catalog_map = await cls.get_service_catalog_map(service_auth_b64)
+        service_id = task.get("ServiceId")
+        if service_id:
+            service_info = catalog_map.get(service_id, {})
+            if not task.get("ServiceName") and service_info.get("name"):
+                task["ServiceName"] = service_info["name"]
+            task["RootServiceId"] = service_info.get("root_id")
+            task["RootServiceName"] = service_info.get("root_name")
+
+        task = await enrich_task_with_extracted_facts(task)
+        raw_history = (
+            await intraservice.get_task_lifetime(service_auth_b64, task_id) or []
+        )
+        if isinstance(raw_history, dict):
+            history = raw_history.get("TaskLifetimes") or []
+        elif isinstance(raw_history, list):
+            history = raw_history
+        else:
+            history = []
+        return {"task": task, "history": history}
 
     @classmethod
     async def get_task_card_details(
@@ -453,7 +529,9 @@ class TriageService:
 
         task = await enrich_task_with_extracted_facts(task)
 
-        raw_history = await intraservice.get_task_lifetime(service_auth_b64, task_id) or []
+        raw_history = (
+            await intraservice.get_task_lifetime(service_auth_b64, task_id) or []
+        )
         if isinstance(raw_history, dict):
             history = raw_history.get("TaskLifetimes") or []
         elif isinstance(raw_history, list):
@@ -462,6 +540,7 @@ class TriageService:
             history = []
 
         import app.routers.triage as tr
+
         telemetry = await tr.get_task_telemetry(task_id)
         if telemetry is None:
             telemetry = await tr.prefetch_task_telemetry(task)
@@ -537,7 +616,11 @@ class TriageService:
             except Exception:
                 pass
 
-        if ai_resolution is None and not is_redirect and decision.get("rule_type") != "duplicate_task":
+        if (
+            ai_resolution is None
+            and not is_redirect
+            and decision.get("rule_type") != "duplicate_task"
+        ):
             ai_resolution, ai_metadata = await tr.synthesize_triage_resolution(
                 task=task,
                 kb_matches=kb_matches,
@@ -580,9 +663,7 @@ class TriageService:
         except Exception:
             # Compatibility window is fail-safe: a new envelope failure must not
             # remove the already computed legacy operator recommendation.
-            logger.exception(
-                "Scenario decision envelope failed for task %s", task_id
-            )
+            logger.exception("Scenario decision envelope failed for task %s", task_id)
 
         printer_address = ""
         for field in task.get("CustomFields", []) or []:
@@ -611,7 +692,9 @@ class TriageService:
                     for field in envelope_outcome.get("invalid_fields", [])
                 )
             elif envelope_outcome.get("kind") in {"manual_review", "no_match"}:
-                blocked_reasons.append(envelope_outcome.get("reason") or "manual_review")
+                blocked_reasons.append(
+                    envelope_outcome.get("reason") or "manual_review"
+                )
             if (decision_envelope.get("policy") or {}).get("resolution_error"):
                 blocked_reasons.append("resolution_policy_unavailable")
 
@@ -628,7 +711,9 @@ class TriageService:
             "circuit_reason": circuit_dec.reason,
             "requires_sanitization": circuit_dec.requires_sanitization,
             "sources": {
-                "rule": bool(decision and decision.get("rule_type") != "standard_in_work"),
+                "rule": bool(
+                    decision and decision.get("rule_type") != "standard_in_work"
+                ),
                 "rag": bool(kb_matches),
                 "ai": bool(ai_metadata.get("ai_used")),
             },
@@ -637,9 +722,7 @@ class TriageService:
                 "blocked_reasons": blocked_reasons,
             },
             "confidence_score": card_confidence,
-            "requires_human_review": bool(
-                card_confidence < 0.80 or blocked_reasons
-            ),
+            "requires_human_review": bool(card_confidence < 0.80 or blocked_reasons),
             "printer_address": printer_address,
         }
 
@@ -668,18 +751,22 @@ class TriageService:
         import app.routers.triage as tr
 
         op_user_id = operator_user_id or settings.PRIMARY_EXECUTOR_ID
-        exec_ids = executor_ids or (str(op_user_id) if op_user_id else settings.DEFAULT_EXECUTOR_IDS)
+        exec_ids = executor_ids or (
+            str(op_user_id) if op_user_id else settings.DEFAULT_EXECUTOR_IDS
+        )
         results = []
 
         for tid in task_ids:
             if dry_run:
-                results.append({
-                    "task_id": tid,
-                    "status": "simulated",
-                    "target_status_id": status_id,
-                    "update_ok": True,
-                    "expenses_ok": True,
-                })
+                results.append(
+                    {
+                        "task_id": tid,
+                        "status": "simulated",
+                        "target_status_id": status_id,
+                        "update_ok": True,
+                        "expenses_ok": True,
+                    }
+                )
                 continue
 
             # Инфраструктурные рекомендации нельзя превращать в статус 29
@@ -706,32 +793,39 @@ class TriageService:
                         rule_type
                     )
                     if expected_actions:
-                        proof_ok, proof_error = await TriageService._validate_execution_proof(
+                        (
+                            proof_ok,
+                            proof_error,
+                        ) = await TriageService._validate_execution_proof(
                             verified_execution_job_id,
                             tid,
                             expected_actions,
                             db=db,
                         )
                         if not proof_ok:
-                            results.append({
-                                "task_id": tid,
-                                "status": "failed",
-                                "update_ok": False,
-                                "expenses_ok": False,
-                                "error": proof_error,
-                            })
+                            results.append(
+                                {
+                                    "task_id": tid,
+                                    "status": "failed",
+                                    "update_ok": False,
+                                    "expenses_ok": False,
+                                    "error": proof_error,
+                                }
+                            )
                             continue
                 except Exception as exc:
                     logger.exception(
                         "Ошибка проверки условий финализации заявки #%d: %s", tid, exc
                     )
-                    results.append({
-                        "task_id": tid,
-                        "status": "failed",
-                        "update_ok": False,
-                        "expenses_ok": False,
-                        "error": "Не удалось безопасно проверить условия финализации заявки.",
-                    })
+                    results.append(
+                        {
+                            "task_id": tid,
+                            "status": "failed",
+                            "update_ok": False,
+                            "expenses_ok": False,
+                            "error": "Не удалось безопасно проверить условия финализации заявки.",
+                        }
+                    )
                     continue
 
             # 1. При необходимости берем в работу (27)
@@ -743,13 +837,15 @@ class TriageService:
                     executor_ids=exec_ids,
                 )
                 if not in_work_ok:
-                    results.append({
-                        "task_id": tid,
-                        "status": "failed",
-                        "update_ok": False,
-                        "expenses_ok": False,
-                        "error": "Не удалось перевести заявку в обязательный промежуточный статус «В работе».",
-                    })
+                    results.append(
+                        {
+                            "task_id": tid,
+                            "status": "failed",
+                            "update_ok": False,
+                            "expenses_ok": False,
+                            "error": "Не удалось перевести заявку в обязательный промежуточный статус «В работе».",
+                        }
+                    )
                     continue
 
             # 2. Обновление в целевой статус
@@ -779,12 +875,16 @@ class TriageService:
                 if status_id == 29 and clean_comment:
                     should_index = True
                 elif status_id == 30 and len(clean_comment) >= 35:
-                    if not clean_comment.startswith("Заявка переведена в статус Отменена"):
+                    if not clean_comment.startswith(
+                        "Заявка переведена в статус Отменена"
+                    ):
                         should_index = True
 
             if should_index:
                 try:
-                    task_data = task_snapshot or await intraservice.get_single_task(service_auth_b64, tid)
+                    task_data = task_snapshot or await intraservice.get_single_task(
+                        service_auth_b64, tid
+                    )
                     if task_data:
                         t_name = task_data.get("Name") or f"Заявка #{tid}"
                         t_desc = task_data.get("Description") or ""
@@ -809,13 +909,19 @@ class TriageService:
                 except Exception as e:
                     logger.error("Ошибка автоиндексации заявки #%d в RAG: %s", tid, e)
 
-            results.append({
-                "task_id": tid,
-                "status": "success" if (upd_ok and exp_ok) else ("failed" if not upd_ok else "partial_failure"),
-                "update_ok": upd_ok,
-                "expenses_ok": exp_ok,
-                "error": None if upd_ok else "Ошибка обновления статуса/комментария заявки в IntraService (проверьте доступные переходы статусов и права роли).",
-            })
+            results.append(
+                {
+                    "task_id": tid,
+                    "status": "success"
+                    if (upd_ok and exp_ok)
+                    else ("failed" if not upd_ok else "partial_failure"),
+                    "update_ok": upd_ok,
+                    "expenses_ok": exp_ok,
+                    "error": None
+                    if upd_ok
+                    else "Ошибка обновления статуса/комментария заявки в IntraService (проверьте доступные переходы статусов и права роли).",
+                }
+            )
 
         return results
 

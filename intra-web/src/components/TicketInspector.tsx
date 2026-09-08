@@ -95,8 +95,12 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   }, [effectiveHost]);
 
   // Load Task Details from Core API
-  const loadDetails = useCallback(async () => {
+  const loadDetails = useCallback(async (updated?: TaskDetails) => {
     if (!rawId) return;
+    if (updated) {
+      setDetails(updated);
+      return;
+    }
     setLoadingDetails(true);
     try {
       const data = await fetchTaskDetails(rawId);

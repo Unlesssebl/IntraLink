@@ -39,7 +39,8 @@ class Settings(BaseSettings):
         None, description="Отдельный ключ только для claim/finish команд исполнителями"
     )
     ALLOW_LEGACY_SHARED_KEYS: bool | None = Field(
-        None, description="Временная совместимость общих BOT/WORKER ключей вне production"
+        None,
+        description="Временная совместимость общих BOT/WORKER ключей вне production",
     )
     SSL_VERIFY: bool = Field(
         False, description="Проверка SSL-сертификатов при запросах к IntraService"
@@ -70,6 +71,16 @@ class Settings(BaseSettings):
     )
     MAX_CONCURRENT_REQUESTS: int = Field(
         10, description="Лимит одновременных подключений к IntraService"
+    )
+    ANALYSIS_REVISION: str = Field(
+        "1",
+        description=(
+            "Текущая ревизия логики триажа. Повышается при изменении правил, "
+            "сценариев или политик, способном изменить результат анализа."
+        ),
+    )
+    TRIAGE_ANALYSIS_MAX_CONCURRENCY: int = Field(
+        4, ge=1, le=20, description="Лимит параллельного явного анализа заявок"
     )
     AUTOPILOT_POLL_BATCH_SIZE: int = Field(
         200, ge=10, le=1000, description="Размер устойчивой страницы активных циклов"
@@ -119,9 +130,7 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = Field(
         "intralink-chat", description="Стабильный alias текстовой модели в LiteLLM"
     )
-    EMBEDDING_MODEL: str = Field(
-        "bge-m3", description="Имя модели эмбеддингов"
-    )
+    EMBEDDING_MODEL: str = Field("bge-m3", description="Имя модели эмбеддингов")
     EMBEDDING_DIMENSION: int = Field(
         1024, description="Размерность векторов модели эмбеддингов (BGE-M3)"
     )
@@ -245,7 +254,9 @@ class Settings(BaseSettings):
             if secret := read_secret_file("JWT_SECRET_FILE"):
                 self.JWT_SECRET = secret
             elif self.APP_ENV.lower() == "production":
-                raise ValueError("JWT_SECRET или JWT_SECRET_FILE обязателен в production")
+                raise ValueError(
+                    "JWT_SECRET или JWT_SECRET_FILE обязателен в production"
+                )
             else:
                 generated_jwt_secret = secrets.token_hex(32)
                 logger.warning(

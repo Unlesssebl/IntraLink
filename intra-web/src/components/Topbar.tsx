@@ -19,6 +19,7 @@ interface Props {
 }
 
 export default function Topbar({
+  currentPage,
   selectedTicket,
   sidebarMode,
   onCycleSidebarMode,
@@ -49,18 +50,18 @@ export default function Topbar({
         >
           {sidebarMode === 'full' && (
             <svg width="16" height="16" viewBox="0 0 14 14" fill="none">
-              <path d="M2 3.5h10M2 7h10M2 10.5h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M2 3.5h10M2 7h10M2 10.5h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           )}
           {sidebarMode === 'compact' && (
             <svg width="16" height="16" viewBox="0 0 14 14" fill="none">
-              <rect x="2" y="2" width="4" height="10" rx="1" fill="currentColor"/>
-              <path d="M8 3.5h4M8 7h4M8 10.5h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              <rect x="2" y="2" width="4" height="10" rx="1" fill="currentColor" />
+              <path d="M8 3.5h4M8 7h4M8 10.5h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
             </svg>
           )}
           {sidebarMode === 'hidden' && (
             <svg width="16" height="16" viewBox="0 0 14 14" fill="none">
-              <path d="M5 3.5l3.5 3.5-3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M5 3.5l3.5 3.5-3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           )}
         </button>
@@ -69,7 +70,7 @@ export default function Topbar({
         <nav className="flex items-center gap-2 text-[14px] min-w-0">
           <span className="text-neutral-400 dark:text-neutral-500 font-semibold">IntraLink</span>
           <span className="text-neutral-300 dark:text-neutral-700">/</span>
-          
+
           {selectedService.name ? (
             <div className="flex items-center gap-1.5 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-900 dark:text-blue-200 px-2.5 py-1 rounded-md text-[13px] font-semibold">
               <span className="truncate max-w-[240px]">{selectedService.name}</span>
@@ -79,7 +80,7 @@ export default function Topbar({
                 title="Сбросить фильтр сервиса"
               >
                 <svg width="12" height="12" viewBox="0 0 11 11" fill="none">
-                  <path d="M2 2l7 7M9 2l-7 7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                  <path d="M2 2l7 7M9 2l-7 7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
                 </svg>
               </button>
             </div>
@@ -187,9 +188,8 @@ export default function Topbar({
             title={activeExecution?.worker_online ? 'Воркер активен, ожидает новых задач' : 'Фоновый воркер не обнаружен'}
           >
             <span
-              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                activeExecution?.worker_online ? 'bg-emerald-500' : 'bg-neutral-400'
-              }`}
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ${activeExecution?.worker_online ? 'bg-emerald-500' : 'bg-neutral-400'
+                }`}
             />
             <span>{activeExecution?.worker_online ? 'Ассистент свободен' : 'Воркер оффлайн'}</span>
           </div>
@@ -200,11 +200,10 @@ export default function Topbar({
       <div className="flex items-center gap-2 shrink-0">
         {/* Live SSE Status Badge */}
         <div
-          className={`h-8 px-2.5 flex items-center gap-1.5 rounded-lg text-xs font-mono border transition-colors select-none ${
-            isLiveConnected
+          className={`h-8 px-2.5 flex items-center gap-1.5 rounded-lg text-xs font-mono border transition-colors select-none ${isLiveConnected
               ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
               : 'bg-neutral-100 dark:bg-neutral-900 text-neutral-400 border-neutral-200 dark:border-neutral-800'
-          }`}
+            }`}
           title={isLiveConnected ? 'Шина событий активна (Real-time SSE)' : 'Подключение к шине событий...'}
         >
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isLiveConnected ? 'bg-emerald-500 animate-pulse' : 'bg-neutral-400'}`} />
@@ -220,7 +219,7 @@ export default function Topbar({
             <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
             <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
           </svg>
-          <span className="hidden sm:inline">Админка</span>
+          <span className="hidden sm:inline">Панель администратора</span>
         </a>
 
         {onRefresh && (
@@ -230,8 +229,8 @@ export default function Topbar({
             title="Обновить очередь заявок"
           >
             <svg width="15" height="15" viewBox="0 0 13 13" fill="none">
-              <path d="M11 2.5a5.5 5.5 0 11-9.5 5.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-              <path d="M11 2.5v3H8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M11 2.5a5.5 5.5 0 11-9.5 5.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+              <path d="M11 2.5v3H8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
         )}

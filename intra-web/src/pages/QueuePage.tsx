@@ -8,9 +8,9 @@ import {
   mapStatusToStatusId,
   fetchActiveOutages,
   triggerQueueAnalysis,
-  reanalyzeTask,
+  analyzeTask,
 } from '../lib/tasks';
-import type { SmartBulkApplyItemPayload, OutageIncident } from '../lib/types';
+import type { AnalysisCounts, SmartBulkApplyItemPayload, OutageIncident } from '../lib/types';
 import type { ServiceSelection } from '../components/Sidebar';
 import TicketInspector from '../components/TicketInspector';
 import OutageAlertBanner from '../components/queue/OutageAlertBanner';
@@ -39,6 +39,7 @@ import { fetchTicketRuns, type TicketRun, type ActiveExecutionStatus } from '../
 
 interface Props {
   tickets: Ticket[];
+  analysisCounts?: AnalysisCounts | null;
   selectedTicketId: string | null;
   onSelectTicket: (id: string | null) => void;
   onUpdateTicket: (id: string, changes: Partial<Ticket>) => void;
@@ -119,6 +120,44 @@ function renderTicketRunPill(run: TicketRun) {
   );
 }
 
+function getAnalysisBadge(ticket: Ticket) {
+  const analysis = ticket.analysis;
+  if (!analysis?.has_result) {
+    return {
+      label: analysis?.state === 'analyzing' ? 'Анализируется' : 'Ожидает анализа',
+      className: 'bg-neutral-100 dark:bg-neutral-850 text-neutral-500 dark:text-neutral-400 border-neutral-200 dark:border-neutral-800',
+    };
+  }
+  if (analysis.disposition === 'applied') {
+    return {
+      label: 'Решение применено',
+      className: 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900',
+    };
+  }
+  if (analysis.state === 'failed') {
+    return {
+      label: 'Ошибка анализа',
+      className: 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-900',
+    };
+  }
+  if (analysis.freshness === 'stale') {
+    return {
+      label: 'Устарело',
+      className: 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-900',
+    };
+  }
+  if (analysis.freshness === 'unknown') {
+    return {
+      label: 'Актуальность не проверена',
+      className: 'bg-neutral-100 dark:bg-neutral-850 text-neutral-600 dark:text-neutral-300 border-neutral-300 dark:border-neutral-700',
+    };
+  }
+  return {
+    label: 'Готово',
+    className: 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-900',
+  };
+}
+
 function getSlaClass(deadline: Date) {
   const h = (deadline.getTime() - Date.now()) / 3600000;
   if (h < 0) return 'text-rose-700 dark:text-rose-400 font-bold';
@@ -147,6 +186,7 @@ function parseHostList(hostStr?: string): string[] {
 
 export default function QueuePage({
   tickets,
+  analysisCounts,
   selectedTicketId,
   onSelectTicket,
   onUpdateTicket,
@@ -237,8 +277,13 @@ export default function QueuePage({
     return scopedTickets.filter(t => !t.isProcessed);
   }, [scopedTickets]);
 
-  const countProcessed = processedTickets.length;
-  const countUnprocessed = unprocessedTickets.length;
+  const useServerCounts = selectedService.rootId === null && selectedService.serviceId === null;
+  const countProcessed = useServerCounts && analysisCounts
+    ? analysisCounts.analyzed
+    : processedTickets.length;
+  const countUnprocessed = useServerCounts && analysisCounts
+    ? analysisCounts.not_analyzed
+    : unprocessedTickets.length;
 
   // Автоматический выбор таба при пустых обработанных
   useEffect(() => {
@@ -260,8 +305,16 @@ export default function QueuePage({
           ? `Запущен анализ ${specificTaskIds.length} заявок...`
           : 'Запущен анализ очереди заявок через сценарный пайплайн...',
       });
-      await triggerQueueAnalysis(specificTaskIds);
-      onToast({ type: 'success', message: 'Анализ очереди успешно завершен' });
+      const targetIds = specificTaskIds?.length
+        ? specificTaskIds
+        : unprocessedTickets.map(ticket => ticket.rawId);
+      const result = await triggerQueueAnalysis(targetIds);
+      onToast({
+        type: result.failed ? 'warning' : 'success',
+        message: result.failed
+          ? `Анализ завершён: ${result.processed} готово, ${result.failed} с ошибкой`
+          : `Проанализировано заявок: ${result.processed}`,
+      });
       onRefresh();
     } catch (err: any) {
       onToast({ type: 'error', message: `Ошибка анализа: ${err.message || err}` });
@@ -275,7 +328,7 @@ export default function QueuePage({
     setAnalyzingTaskIds(prev => new Set(prev).add(ticket.rawId));
     try {
       onToast({ type: 'info', message: `Анализ заявки #${ticket.rawId}...` });
-      await reanalyzeTask(ticket.rawId);
+      await analyzeTask(ticket.rawId);
       onToast({ type: 'success', message: `Заявка #${ticket.rawId} обработана сценарием` });
       onRefresh();
     } catch (err: any) {
@@ -338,6 +391,13 @@ export default function QueuePage({
   };
 
   const handleApplyTicketPlan = async (t: Ticket) => {
+    if (!t.analysis?.can_quick_apply || !t.analysis.decision_id || !t.analysis.decision_version) {
+      onToast({
+        type: 'warning',
+        message: t.analysis?.blocked_reason || 'Результат нужно проверить в карточке заявки',
+      });
+      return;
+    }
     const plan = t.aiPlan;
     if (!plan) {
       await handleInlineTake(t);
@@ -353,6 +413,8 @@ export default function QueuePage({
         minutes: plan.expensesMinutes,
         requires_domain_job: plan.requiresDomainJob,
         domain_job: plan.domainJob,
+        decision_id: t.analysis.decision_id,
+        decision_version: t.analysis.decision_version,
       };
 
       const res = await smartBulkApplyTasks([payload]);
@@ -374,8 +436,20 @@ export default function QueuePage({
   };
 
   const openSmartBatchModal = (ticketsToProcess: Ticket[]) => {
-    if (ticketsToProcess.length === 0) return;
-    const items: SmartBatchItem[] = ticketsToProcess.map(t => ({
+    const applicableTickets = ticketsToProcess.filter(
+      ticket =>
+        ticket.analysis?.can_quick_apply &&
+        ticket.analysis.decision_id &&
+        ticket.analysis.decision_version
+    );
+    if (applicableTickets.length !== ticketsToProcess.length) {
+      onToast({
+        type: 'warning',
+        message: 'Устаревшие или непроверенные решения исключены из пакетного применения',
+      });
+    }
+    if (applicableTickets.length === 0) return;
+    const items: SmartBatchItem[] = applicableTickets.map(t => ({
       ticket: t,
       selected: true,
       comment: t.aiPlan?.comment || t.aiSuggestion || 'Принято в работу специалистом 1-й линии техподдержки.',
@@ -401,6 +475,8 @@ export default function QueuePage({
           minutes: item.minutes,
           requires_domain_job: plan?.requiresDomainJob,
           domain_job: plan?.domainJob,
+          decision_id: item.ticket.analysis!.decision_id!,
+          decision_version: item.ticket.analysis!.decision_version!,
         };
       });
 
@@ -648,11 +724,10 @@ export default function QueuePage({
                 <button
                   key={v}
                   onClick={() => setView(v)}
-                  className={`px-3 py-1 rounded-md text-[12.5px] font-semibold transition-colors cursor-pointer ${
-                    view === v
+                  className={`px-3 py-1 rounded-md text-[12.5px] font-semibold transition-colors cursor-pointer ${view === v
                       ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-2xs'
                       : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
-                  }`}
+                    }`}
                 >
                   {v === 'table' ? 'Таблица' : 'Канбан'}
                 </button>
@@ -666,19 +741,17 @@ export default function QueuePage({
               <button
                 type="button"
                 onClick={() => setProcessedTab('processed')}
-                className={`flex items-center gap-2 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer ${
-                  processedTab === 'processed'
+                className={`flex items-center gap-2 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer ${processedTab === 'processed'
                     ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 shadow-2xs'
                     : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100'
-                }`}
+                  }`}
               >
-                <span>Обработанные</span>
+                <span>Проанализированные AI</span>
                 <span
-                  className={`text-[11px] tabular-nums font-mono px-1.5 py-0.2 rounded-full font-bold ${
-                    processedTab === 'processed'
+                  className={`text-[11px] tabular-nums font-mono px-1.5 py-0.2 rounded-full font-bold ${processedTab === 'processed'
                       ? 'bg-white/20 text-white dark:bg-neutral-900/20 dark:text-neutral-900'
                       : 'bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'
-                  }`}
+                    }`}
                 >
                   {countProcessed}
                 </span>
@@ -687,21 +760,19 @@ export default function QueuePage({
               <button
                 type="button"
                 onClick={() => setProcessedTab('unprocessed')}
-                className={`flex items-center gap-2 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer ${
-                  processedTab === 'unprocessed'
+                className={`flex items-center gap-2 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer ${processedTab === 'unprocessed'
                     ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 shadow-2xs'
                     : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100'
-                }`}
+                  }`}
               >
-                <span>Не обработанные</span>
+                <span>Не проанализированные AI</span>
                 <span
-                  className={`text-[11px] tabular-nums font-mono px-1.5 py-0.2 rounded-full font-bold ${
-                    processedTab === 'unprocessed'
+                  className={`text-[11px] tabular-nums font-mono px-1.5 py-0.2 rounded-full font-bold ${processedTab === 'unprocessed'
                       ? 'bg-white/20 text-white dark:bg-neutral-900/20 dark:text-neutral-900'
                       : countUnprocessed > 0
                         ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 font-semibold'
                         : 'bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'
-                  }`}
+                    }`}
                 >
                   {countUnprocessed}
                 </span>
@@ -784,23 +855,20 @@ export default function QueuePage({
         {/* Индикатор активного выполнения ассистента */}
         {activeExecution?.has_active && activeExecution.task_id && (
           <div
-            className={`shrink-0 px-4 py-2 border-b flex items-center justify-between gap-3 text-xs transition-colors ${
-              activeExecution.state === 'waiting_approval'
+            className={`shrink-0 px-4 py-2 border-b flex items-center justify-between gap-3 text-xs transition-colors ${activeExecution.state === 'waiting_approval'
                 ? 'bg-amber-50/90 dark:bg-amber-950/40 border-amber-200/80 dark:border-amber-900/60 text-amber-900 dark:text-amber-200'
                 : 'bg-blue-50/90 dark:bg-blue-950/40 border-blue-200/80 dark:border-blue-900/60 text-blue-900 dark:text-blue-200'
-            }`}
+              }`}
           >
             <div className="flex items-center gap-2.5 min-w-0">
               <span className="relative flex h-2 w-2 shrink-0">
                 <span
-                  className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                    activeExecution.state === 'waiting_approval' ? 'bg-amber-400' : 'bg-blue-400'
-                  }`}
+                  className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${activeExecution.state === 'waiting_approval' ? 'bg-amber-400' : 'bg-blue-400'
+                    }`}
                 />
                 <span
-                  className={`relative inline-flex rounded-full h-2 w-2 ${
-                    activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
-                  }`}
+                  className={`relative inline-flex rounded-full h-2 w-2 ${activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
+                    }`}
                 />
               </span>
               <div className="flex items-center gap-2 min-w-0 font-medium">
@@ -817,11 +885,10 @@ export default function QueuePage({
                   ? onSelectActiveTask(activeExecution.task_id!)
                   : onSelectTicket(String(activeExecution.task_id))
               }
-              className={`shrink-0 px-3 py-1 rounded-md text-[11.5px] font-semibold transition-colors cursor-pointer border ${
-                activeExecution.state === 'waiting_approval'
+              className={`shrink-0 px-3 py-1 rounded-md text-[11.5px] font-semibold transition-colors cursor-pointer border ${activeExecution.state === 'waiting_approval'
                   ? 'bg-amber-600 hover:bg-amber-500 text-white border-amber-500 shadow-2xs'
                   : 'bg-white dark:bg-neutral-900 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950/60'
-              }`}
+                }`}
             >
               {activeExecution.state === 'waiting_approval' ? 'Подтвердить действие →' : 'Открыть карточку →'}
             </button>
@@ -891,6 +958,7 @@ export default function QueuePage({
                   const scenarioKey = ticket.scenarioKey || ticket.envelope?.scenario_key || ticket.ruleType;
                   const scenarioConfig = scenarioKey ? scenarioBadgeConfigs[scenarioKey] : undefined;
                   const scenarioLabel = scenarioConfig?.label || (ticket.isDuplicate ? 'Дубликат' : (scenarioKey || '—'));
+                  const analysisBadge = getAnalysisBadge(ticket);
 
                   return (
                     <tr
@@ -935,17 +1003,15 @@ export default function QueuePage({
                           {activeExecution?.has_active && activeExecution.task_id === ticket.rawId ? (
                             <div className="mt-1.5">
                               <span
-                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border ${
-                                  activeExecution.state === 'waiting_approval'
+                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border ${activeExecution.state === 'waiting_approval'
                                     ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-800'
                                     : 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 border-blue-300 dark:border-blue-800'
-                                }`}
+                                  }`}
                                 title={activeExecution.status_text}
                               >
                                 <span
-                                  className={`w-1.5 h-1.5 rounded-full shrink-0 animate-ping ${
-                                    activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
-                                  }`}
+                                  className={`w-1.5 h-1.5 rounded-full shrink-0 animate-ping ${activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
+                                    }`}
                                 />
                                 <span className="truncate max-w-[130px]">
                                   {activeExecution.phase_title ||
@@ -1003,15 +1069,12 @@ export default function QueuePage({
                       <td className="w-48 overflow-hidden px-3.5 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
                         {ticket.isProcessed ? (
                           <div className="flex flex-col gap-1 items-start">
-                            {/* Бейдж сценария */}
+                            {/* Операторский статус анализа; сценарий остаётся в title для отладки. */}
                             <span
-                              className={`px-2 py-0.5 rounded text-[11px] font-medium border inline-flex items-center gap-1 max-w-[170px] truncate ${
-                                scenarioConfig?.badgeClass ||
-                                'bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-neutral-700'
-                              }`}
-                              title={scenarioLabel}
+                              className={`px-2 py-0.5 rounded text-[11px] font-medium border inline-flex items-center gap-1 max-w-[190px] truncate ${analysisBadge.className}`}
+                              title={`${analysisBadge.label} · сценарий: ${scenarioLabel}`}
                             >
-                              <span className="truncate">{scenarioLabel}</span>
+                              <span className="truncate">{analysisBadge.label}</span>
                             </span>
 
                             {/* Кнопка быстрого применения целевого статуса */}
@@ -1023,9 +1086,12 @@ export default function QueuePage({
                               <button
                                 type="button"
                                 onClick={() => handleApplyTicketPlan(ticket)}
-                                className="group h-6 max-w-full inline-flex items-center gap-1 px-2 rounded text-[11px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50 hover:bg-neutral-100 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 transition-all cursor-pointer shadow-2xs"
+                                disabled={!ticket.analysis?.can_quick_apply}
+                                className="group h-6 max-w-full inline-flex items-center gap-1 px-2 rounded text-[11px] font-medium border border-neutral-200/90 dark:border-neutral-750 bg-neutral-50 hover:bg-neutral-100 dark:bg-neutral-850 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 transition-all cursor-pointer shadow-2xs disabled:cursor-not-allowed disabled:opacity-50"
                                 title={
-                                  ticket.aiPlan
+                                  !ticket.analysis?.can_quick_apply
+                                    ? ticket.analysis?.blocked_reason || 'Результат недоступен для применения'
+                                    : ticket.aiPlan
                                     ? `${ticket.aiPlan.actionTitle}\nОтвет: «${ticket.aiPlan.comment}»`
                                     : 'Принять в работу'
                                 }
@@ -1275,11 +1341,10 @@ export default function QueuePage({
                 return (
                   <div
                     key={col.status}
-                    className={`w-80 shrink-0 flex flex-col rounded-lg border transition-colors ${
-                      dragOver === col.status
+                    className={`w-80 shrink-0 flex flex-col rounded-lg border transition-colors ${dragOver === col.status
                         ? 'border-neutral-900 bg-neutral-100/50 dark:border-neutral-100 dark:bg-neutral-900/50'
                         : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/40'
-                    }`}
+                      }`}
                     onDragOver={e => {
                       e.preventDefault();
                       setDragOver(col.status);
@@ -1307,20 +1372,18 @@ export default function QueuePage({
                           draggable
                           onDragStart={e => e.dataTransfer.setData('ticketId', t.id)}
                           onClick={() => onSelectTicket(selectedTicketId === t.id ? null : t.id)}
-                          className={`bg-white dark:bg-neutral-850 rounded-md border p-3 cursor-pointer transition-all shadow-2xs hover:border-neutral-300 dark:hover:border-neutral-700 ${
-                            selectedTicketId === t.id
+                          className={`bg-white dark:bg-neutral-850 rounded-md border p-3 cursor-pointer transition-all shadow-2xs hover:border-neutral-300 dark:hover:border-neutral-700 ${selectedTicketId === t.id
                               ? 'border-neutral-900 dark:border-neutral-100 ring-1 ring-neutral-900 dark:ring-neutral-100'
                               : 'border-neutral-200 dark:border-neutral-800'
-                          }`}
+                            }`}
                         >
                           <div className="flex items-start justify-between gap-2 mb-1.5">
                             <span className="font-mono font-semibold text-[11.5px] text-neutral-400 dark:text-neutral-500">
                               #{t.rawId}
                             </span>
                             <span
-                              className={`text-[10.5px] font-semibold flex items-center gap-1 ${
-                                priorityConfig[t.priority].textClass
-                              }`}
+                              className={`text-[10.5px] font-semibold flex items-center gap-1 ${priorityConfig[t.priority].textClass
+                                }`}
                             >
                               <span className={`w-1.5 h-1.5 rounded-full ${priorityConfig[t.priority].dotClass}`} />
                               {priorityConfig[t.priority].label}
@@ -1339,16 +1402,14 @@ export default function QueuePage({
                           {activeExecution?.has_active && activeExecution.task_id === t.rawId ? (
                             <div className="mt-2 pt-1.5 border-t border-neutral-100 dark:border-neutral-750">
                               <span
-                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium border ${
-                                  activeExecution.state === 'waiting_approval'
+                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium border ${activeExecution.state === 'waiting_approval'
                                     ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-800'
                                     : 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 border-blue-300 dark:border-blue-800'
-                                }`}
+                                  }`}
                               >
                                 <span
-                                  className={`w-1.5 h-1.5 rounded-full shrink-0 animate-ping ${
-                                    activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
-                                  }`}
+                                  className={`w-1.5 h-1.5 rounded-full shrink-0 animate-ping ${activeExecution.state === 'waiting_approval' ? 'bg-amber-500' : 'bg-blue-500'
+                                    }`}
                                 />
                                 <span className="truncate max-w-[140px]">
                                   {activeExecution.phase_title || 'Выполняется'}

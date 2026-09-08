@@ -1,7 +1,7 @@
 export type Status = 'new' | 'in_progress' | 'waiting' | 'resolved';
 export type Priority = 'critical' | 'high' | 'medium' | 'low';
 export type Category = 'network' | 'hardware' | 'software' | 'access' | 'email';
-export type Page = 'queue' | 'settings';
+export type Page = 'queue' | 'settings' | 'timeline';
 
 
 export interface TimelineEvent {
@@ -12,7 +12,7 @@ export interface TimelineEvent {
   timestamp: Date;
 }
 
-import type { TicketAIPlan, DecisionEnvelope } from '../lib/types';
+import type { AnalysisState, DecisionEnvelope, TicketAIPlan } from '../lib/types';
 
 export interface Ticket {
   id: string;
@@ -64,6 +64,7 @@ export interface Ticket {
   isProcessed?: boolean;
   scenarioKey?: string;
   envelope?: DecisionEnvelope | null;
+  analysis?: AnalysisState;
 }
 
 export interface ScenarioBadgeConfig {

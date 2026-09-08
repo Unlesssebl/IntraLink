@@ -112,6 +112,7 @@ export interface TaskItem {
   attachments?: TaskAttachment[];
   executors?: string;
   executor_ids?: Array<number | string>;
+  analysis?: AnalysisState;
 }
 
 export interface TaskRights {
@@ -158,6 +159,33 @@ export interface TaskDetails {
   decision?: DecisionRecord;
   sources?: DecisionSources;
   readiness?: DecisionReadiness;
+  analysis?: AnalysisState;
+}
+
+export interface AnalysisState {
+  has_result: boolean;
+  state: 'not_analyzed' | 'analyzing' | 'ready' | 'failed';
+  freshness: 'current' | 'stale' | 'unknown';
+  disposition: 'available' | 'applied';
+  decision_id?: string | null;
+  decision_version?: number | null;
+  scenario_key?: string | null;
+  analyzed_at?: string | null;
+  stale_reason?: string | null;
+  can_quick_apply: boolean;
+  blocked_reason?: string | null;
+  last_attempt?: {
+    state: 'succeeded' | 'failed';
+    error_code?: string | null;
+    finished_at?: string | null;
+  } | null;
+}
+
+export interface AnalysisCounts {
+  analyzed: number;
+  not_analyzed: number;
+  scope_total: number;
+  is_complete_scope: boolean;
 }
 
 export interface DecisionFactSummary {
@@ -398,6 +426,8 @@ export interface SmartBulkApplyItemPayload {
   minutes: number;
   executor_ids?: string;
   is_private?: boolean;
+  decision_id: string;
+  decision_version: number;
   action_type?: string;
   requires_domain_job?: boolean;
   domain_job?: {

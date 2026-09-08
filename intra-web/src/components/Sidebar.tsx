@@ -61,6 +61,7 @@ function formatServiceName(name: string): string {
 }
 
 export default function Sidebar({
+  currentPage,
   onNavigate,
   theme,
   onToggleTheme,
@@ -243,6 +244,7 @@ export default function Sidebar({
               </span>
             )}
           </button>
+
         </div>
 
         <div>

@@ -338,7 +338,8 @@ export function mapTaskToTicket(task: TaskItem): Ticket {
     };
   }
 
-  const isProcessed = isTicketProcessed(task, envelope);
+  const analysis = task.analysis;
+  const isProcessed = analysis ? analysis.has_result : isTicketProcessed(task, envelope);
 
   return {
     id: `HD-${task.id}`,
@@ -396,6 +397,7 @@ export function mapTaskToTicket(task: TaskItem): Ticket {
     isProcessed,
     scenarioKey,
     envelope,
+    analysis,
   };
 }
 
@@ -405,11 +407,12 @@ export async function fetchQueue(filterId = 984, limit = 50, includeRag = false)
   total: number;
   rootServices: Array<{ id: number; name: string }>;
   subservicesByRoot: Record<number, Array<{ id: number; name: string; parent_id?: number }>>;
+  analysisCounts?: import('./types').AnalysisCounts;
 }> {
   const data = await apiFetch<any>(`/api/v1/triage/batch?filter_id=${filterId}&limit=${limit}&include_rag=${includeRag}`);
   const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
   const normalizedTasks: TaskItem[] = tasks.map((item: any) => {
-    if (item.task_id && item.suggested_action) {
+    if (item.task_id) {
       const t = item.task || {};
       const action = item.suggested_action || {};
       const envelope = item.decision_envelope || action._decision_envelope || action.decision_envelope || null;
@@ -448,6 +451,7 @@ export async function fetchQueue(filterId = 984, limit = 50, includeRag = false)
         decision_envelope: envelope,
         scenario_key: envelope?.scenario_key || action.scenario_key || action.rule_type,
         kb_matches: item.kb_matches || [],
+        analysis: item.analysis,
       } as any;
     }
     return item;
@@ -481,6 +485,7 @@ export async function fetchQueue(filterId = 984, limit = 50, includeRag = false)
     total: data.total_open || tickets.length,
     rootServices,
     subservicesByRoot,
+    analysisCounts: data.analysis_counts,
   };
 }
 
@@ -545,6 +550,13 @@ function normalizeTaskDetailsData(data: any): TaskDetails {
 
 export async function fetchTaskDetails(taskId: number): Promise<TaskDetails> {
   const data = await apiFetch<any>(`/api/v1/triage/tasks/${taskId}`);
+  return normalizeTaskDetailsData(data);
+}
+
+export async function analyzeTask(taskId: number): Promise<TaskDetails> {
+  const data = await apiFetch<any>(`/api/v1/triage/tasks/${taskId}/analyze`, {
+    method: 'POST',
+  });
   return normalizeTaskDetailsData(data);
 }
 
@@ -845,6 +857,9 @@ export async function smartBulkApplyTasks(
     if (onProgress) onProgress(i, items.length, item.task_id);
 
     try {
+      if (!item.decision_id || !item.decision_version) {
+        throw new Error('AI-решение не привязано к актуальной версии анализа');
+      }
       const run = await ensureManualTicketRun(item.task_id);
       let verifiedExecutionJobId: string | undefined;
       // 1. Если требуется доменное исполнение (например, grant_wlan)
@@ -872,6 +887,8 @@ export async function smartBulkApplyTasks(
         is_private: item.is_private || false,
         verified_execution_job_id: verifiedExecutionJobId,
         ticket_run_id: run.id,
+        decision_id: item.decision_id,
+        decision_version: item.decision_version,
       });
 
       success_count++;
@@ -924,12 +941,22 @@ export async function broadcastOutageComment(
   return { success: true, affected_count: res.affected_count || 0 };
 }
 
-export async function triggerQueueAnalysis(taskIds?: number[]): Promise<void> {
-  if (taskIds && taskIds.length > 0) {
-    await Promise.allSettled(taskIds.map(id => reanalyzeTask(id)));
-  } else {
-    await purgeTriageCache();
+export interface AnalyzeBatchResult {
+  total: number;
+  processed: number;
+  skipped: number;
+  failed: number;
+  results: Array<{ task_id: number; status: 'processed' | 'skipped' | 'failed'; error?: string }>;
+}
+
+export async function triggerQueueAnalysis(taskIds?: number[]): Promise<AnalyzeBatchResult> {
+  if (!taskIds?.length) {
+    throw new Error('Нет заявок для анализа');
   }
+  return apiFetch<AnalyzeBatchResult>('/api/v1/triage/analyze-batch', {
+    method: 'POST',
+    body: JSON.stringify({ task_ids: Array.from(new Set(taskIds)) }),
+  });
 }
 
 

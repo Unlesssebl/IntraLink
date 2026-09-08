@@ -14,11 +14,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
+from app.config import settings
 from app.database.db import DecisionFeedback, DecisionRecord, DecisionStep
 from app.services.ai_suggestions import action_for_decision, missing_data_for_decision
 
 
-SECRET_KEY_RE = re.compile(r"(password|passwd|secret|token|authorization|credential)", re.I)
+SECRET_KEY_RE = re.compile(
+    r"(password|passwd|secret|token|authorization|credential)", re.I
+)
 SECRET_TEXT_RE = re.compile(
     r"(?i)\b(password|пароль|token|токен|secret)\s*[:=]\s*([^\s,;]+)"
 )
@@ -29,7 +32,9 @@ def sanitize_payload(value: Any) -> Any:
     """Remove obvious secrets and bound text copied from an external ticket."""
     if isinstance(value, dict):
         return {
-            str(key): "[REDACTED]" if SECRET_KEY_RE.search(str(key)) else sanitize_payload(item)
+            str(key): "[REDACTED]"
+            if SECRET_KEY_RE.search(str(key))
+            else sanitize_payload(item)
             for key, item in value.items()
         }
     if isinstance(value, list):
@@ -37,7 +42,9 @@ def sanitize_payload(value: Any) -> Any:
     if isinstance(value, tuple):
         return [sanitize_payload(item) for item in value[:200]]
     if isinstance(value, str):
-        cleaned = SECRET_TEXT_RE.sub(lambda match: f"{match.group(1)}: [REDACTED]", value)
+        cleaned = SECRET_TEXT_RE.sub(
+            lambda match: f"{match.group(1)}: [REDACTED]", value
+        )
         if len(cleaned) > MAX_TEXT_LENGTH:
             return cleaned[:MAX_TEXT_LENGTH] + "… [truncated]"
         return cleaned
@@ -59,7 +66,9 @@ def context_fingerprint(
         "history": history,
         "decision": decision or {},
     }
-    encoded = json.dumps(sanitize_payload(material), ensure_ascii=False, sort_keys=True, default=str)
+    encoded = json.dumps(
+        sanitize_payload(material), ensure_ascii=False, sort_keys=True, default=str
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
@@ -68,12 +77,29 @@ def ticket_snapshot_fingerprint(
 ) -> str:
     """Fingerprint only mutable external ticket data, independent of the proposal."""
     task_keys = (
-        "Id", "StatusId", "ServiceId", "ExecutorId", "ExecutorIds", "Name",
-        "Description", "Changed", "CustomFields", "Attachments", "attachments",
+        "Id",
+        "StatusId",
+        "ServiceId",
+        "ExecutorId",
+        "ExecutorIds",
+        "Name",
+        "Description",
+        "Changed",
+        "CustomFields",
+        "Attachments",
+        "attachments",
     )
     history_keys = (
-        "Id", "id", "Comments", "Comment", "Text", "EditorId", "Editor",
-        "Created", "Date", "Changed",
+        "Id",
+        "id",
+        "Comments",
+        "Comment",
+        "Text",
+        "EditorId",
+        "Editor",
+        "Created",
+        "Date",
+        "Changed",
     )
     material = {
         "task": {key: task.get(key) for key in task_keys if key in task},
@@ -83,27 +109,196 @@ def ticket_snapshot_fingerprint(
             if isinstance(item, dict)
         ],
     }
-    encoded = json.dumps(sanitize_payload(material), ensure_ascii=False, sort_keys=True, default=str)
+    encoded = json.dumps(
+        sanitize_payload(material), ensure_ascii=False, sort_keys=True, default=str
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _history_context(history: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[Any]]:
+def triage_context_fingerprint(
+    task: dict[str, Any], history: list[dict[str, Any]] | None = None
+) -> str:
+    """Stable identity of the source snapshot and the logic used to analyse it."""
+    material = {
+        "ticket_fingerprint": ticket_snapshot_fingerprint(task, history),
+        "analysis_revision": settings.ANALYSIS_REVISION,
+        "analysis_kind": "triage",
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def decision_to_legacy(record: DecisionRecord) -> dict[str, Any] | None:
+    """Build the compatibility recommendation without recalculating it."""
+    proposal = record.proposal_json or {}
+    if not proposal:
+        return None
+    envelope = proposal.get("decision_envelope") or {}
+    policy = record.policy_json or {}
+    scenario_key = envelope.get("scenario_key") or record.source_json.get("rule_key")
+    status_id = (
+        proposal.get("status_id")
+        or policy.get("target_status_id")
+        or policy.get("status_id")
+    )
+    status_name = (
+        proposal.get("status_name")
+        or policy.get("target_status_name")
+        or policy.get("status_name")
+    )
+    return {
+        "name": proposal.get("title") or scenario_key,
+        "comment": proposal.get("comment"),
+        "status_id": status_id,
+        "target_status_id": status_id,
+        "status_name": status_name,
+        "target_status_name": status_name,
+        "expenses": proposal.get("expenses"),
+        "action": proposal.get("action"),
+        "action_parameters": proposal.get("action_parameters"),
+        "scenario_key": scenario_key,
+        "rule_type": (envelope.get("outcome") or {}).get("rule_key") or scenario_key,
+        "template_key": policy.get("template_key") or scenario_key,
+        "_decision_envelope": envelope or None,
+        "_resolution_policy": policy,
+    }
+
+
+def analysis_state(
+    record: DecisionRecord | None,
+    *,
+    task: dict[str, Any] | None = None,
+    history: list[dict[str, Any]] | None = None,
+    freshness_known: bool = True,
+    applied: bool = False,
+    last_attempt: DecisionRecord | None = None,
+) -> dict[str, Any]:
+    """Public, operator-facing analysis state derived from durable data."""
+    failed_attempt = bool(
+        last_attempt
+        and last_attempt.status == "failed"
+        and (record is None or last_attempt.version > record.version)
+    )
+    attempt_payload = None
+    if last_attempt is not None:
+        attempt_payload = {
+            "state": "failed" if last_attempt.status == "failed" else "succeeded",
+            "error_code": (last_attempt.completeness_json or {}).get("error_code"),
+            "finished_at": (
+                last_attempt.finalized_at or last_attempt.created_at
+            ).isoformat()
+            if (last_attempt.finalized_at or last_attempt.created_at)
+            else None,
+        }
+    if record is None:
+        return {
+            "has_result": False,
+            "state": "failed" if failed_attempt else "not_analyzed",
+            "freshness": "unknown" if not freshness_known else "current",
+            "disposition": "available",
+            "decision_id": None,
+            "decision_version": None,
+            "scenario_key": None,
+            "analyzed_at": None,
+            "stale_reason": None,
+            "can_quick_apply": False,
+            "blocked_reason": (
+                "Последняя попытка анализа завершилась ошибкой"
+                if failed_attempt
+                else "Заявка ещё не проанализирована AI"
+            ),
+            "last_attempt": attempt_payload,
+        }
+
+    proposal = record.proposal_json or {}
+    context = record.context_json or {}
+    envelope = proposal.get("decision_envelope") or {}
+    ready = record.status == "finalized" and bool(proposal.get("ready"))
+    stale_reason = None
+    if not freshness_known or task is None:
+        freshness = "unknown"
+    elif context.get("analysis_revision") != settings.ANALYSIS_REVISION:
+        freshness = "stale"
+        stale_reason = "Правила анализа изменились"
+    elif history is None:
+        expected_task_fingerprint = context.get("ticket_fingerprint_task")
+        if expected_task_fingerprint != ticket_snapshot_fingerprint(task, []):
+            freshness = "stale"
+            stale_reason = "Заявка изменилась в IntraService после анализа"
+        else:
+            freshness = "current"
+    elif context.get("ticket_fingerprint") != ticket_snapshot_fingerprint(
+        task, history
+    ):
+        freshness = "stale"
+        stale_reason = "Заявка изменилась в IntraService после анализа"
+    else:
+        freshness = "current"
+
+    disposition = "applied" if applied else "available"
+    can_apply = (
+        ready
+        and not failed_attempt
+        and freshness == "current"
+        and disposition == "available"
+    )
+    blocked_reason = None
+    if not can_apply:
+        if failed_attempt:
+            blocked_reason = "Последняя попытка повторного анализа завершилась ошибкой"
+        elif disposition == "applied":
+            blocked_reason = "Решение уже применено"
+        elif freshness == "unknown":
+            blocked_reason = "Актуальность результата не удалось проверить"
+        elif freshness == "stale":
+            blocked_reason = stale_reason
+        elif not ready:
+            blocked_reason = "Результат требует ручной проверки"
+
+    return {
+        "has_result": True,
+        "state": "failed" if failed_attempt or not ready else "ready",
+        "freshness": freshness,
+        "disposition": disposition,
+        "decision_id": str(record.id),
+        "decision_version": record.version,
+        "scenario_key": envelope.get("scenario_key")
+        or record.source_json.get("rule_key"),
+        "analyzed_at": (record.finalized_at or record.created_at).isoformat()
+        if (record.finalized_at or record.created_at)
+        else None,
+        "stale_reason": stale_reason,
+        "can_quick_apply": can_apply,
+        "blocked_reason": blocked_reason,
+        "last_attempt": attempt_payload,
+    }
+
+
+def _history_context(
+    history: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[Any]]:
     meaningful = [
         item
         for item in history
-        if str(item.get("Comments") or item.get("Comment") or item.get("Text") or "").strip()
+        if str(
+            item.get("Comments") or item.get("Comment") or item.get("Text") or ""
+        ).strip()
     ]
     used = meaningful[-5:]
     omitted = [item.get("Id") or item.get("id") for item in meaningful[:-5]]
     return used, omitted
 
 
-def serialize_decision(record: DecisionRecord, *, steps: list[DecisionStep] | None = None) -> dict[str, Any]:
+def serialize_decision(
+    record: DecisionRecord, *, steps: list[DecisionStep] | None = None
+) -> dict[str, Any]:
     payload = {
         "id": str(record.id),
         "task_id": record.task_id,
         "ticket_run_id": str(record.ticket_run_id) if record.ticket_run_id else None,
-        "previous_decision_id": str(record.previous_decision_id) if record.previous_decision_id else None,
+        "previous_decision_id": str(record.previous_decision_id)
+        if record.previous_decision_id
+        else None,
         "version": record.version,
         "analysis_kind": record.analysis_kind,
         "status": record.status,
@@ -116,7 +311,9 @@ def serialize_decision(record: DecisionRecord, *, steps: list[DecisionStep] | No
         "policy": record.policy_json,
         "created_by": record.created_by,
         "created_at": record.created_at.isoformat() if record.created_at else None,
-        "finalized_at": record.finalized_at.isoformat() if record.finalized_at else None,
+        "finalized_at": record.finalized_at.isoformat()
+        if record.finalized_at
+        else None,
     }
     if steps is not None:
         payload["steps"] = [
@@ -155,14 +352,13 @@ class DecisionJournalService:
         ai_metadata: dict[str, Any] | None = None,
         policy: dict[str, Any] | None = None,
         ticket_run_id: uuid.UUID | None = None,
+        analysis_fence: int | None = None,
         actor: str = "system:triage",
         force: bool = False,
     ) -> DecisionRecord:
         history = history or []
         kb_matches = kb_matches or []
-        fingerprint = context_fingerprint(
-            task=task, history=history, decision=decision, analysis_kind="triage"
-        )
+        fingerprint = triage_context_fingerprint(task, history)
         if force:
             fingerprint = hashlib.sha256(
                 f"{fingerprint}:forced:{uuid.uuid4()}".encode("utf-8")
@@ -202,9 +398,7 @@ class DecisionJournalService:
             limitations.append("Содержимое вложений не анализировалось")
         if rule_errors:
             blocked_reasons.append("Одно или несколько правил завершились ошибкой")
-        outcome = (
-            "proposal" if decision else "no_solution"
-        )
+        outcome = "proposal" if decision else "no_solution"
         record = DecisionRecord(
             task_id=task_id,
             ticket_run_id=ticket_run_id,
@@ -226,6 +420,9 @@ class DecisionJournalService:
                 {
                     "task": task,
                     "ticket_fingerprint": ticket_snapshot_fingerprint(task, history),
+                    "ticket_fingerprint_task": ticket_snapshot_fingerprint(task, []),
+                    "analysis_revision": settings.ANALYSIS_REVISION,
+                    "analysis_fence": analysis_fence,
                     "history_used": used_history,
                     "history_omitted_ids": omitted_history,
                     "history_limit": 5,
@@ -258,7 +455,9 @@ class DecisionJournalService:
                     "status_id": (decision or {}).get("status_id"),
                     "status_name": (decision or {}).get("status_name"),
                     "expenses": (decision or {}).get("expenses"),
-                    "consequences": "Изменит заявку в IntraService" if decision else None,
+                    "consequences": "Изменит заявку в IntraService"
+                    if decision
+                    else None,
                     "ready": bool(decision) and not missing_data and not rule_errors,
                     "trigger_markers": (decision or {}).get("trigger_markers", []),
                     "risk_level": (decision or {}).get("risk_level", "normal"),
@@ -283,14 +482,25 @@ class DecisionJournalService:
                         sequence=sequence,
                         component="rule",
                         status=(
-                            "error" if rule_errors else ("matched" if rule_source else "fallback")
+                            "error"
+                            if rule_errors
+                            else ("matched" if rule_source else "fallback")
                         ),
                         input_json={"rule_type": rule_type},
                         output_json=sanitize_payload(
-                            {key: value for key, value in decision.items() if key != "_rule_trace"}
+                            {
+                                key: value
+                                for key, value in decision.items()
+                                if key != "_rule_trace"
+                            }
                         ),
-                        metadata_json={"trace": sanitize_payload(rule_trace), "trace_available": True},
-                        error_code="rule_evaluation_incomplete" if rule_errors else None,
+                        metadata_json={
+                            "trace": sanitize_payload(rule_trace),
+                            "trace_available": True,
+                        },
+                        error_code="rule_evaluation_incomplete"
+                        if rule_errors
+                        else None,
                     )
                 )
                 sequence += 1
@@ -322,7 +532,9 @@ class DecisionJournalService:
                     ),
                     input_json={"history_limit": 5},
                     output_json={"text": sanitize_payload(ai_text)} if ai_text else {},
-                    metadata_json=sanitize_payload(ai_metadata or {"model": None, "backend": None}),
+                    metadata_json=sanitize_payload(
+                        ai_metadata or {"model": None, "backend": None}
+                    ),
                     duration_ms=(ai_metadata or {}).get("duration_ms"),
                     input_tokens=(ai_metadata or {}).get("input_tokens"),
                     output_tokens=(ai_metadata or {}).get("output_tokens"),
@@ -341,6 +553,60 @@ class DecisionJournalService:
             if existing is None:
                 raise
             return existing
+        await self.db.refresh(record)
+        return record
+
+    async def record_triage_failure(
+        self,
+        *,
+        task_id: int,
+        task: dict[str, Any],
+        history: list[dict[str, Any]] | None,
+        error_code: str,
+        actor: str,
+    ) -> DecisionRecord:
+        history = history or []
+        previous = await self.db.scalar(
+            select(DecisionRecord)
+            .where(DecisionRecord.task_id == task_id)
+            .order_by(DecisionRecord.version.desc())
+            .limit(1)
+        )
+        base_fingerprint = triage_context_fingerprint(task, history)
+        fingerprint = hashlib.sha256(
+            f"{base_fingerprint}:failed:{error_code}:{uuid.uuid4()}".encode("utf-8")
+        ).hexdigest()
+        now = dt.datetime.now(dt.timezone.utc)
+        record = DecisionRecord(
+            task_id=task_id,
+            previous_decision_id=previous.id if previous else None,
+            version=(previous.version if previous else 0) + 1,
+            analysis_kind="triage",
+            status="failed",
+            outcome="no_solution",
+            context_fingerprint=fingerprint,
+            source_json={"rule": False, "rag": False, "ai": False},
+            context_json=sanitize_payload(
+                {
+                    "task": task,
+                    "ticket_fingerprint": ticket_snapshot_fingerprint(task, history),
+                    "ticket_fingerprint_task": ticket_snapshot_fingerprint(task, []),
+                    "analysis_revision": settings.ANALYSIS_REVISION,
+                }
+            ),
+            completeness_json={
+                "complete": False,
+                "missing_data": [],
+                "blocked_reasons": [error_code],
+                "error_code": error_code,
+            },
+            proposal_json={},
+            policy_json={},
+            created_by=actor,
+            finalized_at=now,
+        )
+        self.db.add(record)
+        await self.db.commit()
         await self.db.refresh(record)
         return record
 
@@ -405,7 +671,11 @@ class DecisionJournalService:
                     "target": target,
                 }
             ),
-            completeness_json={"complete": True, "missing_data": [], "blocked_reasons": []},
+            completeness_json={
+                "complete": True,
+                "missing_data": [],
+                "blocked_reasons": [],
+            },
             proposal_json=sanitize_payload(
                 {"action": action, "parameters": parameters, "ready": True}
             ),
@@ -435,13 +705,94 @@ class DecisionJournalService:
         if record is None or record.task_id != task_id:
             raise HTTPException(status.HTTP_409_CONFLICT, "decision_not_found_for_task")
         latest_version = await self.db.scalar(
-            select(func.max(DecisionRecord.version)).where(DecisionRecord.task_id == task_id)
+            select(func.max(DecisionRecord.version)).where(
+                DecisionRecord.task_id == task_id,
+                DecisionRecord.analysis_kind == record.analysis_kind,
+            )
         )
-        if record.version != version or record.version != latest_version or record.status != "finalized":
+        if (
+            record.version != version
+            or record.version != latest_version
+            or record.status != "finalized"
+        ):
+            raise HTTPException(status.HTTP_409_CONFLICT, "decision_stale")
+        if (
+            record.analysis_kind == "triage"
+            and (record.context_json or {}).get("analysis_revision")
+            != settings.ANALYSIS_REVISION
+        ):
             raise HTTPException(status.HTTP_409_CONFLICT, "decision_stale")
         if record.completeness_json.get("complete") is False:
             raise HTTPException(status.HTTP_409_CONFLICT, "decision_incomplete")
         return record
+
+    async def latest_triage(self, task_id: int) -> DecisionRecord | None:
+        return await self.db.scalar(
+            select(DecisionRecord)
+            .where(
+                DecisionRecord.task_id == task_id,
+                DecisionRecord.analysis_kind == "triage",
+                DecisionRecord.status == "finalized",
+            )
+            .order_by(DecisionRecord.version.desc())
+            .limit(1)
+        )
+
+    async def latest_triage_many(
+        self, task_ids: list[int]
+    ) -> dict[int, DecisionRecord]:
+        if not task_ids:
+            return {}
+        records = list(
+            (
+                await self.db.scalars(
+                    select(DecisionRecord)
+                    .where(
+                        DecisionRecord.task_id.in_(set(task_ids)),
+                        DecisionRecord.analysis_kind == "triage",
+                        DecisionRecord.status == "finalized",
+                    )
+                    .order_by(DecisionRecord.task_id, DecisionRecord.version.desc())
+                )
+            ).all()
+        )
+        latest: dict[int, DecisionRecord] = {}
+        for record in records:
+            latest.setdefault(record.task_id, record)
+        return latest
+
+    async def latest_triage_attempt(self, task_id: int) -> DecisionRecord | None:
+        return await self.db.scalar(
+            select(DecisionRecord)
+            .where(
+                DecisionRecord.task_id == task_id,
+                DecisionRecord.analysis_kind == "triage",
+            )
+            .order_by(DecisionRecord.version.desc())
+            .limit(1)
+        )
+
+    async def latest_triage_attempt_many(
+        self, task_ids: list[int]
+    ) -> dict[int, DecisionRecord]:
+        if not task_ids:
+            return {}
+        records = list(
+            (
+                await self.db.scalars(
+                    select(DecisionRecord)
+                    .where(
+                        DecisionRecord.task_id.in_(set(task_ids)),
+                        DecisionRecord.analysis_kind == "triage",
+                    )
+                    .order_by(DecisionRecord.task_id, DecisionRecord.version.desc())
+                )
+            ).all()
+        )
+        latest: dict[int, DecisionRecord] = {}
+        for record in records:
+            latest.setdefault(record.task_id, record)
+        return latest
 
     async def add_feedback(
         self,

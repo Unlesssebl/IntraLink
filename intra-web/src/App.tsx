@@ -7,6 +7,7 @@ import Topbar from './components/Topbar';
 import QueuePage from './pages/QueuePage';
 import SettingsPage from './pages/SettingsPage';
 import AdminPanelPage from './pages/AdminPanelPage';
+import TimelinePage from './pages/TimelinePage';
 import CommandPalette from './components/CommandPalette';
 import ToastContainer from './components/Toast';
 import { AuthProvider, useAuth } from './lib/auth';
@@ -17,7 +18,38 @@ import { fetchActiveExecution, type ActiveExecutionStatus } from './lib/ticketRu
 function MainApp() {
   const { isLoggedIn, user, loading: authLoading, logout } = useAuth();
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
-  const [currentPage, setCurrentPage] = useState<Page>('queue');
+  const [currentPage, setCurrentPage] = useState<Page>(() => {
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/settings')) {
+      return 'settings';
+    }
+    return 'queue';
+  });
+
+  const handleNavigate = useCallback((page: Page) => {
+    if (page === 'timeline') {
+      window.history.pushState({}, '', '/timeline');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      return;
+    }
+    setCurrentPage(page);
+    setSelectedTicketId(null);
+    const targetPath = page === 'settings' ? '/settings' : '/';
+    if (typeof window !== 'undefined' && window.location.pathname !== targetPath) {
+      window.history.pushState({}, '', targetPath);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onPop = () => {
+      if (window.location.pathname.startsWith('/settings')) {
+        setCurrentPage('settings');
+      } else {
+        setCurrentPage('queue');
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => {
     const saved = localStorage.getItem('intralink_sidebar_mode');
     return (saved === 'compact' || saved === 'hidden' || saved === 'full') ? saved : 'full';
@@ -223,10 +255,7 @@ function MainApp() {
       {/* Sidebar with Real Service Catalog */}
       <Sidebar
         currentPage={currentPage}
-        onNavigate={page => {
-          setCurrentPage(page);
-          setSelectedTicketId(null);
-        }}
+        onNavigate={handleNavigate}
         theme={theme}
         onToggleTheme={() => setTheme(t => (t === 'light' ? 'dark' : 'light'))}
         sidebarMode={sidebarMode}
@@ -332,11 +361,11 @@ function MainApp() {
           onClose={() => setCmdPaletteOpen(false)}
           onSelectTicket={id => {
             setSelectedTicketId(id);
-            setCurrentPage('queue');
+            handleNavigate('queue');
             setCmdPaletteOpen(false);
           }}
           onNavigate={page => {
-            setCurrentPage(page);
+            handleNavigate(page);
             setCmdPaletteOpen(false);
           }}
         />
@@ -359,6 +388,17 @@ export default function App() {
 
   if (pathname.startsWith('/admin')) {
     return <AdminPanelPage />;
+  }
+
+  if (pathname.startsWith('/timeline')) {
+    return (
+      <TimelinePage
+        onNavigate={() => {
+          window.history.pushState({}, '', '/');
+          setPathname('/');
+        }}
+      />
+    );
   }
 
   return (

@@ -3,6 +3,7 @@
 Спроектирован как тонкий контроллер (SRP), делегирующий логику в TriageService и TriageSessionManager.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -15,11 +16,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.db import DecisionRecord, DecisionStep, TicketRun, get_db
+from app.database.db import (
+    AsyncSessionLocal,
+    CommandRecord,
+    DecisionRecord,
+    DecisionStep,
+    TicketRun,
+    get_db,
+)
 from app.routers.deps import (
     get_service_auth_b64,
     principal_subject,
     require_permission,
+    verify_trusted_origin,
 )
 from app.services import intraservice
 from app.services.rag import (
@@ -36,9 +45,11 @@ from app.services.template_engine import load_templates
 from app.services.triage_service import TriageService
 from app.services.triage_session import TriageSessionManager
 from app.services.worker import get_redis_client
-from app.services.ai_suggestions import build_suggestion_state, invalidate_suggestion
+from app.services.ai_suggestions import invalidate_suggestion
 from app.services.decision_journal import (
     DecisionJournalService,
+    analysis_state,
+    decision_to_legacy,
     serialize_decision,
     ticket_snapshot_fingerprint,
 )
@@ -92,7 +103,9 @@ class ApplyTriageRequest(BaseModel):
         ),
     )
     decision_id: str | None = Field(None, description="ID зафиксированного решения")
-    decision_version: int | None = Field(None, description="Версия зафиксированного решения")
+    decision_version: int | None = Field(
+        None, description="Версия зафиксированного решения"
+    )
 
 
 class SkipSessionRequest(BaseModel):
@@ -109,8 +122,12 @@ class RAGSearchRequest(BaseModel):
     profile: Literal["precise", "balanced", "broad"] = Field(
         "balanced", description="Версионируемый профиль качества поиска"
     )
-    service_id: int | None = Field(None, description="ID раздела/услуги IntraService для приоритизации")
-    service_path: str | None = Field(None, description="Полный иерархический путь услуги")
+    service_id: int | None = Field(
+        None, description="ID раздела/услуги IntraService для приоритизации"
+    )
+    service_path: str | None = Field(
+        None, description="Полный иерархический путь услуги"
+    )
 
 
 class RAGIndexRequest(BaseModel):
@@ -131,6 +148,10 @@ class RAGSyncRequest(BaseModel):
     limit: int = Field(50, ge=1, le=500, description="Лимит выгрузки задач")
 
 
+class AnalyzeBatchRequest(BaseModel):
+    task_ids: list[int] = Field(..., min_length=1, max_length=100)
+
+
 # ---------------------------------------------------------------------------
 # Эндпоинты триажа очереди и карточки задач
 # ---------------------------------------------------------------------------
@@ -142,8 +163,9 @@ async def attach_durable_decision(
     task_id: int,
     db: AsyncSession,
     actor: str,
+    analysis_fence: int,
     force: bool = False,
-) -> None:
+) -> DecisionRecord:
     suggestion = card.get("ai_suggestion") or {}
     record = await DecisionJournalService(db).record_triage(
         task_id=task_id,
@@ -152,16 +174,18 @@ async def attach_durable_decision(
         decision=card.get("suggested_action"),
         kb_matches=card.get("kb_matches") or [],
         ai_text=card.get("ai_suggested_resolution"),
-            ai_metadata=card.get("ai_metadata") or {
-                "model": None,
-                "backend": None,
-                "circuit": card.get("circuit"),
-                "input_tokens": None,
-                "output_tokens": None,
-            },
+        ai_metadata=card.get("ai_metadata")
+        or {
+            "model": None,
+            "backend": None,
+            "circuit": card.get("circuit"),
+            "input_tokens": None,
+            "output_tokens": None,
+        },
         policy=(card.get("suggested_action") or {}).get("_resolution_policy")
         or suggestion.get("policy")
         or {},
+        analysis_fence=analysis_fence,
         actor=actor,
         force=force,
     )
@@ -182,6 +206,210 @@ async def attach_durable_decision(
         "blocked_reasons": record.completeness_json.get("blocked_reasons", []),
         "stale": suggestion.get("state") == "stale",
     }
+    card["analysis"] = analysis_state(
+        record,
+        task=card.get("task") or {},
+        history=card.get("history") or [],
+    )
+    return record
+
+
+async def attach_existing_decision(
+    *,
+    card: dict[str, Any],
+    record: DecisionRecord | None,
+    db: AsyncSession,
+) -> dict[str, Any]:
+    """Hydrate the compatibility DTO from durable data without recalculation."""
+    card.setdefault("kb_matches", [])
+    card.setdefault("telemetry", None)
+    card.setdefault("ai_metadata", {})
+    card.setdefault("sources", record.source_json if record else {})
+    card["suggested_action"] = decision_to_legacy(record) if record else None
+    card["decision_envelope"] = (
+        (record.proposal_json or {}).get("decision_envelope") if record else None
+    )
+    card["ai_suggested_resolution"] = (
+        (record.proposal_json or {}).get("comment") if record else None
+    )
+    journal = DecisionJournalService(db)
+    last_attempt = await journal.latest_triage_attempt(
+        int((card.get("task") or {}).get("Id") or (record.task_id if record else 0))
+    )
+    applied = False
+    if record is not None:
+        applied = (
+            await db.scalar(
+                select(CommandRecord.id)
+                .where(
+                    CommandRecord.decision_id == record.id,
+                    CommandRecord.status == "succeeded",
+                )
+                .limit(1)
+            )
+        ) is not None
+    card["analysis"] = analysis_state(
+        record,
+        task=card.get("task") or {},
+        history=card.get("history") or [],
+        applied=applied,
+        last_attempt=last_attempt,
+    )
+    if record is None:
+        card["decision"] = None
+        card["readiness"] = {"ready": False, "blocked_reasons": ["not_analyzed"]}
+        return card
+
+    steps = list(
+        (
+            await db.scalars(
+                select(DecisionStep)
+                .where(DecisionStep.decision_id == record.id)
+                .order_by(DecisionStep.sequence)
+            )
+        ).all()
+    )
+    card["decision"] = serialize_decision(record, steps=steps)
+    card["readiness"] = {
+        "ready": card["analysis"]["can_quick_apply"],
+        "missing_data": (record.completeness_json or {}).get("missing_data", []),
+        "blocked_reasons": (record.completeness_json or {}).get("blocked_reasons", []),
+        "stale": card["analysis"]["freshness"] == "stale",
+    }
+    return card
+
+
+async def acquire_analysis_lease(task_id: int) -> tuple[Any, str, str, int]:
+    redis = get_redis_client()
+    lock_key = f"lock:triage-analysis:{task_id}"
+    try:
+        fence = await redis.incr(f"fence:triage-analysis:{task_id}")
+        owner = f"{fence}:{uuid.uuid4()}"
+        acquired = await redis.set(lock_key, owner, nx=True, ex=300)
+    except Exception as exc:
+        logger.warning("Analysis lock unavailable for task %s: %s", task_id, exc)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "analysis_lock_unavailable"
+        ) from exc
+    if not acquired:
+        raise HTTPException(status.HTTP_409_CONFLICT, "analysis_already_running")
+    return redis, lock_key, owner, fence
+
+
+async def release_analysis_lease(redis: Any, lock_key: str, owner: str) -> None:
+    try:
+        await redis.eval(
+            """
+            if redis.call('get', KEYS[1]) == ARGV[1] then
+                return redis.call('del', KEYS[1])
+            end
+            return 0
+            """,
+            1,
+            lock_key,
+            owner,
+        )
+    except Exception:
+        logger.warning("Failed to release analysis lease %s", lock_key, exc_info=True)
+
+
+async def run_explicit_analysis(
+    *,
+    task_id: int,
+    service_auth_b64: str,
+    actor: str,
+    db: AsyncSession,
+    force: bool,
+) -> dict[str, Any]:
+    redis, lock_key, owner, fence = await acquire_analysis_lease(task_id)
+    snapshot: dict[str, Any] | None = None
+    try:
+        snapshot = await TriageService.get_task_card_snapshot(service_auth_b64, task_id)
+        if snapshot is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "ticket_not_found")
+        if not force:
+            existing = await DecisionJournalService(db).latest_triage(task_id)
+            last_attempt = await DecisionJournalService(db).latest_triage_attempt(
+                task_id
+            )
+            existing_state = analysis_state(
+                existing,
+                task=snapshot["task"],
+                history=snapshot["history"],
+                last_attempt=last_attempt,
+            )
+            if (
+                existing
+                and existing_state["state"] == "ready"
+                and existing_state["freshness"] == "current"
+            ):
+                return await attach_existing_decision(
+                    card=snapshot, record=existing, db=db
+                )
+
+        card = await TriageService.get_task_card_details(
+            service_auth_b64=service_auth_b64,
+            db=db,
+            task_id=task_id,
+            force=force,
+        )
+        if not card:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "ticket_not_found")
+        source_fingerprint = ticket_snapshot_fingerprint(
+            card.get("task") or {}, card.get("history") or []
+        )
+        current = await TriageService.get_task_card_snapshot(service_auth_b64, task_id)
+        if current is None or source_fingerprint != ticket_snapshot_fingerprint(
+            current["task"], current["history"]
+        ):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "ticket_changed_during_analysis"
+            )
+        if await redis.get(lock_key) != owner:
+            raise HTTPException(status.HTTP_409_CONFLICT, "analysis_lease_lost")
+        await attach_durable_decision(
+            card=card,
+            task_id=task_id,
+            db=db,
+            actor=actor,
+            analysis_fence=fence,
+            force=force,
+        )
+        return card
+    except HTTPException as exc:
+        if exc.detail not in {"ticket_not_found", "analysis_lease_lost"} and snapshot:
+            try:
+                if await redis.get(lock_key) == owner:
+                    await DecisionJournalService(db).record_triage_failure(
+                        task_id=task_id,
+                        task=snapshot["task"],
+                        history=snapshot["history"],
+                        error_code=str(exc.detail),
+                        actor=actor,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to journal analysis error for task %s", task_id
+                )
+        raise
+    except Exception:
+        if snapshot:
+            try:
+                if await redis.get(lock_key) == owner:
+                    await DecisionJournalService(db).record_triage_failure(
+                        task_id=task_id,
+                        task=snapshot["task"],
+                        history=snapshot["history"],
+                        error_code="analysis_failed",
+                        actor=actor,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to journal analysis error for task %s", task_id
+                )
+        raise
+    finally:
+        await release_analysis_lease(redis, lock_key, owner)
 
 
 @router.get("/batch", status_code=status.HTTP_200_OK)
@@ -200,7 +428,8 @@ async def get_triage_batch(
         False, description="Включить в выборку ранее пропущенные заявки"
     ),
     include_rag: bool = Query(
-        False, description="Выполнять семантический RAG-поиск по прецедентам для всей пачки"
+        False,
+        description="Выполнять семантический RAG-поиск по прецедентам для всей пачки",
     ),
     service_auth_b64: str = Depends(get_service_auth_b64),
     username: str = Depends(principal_subject),
@@ -218,16 +447,73 @@ async def get_triage_batch(
         include_skipped=include_skipped,
         include_rag=include_rag,
         operator_id=username,
+        compute_recommendations=False,
     )
     if isinstance(batch_data, dict):
         try:
             from app.services.outage_detector import OutageDetector
+
             tasks_list = batch_data.get("tasks", [])
             outages = await OutageDetector.detect_outages(tasks_list)
             batch_data["outages"] = outages
         except Exception as e:
             logger.debug("Ошибка детекции аварий в пачке триажа: %s", e)
             batch_data["outages"] = []
+    tasks = batch_data.get("tasks", []) if isinstance(batch_data, dict) else []
+    scope_task_ids = list(batch_data.pop("scope_task_ids", []))
+    all_scope_records = await DecisionJournalService(db).latest_triage_many(
+        scope_task_ids
+    )
+    all_scope_attempts = await DecisionJournalService(db).latest_triage_attempt_many(
+        scope_task_ids
+    )
+    records = {
+        task_id: all_scope_records[task_id]
+        for task_id in [int(item["task_id"]) for item in tasks]
+        if task_id in all_scope_records
+    }
+    applied_decision_ids = set()
+    if records:
+        applied_decision_ids = set(
+            (
+                await db.scalars(
+                    select(CommandRecord.decision_id).where(
+                        CommandRecord.decision_id.in_(
+                            [record.id for record in records.values()]
+                        ),
+                        CommandRecord.status == "succeeded",
+                    )
+                )
+            ).all()
+        )
+    for item in tasks:
+        record = records.get(int(item["task_id"]))
+        item["suggested_action"] = decision_to_legacy(record) if record else None
+        item["decision_envelope"] = (
+            (record.proposal_json or {}).get("decision_envelope") if record else None
+        )
+        item["analysis"] = analysis_state(
+            record,
+            task=item.get("task") or {},
+            applied=bool(record and record.id in applied_decision_ids),
+            last_attempt=all_scope_attempts.get(int(item["task_id"])),
+        )
+        item["sources"] = record.source_json if record else {}
+        item["readiness"] = {
+            "ready": item["analysis"]["can_quick_apply"],
+            "blocked_reasons": (
+                (record.completeness_json or {}).get("blocked_reasons", [])
+                if record
+                else ["not_analyzed"]
+            ),
+        }
+    if isinstance(batch_data, dict):
+        batch_data["analysis_counts"] = {
+            "analyzed": len(all_scope_records),
+            "not_analyzed": max(0, len(scope_task_ids) - len(all_scope_records)),
+            "scope_total": len(scope_task_ids),
+            "is_complete_scope": not batch_data.get("is_truncated", False),
+        }
     return batch_data
 
 
@@ -238,61 +524,114 @@ async def get_task_details_card(
     operator: str = Depends(principal_subject),
     db: AsyncSession = Depends(get_db),
 ):
-    """Возвращает расширенную карточку задачи с историей, RAG и AI-синтезом решения."""
-    card = await TriageService.get_task_card_details(
-        service_auth_b64=service_auth_b64,
-        db=db,
-        task_id=task_id,
-    )
+    """Возвращает заявку и сохранённое решение без повторного анализа."""
+    card = await TriageService.get_task_card_snapshot(service_auth_b64, task_id)
     if not card:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Заявка #{task_id} не найдена в IntraService.",
         )
-    card["ai_suggestion"] = await build_suggestion_state(
-        redis_client=get_redis_client(),
+    record = await DecisionJournalService(db).latest_triage(task_id)
+    return await attach_existing_decision(card=card, record=record, db=db)
+
+
+@router.post(
+    "/tasks/{task_id}/analyze",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
+async def analyze_task_endpoint(
+    task_id: int,
+    service_auth_b64: str = Depends(get_service_auth_b64),
+    operator: str = Depends(principal_subject),
+    _origin: None = Depends(verify_trusted_origin),
+    db: AsyncSession = Depends(get_db),
+):
+    return await run_explicit_analysis(
         task_id=task_id,
-        task=card.get("task") or {},
-        history=card.get("history"),
-        decision=card.get("suggested_action"),
+        service_auth_b64=service_auth_b64,
+        actor=operator,
+        db=db,
+        force=False,
     )
-    await attach_durable_decision(
-        card=card, task_id=task_id, db=db, actor=operator
-    )
-    return card
 
 
-@router.post("/tasks/{task_id}/reanalyze", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
+@router.post(
+    "/tasks/{task_id}/reanalyze",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
 async def reanalyze_task_endpoint(
     task_id: int,
     service_auth_b64: str = Depends(get_service_auth_b64),
     operator: str = Depends(principal_subject),
+    _origin: None = Depends(verify_trusted_origin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Принудительно сбрасывает кэш и перезапускает RuleEngine/RAG/LLM анализ по заявке."""
-    card = await TriageService.get_task_card_details(
-        service_auth_b64=service_auth_b64,
-        db=db,
+    """Явно создаёт новую версию анализа; чтение заявки этого не делает."""
+    return await run_explicit_analysis(
         task_id=task_id,
+        service_auth_b64=service_auth_b64,
+        actor=operator,
+        db=db,
         force=True,
     )
-    if not card:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Заявка #{task_id} не найдена в IntraService.",
-        )
-    card["ai_suggestion"] = await build_suggestion_state(
-        redis_client=get_redis_client(),
-        task_id=task_id,
-        task=card.get("task") or {},
-        history=card.get("history"),
-        decision=card.get("suggested_action"),
-        force_recalculate=True,
-    )
-    await attach_durable_decision(
-        card=card, task_id=task_id, db=db, actor=operator, force=True
-    )
-    return card
+
+
+@router.post(
+    "/analyze-batch",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
+async def analyze_batch_endpoint(
+    payload: AnalyzeBatchRequest,
+    service_auth_b64: str = Depends(get_service_auth_b64),
+    operator: str = Depends(principal_subject),
+    _origin: None = Depends(verify_trusted_origin),
+):
+    task_ids = list(dict.fromkeys(payload.task_ids))
+    semaphore = asyncio.Semaphore(settings.TRIAGE_ANALYSIS_MAX_CONCURRENCY)
+
+    async def analyze_one(task_id: int) -> dict[str, Any]:
+        async with semaphore, AsyncSessionLocal() as session:
+            try:
+                card = await run_explicit_analysis(
+                    task_id=task_id,
+                    service_auth_b64=service_auth_b64,
+                    actor=operator,
+                    db=session,
+                    force=False,
+                )
+                return {
+                    "task_id": task_id,
+                    "status": "processed",
+                    "analysis": card["analysis"],
+                }
+            except HTTPException as exc:
+                status_value = (
+                    "skipped" if exc.detail == "analysis_already_running" else "failed"
+                )
+                return {
+                    "task_id": task_id,
+                    "status": status_value,
+                    "error": str(exc.detail),
+                }
+            except Exception:
+                logger.exception("Batch analysis failed for task %s", task_id)
+                return {
+                    "task_id": task_id,
+                    "status": "failed",
+                    "error": "analysis_failed",
+                }
+
+    results = await asyncio.gather(*(analyze_one(task_id) for task_id in task_ids))
+    return {
+        "total": len(task_ids),
+        "processed": sum(1 for item in results if item["status"] == "processed"),
+        "skipped": sum(1 for item in results if item["status"] == "skipped"),
+        "failed": sum(1 for item in results if item["status"] == "failed"),
+        "results": results,
+    }
 
 
 def extract_operator_user_id(
@@ -321,10 +660,15 @@ def extract_operator_user_id(
     return None
 
 
-@router.post("/apply", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
+@router.post(
+    "/apply",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
 async def apply_triage_action(
     payload: ApplyTriageRequest,
     service_auth_b64: str = Depends(get_service_auth_b64),
+    _origin: None = Depends(verify_trusted_origin),
     db: AsyncSession = Depends(get_db),
     authorization: str | None = Header(None, alias="Authorization"),
     admin_session: str | None = Cookie(None),
@@ -402,13 +746,11 @@ async def apply_triage_action(
                 if isinstance(current_history_payload, dict)
                 else (current_history_payload or [])
             )
-            expected_fingerprint = decision_by_task[payload.task_ids[0]].context_json.get(
-                "ticket_fingerprint"
-            )
-            if (
-                not current_task
-                or expected_fingerprint
-                != ticket_snapshot_fingerprint(current_task, current_history)
+            expected_fingerprint = decision_by_task[
+                payload.task_ids[0]
+            ].context_json.get("ticket_fingerprint")
+            if not current_task or expected_fingerprint != ticket_snapshot_fingerprint(
+                current_task, current_history
             ):
                 raise HTTPException(status.HTTP_409_CONFLICT, "decision_stale")
         else:
@@ -442,8 +784,15 @@ async def apply_triage_action(
     )
 
     # Если ни одна задача не была успешно обновлена в IntraService, возвращаем ошибку клиенту
-    if not payload.dry_run and results and all(not r.get("update_ok", False) for r in results):
-        first_err = results[0].get("error") or "Не удалось обновить заявку в IntraService (проверьте доступные переходы статусов и права роли)."
+    if (
+        not payload.dry_run
+        and results
+        and all(not r.get("update_ok", False) for r in results)
+    ):
+        first_err = (
+            results[0].get("error")
+            or "Не удалось обновить заявку в IntraService (проверьте доступные переходы статусов и права роли)."
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=first_err,
@@ -489,9 +838,13 @@ async def apply_triage_action(
                     "operator_user_id": op_user_id,
                     "timestamp": time.time(),
                 }
-                await redis.publish("events:all", json.dumps(event_payload, ensure_ascii=False))
+                await redis.publish(
+                    "events:all", json.dumps(event_payload, ensure_ascii=False)
+                )
             except Exception as ex:
-                logger.debug("Не удалось опубликовать событие triage_applied в Redis: %s", ex)
+                logger.debug(
+                    "Не удалось опубликовать событие triage_applied в Redis: %s", ex
+                )
     return {"results": results}
 
 
@@ -515,7 +868,11 @@ async def get_duplicates_in_queue(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/session/skip", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
+@router.post(
+    "/session/skip",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
 async def skip_session_tasks(
     payload: SkipSessionRequest,
     operator: str = Depends(principal_subject),
@@ -533,7 +890,11 @@ async def skip_session_tasks(
     }
 
 
-@router.post("/session/reset", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
+@router.post(
+    "/session/reset",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
 async def reset_session_tasks(
     operator_id: str | None = Query(None, description="Идентификатор оператора"),
     operator: str = Depends(principal_subject),
@@ -582,7 +943,11 @@ async def get_triage_templates():
 # ---------------------------------------------------------------------------
 
 
-@router.post("/rag/search", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("ai:use"))])
+@router.post(
+    "/rag/search",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("ai:use"))],
+)
 async def rag_search_endpoint(
     payload: RAGSearchRequest,
     db: AsyncSession = Depends(get_db),
@@ -606,7 +971,11 @@ async def rag_search_endpoint(
     return {"total": len(matches), "matches": matches}
 
 
-@router.post("/rag/index", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
+@router.post(
+    "/rag/index",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
 async def rag_index_endpoint(
     payload: RAGIndexRequest,
     db: AsyncSession = Depends(get_db),
@@ -633,17 +1002,26 @@ async def rag_index_endpoint(
     return {"status": "success", "task_id": payload.task_id}
 
 
-@router.post("/rag/backfill-paths", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
+@router.post(
+    "/rag/backfill-paths",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
 async def rag_backfill_paths_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Фоновое обогащение существующих записей базы знаний полными путями каталога услуг."""
     from app.services.rag import backfill_kb_service_paths
+
     updated = await backfill_kb_service_paths(db)
     return {"status": "success", "updated_records": updated}
 
 
-@router.post("/rag/sync", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
+@router.post(
+    "/rag/sync",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
 async def rag_sync_endpoint(
     payload: RAGSyncRequest,
     service_auth_b64: str = Depends(get_service_auth_b64),
@@ -658,7 +1036,11 @@ async def rag_sync_endpoint(
     )
 
 
-@router.post("/cache/purge", status_code=status.HTTP_200_OK, dependencies=[Depends(require_permission("triage:mutate"))])
+@router.post(
+    "/cache/purge",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
 async def purge_triage_cache_endpoint(
     operator: str = Depends(principal_subject),
 ):
@@ -713,10 +1095,10 @@ async def get_feedback_review_endpoint(
                 "reason_code": feedback.reason_code,
                 "final_action": feedback.final_action_json,
                 "operator_id": feedback.actor,
-                "created_at": feedback.created_at.isoformat() if feedback.created_at else None,
+                "created_at": feedback.created_at.isoformat()
+                if feedback.created_at
+                else None,
             }
             for feedback, decision in entries
         ],
     }
-
-

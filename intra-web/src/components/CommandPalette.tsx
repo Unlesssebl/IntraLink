@@ -9,7 +9,7 @@ interface Props {
   onNavigate: (page: Page) => void;
 }
 
-export default function CommandPalette({ tickets, onClose, onSelectTicket }: Props) {
+export default function CommandPalette({ tickets, onClose, onSelectTicket, onNavigate }: Props) {
   const [query, setQuery] = useState('');
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -92,6 +92,40 @@ export default function CommandPalette({ tickets, onClose, onSelectTicket }: Pro
 
         {/* Results Area */}
         <div ref={listRef} className="max-h-80 overflow-y-auto py-1">
+          {(!q || 'хронология timeline релизы версии вехи'.includes(q)) && (
+            <div className="px-2 py-1 mb-1 border-b border-neutral-100 dark:border-neutral-800/80">
+              <button
+                onClick={() => {
+                  onNavigate('timeline');
+                  onClose();
+                }}
+                className="w-full flex items-center justify-between px-3 py-2 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer text-left group"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-6 h-6 rounded-md bg-sky-500/10 text-sky-500 flex items-center justify-center">
+                    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M2 3.5h10M2 7h10M2 10.5h10" strokeLinecap="round" />
+                      <circle cx="4" cy="3.5" r="1.2" fill="currentColor" />
+                      <circle cx="9" cy="7" r="1.2" fill="currentColor" />
+                      <circle cx="6" cy="10.5" r="1.2" fill="currentColor" />
+                    </svg>
+                  </div>
+                  <div>
+                    <span className="text-xs font-medium text-neutral-900 dark:text-neutral-100 group-hover:text-sky-500 transition-colors">
+                      Открыть хронологию проекта
+                    </span>
+                    <span className="text-[11px] text-neutral-400 block font-mono">
+                      45+ релизов · 5 эпох · v1.0.0 → v3.3.0
+                    </span>
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono text-neutral-400 border border-neutral-200 dark:border-neutral-700 px-1.5 py-0.5 rounded">
+                  /timeline
+                </span>
+              </button>
+            </div>
+          )}
+
           {!q ? (
             <div className="px-4 py-8 text-center text-neutral-400 dark:text-neutral-500">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="mx-auto mb-2 opacity-40">
