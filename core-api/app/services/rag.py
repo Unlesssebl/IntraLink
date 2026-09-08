@@ -1090,11 +1090,12 @@ async def index_task_knowledge(
 
         # Авто-резолв полного пути сервиса при необходимости
         if (not service_path or not service_path_ids) and service_id:
-            resolved_path, resolved_ids = await ServiceCatalogService.get_service_path(service_id)
+            resolved_path, resolved_ids = await ServiceCatalogService.get_service_path(service_id, fallback_name=service_name)
             if not service_path:
                 service_path = resolved_path
             if not service_path_ids:
                 service_path_ids = resolved_ids
+
 
         res_label = (classification_data or {}).get("resolution_label") or "Решение"
         service_header = f"Сервис: {service_path}\n" if service_path else (f"Сервис: {service_name}\n" if service_name else "")
@@ -1640,15 +1641,35 @@ async def sync_stratified_kb(
                 "Синхронизация базы знаний уже выполняется другим процессом."
             )
 
+    # 1. Извлекаем конечные детализированные сервисы каталога (листья)
+    leaf_services = await ServiceCatalogService.get_leaf_services(redis_client=redis)
+    use_leaf_mode = bool(leaf_services)
+
     all_roots = get_all_root_services()
     if target_root_id:
-        target_roots = [r for r in all_roots if r["root_id"] == target_root_id]
-        if not target_roots:
-            if redis:
-                await redis.delete(lock_key)
-            raise ValueError(f"Корневой раздел с ID '{target_root_id}' не найден в каталоге.")
+        if use_leaf_mode:
+            target_services = [
+                s for s in leaf_services
+                if s.root_num == target_root_id or str(s.root_id) == str(target_root_id) or str(s.id) == str(target_root_id)
+            ]
+            if not target_services:
+                target_roots = [r for r in all_roots if r["root_id"] == target_root_id]
+                if not target_roots:
+                    if redis:
+                        await redis.delete(lock_key)
+                    raise ValueError(f"Раздел с ID '{target_root_id}' не найден в каталоге.")
+                use_leaf_mode = False
+        else:
+            target_roots = [r for r in all_roots if r["root_id"] == target_root_id]
+            if not target_roots:
+                if redis:
+                    await redis.delete(lock_key)
+                raise ValueError(f"Корневой раздел с ID '{target_root_id}' не найден в каталоге.")
     else:
+        target_services = leaf_services
         target_roots = all_roots
+
+    items_to_process = target_services if use_leaf_mode else target_roots
 
     if not status_ids:
         status_ids = [28, 29, 43, 30]
@@ -1664,7 +1685,7 @@ async def sync_stratified_kb(
         "current_root": None,
         "current_service_name": None,
         "processed_roots": 0,
-        "total_roots": len(target_roots),
+        "total_roots": len(items_to_process),
         "percent": 0,
         "total_indexed": 0,
         "total_skipped": 0,
@@ -1686,7 +1707,8 @@ async def sync_stratified_kb(
         if len(progress_state["logs"]) > 100:
             progress_state["logs"] = progress_state["logs"][-100:]
 
-    add_log(f"Старт наполнения RAG: {len(target_roots)} разделов, квота {quota_per_service}, глубина {days} дн., статусы [{status_ids_str}], AI-фильтр: {'ВКЛ' if ai_eval else 'ВЫКЛ'}", "info")
+    mode_title = f"{len(items_to_process)} детальных сервисов" if use_leaf_mode else f"{len(items_to_process)} разделов"
+    add_log(f"Старт наполнения RAG: {mode_title}, квота {quota_per_service}, глубина {days} дн., статусы [{status_ids_str}], AI-фильтр: {'ВКЛ' if ai_eval else 'ВЫКЛ'}", "info")
     await _save_sync_progress(redis, progress_state)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -1695,23 +1717,45 @@ async def sync_stratified_kb(
     try:
         consecutive_ai_errors = 0
         async with AsyncSessionLocal() as db:
-            for idx, root_info in enumerate(target_roots, start=1):
-                r_id = root_info["root_id"]
-                r_name = root_info["name"]
-                sub_ids = get_subservice_ids_for_root(r_id)
+            for idx, item_info in enumerate(items_to_process, start=1):
+                if use_leaf_mode:
+                    # Режим детальных конечных сервисов (листьев каталога)
+                    s_id = item_info.id
+                    sub_ids = [s_id]
+                    s_name = item_info.name
+                    s_path = item_info.service_path
+                    s_path_ids = list(item_info.path_ids)
+                    r_id = item_info.root_num or "00"
+                    r_name = item_info.root_name or s_name
+                    stat_key = f"{r_id}:{s_id}"
+                    item_display_name = s_path
+                    effective_quota = quota_per_service
+                else:
+
+                    # Режим корневых разделов (fallback для окружений без Redis)
+                    r_id = item_info["root_id"]
+                    r_name = item_info["name"]
+                    sub_ids = get_subservice_ids_for_root(r_id)
+                    s_id = sub_ids[0] if sub_ids else 0
+                    s_name = r_name
+                    s_path = r_name
+                    s_path_ids = [s_id] if s_id else []
+                    stat_key = r_id
+                    item_display_name = r_name
+                    effective_quota = quota_per_service
 
                 progress_state["current_root"] = r_id
-                progress_state["current_service_name"] = r_name
+                progress_state["current_service_name"] = item_display_name
                 progress_state["updated_at"] = datetime.now(timezone.utc).isoformat()
-                progress_state["percent"] = int(((idx - 1) / len(target_roots)) * 100)
+                progress_state["percent"] = int(((idx - 1) / len(items_to_process)) * 100)
                 await _save_sync_progress(redis, progress_state)
 
                 if not sub_ids:
                     progress_state["processed_roots"] = idx
-                    add_log(f"[{r_id}] Раздел '{r_name}': нет дочерних сервисов, пропуск", "warn")
+                    add_log(f"[{r_id}] '{item_display_name}': нет ID сервиса, пропуск", "warn")
                     continue
 
-                # Проверяем, сколько активных прецедентов уже есть в этом разделе
+                # Проверяем, сколько активных прецедентов уже есть в этом сервисе
                 count_stmt = select(func.count(TaskKnowledgeBase.task_id)).where(
                     TaskKnowledgeBase.service_id.in_(sub_ids),
                     TaskKnowledgeBase.is_blacklisted.is_(False),
@@ -1719,26 +1763,26 @@ async def sync_stratified_kb(
                 existing_count = (await db.execute(count_stmt)).scalar() or 0
 
                 s_stats = {
-                    "name": r_name,
+                    "name": item_display_name,
                     "existing": existing_count,
                     "indexed": 0,
                     "skipped": 0,
                     "duplicates": 0,
-                    "quota": quota_per_service,
+                    "quota": effective_quota,
                     "status": "in_progress",
                 }
 
-                add_log(f"[{r_id}] Раздел '{r_name}': в базе {existing_count}/{quota_per_service} записей", "info")
+                add_log(f"[{r_id}] '{item_display_name}': в базе {existing_count}/{effective_quota} записей", "info")
 
-                if existing_count >= quota_per_service:
+                if existing_count >= effective_quota:
                     s_stats["status"] = "quota_reached"
-                    progress_state["service_stats"][r_id] = s_stats
+                    progress_state["service_stats"][stat_key] = s_stats
                     progress_state["processed_roots"] = idx
-                    add_log(f"[{r_id}] Раздел '{r_name}' укомплектован (квота {quota_per_service} достигнута)", "success")
+                    add_log(f"[{r_id}] '{item_display_name}' укомплектован (квота {effective_quota} достигнута)", "success")
                     await _save_sync_progress(redis, progress_state)
                     continue
 
-                needed = quota_per_service - existing_count
+                needed = effective_quota - existing_count
                 page = 1
                 page_size = min(max(needed * 2, 20), 50)
                 service_indexed = 0
@@ -1856,8 +1900,9 @@ async def sync_stratified_kb(
                                 continue
                         t_name = (t.get("Name") or f"Заявка #{tid}")[:255]
                         s_id = t.get("ServiceId") or sub_ids[0]
-                        s_path, s_path_ids = await ServiceCatalogService.get_service_path(s_id)
-                        s_name = t.get("ServiceName") or (s_path.split(" > ")[-1] if s_path else r_name)
+                        s_path, s_path_ids = await ServiceCatalogService.get_service_path(s_id, fallback_name=t.get("ServiceName"))
+                        s_name = (s_path.split(" / ")[-1] if s_path else None) or t.get("ServiceName") or r_name
+
                         st_name = canon.get("status_name") or t.get("StatusName") or "Закрыта"
                         res_label = canon.get("resolution_label") or "Успешно выполнено"
                         res_type = canon.get("resolution_type") or "resolved"

@@ -32,6 +32,11 @@ class ServiceInfo:
     root_num: str | None
     root_name: str | None
 
+    @property
+    def service_id(self) -> int:
+        return self.id
+
+
 
 class ServiceCatalogService:
     """
@@ -72,18 +77,20 @@ class ServiceCatalogService:
 
         raw_by_id: dict[int, dict[str, Any]] = {}
         for s in raw_services:
-            if isinstance(s, dict) and s.get("Id"):
-                try:
-                    raw_by_id[int(s["Id"])] = s
-                except (ValueError, TypeError):
-                    continue
+            if isinstance(s, dict):
+                raw_id = s.get("Id") if s.get("Id") is not None else s.get("id")
+                if raw_id is not None:
+                    try:
+                        raw_by_id[int(raw_id)] = s
+                    except (ValueError, TypeError):
+                        continue
 
         root_id_to_num = {v["id"]: k for k, v in ROOT_SERVICES.items()}
         result_map: dict[int, ServiceInfo] = {}
 
         for sid, s in raw_by_id.items():
-            sname = str(s.get("Name") or f"Сервис #{sid}").strip()
-            parent_id_raw = s.get("ParentId")
+            sname = str(s.get("Name") or s.get("name") or f"Сервис #{sid}").strip()
+            parent_id_raw = s.get("ParentId") if s.get("ParentId") is not None else s.get("parent_id")
             parent_id = int(parent_id_raw) if parent_id_raw is not None and str(parent_id_raw).isdigit() else None
 
             # 1. Извлекаем цепочку идентификаторов
@@ -104,7 +111,7 @@ class ServiceCatalogService:
                     visited.add(curr_id)
                     chain.append(curr_id)
                     parent_node = raw_by_id.get(curr_id)
-                    p_id = parent_node.get("ParentId") if parent_node else None
+                    p_id = parent_node.get("ParentId") if parent_node and parent_node.get("ParentId") is not None else (parent_node.get("parent_id") if parent_node else None)
                     curr_id = int(p_id) if p_id is not None and str(p_id).isdigit() else None
                 path_ids = list(reversed(chain))
 
@@ -117,7 +124,7 @@ class ServiceCatalogService:
             name_parts = []
             for ancestor_id in path_ids:
                 node = raw_by_id.get(ancestor_id)
-                node_name = str(node.get("Name") or "").strip() if node else ""
+                node_name = str(node.get("Name") or node.get("name") or "").strip() if node else ""
                 if node_name:
                     name_parts.append(node_name)
                 elif ancestor_id == sid:
@@ -142,8 +149,9 @@ class ServiceCatalogService:
             if not root_id and path_ids:
                 root_id = path_ids[0]
 
+            root_node = raw_by_id.get(root_id, {}) if root_id else {}
             root_name = ROOT_SERVICES.get(root_num, {}).get("name") if root_num else (
-                raw_by_id.get(root_id, {}).get("Name") if root_id else sname
+                root_node.get("Name") or root_node.get("name") or sname
             )
 
             result_map[sid] = ServiceInfo(
@@ -171,6 +179,13 @@ class ServiceCatalogService:
             return cls._l1_cache
 
         # 1. Попытка чтения из Redis
+        if redis_client is None:
+            try:
+                from app.services.worker import get_redis_client
+                redis_client = get_redis_client()
+            except Exception:
+                pass
+
         if redis_client is not None:
             try:
                 raw_catalog = await redis_client.get("worker:service_catalog")
@@ -260,6 +275,20 @@ class ServiceCatalogService:
         catalog = await cls.get_all_services(redis_client=redis_client)
         info = catalog.get(sid)
         if info:
+            if "Подраздел #" in info.service_path and service_name and "Подраздел" not in service_name:
+                root_name = info.root_name or (get_root_name(info.root_num) if info.root_num else None)
+                new_path = f"{root_name} / {service_name}" if root_name and root_name != service_name else service_name
+                return ServiceInfo(
+                    id=info.id,
+                    name=service_name,
+                    parent_id=info.parent_id,
+                    path_ids=info.path_ids,
+                    path_ids_str=info.path_ids_str,
+                    service_path=cls.normalize_path_string([new_path]),
+                    root_id=info.root_id,
+                    root_num=info.root_num,
+                    root_name=info.root_name,
+                )
             return info
 
         # Fallback для нового или неизвестного сервиса
@@ -271,6 +300,7 @@ class ServiceCatalogService:
             service_path = f"{root_name} / {sname}"
         else:
             service_path = sname
+
 
         return ServiceInfo(
             id=sid,
@@ -314,3 +344,47 @@ class ServiceCatalogService:
         """Возвращает готовую строку полного пути сервиса."""
         path_str, _ = await cls.get_service_path(service_id, fallback_name=fallback_name, redis_client=redis_client)
         return path_str
+
+    @classmethod
+    async def get_leaf_services(
+        cls,
+        redis_client=None,
+        raw_services: list[dict] | None = None,
+    ) -> list[ServiceInfo]:
+        """
+        Возвращает список всех конечных сервисов (листьев каталога), в которые создаются заявки.
+        Листом считается сервис, на который не ссылается ни один дочерний элемент.
+        """
+        if raw_services is not None:
+            all_services = cls.build_catalog_map(raw_services)
+        else:
+            all_services = await cls.get_all_services(redis_client=redis_client)
+
+        parent_ids = {s.parent_id for s in all_services.values() if s.parent_id is not None}
+        leaves = [s for s in all_services.values() if s.id not in parent_ids]
+        # Сортируем по номеру корневого раздела и ID для предсказуемости
+        return sorted(leaves, key=lambda s: (s.root_num or "99", s.id))
+
+    @classmethod
+    async def get_leaf_services_by_root(
+        cls,
+        root: str | int,
+        redis_client=None,
+        raw_services: list[dict] | None = None,
+    ) -> list[ServiceInfo]:
+        """Возвращает конечные сервисы для конкретного корневого раздела (по номеру или ID)."""
+        leaves = await cls.get_leaf_services(redis_client=redis_client, raw_services=raw_services)
+        root_str = str(root).strip()
+        # Если передан номер с лидирующим нулем или без него (например 1 или "01")
+        if root_str.isdigit():
+            norm_num = f"{int(root_str):02d}"
+            root_id_int = int(root_str)
+        else:
+            norm_num = root_str
+            root_id_int = -1
+
+        return [
+            s for s in leaves
+            if s.root_num == norm_num or s.root_id == root_id_int or (s.root_num and s.root_num.lstrip("0") == root_str.lstrip("0"))
+        ]
+

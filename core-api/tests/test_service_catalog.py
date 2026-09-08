@@ -73,3 +73,43 @@ def test_normalize_path_length_budget():
     parts = ["А" * 50, "Б" * 50, "В" * 50]
     norm = ServiceCatalogService.normalize_path_string(parts)
     assert len(norm) <= 120
+
+
+def test_build_catalog_map_lowercase_keys():
+    """Проверяет корректность разбора словарей из Redis с ключами в нижнем регистре (id, name, parent_id, path)."""
+    mock_redis_raw = [
+        {"id": 42, "name": "01. Учетные записи пользователей", "parent_id": None, "path": "42|"},
+        {"id": 53, "name": "Создание учетной записи", "parent_id": 42, "path": "42|53|"},
+        {"id": 63, "name": "Создание почты", "parent_id": 53, "path": "42|53|63|"},
+    ]
+
+    catalog = ServiceCatalogService.build_catalog_map(mock_redis_raw)
+    assert len(catalog) == 3
+    leaf = catalog[63]
+    assert leaf.service_path == "01. Учетные записи пользователей / Создание учетной записи / Создание почты"
+    assert leaf.root_id == 42
+    assert leaf.path_ids == (42, 53, 63)
+
+
+@pytest.mark.asyncio
+async def test_get_leaf_services():
+    """Проверяет фильтрацию только конечных сервисов (листьев) каталога."""
+    mock_raw = [
+        {"id": 1, "name": "01. Корневой раздел", "parent_id": None},
+        {"id": 2, "name": "Промежуточная папка", "parent_id": 1},
+        {"id": 3, "name": "Конечный сервис А", "parent_id": 2},
+        {"id": 4, "name": "Конечный сервис Б", "parent_id": 1},
+    ]
+
+    leaves = await ServiceCatalogService.get_leaf_services(raw_services=mock_raw)
+    leaf_ids = [leaf.service_id for leaf in leaves]
+    # 1 и 2 являются родителями, поэтому не листья. Листья: 3 и 4
+    assert 3 in leaf_ids
+    assert 4 in leaf_ids
+    assert 1 not in leaf_ids
+    assert 2 not in leaf_ids
+
+    leaves_root1 = await ServiceCatalogService.get_leaf_services_by_root(1, raw_services=mock_raw)
+    assert len(leaves_root1) == 2
+    assert {s.service_id for s in leaves_root1} == {3, 4}
+
