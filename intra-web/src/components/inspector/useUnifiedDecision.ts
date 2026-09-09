@@ -56,6 +56,15 @@ export interface UseUnifiedDecisionReturn {
   applyNewDraft: () => void;
   dismissNewDraft: () => void;
 
+  // Резолюция статуса и готовности
+  targetStatusId: number;
+  targetStatusName: string;
+  primaryActionLabel: string;
+  requiresComment: boolean;
+  commentMissing: boolean;
+  actionUnavailable: boolean;
+  isReady: boolean;
+
   // Действия оператора
   handleApplyDecision: () => Promise<void>;
   handleCancelTicket: () => Promise<void>;
@@ -626,6 +635,75 @@ export function useUnifiedDecision({
     [details?.decision?.id, onToast]
   );
 
+  // Резолюция параметров действия и валидации
+  const decision = safeDetails?.decision;
+  const envelope = safeDetails?.decision_envelope;
+  const envelopePolicy = envelope?.policy || {};
+  const proposal = decision?.proposal;
+  const analysis = safeDetails?.analysis;
+  const hasAnalysisResult = analysis?.has_result ?? Boolean(decision);
+
+  const readiness =
+    safeDetails?.readiness ||
+    (decision?.completeness
+      ? {
+          ready: decision.completeness.complete,
+          blocked_reasons: decision.completeness.blocked_reasons || [],
+          missing_data: decision.completeness.missing_data || [],
+          stale: false,
+        }
+      : undefined);
+
+  const readinessIsCurrent = analysis
+    ? analysis.freshness === 'current'
+    : !(readiness?.stale || isStale);
+  const isReady = hasAnalysisResult && (readiness?.ready ?? true) && readinessIsCurrent;
+
+  const targetStatusId =
+    selectedStatusOverride ||
+    envelopePolicy.status_id ||
+    proposal?.status_id ||
+    (safeDetails?.suggested_action as any)?.status_id ||
+    27;
+
+  const statusNameMap: Record<number, string> = {
+    27: 'В работе',
+    29: 'Выполнена',
+    30: 'Отменена',
+    35: 'Требует уточнения',
+    48: 'Ожидание поставки',
+  };
+
+  const targetStatusName =
+    statusNameMap[targetStatusId] ||
+    proposal?.status_name ||
+    envelopePolicy.status_name ||
+    (safeDetails?.suggested_action as any)?.status_name ||
+    'В работе';
+
+  const actionPolicy = safeDetails?.ai_suggestion?.policy || decision?.policy;
+  const policyBlocked = Boolean(
+    (actionPolicy as any)?.blocked || (actionPolicy as any)?.allowed === false
+  );
+
+  const primaryActionLabel = pendingCommand
+    ? 'Подтвердить команду'
+    : targetStatusId === 27
+    ? 'Перевести в статус «В работе»'
+    : targetStatusId === 29
+    ? 'Отметить заявку выполненной'
+    : targetStatusId === 30
+    ? 'Отменить заявку'
+    : targetStatusId === 35
+    ? 'Запросить уточнение'
+    : targetStatusId === 48
+    ? 'Перевести в «Ожидание поставки»'
+    : `Перевести в статус «${targetStatusName}»`;
+
+  const requiresComment = [29, 30, 35].includes(targetStatusId);
+  const commentMissing = requiresComment && !replyText.trim();
+  const actionUnavailable = !pendingCommand && (!isReady || policyBlocked || commentMissing);
+
   return {
     replyText,
     setReplyText,
@@ -639,6 +717,13 @@ export function useUnifiedDecision({
     setSelectedStatusOverride,
     selectedTab,
     setSelectedTab,
+    targetStatusId,
+    targetStatusName,
+    primaryActionLabel,
+    requiresComment,
+    commentMissing,
+    isReady,
+    actionUnavailable,
     ticketRun,
     runEvents,
     pendingCommand,

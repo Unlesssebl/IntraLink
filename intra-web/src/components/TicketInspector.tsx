@@ -13,8 +13,10 @@ import InspectorHeader from './inspector/InspectorHeader';
 import AttachmentsSection from './inspector/AttachmentsSection';
 import CommentsTimeline from './inspector/CommentsTimeline';
 import UnifiedDecisionPanel from './inspector/UnifiedDecisionPanel';
+import UnifiedActionDock from './inspector/UnifiedActionDock';
 import TicketContextSummary from './inspector/TicketContextSummary';
 import { type DiagStatus } from './inspector/DiagnosticsSection';
+import { useUnifiedDecision } from './inspector/useUnifiedDecision';
 
 interface Props {
   ticket: Ticket;
@@ -46,10 +48,11 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     smb: 'idle',
     winrm: 'idle',
   });
+
   // AI Summary State
   const [aiSummary, setAiSummary] = useState<TicketSummaryResult | null>(null);
   const [loadingAiSummary, setLoadingAiSummary] = useState(false);
-  const [isCommentsExpanded, setIsCommentsExpanded] = useState(false);
+  const [isCommentsExpanded, setIsCommentsExpanded] = useState(true);
 
   // Resizing state
   const [inspectorWidth, setInspectorWidth] = useState<number>(() => {
@@ -106,31 +109,34 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   }, [effectiveHost]);
 
   // Load Task Details from Core API
-  const loadDetails = useCallback(async (updated?: TaskDetails) => {
-    if (!rawId) return;
-    if (updated) {
-      if (
-        updated.id === rawId ||
-        (updated as any).task?.id === rawId ||
-        (updated as any).task?.Id === rawId
-      ) {
-        setDetails(updated);
-        setCachedTaskDetails(rawId, updated);
+  const loadDetails = useCallback(
+    async (updated?: TaskDetails) => {
+      if (!rawId) return;
+      if (updated) {
+        if (
+          updated.id === rawId ||
+          (updated as any).task?.id === rawId ||
+          (updated as any).task?.Id === rawId
+        ) {
+          setDetails(updated);
+          setCachedTaskDetails(rawId, updated);
+        }
+        return;
       }
-      return;
-    }
-    setLoadingDetails(true);
-    try {
-      const data = await fetchTaskDetails(rawId, { bypassCache: true });
-      setDetails(data);
-    } catch (err: any) {
-      console.warn('Не удалось загрузить подробности заявки:', err);
-    } finally {
-      setLoadingDetails(false);
-    }
-  }, [rawId]);
+      setLoadingDetails(true);
+      try {
+        const data = await fetchTaskDetails(rawId, { bypassCache: true });
+        setDetails(data);
+      } catch (err: any) {
+        console.warn('Не удалось загрузить подробности заявки:', err);
+      } finally {
+        setLoadingDetails(false);
+      }
+    },
+    [rawId]
+  );
 
-  // Load Task Details with SWR (Stale-While-Revalidate) & cancellation
+  // Load Task Details with SWR & cancellation
   useEffect(() => {
     let cancelled = false;
     if (!rawId) {
@@ -190,7 +196,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     )
       return (details as any).history.TaskLifetimes;
     return [];
-  }, [safeDetails]);
+  }, [safeDetails, details]);
 
   const rawAttachments = safeDetails?.attachments ?? ticket.attachments;
   const attachmentsList: any[] = useMemo(() => {
@@ -263,6 +269,32 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     }
   };
 
+  // Единое состояние и логика принятия решений
+  const decisionState = useUnifiedDecision({
+    ticket,
+    details: safeDetails,
+    rawId,
+    onUpdateTicket,
+    onToast,
+    onClose,
+    onRefreshDetails: loadDetails,
+  });
+
+  // Быстрые сниппеты для подстановки в ответ
+  const snippets = useMemo(() => {
+    const list: Array<{ label: string; text: string }> = [];
+    const aiDraft =
+      safeDetails?.decision_envelope?.response_draft || safeDetails?.ai_suggested_resolution;
+    if (aiDraft) {
+      list.push({ label: 'Черновик AI', text: aiDraft });
+    }
+    const kbSolution = safeDetails?.kb_matches && safeDetails.kb_matches[0]?.solution;
+    if (kbSolution) {
+      list.push({ label: 'База знаний', text: kbSolution });
+    }
+    return list;
+  }, [safeDetails]);
+
   const panelClass = expanded
     ? 'fixed inset-0 z-50 bg-neutral-50 dark:bg-neutral-950 flex flex-col overflow-hidden animate-in fade-in duration-200'
     : 'fixed inset-y-0 right-0 z-50 bg-neutral-50 dark:bg-neutral-950 border-l border-neutral-200 dark:border-neutral-800 flex flex-col shadow-2xl animate-in slide-in-from-right duration-200';
@@ -302,20 +334,21 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         onToast={onToast}
       />
 
-      {/* 2. Body Content (Dual pane when expanded, Single column when standard) */}
+      {/* 2. Body Content & Sticky Action Dock */}
       {expanded ? (
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <div className="max-w-7xl mx-auto w-full h-full p-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Left pane: Context, Attachments, Comments */}
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          <div className="flex-1 min-h-0 max-w-7xl mx-auto w-full p-4 grid grid-cols-1 lg:grid-cols-2 gap-4 overflow-hidden">
+            {/* Левая панель: Контекст, Рабочая станция, Вложения, Переписка */}
             <div className="space-y-3.5 overflow-y-auto pr-1">
               <TicketContextSummary
                 ticket={ticket}
                 details={safeDetails}
-                commentsList={commentsList}
+                rawId={rawId}
                 attachmentsCount={attachmentsList.length}
                 hostList={hostList}
                 diagStatus={diagStatus}
                 onRunDiag={runDiag}
+                onToast={onToast}
               />
               <AttachmentsSection attachments={attachmentsList} rawId={rawId} />
               <CommentsTimeline
@@ -324,71 +357,134 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                 isCommentsExpanded={isCommentsExpanded}
                 onToggleCommentsExpanded={() => setIsCommentsExpanded((prev) => !prev)}
                 expandedMode={true}
+                aiSummary={aiSummary}
+                loadingAiSummary={loadingAiSummary}
+                onGenerateAiSummary={handleGenerateAiSummary}
               />
             </div>
 
-            {/* Right pane: Unified Decision & Action Platform */}
-            <div className="overflow-y-auto pr-1">
-              <div className="lg:sticky lg:top-0">
+            {/* Правая панель: Доказательная база сценария (FactBag, Регламент, RAG, Аудит) */}
+            <div className="space-y-3.5 overflow-y-auto pr-1">
               <UnifiedDecisionPanel
                 key={rawId}
                 ticket={ticket}
                 details={safeDetails}
                 rawId={rawId}
                 loadingDetails={loadingDetails}
-                templates={templates}
-                aiSummary={aiSummary}
-                loadingAiSummary={loadingAiSummary}
-                onGenerateAiSummary={handleGenerateAiSummary}
-                onUpdateTicket={onUpdateTicket}
+                decisionState={decisionState}
                 onToast={onToast}
-                onClose={onClose}
-                onRefreshDetails={loadDetails}
-                diagStatus={diagStatus}
               />
-              </div>
             </div>
+          </div>
+
+          {/* Прикрепленный Action Dock внизу модалки */}
+          <div className="max-w-7xl mx-auto w-full shrink-0">
+            <UnifiedActionDock
+              replyText={decisionState.replyText}
+              setReplyText={decisionState.setReplyText}
+              replyMode={decisionState.replyMode}
+              setReplyMode={decisionState.setReplyMode}
+              expenses={decisionState.expenses}
+              setExpenses={decisionState.setExpenses}
+              selectedTemplateKey={decisionState.selectedTemplateKey}
+              setSelectedTemplateKey={decisionState.setSelectedTemplateKey}
+              templates={templates}
+              selectedStatusOverride={decisionState.selectedStatusOverride}
+              setSelectedStatusOverride={decisionState.setSelectedStatusOverride}
+              primaryActionLabel={decisionState.primaryActionLabel}
+              targetStatusId={decisionState.targetStatusId}
+              targetStatusName={decisionState.targetStatusName}
+              actionUnavailable={decisionState.actionUnavailable}
+              submitting={decisionState.submitting}
+              requiresComment={decisionState.requiresComment}
+              commentMissing={decisionState.commentMissing}
+              pendingCommand={decisionState.pendingCommand}
+              onApplyDecision={decisionState.handleApplyDecision}
+              onCancelTicket={decisionState.handleCancelTicket}
+              onTakeTicket={decisionState.handleTakeTicket}
+              onReanalyze={decisionState.handleReanalyze}
+              reanalyzing={decisionState.reanalyzing}
+              pendingNewAiDraft={decisionState.pendingNewAiDraft}
+              onApplyNewDraft={decisionState.applyNewDraft}
+              onDismissNewDraft={decisionState.dismissNewDraft}
+              snippets={snippets}
+              insertSnippet={decisionState.insertSnippet}
+            />
           </div>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto">
-          <div className="p-4 space-y-3.5">
-            <TicketContextSummary
-              ticket={ticket}
-              details={safeDetails}
-              commentsList={commentsList}
-              attachmentsCount={attachmentsList.length}
-              hostList={hostList}
-              diagStatus={diagStatus}
-              onRunDiag={runDiag}
-            />
-            <AttachmentsSection attachments={attachmentsList} rawId={rawId} />
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          {/* Скроллируемая часть карточки */}
+          <div className="flex-1 overflow-y-auto">
+            <div className="p-4 space-y-3.5">
+              <TicketContextSummary
+                ticket={ticket}
+                details={safeDetails}
+                rawId={rawId}
+                attachmentsCount={attachmentsList.length}
+                hostList={hostList}
+                diagStatus={diagStatus}
+                onRunDiag={runDiag}
+                onToast={onToast}
+              />
 
-            <UnifiedDecisionPanel
-              key={rawId}
-              ticket={ticket}
-              details={safeDetails}
-              rawId={rawId}
-              loadingDetails={loadingDetails}
-              templates={templates}
-              aiSummary={aiSummary}
-              loadingAiSummary={loadingAiSummary}
-              onGenerateAiSummary={handleGenerateAiSummary}
-              onUpdateTicket={onUpdateTicket}
-              onToast={onToast}
-              onClose={onClose}
-              onRefreshDetails={loadDetails}
-              diagStatus={diagStatus}
-            />
+              <AttachmentsSection attachments={attachmentsList} rawId={rawId} />
 
-            <CommentsTimeline
-              commentsList={commentsList}
-              loadingDetails={loadingDetails}
-              isCommentsExpanded={isCommentsExpanded}
-              onToggleCommentsExpanded={() => setIsCommentsExpanded((prev) => !prev)}
-              expandedMode={false}
-            />
+              <UnifiedDecisionPanel
+                key={rawId}
+                ticket={ticket}
+                details={safeDetails}
+                rawId={rawId}
+                loadingDetails={loadingDetails}
+                decisionState={decisionState}
+                onToast={onToast}
+              />
+
+              <CommentsTimeline
+                commentsList={commentsList}
+                loadingDetails={loadingDetails}
+                isCommentsExpanded={isCommentsExpanded}
+                onToggleCommentsExpanded={() => setIsCommentsExpanded((prev) => !prev)}
+                expandedMode={false}
+                aiSummary={aiSummary}
+                loadingAiSummary={loadingAiSummary}
+                onGenerateAiSummary={handleGenerateAiSummary}
+              />
+            </div>
           </div>
+
+          {/* Прикрепленный Action Dock внизу панели (всегда доступен) */}
+          <UnifiedActionDock
+            replyText={decisionState.replyText}
+            setReplyText={decisionState.setReplyText}
+            replyMode={decisionState.replyMode}
+            setReplyMode={decisionState.setReplyMode}
+            expenses={decisionState.expenses}
+            setExpenses={decisionState.setExpenses}
+            selectedTemplateKey={decisionState.selectedTemplateKey}
+            setSelectedTemplateKey={decisionState.setSelectedTemplateKey}
+            templates={templates}
+            selectedStatusOverride={decisionState.selectedStatusOverride}
+            setSelectedStatusOverride={decisionState.setSelectedStatusOverride}
+            primaryActionLabel={decisionState.primaryActionLabel}
+            targetStatusId={decisionState.targetStatusId}
+            targetStatusName={decisionState.targetStatusName}
+            actionUnavailable={decisionState.actionUnavailable}
+            submitting={decisionState.submitting}
+            requiresComment={decisionState.requiresComment}
+            commentMissing={decisionState.commentMissing}
+            pendingCommand={decisionState.pendingCommand}
+            onApplyDecision={decisionState.handleApplyDecision}
+            onCancelTicket={decisionState.handleCancelTicket}
+            onTakeTicket={decisionState.handleTakeTicket}
+            onReanalyze={decisionState.handleReanalyze}
+            reanalyzing={decisionState.reanalyzing}
+            pendingNewAiDraft={decisionState.pendingNewAiDraft}
+            onApplyNewDraft={decisionState.applyNewDraft}
+            onDismissNewDraft={decisionState.dismissNewDraft}
+            snippets={snippets}
+            insertSnippet={decisionState.insertSnippet}
+          />
         </div>
       )}
     </div>
