@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Ticket } from '../../data/mock';
-import type { TaskDetails, RAGMatchItem } from '../../lib/types';
+import type { TaskDetails } from '../../lib/types';
 import {
   IconPlay,
   IconPause,
@@ -186,10 +186,6 @@ export default function UnifiedDecisionPanel({
 
   // Данные для превью в заголовке аккордеона
   const factsCount = Object.keys(envelope?.facts_summary || {}).length;
-  const bestRagMatch = details?.kb_matches && details.kb_matches[0];
-  const bestRagPct = bestRagMatch
-    ? Math.round(bestRagMatch.similarity_pct || (1 - (bestRagMatch.distance || 0.3)) * 100)
-    : null;
 
   return (
     <div className="rounded-2xl border border-neutral-200/90 bg-white p-4 shadow-xs dark:border-neutral-800 dark:bg-neutral-900 space-y-3.5">
@@ -445,11 +441,7 @@ export default function UnifiedDecisionPanel({
                 {factsCount} {factsCount === 1 ? 'факт' : factsCount < 5 ? 'факта' : 'фактов'}
               </span>
             )}
-            {bestRagPct !== null && (
-              <span className="rounded-md bg-purple-100 dark:bg-purple-950/80 px-1.5 py-0.5 font-mono text-[10.5px] font-bold text-purple-700 dark:text-purple-300">
-                RAG {bestRagPct}%
-              </span>
-            )}
+
             {envelope?.facts_revision && (
               <span className="rounded-md bg-blue-50 dark:bg-blue-950 px-1.5 py-0.5 font-mono text-[10px] text-blue-700 dark:text-blue-300 border border-blue-200/60 dark:border-blue-900/60">
                 v{envelope.facts_revision}
@@ -477,28 +469,7 @@ export default function UnifiedDecisionPanel({
               >
                 Факты (FactBag)
               </button>
-              <button
-                type="button"
-                onClick={() => setSelectedTab('rules')}
-                className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
-                  selectedTab === 'rules'
-                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
-                }`}
-              >
-                Регламент
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedTab('rag')}
-                className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
-                  selectedTab === 'rag'
-                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
-                }`}
-              >
-                База знаний (RAG)
-              </button>
+
               <button
                 type="button"
                 onClick={() => setSelectedTab('completeness')}
@@ -522,88 +493,7 @@ export default function UnifiedDecisionPanel({
                 />
               )}
 
-              {/* Регламент */}
-              {selectedTab === 'rules' && (
-                <div className="space-y-2 rounded-xl border border-neutral-200/80 bg-white p-3 text-xs dark:border-neutral-800 dark:bg-neutral-900">
-                  {details?.suggested_action?.target_service && (
-                    <div className="flex items-center gap-2 text-neutral-800 dark:text-neutral-200 flex-wrap">
-                      <span className="font-semibold text-neutral-500">Маршрутизация:</span>
-                      <span className="px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 font-medium">
-                        {ticket.serviceName || 'Текущий раздел'}
-                      </span>
-                      <span>→</span>
-                      <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 font-bold">
-                        {details.suggested_action.target_service}
-                      </span>
-                    </div>
-                  )}
 
-                  {details?.suggested_action?.reason && (
-                    <div className="space-y-1">
-                      <span className="font-semibold text-neutral-500 block">Обоснование:</span>
-                      <p className="text-neutral-800 dark:text-neutral-200 leading-relaxed font-medium">
-                        {details.suggested_action.reason}
-                      </p>
-                    </div>
-                  )}
-
-                  {details?.suggested_action?.trigger_markers &&
-                    details.suggested_action.trigger_markers.length > 0 && (
-                      <div className="space-y-1 pt-1">
-                        <span className="font-semibold text-neutral-500 block">Ключевые маркеры:</span>
-                        <div className="flex flex-wrap gap-1">
-                          {details.suggested_action.trigger_markers.map((marker: string, idx: number) => (
-                            <span
-                              key={idx}
-                              className="rounded-md bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 border border-neutral-200 dark:border-neutral-700 font-mono text-[11px]"
-                            >
-                              {marker}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                </div>
-              )}
-
-              {/* RAG */}
-              {selectedTab === 'rag' && (
-                <div className="space-y-2">
-                  {details?.kb_matches && details.kb_matches.length > 0 ? (
-                    details.kb_matches.map((m: RAGMatchItem, i: number) => (
-                      <div
-                        key={m.task_id || i}
-                        className="rounded-xl border border-neutral-200/80 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900 text-xs space-y-1.5"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-bold text-neutral-900 dark:text-neutral-100 font-mono">
-                            #{m.task_id} {m.name || m.problem}
-                          </span>
-                          <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-bold text-purple-800 dark:bg-purple-950 dark:text-purple-300">
-                            {Math.round(m.similarity_pct || (1 - (m.distance || 0.3)) * 100)}% сходство
-                          </span>
-                        </div>
-                        <div className="text-neutral-700 dark:text-neutral-300 leading-relaxed line-clamp-2">
-                          {m.solution}
-                        </div>
-                        <div className="flex justify-end pt-1">
-                          <button
-                            type="button"
-                            onClick={() => insertSnippet(m.solution)}
-                            className="text-purple-600 hover:text-purple-700 dark:text-purple-400 font-semibold text-[11px]"
-                          >
-                            + Вставить решение в ответ
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="py-4 text-center text-xs text-neutral-400 italic">
-                      Похожих решений в базе знаний не найдено
-                    </div>
-                  )}
-                </div>
-              )}
 
               {/* Журнал цикла */}
               {selectedTab === 'completeness' && (

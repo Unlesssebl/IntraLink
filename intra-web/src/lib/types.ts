@@ -26,6 +26,8 @@ export interface HardwareSpecs {
   flag_hdd_bottleneck?: boolean;
 }
 
+export type DiagStatus = 'ok' | 'fail' | 'checking' | 'idle';
+
 export interface SingleHostDiagnostics {
   host: string;
   resolved_ip?: string | null;

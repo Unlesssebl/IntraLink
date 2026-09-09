@@ -1,37 +1,39 @@
 import { useState } from 'react';
 import type { InspectorModuleProps } from './InspectorModuleProps';
+import { useResolvedEntities } from '../useResolvedEntities';
 import HardwareSpecsCard from '../HardwareSpecsCard';
+import InspectorCard from '../primitives/InspectorCard';
 import {
   IconMonitor,
   IconCopy,
   IconRefresh,
   IconPlay,
   IconWrench,
-  IconSparkles,
 } from '../../Icons';
 import {
-  launchDesktopClient,
-  getDesktopFallbackCommand,
+  launchDesktopClientWithFallback,
   type DesktopClient,
 } from '../../../lib/desktop';
-import { DiagBadge } from '../TicketContextSummary';
+import DiagBadge from '../DiagBadge';
 
 export default function HostHardwareModule({
   ticket,
   details,
   rawId,
-  hostList,
+  hostList: rawHostList,
   diagStatus,
   hostDiagnostics,
   loadingDiagnostics = false,
   onRunDiag,
   onToast,
-  onExecuteAction,
 }: InspectorModuleProps) {
   const [selectedHostIndex, setSelectedHostIndex] = useState(0);
   const [showWinRmAssistant, setShowWinRmAssistant] = useState(false);
 
-  const activeHost = hostList[selectedHostIndex] || hostList[0] || ticket.host || details?.pc_name || '';
+  const entities = useResolvedEntities(ticket, details, rawHostList);
+  const { host } = entities;
+  const hostList = host.hostList;
+  const activeHost = hostList[selectedHostIndex] || host.primaryHost;
 
   // Get specs for active host
   const getActiveHostSpecs = () => {
@@ -47,32 +49,21 @@ export default function HostHardwareModule({
 
   const activeSpecs = getActiveHostSpecs();
 
-  const handleLaunchClient = async (host: string, client: DesktopClient) => {
-    const label = client === 'litemanager' ? 'LiteManager' : client === 'dameware' ? 'DameWare' : 'RDP';
-    try {
-      await launchDesktopClient(rawId, host, client);
-      onToast({ type: 'info', message: `${label}: запрос передан Desktop Companion` });
-    } catch {
-      const command = getDesktopFallbackCommand(client, host);
-      await navigator.clipboard.writeText(command);
-      onToast({
-        type: 'warning',
-        message: `Desktop Companion недоступен. Команда скопирована: ${command}`,
-      });
-    }
+  const handleLaunchClient = (targetHost: string, client: DesktopClient) => {
+    launchDesktopClientWithFallback(rawId, targetHost, client, onToast);
   };
 
   if (!activeHost) {
     return (
-      <div className="rounded-xl border border-neutral-200/80 bg-neutral-50/50 p-4 text-center dark:border-neutral-800 dark:bg-neutral-950/40">
-        <div className="flex flex-col items-center justify-center gap-2 py-6 text-neutral-500 dark:text-neutral-400">
+      <InspectorCard variant="subtle">
+        <div className="flex flex-col items-center justify-center gap-2 py-6 text-neutral-500 dark:text-neutral-400 text-center">
           <IconMonitor size={24} className="text-neutral-300 dark:text-neutral-600" />
           <div className="text-xs font-medium">Рабочая станция (ПК) не указана в заявке</div>
           <p className="text-[11px] text-neutral-400 max-w-sm">
             Если пользователь упомянул имя ПК в тексте, добавьте его или запустите диагностику по IP заявителя.
           </p>
         </div>
-      </div>
+      </InspectorCard>
     );
   }
 
@@ -80,7 +71,7 @@ export default function HostHardwareModule({
     <div className="space-y-3">
       {/* 1. Multi-Host Switcher if multiple hosts exist */}
       {hostList.length > 1 && (
-        <div className="flex items-center gap-1.5 p-1 bg-neutral-100 dark:bg-neutral-800/60 rounded-lg border border-neutral-200/70 dark:border-neutral-700/60 overflow-x-auto">
+        <div className="flex items-center gap-1.5 p-1 bg-neutral-100 dark:bg-neutral-800/60 rounded-xl border border-neutral-200/70 dark:border-neutral-700/60 overflow-x-auto">
           <span className="text-[10px] uppercase font-bold text-neutral-400 px-2 shrink-0">
             Хосты ({hostList.length}):
           </span>
@@ -89,7 +80,7 @@ export default function HostHardwareModule({
               key={h}
               type="button"
               onClick={() => setSelectedHostIndex(idx)}
-              className={`px-2.5 py-1 rounded-md text-xs font-mono font-medium transition-colors cursor-pointer shrink-0 ${
+              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-medium transition-colors cursor-pointer shrink-0 ${
                 selectedHostIndex === idx
                   ? 'bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-xs border border-neutral-200/90 dark:border-neutral-700'
                   : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
@@ -109,7 +100,7 @@ export default function HostHardwareModule({
       />
 
       {/* 3. Network Diagnostics & Remote Access Toolbar */}
-      <div className="rounded-xl border border-neutral-200/80 bg-neutral-50/50 p-3 dark:border-neutral-800 dark:bg-neutral-950/40 space-y-2.5">
+      <InspectorCard variant="subtle">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span
@@ -155,7 +146,7 @@ export default function HostHardwareModule({
             type="button"
             onClick={() => onRunDiag(activeHost)}
             disabled={diagStatus.ping === 'checking'}
-            className="inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-white px-2 py-0.5 text-[10.5px] font-semibold text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800 disabled:opacity-50 cursor-pointer"
+            className="inline-flex items-center gap-1 rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-[10.5px] font-semibold text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800 disabled:opacity-50 cursor-pointer"
           >
             <IconRefresh size={11} className={diagStatus.ping === 'checking' ? 'animate-spin text-blue-500' : ''} />
             <span>{diagStatus.ping === 'checking' ? 'Опрос...' : 'Диагностика'}</span>
@@ -168,7 +159,7 @@ export default function HostHardwareModule({
           <button
             type="button"
             onClick={() => handleLaunchClient(activeHost, 'litemanager')}
-            className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50/80 px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300 cursor-pointer"
+            className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50/80 px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300 cursor-pointer"
           >
             <IconPlay size={11} />
             <span>LiteManager</span>
@@ -176,7 +167,7 @@ export default function HostHardwareModule({
           <button
             type="button"
             onClick={() => handleLaunchClient(activeHost, 'dameware')}
-            className="inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 cursor-pointer"
+            className="inline-flex items-center gap-1 rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 cursor-pointer"
           >
             <IconPlay size={11} />
             <span>DameWare</span>
@@ -184,7 +175,7 @@ export default function HostHardwareModule({
           <button
             type="button"
             onClick={() => handleLaunchClient(activeHost, 'rdp')}
-            className="inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 cursor-pointer"
+            className="inline-flex items-center gap-1 rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 cursor-pointer"
           >
             <IconPlay size={11} />
             <span>RDP</span>
@@ -205,11 +196,11 @@ export default function HostHardwareModule({
 
         {/* WinRM Assistant Box */}
         {showWinRmAssistant && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2 text-xs dark:border-amber-900/60 dark:bg-amber-950/30">
+          <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-2.5 text-xs dark:border-amber-900/60 dark:bg-amber-950/30">
             <div className="text-[11px] text-amber-900 dark:text-amber-200 font-medium mb-1">
               Команда удалённого включения службы WinRM через WMI:
             </div>
-            <div className="flex items-center justify-between gap-2 font-mono text-[10px] bg-white dark:bg-neutral-900 p-1.5 rounded border border-neutral-200 dark:border-neutral-800">
+            <div className="flex items-center justify-between gap-2 font-mono text-[10px] bg-white dark:bg-neutral-900 p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800">
               <span className="truncate">wmic /node:{activeHost} process call create "winrm quickconfig -q"</span>
               <button
                 type="button"
@@ -224,7 +215,7 @@ export default function HostHardwareModule({
             </div>
           </div>
         )}
-      </div>
+      </InspectorCard>
     </div>
   );
 }

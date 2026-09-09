@@ -25,7 +25,7 @@ import {
   IconRedirect,
   IconSparkles,
 } from './Icons';
-import { type DiagStatus } from './inspector/DiagnosticsSection';
+import type { DiagStatus } from '../lib/types';
 import { useUnifiedDecision } from './inspector/useUnifiedDecision';
 import { filterMeaningfulComments } from './inspector/commentsUtils';
 
@@ -508,11 +508,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                 details={safeDetails}
                 rawId={rawId}
                 attachmentsCount={attachmentsList.length}
-                hostList={hostList}
-                diagStatus={diagStatus}
-                onRunDiag={runDiag}
                 onToast={onToast}
-                hideHostSection={true}
               />
               <InspectorWorkspace
                 ticket={ticket}
@@ -599,11 +595,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                 details={safeDetails}
                 rawId={rawId}
                 attachmentsCount={attachmentsList.length}
-                hostList={hostList}
-                diagStatus={diagStatus}
-                onRunDiag={runDiag}
                 onToast={onToast}
-                hideHostSection={true}
               />
 
               <InspectorWorkspace

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import type { Ticket } from '../../data/mock';
-import type { TaskDetails, HostDiagnostics } from '../../lib/types';
-import type { DiagStatus } from './DiagnosticsSection';
+import type { TaskDetails, HostDiagnostics, DiagStatus } from '../../lib/types';
+import { useResolvedEntities } from './useResolvedEntities';
 import HostHardwareModule from './modules/HostHardwareModule';
 import PrinterModule from './modules/PrinterModule';
 import IdentityModule from './modules/IdentityModule';
@@ -44,9 +44,8 @@ export default function InspectorWorkspace({
   onRefreshDetails,
   onExecuteAction,
 }: InspectorWorkspaceProps) {
-  const envelope = details?.decision_envelope;
-  const scenarioKey = envelope?.rule?.scenario_key || envelope?.rule?.rule_type || '';
-  const facts = envelope?.facts || {};
+  const entities = useResolvedEntities(ticket, details, hostList);
+  const { scenarioKey, facts, host, printer, identity, routing, rag } = entities;
 
   // Auto-detect default module from scenario_key & catalog
   const defaultTab = useMemo<WorkspaceModuleTab>(() => {
@@ -55,17 +54,29 @@ export default function InspectorWorkspace({
     const desc = ((ticket.description || '') + ' ' + (ticket.title || '')).toLowerCase();
 
     // 1. Printer / Spooler scenario
-    if (sKey.includes('printer') || sName.includes('печат') || sName.includes('оргтехник') || facts.printer_name) {
+    if (
+      sKey.includes('printer') ||
+      sName.includes('печат') ||
+      sName.includes('оргтехник') ||
+      printer.hasPrinter
+    ) {
       return 'printer';
     }
 
     // 2. Identity / AD / Access scenario
-    if (sKey.includes('create_user') || sKey.includes('wlan') || sKey.includes('identity') || sName.includes('учетн') || sName.includes('доступ')) {
+    if (
+      sKey.includes('create_user') ||
+      sKey.includes('wlan') ||
+      sKey.includes('identity') ||
+      sName.includes('учетн') ||
+      sName.includes('доступ') ||
+      identity.isLockedOut
+    ) {
       return 'identity';
     }
 
     // 3. Catalog redirect
-    if (sKey.includes('redirect') || sName.includes('перенаправлен')) {
+    if (sKey.includes('redirect') || sName.includes('перенаправлен') || routing.isRedirect) {
       return 'redirect';
     }
 
@@ -76,14 +87,14 @@ export default function InspectorWorkspace({
       desc.includes('тормоз') ||
       desc.includes('завис') ||
       desc.includes('перезагруз') ||
-      hostList.length > 0
+      host.hasHost
     ) {
       return 'host';
     }
 
     // 5. Fallback
-    return hostList.length > 0 ? 'host' : 'kb';
-  }, [scenarioKey, ticket.serviceName, ticket.description, ticket.title, facts, hostList]);
+    return host.hasHost ? 'host' : 'kb';
+  }, [scenarioKey, ticket.serviceName, ticket.description, ticket.title, printer, identity, routing, host]);
 
   const [activeTab, setActiveTab] = useState<WorkspaceModuleTab>(defaultTab);
 
@@ -92,19 +103,17 @@ export default function InspectorWorkspace({
     setActiveTab(defaultTab);
   }, [rawId, defaultTab]);
 
-  // Data presence indicators for tab dots
-  const hasHostData = hostList.length > 0 || Boolean(ticket.host || details?.pc_name);
-  const hasPrinterData = (ticket.serviceName || '').toLowerCase().includes('печат') || Boolean(facts.printer_name);
-  const hasIdentityData = Boolean(ticket.requesterLogin || ticket.requesterName || details?.creator);
-  const hasRedirectData = Boolean(envelope?.rule?.rule_type === 'redirect' || facts.target_service_name);
-  const hasKbData = Boolean(details?.rag_results && details.rag_results.length > 0);
-
   const tabs: Array<{ id: WorkspaceModuleTab; label: string; icon: any; hasData: boolean }> = [
-    { id: 'host', label: 'Хост / Железо', icon: IconMonitor, hasData: hasHostData },
-    { id: 'printer', label: 'Печать / МФУ', icon: IconPrinter, hasData: hasPrinterData },
-    { id: 'identity', label: 'Учётка / AD', icon: IconUser, hasData: hasIdentityData },
-    { id: 'redirect', label: 'Редирект', icon: IconRedirect, hasData: hasRedirectData },
-    { id: 'kb', label: 'База знаний', icon: IconBookOpen, hasData: hasKbData },
+    { id: 'host', label: 'Хост / Железо', icon: IconMonitor, hasData: host.hasHost },
+    { id: 'printer', label: 'Печать / МФУ', icon: IconPrinter, hasData: printer.hasPrinter },
+    {
+      id: 'identity',
+      label: 'Учётка / AD',
+      icon: IconUser,
+      hasData: Boolean(entities.requester.login || entities.requester.name),
+    },
+    { id: 'redirect', label: 'Редирект', icon: IconRedirect, hasData: routing.isRedirect },
+    { id: 'kb', label: 'База знаний', icon: IconBookOpen, hasData: rag.hasResults },
   ];
 
   const commonProps = {
@@ -113,7 +122,7 @@ export default function InspectorWorkspace({
     rawId,
     scenarioKey,
     facts,
-    hostList,
+    hostList: host.hostList,
     diagStatus,
     hostDiagnostics,
     loadingDiagnostics,

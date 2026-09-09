@@ -1,6 +1,5 @@
 import type { Ticket } from '../../../data/mock';
-import type { TaskDetails, HostDiagnostics } from '../../../lib/types';
-import type { DiagStatus } from '../DiagnosticsSection';
+import type { TaskDetails, HostDiagnostics, DiagStatus } from '../../../lib/types';
 
 export interface InspectorModuleProps {
   ticket: Ticket;

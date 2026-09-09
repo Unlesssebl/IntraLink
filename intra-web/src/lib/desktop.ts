@@ -18,3 +18,24 @@ export async function launchDesktopClient(taskId: number, host: string, client: 
   });
   window.location.assign(result.deep_link);
 }
+
+export async function launchDesktopClientWithFallback(
+  taskId: number,
+  host: string,
+  client: DesktopClient,
+  onToast: (t: { type: 'success' | 'error' | 'warning' | 'info'; message: string }) => void
+): Promise<void> {
+  const label = client === 'litemanager' ? 'LiteManager' : client === 'dameware' ? 'DameWare' : 'RDP';
+  try {
+    await launchDesktopClient(taskId, host, client);
+    onToast({ type: 'info', message: `${label}: запрос передан Desktop Companion` });
+  } catch {
+    const command = getDesktopFallbackCommand(client, host);
+    await navigator.clipboard.writeText(command);
+    onToast({
+      type: 'warning',
+      message: `Desktop Companion недоступен. Команда скопирована: ${command}`,
+    });
+  }
+}
+
