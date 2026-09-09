@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import type { Ticket } from '../../data/mock';
 import type { TaskDetails } from '../../lib/types';
+import { useResolvedEntities } from './useResolvedEntities';
 import {
   IconBuilding,
   IconChevronDown,
@@ -27,23 +28,20 @@ export default function TicketContextSummary({
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const description = ticket.description || details?.description || '';
 
-  const location = [
-    ticket.room || details?.room ? `каб. ${ticket.room || details?.room}` : '',
-    ticket.department || details?.department || '',
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  const entities = useResolvedEntities(ticket, details);
+  const { requester } = entities;
 
-  const phone = ticket.requesterPhone || details?.phone || '';
-  const requester = ticket.requesterName || details?.creator || '';
+  const location = requester.locationStr;
+  const phone = requester.phone;
+  const requesterName = requester.name;
 
   const meta = [
-    requester
+    requesterName
       ? {
           key: 'requester',
           label: 'Заявитель',
-          value: requester,
-          subValue: ticket.requesterLogin ? `@${ticket.requesterLogin}` : undefined,
+          value: requesterName,
+          subValue: requester.login ? `@${requester.login}` : undefined,
           icon: <IconUser size={14} />,
         }
       : null,

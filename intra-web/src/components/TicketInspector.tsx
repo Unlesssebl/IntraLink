@@ -24,9 +24,11 @@ import {
   IconUser,
   IconRedirect,
   IconSparkles,
+  IconCopy,
 } from './Icons';
 import type { DiagStatus } from '../lib/types';
 import { useUnifiedDecision } from './inspector/useUnifiedDecision';
+import { useResolvedEntities } from './inspector/useResolvedEntities';
 import { filterMeaningfulComments } from './inspector/commentsUtils';
 
 interface Props {
@@ -107,19 +109,9 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
         (details as any).task?.Id === rawId)
   );
   const safeDetails = isDetailsForCurrentTicket ? details : null;
-  const effectiveHost = ticket.host || details?.pc_name || '';
-  const hostList = useMemo(() => {
-    return effectiveHost
-      ? Array.from(
-          new Set(
-            effectiveHost
-              .split(/[,;]+/)
-              .map((h) => h.trim().replace(/\s+/g, ''))
-              .filter(Boolean)
-          )
-        )
-      : [];
-  }, [effectiveHost]);
+  const resolvedEntities = useResolvedEntities(ticket, safeDetails);
+  const hostList = resolvedEntities.host.hostList;
+  const effectiveHost = resolvedEntities.host.primaryHost;
 
   // Load Task Details from Core API
   const loadDetails = useCallback(
@@ -350,13 +342,13 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       if (pc) {
         list.push({
           id: 'restart_spooler',
-          label: 'Перезапустить Spooler',
-          icon: <IconRefresh size={11} />,
-          hint: `Перезапуск службы диспетчера печати на ${pc}`,
+          label: 'Скопировать рестарт Spooler',
+          icon: <IconCopy size={11} />,
+          hint: `Скопировать команду перезапуска службы Spooler на ${pc} в буфер обмена`,
           onClick: async () => {
             try {
               await navigator.clipboard.writeText(`Invoke-Command -ComputerName "${pc}" -ScriptBlock { Restart-Service Spooler -Force }`);
-              onToast({ type: 'info', message: `Команда рестарта Spooler на ${pc} скопирована` });
+              onToast({ type: 'info', message: `Команда рестарта Spooler на ${pc} скопирована в буфер обмена` });
             } catch {
               onToast({ type: 'error', message: 'Не удалось скопировать команду' });
             }
@@ -365,13 +357,13 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
 
         list.push({
           id: 'reboot_pc',
-          label: 'Перезагрузить ПК',
-          icon: <IconClock size={11} />,
-          hint: `Плановая перезагрузка компьютера ${pc}`,
+          label: 'Скопировать reboot ПК',
+          icon: <IconCopy size={11} />,
+          hint: `Скопировать команду перезагрузки компьютера ${pc} в буфер обмена`,
           onClick: async () => {
             try {
               await navigator.clipboard.writeText(`Restart-Computer -ComputerName "${pc}" -Force`);
-              onToast({ type: 'info', message: `Команда перезагрузки ${pc} скопирована` });
+              onToast({ type: 'info', message: `Команда перезагрузки ${pc} скопирована в буфер обмена` });
             } catch {
               onToast({ type: 'error', message: 'Не удалось скопировать команду' });
             }
@@ -386,13 +378,13 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       if (login) {
         list.push({
           id: 'unlock_ad',
-          label: 'Разблокировать УЗ',
-          icon: <IconLock size={11} />,
-          hint: `Разблокировка учетной записи ${login} в Active Directory`,
+          label: 'Скопировать Unlock-AD',
+          icon: <IconCopy size={11} />,
+          hint: `Скопировать команду разблокировки учетной записи ${login} в Active Directory`,
           onClick: async () => {
             try {
               await navigator.clipboard.writeText(`Unlock-ADAccount -Identity "${login}"`);
-              onToast({ type: 'info', message: `Команда разблокировки ${login} скопирована` });
+              onToast({ type: 'info', message: `Команда разблокировки ${login} скопирована в буфер обмена` });
             } catch {
               onToast({ type: 'error', message: 'Не удалось скопировать команду' });
             }
@@ -447,16 +439,10 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     return list;
   }, [safeDetails, hostList, effectiveHost, ticket, decisionState, onToast]);
 
-  // Быстрые сниппеты для подстановки в ответ
+  // Быстрые сниппеты для подстановки в ответ (не дублируем то, что уже в SmartActionBar)
   const snippets = useMemo(() => {
-    const list: Array<{ label: string; text: string }> = [];
-    const aiDraft =
-      safeDetails?.decision_envelope?.response?.text;
-    if (aiDraft) {
-      list.push({ label: 'Вставить ответ AI', text: aiDraft });
-    }
-    return list;
-  }, [safeDetails]);
+    return [];
+  }, []);
 
   const panelClass = expanded
     ? 'fixed inset-0 z-50 bg-neutral-50 dark:bg-neutral-950 flex flex-col overflow-hidden animate-in fade-in duration-200'
@@ -498,8 +484,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
       />
 
       {/* 2. Body Content & Sticky Action Dock */}
-      {expanded ? (
-        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        {expanded ? (
           <div className="flex-1 min-h-0 max-w-7xl mx-auto w-full p-4 grid grid-cols-1 lg:grid-cols-2 gap-4 overflow-hidden">
             {/* Левая панель: Контекст, Рабочая станция, Вложения, Переписка */}
             <div className="space-y-3.5 overflow-y-auto pr-1">
@@ -548,46 +534,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
               />
             </div>
           </div>
-
-          {/* Прикрепленный Action Dock внизу модалки */}
-          <div className="max-w-7xl mx-auto w-full shrink-0">
-            <UnifiedActionDock
-              replyText={decisionState.replyText}
-              setReplyText={decisionState.setReplyText}
-              replyMode={decisionState.replyMode}
-              setReplyMode={decisionState.setReplyMode}
-              expenses={decisionState.expenses}
-              setExpenses={decisionState.setExpenses}
-              selectedTemplateKey={decisionState.selectedTemplateKey}
-              setSelectedTemplateKey={decisionState.setSelectedTemplateKey}
-              templates={templates}
-              selectedStatusOverride={decisionState.selectedStatusOverride}
-              setSelectedStatusOverride={decisionState.setSelectedStatusOverride}
-              primaryActionLabel={decisionState.primaryActionLabel}
-              targetStatusId={decisionState.targetStatusId}
-              targetStatusName={decisionState.targetStatusName}
-              actionUnavailable={decisionState.actionUnavailable}
-              submitting={decisionState.submitting}
-              requiresComment={decisionState.requiresComment}
-              commentMissing={decisionState.commentMissing}
-              pendingCommand={decisionState.pendingCommand}
-              onApplyDecision={decisionState.handleApplyDecision}
-              onCancelTicket={decisionState.handleCancelTicket}
-              onTakeTicket={decisionState.handleTakeTicket}
-              onReanalyze={decisionState.handleReanalyze}
-              reanalyzing={decisionState.reanalyzing}
-              pendingNewAiDraft={decisionState.pendingNewAiDraft}
-              onApplyNewDraft={decisionState.applyNewDraft}
-              onDismissNewDraft={decisionState.dismissNewDraft}
-              snippets={snippets}
-              insertSnippet={decisionState.insertSnippet}
-              smartActions={smartActions}
-            />
-          </div>
-        </div>
-      ) : (
-        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-          {/* Скроллируемая часть карточки */}
+        ) : (
           <div className="flex-1 overflow-y-auto">
             <div className="p-4 space-y-3.5">
               <TicketContextSummary
@@ -635,8 +582,10 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
               />
             </div>
           </div>
+        )}
 
-          {/* Прикрепленный Action Dock внизу панели (всегда доступен) */}
+        {/* Прикрепленный Action Dock внизу панели (всегда доступен, единый экземпляр) */}
+        <div className={expanded ? 'max-w-7xl mx-auto w-full shrink-0' : 'shrink-0'}>
           <UnifiedActionDock
             replyText={decisionState.replyText}
             setReplyText={decisionState.setReplyText}
@@ -670,7 +619,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             smartActions={smartActions}
           />
         </div>
-      )}
+      </div>
     </div>
   );
 }

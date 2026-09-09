@@ -1,0 +1,21 @@
+{
+  "actual_count": 99,
+  "audit_table_counts_at_export": {
+    "commands": 0,
+    "decision_applications": 0,
+    "decision_feedback": 0,
+    "decision_steps": 0
+  },
+  "discrepancy": false,
+  "end_exclusive": "2026-09-09 18:51:57+00",
+  "expected_count": 99,
+  "privacy": "Pseudonymized internal regression data, not approved for public distribution. Raw task projected; source values never written to disk.",
+  "schema_version": 1,
+  "sha256": {
+    "annotations.json": "0539f91815fd8fdaa3a850cc2d62dd430a566e4e30bb9d91ae26299dd4d0c428",
+    "decisions.json": "cbb61b6a5e74f0c1da78982590f76e03a3a55382c62e8b1de15ee5b7eb1a69a4"
+  },
+  "source": "Docker PostgreSQL / intraservice / decision_records; READ ONLY",
+  "start_inclusive": "2026-09-09 18:50:15+00",
+  "unique_tasks": 99
+}

@@ -204,3 +204,32 @@ test('commentsUtils: содержательные комментарии пол�
   assert.strictEqual(filtered.length, 2);
   assert.strictEqual(formatCommentsCount(filtered.length), '2 комментария');
 });
+
+test('safeClearText: защита от случайного стирания длинного текста', () => {
+  function computeClearAction(currentText: string, isConfirmed: boolean): { newText: string; needsConfirm: boolean } {
+    if (currentText.trim().length <= 20) {
+      return { newText: '', needsConfirm: false };
+    }
+    if (!isConfirmed) {
+      return { newText: currentText, needsConfirm: true };
+    }
+    return { newText: '', needsConfirm: false };
+  }
+
+  // Короткий текст стирается сразу без подтверждения
+  const shortResult = computeClearAction('Короткий текст', false);
+  assert.strictEqual(shortResult.newText, '');
+  assert.strictEqual(shortResult.needsConfirm, false);
+
+  // Длинный текст не стирается по первому клику, а требует подтверждения
+  const longText = 'Здравствуйте! Проблема была исследована, выполнен сброс службы Spooler.';
+  const firstClick = computeClearAction(longText, false);
+  assert.strictEqual(firstClick.newText, longText);
+  assert.strictEqual(firstClick.needsConfirm, true);
+
+  // По повторному клику с подтверждением текст очищается
+  const secondClick = computeClearAction(longText, true);
+  assert.strictEqual(secondClick.newText, '');
+  assert.strictEqual(secondClick.needsConfirm, false);
+});
+

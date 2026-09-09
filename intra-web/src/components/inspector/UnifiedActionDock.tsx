@@ -87,8 +87,30 @@ export default function UnifiedActionDock({
 }: UnifiedActionDockProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const templateMenuRef = useRef<HTMLDivElement>(null);
+
+  // Сброс таймера подтверждения очистки
+  useEffect(() => {
+    if (!confirmClear) return;
+    const timer = setTimeout(() => setConfirmClear(false), 3000);
+    return () => clearTimeout(timer);
+  }, [confirmClear]);
+
+  const handleClearClick = () => {
+    if (replyText.trim().length <= 20) {
+      setReplyText('');
+      setConfirmClear(false);
+      return;
+    }
+    if (!confirmClear) {
+      setConfirmClear(true);
+      return;
+    }
+    setReplyText('');
+    setConfirmClear(false);
+  };
 
   // Закрытие выпадающих списков при клике снаружи
   useEffect(() => {
@@ -279,14 +301,27 @@ export default function UnifiedActionDock({
         />
 
         {replyText && (
-          <button
-            type="button"
-            onClick={() => setReplyText('')}
-            className="absolute top-2.5 right-2.5 rounded p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
-            title="Очистить текст"
-          >
-            <IconClose size={12} />
-          </button>
+          <div className="absolute top-2.5 right-2.5 z-10">
+            {confirmClear ? (
+              <button
+                type="button"
+                onClick={handleClearClick}
+                className="inline-flex items-center gap-1 rounded bg-rose-600 px-2 py-0.5 text-[10.5px] font-bold text-white shadow-xs hover:bg-rose-500 transition-all animate-in fade-in cursor-pointer"
+                title="Подтвердить удаление всего набранного текста"
+              >
+                <span>Очистить?</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleClearClick}
+                className="rounded p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors cursor-pointer"
+                title="Очистить текст (при длинном тексте потребуется подтверждение)"
+              >
+                <IconClose size={12} />
+              </button>
+            )}
+          </div>
         )}
       </div>
 

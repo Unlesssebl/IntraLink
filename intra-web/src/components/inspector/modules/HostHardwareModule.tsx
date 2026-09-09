@@ -159,15 +159,28 @@ export default function HostHardwareModule({
           <button
             type="button"
             onClick={() => handleLaunchClient(activeHost, 'litemanager')}
-            className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50/80 px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300 cursor-pointer"
+            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition-colors cursor-pointer ${
+              diagStatus.ping === 'fail'
+                ? 'border-neutral-200 bg-neutral-100 text-neutral-500 hover:bg-neutral-200 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-400'
+                : 'border-blue-200 bg-blue-50/80 text-blue-700 hover:bg-blue-100 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300'
+            }`}
+            title={diagStatus.ping === 'fail' ? 'Внимание: хост не отвечает на Ping (возможно офлайн или ICMP закрыт)' : 'Запустить LiteManager'}
           >
             <IconPlay size={11} />
             <span>LiteManager</span>
+            {diagStatus.ping === 'fail' && (
+              <span className="text-[9px] font-mono text-amber-600 dark:text-amber-400">(офлайн?)</span>
+            )}
           </button>
           <button
             type="button"
             onClick={() => handleLaunchClient(activeHost, 'dameware')}
-            className="inline-flex items-center gap-1 rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 cursor-pointer"
+            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer ${
+              diagStatus.ping === 'fail'
+                ? 'border-neutral-200 bg-neutral-100 text-neutral-500 hover:bg-neutral-200 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-400'
+                : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300'
+            }`}
+            title={diagStatus.ping === 'fail' ? 'Внимание: хост не отвечает на Ping' : 'Запустить DameWare'}
           >
             <IconPlay size={11} />
             <span>DameWare</span>
@@ -175,7 +188,12 @@ export default function HostHardwareModule({
           <button
             type="button"
             onClick={() => handleLaunchClient(activeHost, 'rdp')}
-            className="inline-flex items-center gap-1 rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-[11px] font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 cursor-pointer"
+            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer ${
+              diagStatus.ping === 'fail'
+                ? 'border-neutral-200 bg-neutral-100 text-neutral-500 hover:bg-neutral-200 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-400'
+                : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300'
+            }`}
+            title={diagStatus.ping === 'fail' ? 'Внимание: хост не отвечает на Ping' : 'Запустить RDP'}
           >
             <IconPlay size={11} />
             <span>RDP</span>

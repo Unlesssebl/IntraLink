@@ -41,8 +41,8 @@ export interface UseUnifiedDecisionReturn {
   setSelectedStatusOverride: (statusId: number | null) => void;
 
   // Вкладки оснований
-  selectedTab: 'facts' | 'rules' | 'rag' | 'ai' | 'diagnostics' | 'completeness';
-  setSelectedTab: (tab: 'facts' | 'rules' | 'rag' | 'ai' | 'diagnostics' | 'completeness') => void;
+  selectedTab: 'facts' | 'completeness';
+  setSelectedTab: (tab: 'facts' | 'completeness') => void;
 
   // Состояние жизненного цикла и защиты
   ticketRun: TicketRun | null;
@@ -52,6 +52,7 @@ export interface UseUnifiedDecisionReturn {
   submitting: boolean;
   reanalyzing: boolean;
   feedbackSubmitted: boolean;
+  setFeedbackSubmitted: (val: boolean) => void;
   pendingNewAiDraft: string | null;
   applyNewDraft: () => void;
   dismissNewDraft: () => void;
@@ -190,9 +191,7 @@ export function useUnifiedDecision({
   );
   const [selectedTemplateKey, setSelectedTemplateKey] = useState<string>('');
   const [selectedStatusOverride, setSelectedStatusOverride] = useState<number | null>(null);
-  const [selectedTab, setSelectedTab] = useState<
-    'facts' | 'rules' | 'rag' | 'ai' | 'diagnostics' | 'completeness'
-  >('facts');
+  const [selectedTab, setSelectedTab] = useState<'facts' | 'completeness'>('facts');
 
   const [ticketRun, setTicketRun] = useState<TicketRun | null>(null);
   const [runEvents, setRunEvents] = useState<TicketRunEvent[]>([]);
@@ -731,6 +730,7 @@ export function useUnifiedDecision({
     submitting,
     reanalyzing,
     feedbackSubmitted,
+    setFeedbackSubmitted,
     pendingNewAiDraft,
     applyNewDraft,
     dismissNewDraft,

@@ -89,6 +89,7 @@ export default function UnifiedDecisionPanel({
     isStale,
     reanalyzing,
     feedbackSubmitted,
+    setFeedbackSubmitted,
     handleReanalyze,
     handleAnalyze,
     handleOverrideFacts,
@@ -352,10 +353,24 @@ export default function UnifiedDecisionPanel({
           </span>
 
           {feedbackSubmitted ? (
-            <span className="font-semibold text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1 text-[11px]">
-              <IconCheck size={12} />
-              <span>Спасибо за оценку</span>
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1 text-[11px]">
+                <IconCheck size={12} />
+                <span>Оценка зафиксирована</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setFeedbackSubmitted(false);
+                  setSelectedVerdict(null);
+                  setShowFeedbackDetails(false);
+                }}
+                className="text-[10.5px] text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 underline cursor-pointer"
+                title="Изменить оценку"
+              >
+                Изменить
+              </button>
+            </div>
           ) : (
             <div className="flex items-center gap-1.5">
               <button
