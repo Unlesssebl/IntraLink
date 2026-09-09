@@ -104,6 +104,34 @@ async def test_rerank_candidates_fallback_graceful():
         assert results[0]["rerank_fallback"] is True
 
 
+@pytest.mark.asyncio
+async def test_rerank_candidates_service_boost():
+    """Проверка применения сервисного буста реранкера (x1.25 точный сервис, x1.10 ветка)."""
+    candidates = [
+        {"task_id": 501, "name": "Заявка сервиса А", "service_id": 10, "service_path_ids": [1, 10]},
+        {"task_id": 502, "name": "Заявка целевого сервиса Б", "service_id": 20, "service_path_ids": [2, 20]},
+    ]
+    # Одинаковые базовые скоры 0.70
+    mock_scores = [0.70, 0.70]
+
+    with patch("app.services.rag._rerank_fastembed_sync", return_value=mock_scores):
+        results = await rerank_candidates(
+            query_text="Тестовый запрос",
+            candidates=candidates,
+            top_n=2,
+            threshold=0.50,
+            service_id=20,
+            service_path_ids=[2, 20],
+        )
+
+        assert len(results) == 2
+        # Кандидат 502 получил буст x1.25 (0.70 * 1.25 = 0.875) и вышел на первое место
+        assert results[0]["task_id"] == 502
+        assert results[0]["rerank_score"] == 0.875
+        assert results[1]["task_id"] == 501
+        assert results[1]["rerank_score"] == 0.70
+
+
 # ===========================================================================
 # 3. Интеграционный тест search_knowledge_base с Reranker
 # ===========================================================================

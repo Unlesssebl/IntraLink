@@ -346,6 +346,9 @@ async def run_explicit_analysis(
         snapshot = await TriageService.get_task_card_snapshot(service_auth_b64, task_id)
         if snapshot is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "ticket_not_found")
+        status_id = (snapshot.get("task") or {}).get("StatusId")
+        if not force and status_id in (28, 29, 30):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "ticket_already_closed")
         if not force:
             existing = await DecisionJournalService(db).latest_triage(task_id)
             last_attempt = await DecisionJournalService(db).latest_triage_attempt(
@@ -428,7 +431,7 @@ async def run_explicit_analysis(
 @router.get("/batch", status_code=status.HTTP_200_OK)
 async def get_triage_batch(
     filter_id: int = Query(984, description="ID фильтра очереди 1-й линии"),
-    limit: int = Query(5, ge=1, le=500, description="Размер пачки заявок"),
+    limit: int = Query(5, ge=1, le=2000, description="Размер пачки заявок"),
     page: int = Query(1, ge=1, description="Номер страницы/пачки"),
     service_prefix: str | None = Query(
         None,
@@ -439,6 +442,9 @@ async def get_triage_batch(
     ),
     include_skipped: bool = Query(
         False, description="Включить в выборку ранее пропущенные заявки"
+    ),
+    include_closed: bool = Query(
+        True, description="Включить в выборку выполненные (29) и отмененные (30) заявки"
     ),
     include_rag: bool = Query(
         False,
@@ -458,6 +464,7 @@ async def get_triage_batch(
         service_prefix=service_prefix,
         redirect_only=redirect_only,
         include_skipped=include_skipped,
+        include_closed=include_closed,
         include_rag=include_rag,
         operator_id=username,
         compute_recommendations=False,
@@ -643,7 +650,7 @@ async def _execute_triage_batch_worker(
                 )
                 return {"task_id": task_id, "status": "processed"}
             except HTTPException as exc:
-                if exc.detail == "analysis_already_running":
+                if exc.detail in {"analysis_already_running", "ticket_already_closed"}:
                     await redis.hincrby(batch_key, "skipped", 1)
                     status_val = "skipped"
                 else:

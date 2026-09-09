@@ -3,6 +3,7 @@ import { useState, useCallback, useEffect, useMemo } from 'react';
 import type { Ticket, Status } from '../data/mock';
 
 import { statusConfig, priorityConfig, getStatusDotClass, scenarioBadgeConfigs } from '../data/mock';
+import { SCENARIO_REGISTRY } from '../lib/scenarios';
 
 import {
 
@@ -100,7 +101,7 @@ interface Props {
   activeBatch?: import('../App').ActiveBatchState | null;
   onStartBatch?: (batchState: import('../App').ActiveBatchState) => void;
   onCancelBatch?: (batchId: string) => Promise<void>;
-
+  availableStatuses?: Array<{ id: number; name: string }>;
 }
 
 type ViewMode = 'table' | 'kanban';
@@ -112,7 +113,29 @@ interface SmartBatchModalState {
   open: boolean;
 
   items: SmartBatchItem[];
+}
 
+const CANONICAL_STATUS_LIST = [
+  'Открыта',
+  'В работе',
+  'Требует уточнения',
+  'Ждем пользователя',
+  'Ждем поставку',
+  'Плановые работы',
+  'Обработано 1-й линией',
+  'Выполнена',
+  'Отменена',
+  'Закрыта',
+];
+
+export function isClosedTicket(ticket: { statusId?: number; status?: string }): boolean {
+  if (ticket.statusId && (ticket.statusId === 28 || ticket.statusId === 29 || ticket.statusId === 30)) {
+    return true;
+  }
+  if (ticket.status === 'resolved') {
+    return true;
+  }
+  return false;
 }
 
 function getRunBadgeConfig(state: string, mode: string) {
@@ -376,12 +399,16 @@ export default function QueuePage({
   activeBatch,
   onStartBatch,
   onCancelBatch,
-
+  availableStatuses = [],
 }: Props) {
 
   const [view, setView] = useState<ViewMode>('table');
 
   const [processedTab, setProcessedTab] = useState<ProcessedTab>('processed');
+
+  const [selectedScenario, setSelectedScenario] = useState<string | null>(null);
+
+  const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
@@ -516,48 +543,54 @@ export default function QueuePage({
   }, [scopedTickets]);
 
   const unprocessedTickets = useMemo(() => {
-
     return scopedTickets.filter(t => !t.isProcessed);
-
   }, [scopedTickets]);
+
+  // Открытые не проанализированные заявки (закрытые и отмененные исключаются из фонового анализа)
+  const openUnprocessedTickets = useMemo(() => {
+    return unprocessedTickets.filter(t => !isClosedTicket(t));
+  }, [unprocessedTickets]);
 
   const useServerCounts = selectedService.rootId === null && selectedService.serviceId === null;
 
   const countProcessed = useServerCounts && analysisCounts
-
     ? analysisCounts.analyzed
-
     : processedTickets.length;
 
   const countUnprocessed = useServerCounts && analysisCounts
-
     ? analysisCounts.not_analyzed
-
     : unprocessedTickets.length;
 
   // Автоматический выбор таба при пустых обработанных
-
   useEffect(() => {
-
     if (countProcessed === 0 && countUnprocessed > 0 && processedTab === 'processed') {
-
       setProcessedTab('unprocessed');
-
     }
-
   }, [countProcessed, countUnprocessed, processedTab]);
 
   // Запуск фонового анализа очереди или конкретных заявок
-
   const handleTriggerAnalysis = async (specificTaskIds?: number[]) => {
     setIsAnalyzing(true);
     if (specificTaskIds && specificTaskIds.length > 0) {
       setAnalyzingTaskIds(new Set(specificTaskIds));
     }
     try {
-      const targetIds = specificTaskIds?.length
-        ? specificTaskIds
-        : unprocessedTickets.map(ticket => ticket.rawId);
+      const rawTargets = specificTaskIds?.length
+        ? specificTaskIds.filter(id => {
+            const ticket = tickets.find(t => t.rawId === id);
+            return !ticket || !isClosedTicket(ticket);
+          })
+        : openUnprocessedTickets.map(ticket => ticket.rawId);
+
+      const targetIds = Array.from(new Set(rawTargets));
+
+      if (targetIds.length === 0) {
+        onToast({
+          type: 'info',
+          message: 'Нет открытых заявок для анализа (закрытые заявки пропускаются)',
+        });
+        return;
+      }
 
       onToast({
         type: 'info',
@@ -632,34 +665,122 @@ export default function QueuePage({
 
   };
 
-  // Базовый набор тикетов по текущему сегменту
+  // Опции для выпадающего списка сценариев (на основе scopedTickets для таба «Проанализированные AI»)
+  const scenarioOptions = useMemo(() => {
+    const counts: Record<string, number> = {};
+    let noScenarioCount = 0;
 
+    for (const t of processedTickets) {
+      const key = t.scenarioKey || t.envelope?.scenario_key || t.ruleType;
+      if (key && SCENARIO_REGISTRY[key]) {
+        counts[key] = (counts[key] || 0) + 1;
+      } else {
+        noScenarioCount++;
+      }
+    }
+
+    const items = Object.entries(counts).map(([key, count]) => ({
+      key,
+      label: SCENARIO_REGISTRY[key]?.shortTitle || SCENARIO_REGISTRY[key]?.title || key,
+      count,
+    })).sort((a, b) => b.count - a.count);
+
+    if (noScenarioCount > 0) {
+      items.push({
+        key: '__none__',
+        label: 'Без сценария / Консультация',
+        count: noScenarioCount,
+      });
+    }
+
+    return items;
+  }, [processedTickets]);
+
+  // Базовый набор тикетов по текущему сегменту
   const currentTabTickets = processedTab === 'processed' ? processedTickets : unprocessedTickets;
 
-  const filtered = currentTabTickets.filter(t => {
+  // Опции для выпадающего списка статусов IntraService (на основе справочника статусов и тикетов текущей вкладки)
+  const statusOptions = useMemo(() => {
+    const map = new Map<string, { name: string; count: number; statusId?: number }>();
 
+    // 1. Статусы из бэкенда IntraService (если получены)
+    if (availableStatuses && availableStatuses.length > 0) {
+      for (const st of availableStatuses) {
+        if (st.name) {
+          const normKey = st.name.trim().toLowerCase();
+          if (!map.has(normKey)) {
+            map.set(normKey, { name: st.name.trim(), count: 0, statusId: st.id });
+          }
+        }
+      }
+    }
+
+    // 2. Стандартный канонический список статусов IntraService
+    for (const name of CANONICAL_STATUS_LIST) {
+      const normKey = name.toLowerCase();
+      if (!map.has(normKey)) {
+        map.set(normKey, { name, count: 0 });
+      }
+    }
+
+    // 3. Подсчет тикетов в текущей вкладке и учет любых кастомных статусов
+    for (const t of currentTabTickets) {
+      const rawName = (t.statusName || statusConfig[t.status]?.label || 'Открыта').trim();
+      const normKey = rawName.toLowerCase();
+      const existing = map.get(normKey);
+      if (existing) {
+        existing.count++;
+        if (existing.statusId === undefined && t.statusId) {
+          existing.statusId = t.statusId;
+        }
+      } else {
+        map.set(normKey, {
+          name: rawName,
+          count: 1,
+          statusId: t.statusId,
+        });
+      }
+    }
+
+    // Сортировка: сначала статусы с заявками (по убыванию count), затем без заявок по алфавиту
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.count !== b.count) {
+        return b.count - a.count;
+      }
+      return a.name.localeCompare(b.name, 'ru');
+    });
+  }, [availableStatuses, currentTabTickets]);
+
+  const filtered = currentTabTickets.filter(t => {
     if (activeOutageFilterIds && !activeOutageFilterIds.includes(t.rawId)) return false;
 
+    // Фильтр сценария (действует только на вкладке «Проанализированные AI», EC-1)
+    if (processedTab === 'processed' && selectedScenario !== null) {
+      const key = t.scenarioKey || t.envelope?.scenario_key || t.ruleType;
+      if (selectedScenario === '__none__') {
+        if (key && SCENARIO_REGISTRY[key]) return false;
+      } else if (key !== selectedScenario) {
+        return false;
+      }
+    }
+
+    // Фильтр статусов IntraService (действует на обе вкладки, регистронезависимо, EC-4)
+    if (selectedStatus !== null) {
+      const rawName = (t.statusName || statusConfig[t.status]?.label || '').trim().toLowerCase();
+      if (rawName !== selectedStatus.toLowerCase()) return false;
+    }
+
     if (searchQuery) {
-
       const q = searchQuery.toLowerCase().trim();
-
       const matchId = t.id.toLowerCase().includes(q) || String(t.rawId).includes(q);
-
       const matchTitle = (t.title || '').toLowerCase().includes(q);
-
       const matchReq = (t.requesterName || '').toLowerCase().includes(q);
-
       const matchHost = (t.host || '').toLowerCase().includes(q);
-
       const matchService = (t.serviceName || '').toLowerCase().includes(q);
-
       if (!matchId && !matchTitle && !matchReq && !matchHost && !matchService) return false;
-
     }
 
     return true;
-
   });
 
   const sorted = [...filtered].sort((a, b) => {
@@ -1448,7 +1569,11 @@ export default function QueuePage({
 
               className="flex items-center gap-1.5 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-850 text-neutral-800 dark:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-neutral-800 shadow-2xs disabled:opacity-60"
 
-              title="Принудительно запустить анализ входящих заявок через сценарный пайплайн"
+              title={
+                openUnprocessedTickets.length > 0
+                  ? `Запустить анализ открытых заявок (${openUnprocessedTickets.length} шт.) через сценарный пайплайн. Закрытые заявки пропускаются.`
+                  : 'Все открытые заявки уже проанализированы'
+              }
 
             >
 
@@ -1488,6 +1613,62 @@ export default function QueuePage({
 
               </div>
 
+            )}
+
+            <div className="w-px h-5 bg-neutral-200 dark:bg-neutral-800" />
+
+            {/* Фильтр по сценариям (только для таба «Проанализированные AI», EC-1) */}
+            {processedTab === 'processed' && (
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={selectedScenario || ''}
+                  onChange={e => setSelectedScenario(e.target.value || null)}
+                  className="h-7 px-2 py-0.5 text-[12px] font-medium rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-850 text-neutral-800 dark:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors cursor-pointer shadow-2xs focus:outline-none focus:ring-1 focus:ring-neutral-400 dark:focus:ring-neutral-600"
+                  title="Фильтрация очереди по сценарию заявки"
+                  aria-label="Фильтр по сценарию заявки"
+                >
+                  <option value="">Все сценарии ({countProcessed})</option>
+                  {scenarioOptions.map(sc => (
+                    <option key={sc.key} value={sc.key}>
+                      {sc.label} ({sc.count})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Фильтр по статусам IntraService (для обеих вкладок, строго без ID, EC-4) */}
+            <div className="flex items-center gap-1.5">
+              <select
+                value={selectedStatus || ''}
+                onChange={e => setSelectedStatus(e.target.value || null)}
+                className="h-7 px-2 py-0.5 text-[12px] font-medium rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-850 text-neutral-800 dark:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors cursor-pointer shadow-2xs focus:outline-none focus:ring-1 focus:ring-neutral-400 dark:focus:ring-neutral-600"
+                title="Фильтрация очереди по статусу IntraService"
+                aria-label="Фильтр по статусу IntraService"
+              >
+                <option value="">Все статусы ({currentTabTickets.length})</option>
+                {statusOptions.map(st => (
+                  <option key={st.name} value={st.name}>
+                    {st.name} ({st.count})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Кнопка сброса фильтров */}
+            {(selectedScenario !== null || selectedStatus !== null) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedScenario(null);
+                  setSelectedStatus(null);
+                }}
+                className="h-7 flex items-center gap-1 px-2 py-0.5 rounded-md text-[12px] font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-neutral-100 dark:hover:bg-neutral-850 border border-dashed border-neutral-300 dark:border-neutral-700 transition-colors cursor-pointer"
+                title="Сбросить выбранные сценарий и статус"
+              >
+                <span className="font-bold">✕</span>
+                <span>Сбросить</span>
+              </button>
             )}
 
           </div>
@@ -2499,58 +2680,55 @@ export default function QueuePage({
                 </div>
 
                 <p className="text-[14px] font-semibold text-neutral-700 dark:text-neutral-300">
-
-                  {processedTab === 'processed'
-
-                    ? countProcessed === 0
-
-                      ? 'Нет проанализированных заявок'
-
-                      : 'Нет заявок по текущему фильтру'
-
-                    : countUnprocessed === 0
-
-                      ? 'Все заявки в выбранной области проанализированы AI'
-
-                      : 'Нет не проанализированных заявок по фильтру'}
-
+                  {selectedScenario !== null || selectedStatus !== null
+                    ? 'Нет заявок по выбранным фильтрам'
+                    : processedTab === 'processed'
+                      ? countProcessed === 0
+                        ? 'Нет проанализированных заявок'
+                        : 'Нет заявок по текущему фильтру'
+                      : countUnprocessed === 0
+                        ? 'Все заявки в выбранной области проанализированы AI'
+                        : 'Нет не проанализированных заявок по фильтру'}
                 </p>
 
-                <p className="text-[12px] text-neutral-400 dark:text-neutral-500 mt-1 max-w-[340px] text-center">
-
-                  {processedTab === 'processed' && countProcessed === 0 && countUnprocessed > 0 ? (
-
-                    <span>
-
-                      В очереди находится {countUnprocessed} заявок без анализа.{' '}
-
+                <div className="text-[12px] text-neutral-400 dark:text-neutral-500 mt-1 max-w-[380px] text-center">
+                  {selectedScenario !== null || selectedStatus !== null ? (
+                    <div className="flex flex-col items-center gap-2">
+                      <span>
+                        {selectedScenario !== null && selectedStatus !== null
+                          ? `Не найдено обращений со сценарием «${selectedScenario === '__none__' ? 'Без сценария' : (SCENARIO_REGISTRY[selectedScenario]?.shortTitle || selectedScenario)}» и статусом «${selectedStatus}».`
+                          : selectedScenario !== null
+                            ? `Не найдено обращений со сценарием «${selectedScenario === '__none__' ? 'Без сценария' : (SCENARIO_REGISTRY[selectedScenario]?.shortTitle || selectedScenario)}».`
+                            : `Не найдено обращений со статусом «${selectedStatus}».`}
+                      </span>
                       <button
-
                         type="button"
-
-                        onClick={() => setProcessedTab('unprocessed')}
-
-                        className="text-neutral-900 dark:text-neutral-100 font-semibold underline cursor-pointer"
-
+                        onClick={() => {
+                          setSelectedScenario(null);
+                          setSelectedStatus(null);
+                        }}
+                        className="px-3 py-1 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 rounded-md text-xs font-semibold hover:opacity-90 transition-opacity cursor-pointer shadow-2xs mt-1"
                       >
-
-                        Перейти к не проанализированным
-
+                        Сбросить фильтры
                       </button>
-
+                    </div>
+                  ) : processedTab === 'processed' && countProcessed === 0 && countUnprocessed > 0 ? (
+                    <span>
+                      В очереди находится {countUnprocessed} заявок без анализа.{' '}
+                      <button
+                        type="button"
+                        onClick={() => setProcessedTab('unprocessed')}
+                        className="text-neutral-900 dark:text-neutral-100 font-semibold underline cursor-pointer"
+                      >
+                        Перейти к не проанализированным
+                      </button>
                     </span>
-
                   ) : processedTab === 'unprocessed' && countUnprocessed === 0 ? (
-
                     <span>Все обращения в выбранной области очереди успешно проанализированы AI</span>
-
                   ) : (
-
                     <span>Попробуйте сбросить поисковый запрос или фильтр сервиса</span>
-
                   )}
-
-                </p>
+                </div>
 
               </div>
 

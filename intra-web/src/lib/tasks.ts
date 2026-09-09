@@ -1534,40 +1534,25 @@ export function mapTaskToTicket(task: TaskItem): Ticket {
 
 
 
-export async function fetchQueue(filterId = 984, limit = 50, includeRag = false): Promise<{
-
-
-
+export async function fetchQueue(
+  filterId = 984,
+  limit = 2000,
+  includeRag = false,
+  includeClosed = true,
+  includeSkipped = false
+): Promise<{
   tickets: Ticket[];
-
-
-
   rawTasks: TaskItem[];
-
-
-
   total: number;
-
-
-
   rootServices: Array<{ id: number; name: string }>;
-
-
-
   subservicesByRoot: Record<number, Array<{ id: number; name: string; parent_id?: number }>>;
-
-
-
+  statuses?: Array<{ id: number; name: string }>;
   analysisCounts?: import('./types').AnalysisCounts;
   activeBatchId?: string | null;
-
-
-
 }> {
-
-
-
-  const data = await apiFetch<any>(`/api/v2/triage/batch?filter_id=${filterId}&limit=${limit}&include_rag=${includeRag}`);
+  const data = await apiFetch<any>(
+    `/api/v2/triage/batch?filter_id=${filterId}&limit=${limit}&include_rag=${includeRag}&include_closed=${includeClosed}&include_skipped=${includeSkipped}`
+  );
 
 
 
@@ -1868,6 +1853,14 @@ export async function fetchQueue(filterId = 984, limit = 50, includeRag = false)
 
 
     subservicesByRoot,
+
+
+
+    statuses: Array.isArray(data?.statuses)
+      ? data.statuses
+          .map((st: any) => ({ id: Number(st.Id ?? st.id), name: String(st.Name ?? st.name ?? '').trim() }))
+          .filter((s: { id: number; name: string }) => s.name)
+      : [],
 
 
 

@@ -127,6 +127,8 @@ function MainApp() {
 
   const [subservicesByRoot, setSubservicesByRoot] = useState<Record<number, Array<{ id: number; name: string; parent_id?: number }>>>({});
 
+  const [availableStatuses, setAvailableStatuses] = useState<Array<{ id: number; name: string }>>([]);
+
   const [selectedService, setSelectedService] = useState<ServiceSelection>({
 
     rootId: null,
@@ -228,13 +230,15 @@ function MainApp() {
 
     try {
 
-      const data = await fetchQueue(984, 200);
+      const data = await fetchQueue(984, 2000);
 
       setTickets(data.tickets || []);
 
       setRootServices(data.rootServices || []);
 
       setSubservicesByRoot(data.subservicesByRoot || {});
+
+      setAvailableStatuses(data.statuses || []);
 
     } catch (err: any) {
 
@@ -671,6 +675,8 @@ function MainApp() {
               activeExecution={activeExecution}
 
               onSelectActiveTask={handleSelectActiveTask}
+
+              availableStatuses={availableStatuses}
 
             />
 

@@ -519,7 +519,7 @@ async def sparse_text_search(
     """
     Полнотекстовый sparse-поиск по ключевым словам и техническим идентификаторам в базе решений.
     При наличии PostgreSQL search_vector использует нативный GIN-индекс и ts_rank('russian')
-    с мягким бустом точного сервиса (x1.25) или родительской ветки (x1.10).
+    с приоритетным сервисным бустом точного сервиса (x1.75) или родительской ветки (x1.35).
     В средах тестирования (SQLite) автоматически переключается на токенный поиск с аналогичным бустом.
     """
     from sqlalchemy import or_, text
@@ -544,13 +544,13 @@ async def sparse_text_search(
             fts_query = re.sub(r"-(\d+)", r" \1", clean_query).strip()
             ts_query_expr = func.plainto_tsquery("russian", fts_query)
 
-            # Мягкий буст по точной услуге (1.25) или ветке каталога (1.10)
+            # Приоритетный буст по точной услуге (1.75) или ветке каталога (1.35)
             if service_id or service_path_ids:
                 cases = []
                 if service_id:
-                    cases.append((TaskKnowledgeBase.service_id == service_id, 1.25))
+                    cases.append((TaskKnowledgeBase.service_id == service_id, 1.75))
                 if service_path_ids and hasattr(TaskKnowledgeBase, "service_path_ids"):
-                    cases.append((TaskKnowledgeBase.service_path_ids.overlap(service_path_ids), 1.10))
+                    cases.append((TaskKnowledgeBase.service_path_ids.overlap(service_path_ids), 1.35))
                 boost_factor = case(*cases, else_=1.0)
             else:
                 boost_factor = 1.0
@@ -682,11 +682,11 @@ async def sparse_text_search(
             if clean_query.lower() in combined:
                 score += 5.0
 
-            # Мягкий буст по сервису
+            # Приоритетный буст по сервису (точный x1.75, ветка x1.35)
             if service_id and r.service_id == service_id:
-                score *= 1.25
+                score *= 1.75
             elif service_path_ids and set(getattr(r, "service_path_ids", []) or []).intersection(service_path_ids):
-                score *= 1.10
+                score *= 1.35
 
             c_data = r.classification_data or {}
             res_type = c_data.get("resolution_type")
@@ -735,7 +735,7 @@ def reciprocal_rank_fusion(
 ) -> list[dict[str, Any]]:
     """
     Слияние результатов Dense pgvector и Sparse tsvector по алгоритму Reciprocal Rank Fusion (RRF)
-    с мягким бустом совпадения точного сервиса (x1.25) или родительской ветки каталога (x1.10).
+    с приоритетным бустом совпадения точного сервиса (x1.75) или родительской ветки каталога (x1.35).
     Формула: RRF_Score = sum(1.0 / (k + rank_i)) * service_boost
     """
     scores: dict[int, float] = {}
@@ -757,15 +757,15 @@ def reciprocal_rank_fusion(
         if tid not in doc_map:
             doc_map[tid] = dict(doc)
 
-    # Мягкий буст RRF-скора при совпадении точной услуги (x1.25) или ветки (x1.10)
+    # Приоритетный буст RRF-скора при совпадении точной услуги (x1.75) или ветки (x1.35)
     for tid in scores:
         doc = doc_map[tid]
         cand_sid = doc.get("service_id")
         cand_path_ids = set(doc.get("service_path_ids") or [])
         if service_id and cand_sid == service_id:
-            scores[tid] *= 1.25
+            scores[tid] *= 1.75
         elif service_path_ids and cand_path_ids.intersection(service_path_ids):
-            scores[tid] *= 1.10
+            scores[tid] *= 1.35
 
     sorted_tids = sorted(
         scores.keys(), key=lambda x: scores[x], reverse=True
@@ -783,11 +783,11 @@ def reciprocal_rank_fusion(
             dense_pct = round((1.0 - float(item["distance"])) * 100.0, 1)
             sim_pct = max(sim_pct, dense_pct)
 
-        # Сохранение относительного буста в similarity_pct
+        # Сохранение приоритетного буста в similarity_pct
         if service_id and item.get("service_id") == service_id:
-            sim_pct = min(99.0, round(sim_pct * 1.15, 1))
+            sim_pct = min(99.0, round(sim_pct * 1.30, 1))
         elif service_path_ids and set(item.get("service_path_ids") or []).intersection(service_path_ids):
-            sim_pct = min(99.0, round(sim_pct * 1.05, 1))
+            sim_pct = min(99.0, round(sim_pct * 1.15, 1))
 
         q_score = float(item.get("quality_score") or 1.0)
         # Взвешенный скоринг ценности: сходство * (0.7 + 0.3 * quality_score)
@@ -849,9 +849,12 @@ async def rerank_candidates(
     threshold: float = 0.85,
     circuit: DataCircuit | None = None,
     target_service_path: str | None = None,
+    service_id: int | None = None,
+    service_path_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Выполняет двухэтапную переоценку (Rerank) топ-кандидатов через локальный Cross-Encoder.
+    Выполняет двухэтапную переоценку (Rerank) топ-кандидатов через локальный Cross-Encoder
+    с сервисным бустом для точного сервиса (x1.25) или родительской ветки каталога (x1.10).
     Отбирает наиболее семантически релевантные решения (порог score >= threshold).
     Если ни один кандидат не превысил порог, возвращает пустой список (no-match).
     """
@@ -882,6 +885,15 @@ async def rerank_candidates(
     if scores is not None and len(scores) == len(candidates):
         for candidate, raw_score in zip(candidates, scores):
             norm_score = normalize_rerank_score(raw_score)
+
+            # Сервисный буст реранкера (точный сервис +25% к логистической уверенности, ветка +10%)
+            cand_sid = candidate.get("service_id")
+            cand_path_ids = set(candidate.get("service_path_ids") or [])
+            if service_id and cand_sid == service_id:
+                norm_score = min(1.0, round(norm_score * 1.25, 4))
+            elif service_path_ids and cand_path_ids.intersection(service_path_ids):
+                norm_score = min(1.0, round(norm_score * 1.10, 4))
+
             candidate["rerank_score"] = norm_score
             candidate["similarity_pct"] = round(norm_score * 100.0, 1)
             candidate["search_type"] = "hybrid_reranked"
@@ -1031,6 +1043,8 @@ async def search_knowledge_base(
                     threshold=rerank_threshold,
                     circuit=eval_circuit,
                     target_service_path=service_path,
+                    service_id=service_id,
+                    service_path_ids=service_path_ids,
                 )
                 final_matches = reranked
             else:

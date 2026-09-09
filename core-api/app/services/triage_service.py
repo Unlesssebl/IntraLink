@@ -41,6 +41,8 @@ class TriageService:
 
     _catalog_cache: dict[int, dict[str, Any]] = {}
     _catalog_cache_ts: float = 0.0
+    _statuses_cache: list[dict[str, Any]] | None = None
+    _statuses_cache_ts: float = 0.0
     _EXECUTION_RULE_ACTIONS = {
         "wlan_access": {"grant_wlan", "wifi"},
         "user_creation": {"create_user"},
@@ -183,6 +185,57 @@ class TriageService:
             logger.warning("Ошибка получения справочника сервисов IntraService: %s", e)
             return cls._catalog_cache or {}
 
+    CANONICAL_STATUSES = [
+        {"id": 31, "name": "Открыта"},
+        {"id": 27, "name": "В работе"},
+        {"id": 35, "name": "Требует уточнения"},
+        {"id": 43, "name": "Обработано 1-й линией"},
+        {"id": 29, "name": "Выполнена"},
+        {"id": 30, "name": "Отменена"},
+        {"id": 28, "name": "Закрыта"},
+    ]
+
+    @classmethod
+    async def get_all_statuses(cls, service_auth_b64: str) -> list[dict[str, Any]]:
+        """Кэширует справочник статусов IntraService с каноническим фоллбеком."""
+        now = time.monotonic()
+        if cls._statuses_cache and (now - cls._statuses_cache_ts < 300.0):
+            return cls._statuses_cache
+        try:
+            raw = await intraservice.get_statuses(service_auth_b64) or []
+            items = []
+            if isinstance(raw, list):
+                items = [s for s in raw if isinstance(s, dict)]
+            elif isinstance(raw, dict) and "TaskStatuses" in raw:
+                items = [s for s in raw["TaskStatuses"] if isinstance(s, dict)]
+
+            result: list[dict[str, Any]] = []
+            seen_ids: set[int] = set()
+            for s in items:
+                sid = s.get("Id") if s.get("Id") is not None else s.get("id")
+                sname = s.get("Name") if s.get("Name") is not None else s.get("name")
+                if sid is not None and sname:
+                    try:
+                        int_id = int(sid)
+                    except (TypeError, ValueError):
+                        continue
+                    seen_ids.add(int_id)
+                    result.append({"id": int_id, "name": str(sname).strip()})
+
+            for st in cls.CANONICAL_STATUSES:
+                if st["id"] not in seen_ids:
+                    result.append(st)
+                    seen_ids.add(st["id"])
+
+            if result:
+                cls._statuses_cache = result
+                cls._statuses_cache_ts = now
+                return cls._statuses_cache
+        except Exception as e:
+            logger.warning("Ошибка получения справочника статусов IntraService: %s", e)
+
+        return cls.CANONICAL_STATUSES
+
     @classmethod
     async def prepare_triage_batch(
         cls,
@@ -197,17 +250,15 @@ class TriageService:
         include_rag: bool = False,
         operator_id: str | None = None,
         compute_recommendations: bool = False,
+        include_closed: bool = True,
     ) -> dict[str, Any]:
         """
         Возвращает подготовленную пачку заявок с авто-подбором шаблонов Rule Engine,
         детекцией дубликатов, семантическим RAG контекстом и телеметрией 0ms.
         """
 
-        # IntraService не возвращает total после нормализации ответа, поэтому
-        # забираем максимально допустимую страницу. Иначе page > 8 при
-        # стандартном limit=5 ложно выглядела пустой, а дедупликация работала
-        # только на первых 40 заявках.
-        fetch_limit = 500
+        # Забираем максимально допустимую порцию заявок (до 2000 по спецификации IntraService API)
+        fetch_limit = 2000
         tasks = await intraservice.get_tasks_by_filter(
             auth_b64=service_auth_b64,
             filter_id=filter_id,
@@ -224,7 +275,7 @@ class TriageService:
                 "duplicates": [],
             }
 
-        # Исключаем закрытые (29, 30) и пропущенные в смене
+        # Фильтруем пропущенные в смене (если include_skipped=False) и закрытые (если include_closed=False)
         skipped_ids = (
             set()
             if include_skipped
@@ -233,14 +284,20 @@ class TriageService:
         active_tasks = [
             t
             for t in tasks
-            if t.get("Id") not in skipped_ids and t.get("StatusId") not in (29, 30)
+            if t.get("Id") not in skipped_ids and (include_closed or t.get("StatusId") not in (28, 29, 30))
         ]
 
         catalog_map = await cls.get_service_catalog_map(service_auth_b64)
 
-        # Детекция дубликатов
+        # Детекция дубликатов: запускаем по всем задачам (закрытые могут быть Master),
+        # но исключаем закрытые (28, 29, 30) из кандидатов на отмену
         detector = DuplicateDetector()
-        all_duplicates = detector.find_duplicates(active_tasks)
+        raw_duplicates = detector.find_duplicates(active_tasks)
+        task_status_map = {t.get("Id"): t.get("StatusId") for t in active_tasks}
+        all_duplicates = [
+            d for d in raw_duplicates
+            if task_status_map.get(d.get("duplicate_task_id")) not in (28, 29, 30)
+        ]
         dup_map = {d["duplicate_task_id"]: d for d in all_duplicates}
 
         # Фильтрация по разделу каталога
@@ -464,6 +521,7 @@ class TriageService:
                 for k, v in sorted(ROOT_SERVICES.items())
             ],
             "services_catalog": list(catalog_map.values()),
+            "statuses": await cls.get_all_statuses(service_auth_b64),
             "is_truncated": len(tasks) >= fetch_limit,
         }
 
@@ -951,7 +1009,7 @@ class TriageService:
             page=1,
             page_size=max(limit * 5, 50),
         )
-        active_tasks = [t for t in tasks if t.get("StatusId") not in (29, 30)]
+        active_tasks = [t for t in tasks if t.get("StatusId") not in (28, 29, 30)]
         detector = DuplicateDetector()
         duplicates = detector.find_duplicates(active_tasks)
         return duplicates[:limit]

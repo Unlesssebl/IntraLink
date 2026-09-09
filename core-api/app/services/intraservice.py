@@ -399,33 +399,55 @@ async def get_tasks_by_filter(
     auth_b64: str,
     filter_id: int,
     page: int = 1,
-    page_size: int = 50,
+    page_size: int = 2000,
     service_ids: list[int] | None = None,
+    fetch_all_pages: bool = True,
+    max_pages: int = 3,
 ) -> list[dict[str, Any]]:
     """
     Получает список задач по ID фильтра очереди IntraService с обогащением кастомными полями.
+    Поддерживает обход Paginator для получения полного среза очереди (до 2000 на страницу).
     """
-    params = {
+    # Для выборки очереди используем оптимизированный набор include (без тяжелых attachments/comments)
+    base_params: dict[str, str] = {
         "filterid": str(filter_id),
-        "include": "status,customfields,service,comments,attachments",
-        "pagesize": str(page_size),
-        "page": str(page),
+        "include": "status,customfields,service",
+        "pagesize": str(min(page_size, 2000)),
     }
     if service_ids:
         s_ids_str = ",".join(str(s) for s in service_ids)
-        params["ServiceIds"] = s_ids_str
-        params["serviceids"] = s_ids_str
+        base_params["ServiceIds"] = s_ids_str
+        base_params["serviceids"] = s_ids_str
 
-    res = await _make_request(
-        endpoint="task", method="GET", auth_b64=auth_b64, params=params
-    )
-    tasks = []
-    if isinstance(res, dict):
-        tasks = res.get("Tasks", [])
-    elif isinstance(res, list):
-        tasks = res
+    current_page = page
+    all_raw_tasks: list[dict[str, Any]] = []
 
-    return [enrich_task_data(t) for t in tasks if t and isinstance(t, dict)]
+    while True:
+        params = dict(base_params)
+        params["page"] = str(current_page)
+        res = await _make_request(
+            endpoint="task", method="GET", auth_b64=auth_b64, params=params
+        )
+        page_tasks: list[dict[str, Any]] = []
+        paginator: dict[str, Any] = {}
+        if isinstance(res, dict):
+            page_tasks = res.get("Tasks", []) or []
+            paginator = res.get("Paginator", {}) or {}
+        elif isinstance(res, list):
+            page_tasks = res
+
+        all_raw_tasks.extend(page_tasks)
+
+        if not fetch_all_pages:
+            break
+
+        total_pages = int(paginator.get("PageCount") or 1)
+        if current_page >= total_pages or current_page >= (page + max_pages - 1) or not page_tasks:
+            break
+
+        current_page += 1
+
+    return [enrich_task_data(t) for t in all_raw_tasks if t and isinstance(t, dict)]
 
 
 async def download_attachment_file(
@@ -515,6 +537,22 @@ async def add_task_expenses(auth_b64: str, task_id: int, minutes: int, user_id: 
         json_data=payload,
     )
     return res is not None
+
+
+async def get_statuses(auth_b64: str) -> list[dict[str, Any]] | None:
+    """
+    Получает справочник статусов заявок из IntraService (/api/taskstatus).
+    """
+    res = await _make_request(
+        endpoint="taskstatus",
+        method="GET",
+        auth_b64=auth_b64,
+    )
+    if isinstance(res, list):
+        return [s for s in res if isinstance(s, dict)]
+    elif isinstance(res, dict) and "TaskStatuses" in res:
+        return [s for s in res["TaskStatuses"] if isinstance(s, dict)]
+    return res if isinstance(res, list) else []
 
 
 async def get_tasks_by_status(

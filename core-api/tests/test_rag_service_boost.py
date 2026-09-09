@@ -202,3 +202,20 @@ async def test_backfill_kb_service_paths(async_db_session: AsyncSession):
         rec = await async_db_session.get(TaskKnowledgeBase, 301)
         assert rec.service_path == "ИТ > Доступ > Учетные записи"
         assert rec.service_path_ids == [1, 10, 45]
+
+
+@pytest.mark.asyncio
+async def test_reciprocal_rank_fusion_boost_magnitude():
+    """Проверяет точный приоритетный коэффициент x1.75 для точного сервиса и x1.35 для ветки каталога."""
+    dense = [{"task_id": 1, "service_id": 100, "service_path_ids": [10, 100], "quality_score": 1.0, "rank": 1}]
+    sparse = [{"task_id": 1, "service_id": 100, "service_path_ids": [10, 100], "quality_score": 1.0, "sparse_score": 5.0, "rank": 1}]
+
+    fused_plain = reciprocal_rank_fusion(dense, sparse, limit=1)
+    base_score = fused_plain[0]["rrf_score"]
+
+    fused_exact = reciprocal_rank_fusion(dense, sparse, limit=1, service_id=100)
+    assert round(fused_exact[0]["rrf_score"] / base_score, 2) == 1.75
+
+    fused_branch = reciprocal_rank_fusion(dense, sparse, limit=1, service_id=999, service_path_ids=[10])
+    assert round(fused_branch[0]["rrf_score"] / base_score, 2) == 1.35
+

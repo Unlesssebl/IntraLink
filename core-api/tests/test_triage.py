@@ -6,6 +6,7 @@ from app.config import settings
 from app.database.db import get_db
 from app.main import app
 from app.routers.deps import get_service_auth_b64
+from app.services.triage_service import TriageService
 
 HEADERS = {"X-Bot-Api-Key": settings.BOT_API_KEY or "test-api-key"}
 
@@ -38,7 +39,7 @@ async def test_get_triage_services():
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/v1/triage/services", headers=HEADERS)
+        resp = await client.get("/api/v2/triage/services", headers=HEADERS)
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
@@ -51,7 +52,7 @@ async def test_get_triage_templates():
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/v1/triage/templates", headers=HEADERS)
+        resp = await client.get("/api/v2/triage/templates", headers=HEADERS)
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, dict)
@@ -70,7 +71,7 @@ async def test_session_skip_and_reset():
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp_skip = await client.post(
-                "/api/v1/triage/session/skip",
+                "/api/v2/triage/session/skip",
                 headers=HEADERS,
                 json={"task_ids": [100, 101], "reason": "skip_test"},
             )
@@ -78,7 +79,7 @@ async def test_session_skip_and_reset():
             assert resp_skip.json()["status"] == "success"
 
             resp_reset = await client.post(
-                "/api/v1/triage/session/reset", headers=HEADERS
+                "/api/v2/triage/session/reset", headers=HEADERS
             )
             assert resp_reset.status_code == 200
             assert resp_reset.json()["status"] == "success"
@@ -117,13 +118,20 @@ async def test_get_triage_batch():
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/v1/triage/batch?limit=5", headers=HEADERS)
+            resp = await client.get("/api/v2/triage/batch?limit=5", headers=HEADERS)
             assert resp.status_code == 200
             data = resp.json()
             assert data["total_open"] == 1
             assert len(data["tasks"]) == 1
             assert data["tasks"][0]["task_id"] == 139001
             assert "suggested_action" in data["tasks"][0]
+            assert "statuses" in data
+            assert len(data["statuses"]) >= 7
+            status_names = [s["name"] for s in data["statuses"]]
+            assert "Открыта" in status_names
+            assert "В работе" in status_names
+            assert "Выполнена" in status_names
+            assert "Отменена" in status_names
 
 
 @pytest.mark.asyncio
@@ -145,23 +153,16 @@ async def test_apply_triage_action():
         new_callable=AsyncMock,
         return_value=True,
     ):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post(
-                "/api/v1/triage/apply",
-                headers=HEADERS,
-                json={
-                    "task_ids": [139001],
-                    "status_id": 29,
-                    "comment": "Выполнено",
-                    "expenses": 10,
-                },
-            )
-            assert resp.status_code == 200
-            data = resp.json()
-            assert len(data["results"]) == 1
-            assert data["results"][0]["status"] == "success"
+        results = await TriageService.apply_triage_resolution(
+            service_auth_b64="bW9ja19hdXRoX2I2NA==",
+            db=AsyncMock(),
+            task_ids=[139001],
+            status_id=29,
+            comment="Выполнено",
+            expenses=10,
+        )
+        assert len(results) == 1
+        assert results[0]["status"] == "success"
 
 
 @pytest.mark.asyncio
@@ -181,7 +182,7 @@ async def test_rag_sync_endpoint():
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.post(
-                "/api/v1/triage/rag/sync",
+                "/api/v2/triage/rag/sync",
                 headers=HEADERS,
                 json={"days": 14, "limit": 20},
             )
@@ -250,7 +251,7 @@ async def test_analyze_batch_endpoint():
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.post(
-                "/api/v1/triage/analyze-batch",
+                "/api/v2/triage/analyze-batch",
                 headers=HEADERS,
                 json={"task_ids": list(range(1, 201))},
             )
@@ -265,7 +266,7 @@ async def test_analyze_batch_endpoint():
 
             # Проверка Single Flight: повторный запрос возвращает тот же активный батч
             resp_dup = await client.post(
-                "/api/v1/triage/analyze-batch",
+                "/api/v2/triage/analyze-batch",
                 headers=HEADERS,
                 json={"task_ids": [1, 2, 3]},
             )
@@ -277,7 +278,7 @@ async def test_analyze_batch_endpoint():
 
             # Проверка получения статуса батча
             resp_status = await client.get(
-                f"/api/v1/triage/analyze-batch/{batch_id}",
+                f"/api/v2/triage/analyze-batch/{batch_id}",
                 headers=HEADERS,
             )
             assert resp_status.status_code == 200
@@ -287,7 +288,7 @@ async def test_analyze_batch_endpoint():
 
             # Проверка отмены батча
             resp_cancel = await client.post(
-                f"/api/v1/triage/analyze-batch/{batch_id}/cancel",
+                f"/api/v2/triage/analyze-batch/{batch_id}/cancel",
                 headers=HEADERS,
             )
             assert resp_cancel.status_code == 200
