@@ -10,6 +10,8 @@ import {
   IconClock,
 } from '../Icons';
 
+import SmartActionBar, { type SmartAction } from './SmartActionBar';
+
 export interface TemplateItem {
   key: string;
   name: string;
@@ -48,6 +50,7 @@ export interface UnifiedActionDockProps {
   onDismissNewDraft: () => void;
   snippets?: Array<{ label: string; text: string }>;
   insertSnippet: (snippet: string) => void;
+  smartActions?: SmartAction[];
 }
 
 export default function UnifiedActionDock({
@@ -80,6 +83,7 @@ export default function UnifiedActionDock({
   onDismissNewDraft,
   snippets = [],
   insertSnippet,
+  smartActions = [],
 }: UnifiedActionDockProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
@@ -137,6 +141,11 @@ export default function UnifiedActionDock({
 
   return (
     <div className="sticky bottom-0 z-20 border-t border-neutral-200/90 bg-white/95 p-3.5 backdrop-blur-md shadow-lg dark:border-neutral-800 dark:bg-neutral-900/95 space-y-2.5">
+      {/* Dynamic Contextual Smart Action Bar */}
+      {smartActions && smartActions.length > 0 && (
+        <SmartActionBar actions={smartActions} className="-mx-3.5 -mt-3.5 mb-2.5" />
+      )}
+
       {/* Конфликт черновика при повторном AI-анализе */}
       {pendingNewAiDraft && (
         <div className="flex items-center justify-between gap-2 rounded-xl border border-purple-200 bg-purple-50 p-2.5 text-xs text-purple-900 dark:border-purple-900 dark:bg-purple-950/40 dark:text-purple-200 animate-in fade-in duration-150">

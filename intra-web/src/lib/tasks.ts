@@ -1980,7 +1980,7 @@ export function normalizeAttachmentItem(item: any, idx: number = 0) {
 
 
 
-export async function fetchDiagnostics(host: string): Promise<HostDiagnostics> {
+export async function fetchDiagnostics(host: string, includeSpecs: boolean = true): Promise<HostDiagnostics> {
 
 
 
@@ -1988,7 +1988,7 @@ export async function fetchDiagnostics(host: string): Promise<HostDiagnostics> {
 
 
 
-  return apiFetch<HostDiagnostics>(`/admin/api/diag/${encodeURIComponent(host)}`);
+  return apiFetch<HostDiagnostics>(`/admin/api/diag/${encodeURIComponent(host)}?include_specs=${includeSpecs}`);
 
 
 

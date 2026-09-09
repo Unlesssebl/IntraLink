@@ -37,6 +37,7 @@ export interface Ticket {
   ip: string;
   room?: string;
   department?: string;
+  company?: string;
   slaDeadline: Date;
   createdAt: Date;
   description: string;

@@ -38,11 +38,12 @@ async def _check_tcp_port(target: str, port: int, timeout: float = 0.8) -> bool:
     return await check_tcp_port(target, port, timeout=timeout)
 
 
-async def _check_single_host(host: str) -> dict[str, Any]:
+async def _check_single_host(host: str, include_specs: bool = True) -> dict[str, Any]:
     """
     Отказоустойчивая диагностика одиночного хоста:
     1. Резолвинг через DNS (включая corporate.loc).
     2. Одновременный опрос ICMP Ping + TCP порты SMB (445), WinRM (5985), RPC (135).
+    3. Если доступен WinRM и включен include_specs — получение паспорта железа (CPU, RAM, SSD/HDD, Uptime).
     """
     clean_host = host.strip()
     if not clean_host:
@@ -53,6 +54,7 @@ async def _check_single_host(host: str) -> dict[str, Any]:
             "smb_ok": False,
             "winrm_ok": False,
             "status_label": "🔴 Офлайн",
+            "specs": None,
         }
 
     # Делегируем в централизованный диагностический модуль
@@ -75,6 +77,14 @@ async def _check_single_host(host: str) -> dict[str, Any]:
     else:
         status_label = "🟡 Онлайн (Ping)"
 
+    specs = None
+    if is_online and winrm_ok and include_specs:
+        try:
+            from app.services.host_telemetry import collect_hardware_specs
+            specs = await collect_hardware_specs(clean_host)
+        except Exception as e_specs:
+            logger.debug("Не удалось получить specs для %s: %s", clean_host, e_specs)
+
     return {
         "host": clean_host,
         "resolved_ip": resolved_ip,
@@ -84,32 +94,33 @@ async def _check_single_host(host: str) -> dict[str, Any]:
         "winrm_ok": winrm_ok,
         "rpc_ok": rpc_ok,
         "status_label": status_label,
+        "specs": specs,
     }
 
 
-async def _check_host_ping_and_ports(host_str: str) -> dict[str, Any]:
+async def _check_host_ping_and_ports(host_str: str, include_specs: bool = True) -> dict[str, Any]:
     """
     Поддерживает как одиночные хосты, так и списки хостов через запятую/пробел/точку с запятой.
     Возвращает статус доступности рабочего места оператора в реальном времени.
     """
     if not host_str:
-        return {"is_online": False, "status_label": "Хост не указан"}
+        return {"is_online": False, "status_label": "Хост не указан", "specs": None}
 
     # Разделяем строку по запятым, точкам с запятой или пробелам
     raw_hosts = re.split(r"[,;\s]+", host_str.strip())
     hosts = [h.strip() for h in raw_hosts if h.strip()]
 
     if not hosts:
-        return {"is_online": False, "status_label": "Хост не указан"}
+        return {"is_online": False, "status_label": "Хост не указан", "specs": None}
 
     import app.routers.admin as admin
 
     # Одиночный хост
     if len(hosts) == 1:
-        return await admin._check_single_host(hosts[0])
+        return await admin._check_single_host(hosts[0], include_specs=include_specs)
 
     # Несколько хостов: параллельно опрашиваем все хосты
-    tasks = [admin._check_single_host(h) for h in hosts]
+    tasks = [admin._check_single_host(h, include_specs=include_specs) for h in hosts]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     valid_results = []
@@ -124,6 +135,7 @@ async def _check_host_ping_and_ports(host_str: str) -> dict[str, Any]:
                 "smb_ok": False,
                 "winrm_ok": False,
                 "status_label": "🔴 Сбой проверки",
+                "specs": None,
             })
 
     online_hosts = [r for r in valid_results if r["is_online"]]
@@ -146,25 +158,27 @@ async def _check_host_ping_and_ports(host_str: str) -> dict[str, Any]:
         "smb_ok": any(r.get("smb_ok") for r in valid_results),
         "winrm_ok": any(r.get("winrm_ok") for r in valid_results),
         "status_label": summary_label,
+        "specs": primary.get("specs"),
         "multiple": True,
         "hosts_results": valid_results,
     }
 
 
 @router.get("/admin/api/diag/{host}", dependencies=[Depends(require_permission("diagnostic:run"))])
-async def get_host_diagnostics(host: str):
+async def get_host_diagnostics(host: str, include_specs: bool = True):
     """
     Возвращает статус доступности рабочего места оператора в реальном времени.
     """
     clean_host = host.strip()
     now = time.monotonic()
-    if clean_host in _DIAG_CACHE:
-        ts, cached = _DIAG_CACHE[clean_host]
+    cache_key = f"{clean_host}:specs={include_specs}"
+    if cache_key in _DIAG_CACHE:
+        ts, cached = _DIAG_CACHE[cache_key]
         if now - ts < _DIAG_CACHE_TTL:
             return cached
 
     import app.routers.admin as admin
 
-    result = await admin._check_host_ping_and_ports(clean_host)
-    _DIAG_CACHE[clean_host] = (now, result)
+    result = await admin._check_host_ping_and_ports(clean_host, include_specs=include_specs)
+    _DIAG_CACHE[cache_key] = (now, result)
     return result

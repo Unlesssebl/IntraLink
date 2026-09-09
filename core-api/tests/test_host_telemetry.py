@@ -16,7 +16,9 @@ from app.main import app
 from app.routers.deps import get_service_auth_b64
 from app.services.host_telemetry import (
     collect_cim_metrics,
+    collect_hardware_specs,
     collect_host_telemetry,
+    compute_health_flags,
     extract_pc_from_task,
     fast_ping,
     format_telemetry_badge,
@@ -408,7 +410,7 @@ async def test_triage_batch_endpoint_includes_telemetry():
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
-                "/api/v1/triage/batch?limit=5", headers=HEADERS
+                "/api/v2/triage/batch?limit=5", headers=HEADERS
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -421,7 +423,7 @@ async def test_triage_batch_endpoint_includes_telemetry():
 
 @pytest.mark.asyncio
 async def test_triage_task_card_endpoint_includes_telemetry():
-    """Эндпоинт /api/v1/triage/tasks/{task_id} возвращает телеметрию хоста."""
+    """Эндпоинт /api/v2/triage/tasks/{task_id} возвращает телеметрию хоста."""
     task_mock = {
         "Id": 141011,
         "Name": "Проблема с печатью",
@@ -456,10 +458,164 @@ async def test_triage_task_card_endpoint_includes_telemetry():
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
-                "/api/v1/triage/tasks/141011", headers=HEADERS
+                "/api/v2/triage/tasks/141011", headers=HEADERS
             )
             assert resp.status_code == 200
             data = resp.json()
             assert "telemetry" in data
             assert data["telemetry"]["status"] == "ONLINE"
             assert "🖨️ Spooler: OK" in data["telemetry"]["badge"]
+
+
+# ===========================================================================
+# 6. Тесты паспорта железа (Hardware Specs & Health Flags)
+# ===========================================================================
+
+
+def test_compute_health_flags():
+    """Проверка расчета флагов рисков здоровья ПК (Health Flags)."""
+    # 1. Нормальный хост (Uptime 5 дней, RAM 16GB, SSD, Disk free 50GB / 40%)
+    normal_data = {
+        "uptime_seconds": 5 * 86400,
+        "total_ram_kb": 16 * 1024 * 1024,
+        "free_ram_kb": 8 * 1024 * 1024,
+        "drive_type": "SSD",
+    }
+    normal_disk = {"free_gb": 50.0, "free_percent": 40.0}
+    flags = compute_health_flags(normal_data, normal_disk)
+    assert not flags["flag_uptime_warning"]
+    assert not flags["flag_uptime_critical"]
+    assert not flags["flag_disk_low"]
+    assert not flags["flag_ram_low"]
+    assert not flags["flag_hdd_bottleneck"]
+
+    # 2. Uptime warning (20 дней)
+    warn_uptime_data = {**normal_data, "uptime_seconds": 20 * 86400}
+    flags_warn = compute_health_flags(warn_uptime_data, normal_disk)
+    assert flags_warn["flag_uptime_warning"]
+    assert not flags_warn["flag_uptime_critical"]
+
+    # 3. Uptime critical (45 дней)
+    crit_uptime_data = {**normal_data, "uptime_seconds": 45 * 86400}
+    flags_crit = compute_health_flags(crit_uptime_data, normal_disk)
+    assert not flags_crit["flag_uptime_warning"]
+    assert flags_crit["flag_uptime_critical"]
+
+    # 4. Low disk (< 10GB или < 10%)
+    low_disk = {"free_gb": 5.0, "free_percent": 4.5}
+    flags_disk = compute_health_flags(normal_data, low_disk)
+    assert flags_disk["flag_disk_low"]
+
+    # 5. Low RAM (< 8GB) и HDD
+    low_ram_hdd = {
+        "uptime_seconds": 86400,
+        "total_ram_kb": 4 * 1024 * 1024,
+        "free_ram_kb": 512 * 1024,
+        "drive_type": "HDD",
+    }
+    flags_low_ram = compute_health_flags(low_ram_hdd, normal_disk)
+    assert flags_low_ram["flag_ram_low"]
+    assert flags_low_ram["flag_hdd_bottleneck"]
+
+
+@pytest.mark.asyncio
+async def test_collect_cim_metrics_specs_parsed():
+    """Проверка формирования specs в collect_cim_metrics."""
+    fake_cim = {
+        "success": True,
+        "data": {
+            "disk_total": 256 * 1024**3,
+            "disk_free": 120 * 1024**3,
+            "drive_type": "SSD",
+            "spooler": "Running",
+            "onec": "None",
+            "user": "CORP\\ivanov.ii",
+            "manufacturer": "HP",
+            "model": "ProDesk 400 G6",
+            "cpu_name": "Intel Core i5-10500",
+            "cpu_cores": 6,
+            "cpu_threads": 12,
+            "total_ram_kb": 16 * 1024 * 1024,
+            "free_ram_kb": 10 * 1024 * 1024,
+            "boot_time": "2026-09-01T08:00:00",
+            "uptime_seconds": 8 * 86400 + 3600,
+            "os_caption": "Microsoft Windows 10 Pro",
+            "os_arch": "64-bit",
+        },
+    }
+    with patch(
+        "app.services.host_telemetry.run_cim_winrm_metrics_sync",
+        return_value=fake_cim,
+    ):
+        res = await collect_cim_metrics("NTEMW0144", timeout_sec=5)
+        assert res["ok"] is True
+        specs = res.get("specs")
+        assert specs is not None
+        assert specs["pc_name"] == "NTEMW0144"
+        assert specs["cpu_name"] == "Intel Core i5-10500"
+        assert specs["cpu_cores"] == 6
+        assert specs["total_ram_gb"] == 16.0
+        assert specs["disk_type"] == "SSD"
+        assert specs["uptime_days"] == 8
+        assert specs["logged_in_user"] == "ivanov.ii"
+        assert specs["flag_uptime_critical"] is False
+        assert specs["flag_disk_low"] is False
+
+
+@pytest.mark.asyncio
+async def test_collect_hardware_specs_with_cache():
+    """Проверка чтения паспорта железа из кэша Redis."""
+    redis_mock = AsyncMock()
+    cached_specs = {
+        "pc_name": "NTEMW0144",
+        "cpu_name": "Intel Core i5",
+        "total_ram_gb": 16.0,
+        "disk_type": "SSD",
+        "uptime_days": 3,
+    }
+    redis_mock.get.return_value = json_dumps(cached_specs)
+
+    specs = await collect_hardware_specs(
+        "NTEMW0144", use_cache=True, redis_client=redis_mock
+    )
+    assert specs == cached_specs
+    redis_mock.get.assert_called_once_with("diag:specs:NTEMW0144")
+
+
+@pytest.mark.asyncio
+async def test_admin_diag_returns_specs():
+    """Проверка возврата specs через _check_single_host."""
+    from app.routers.admin.diag import _check_single_host
+
+    mock_diag_res = {
+        "host": "NTEMW0144",
+        "resolved_ip": "10.244.1.50",
+        "is_online": True,
+        "avg_rtt": "2ms",
+        "smb_ok": True,
+        "winrm_ok": True,
+        "rpc_ok": True,
+    }
+    mock_specs = {
+        "pc_name": "NTEMW0144",
+        "cpu_name": "Intel Core i7",
+        "total_ram_gb": 32.0,
+        "disk_type": "SSD",
+        "uptime_days": 2,
+    }
+
+    with patch(
+        "app.routers.admin.diag.run_single_host_diag",
+        new_callable=AsyncMock,
+        return_value=mock_diag_res,
+    ), patch(
+        "app.services.host_telemetry.collect_hardware_specs",
+        new_callable=AsyncMock,
+        return_value=mock_specs,
+    ):
+        res = await _check_single_host("NTEMW0144", include_specs=True)
+        assert res["is_online"] is True
+        assert res["winrm_ok"] is True
+        assert res["specs"] == mock_specs
+
+

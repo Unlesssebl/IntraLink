@@ -324,11 +324,42 @@ async def subnet_rate_limit(
 # ---------------------------------------------------------------------------
 
 
+def compute_health_flags(data: dict[str, Any], disk_info: dict[str, Any] | None = None) -> dict[str, bool]:
+    """
+    Вычисляет предупреждающие флаги здоровья рабочей станции (Health Flags).
+    """
+    uptime_sec = data.get("uptime_seconds") or 0
+    uptime_days = int(uptime_sec // 86400)
+
+    total_ram_kb = data.get("total_ram_kb") or 0
+    free_ram_kb = data.get("free_ram_kb") or 0
+    total_ram_gb = (total_ram_kb / (1024 * 1024)) if total_ram_kb else 0
+    ram_used_pct = ((total_ram_kb - free_ram_kb) / total_ram_kb * 100) if total_ram_kb > 0 else 0
+
+    disk_free_gb = disk_info.get("free_gb") if disk_info else None
+    disk_free_pct = disk_info.get("free_percent") if disk_info else None
+
+    drive_type = str(data.get("drive_type") or "").strip().upper()
+
+    return {
+        "flag_uptime_warning": 14 <= uptime_days < 30,
+        "flag_uptime_critical": uptime_days >= 30,
+        "flag_disk_low": (disk_free_gb is not None and disk_free_gb < 10.0) or (disk_free_pct is not None and disk_free_pct < 10.0),
+        "flag_ram_low": (0 < total_ram_gb < 7.5) or ram_used_pct > 90.0,
+        "flag_hdd_bottleneck": "HDD" in drive_type,
+    }
+
+
 def run_cim_winrm_metrics_sync(
     target_pc: str, timeout_sec: int = 6
 ) -> dict[str, Any]:
     """
-    Синхронный сбор системных метрик через CIM / WinRM (диск C:, Spooler, активный юзер).
+    Синхронный сбор системных метрик через CIM / WinRM:
+    - Процессор (модель, ядра, потоки)
+    - Оперативная память (всего, свободно, процент занятости)
+    - Дисковая подсистема (C: размер/свободно, тип SSD/HDD)
+    - ОС и Uptime (время с последней загрузки, архитектура)
+    - Модель ПК и системные службы (Spooler, 1C)
     Использует Invoke-Command с таймаутом и безопасным JSON-выводом.
     """
     ps_script = f"""
@@ -338,14 +369,37 @@ def run_cim_winrm_metrics_sync(
             $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" | Select-Object Size,FreeSpace
             $spooler = Get-Service -Name Spooler -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status
             $one_c = Get-Service -Name '*1C*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status
-            $user = (Get-CimInstance Win32_ComputerSystem).UserName
+            $cs = Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer, Model, UserName
+
+            # CPU
+            $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed
+
+            # RAM & OS Uptime
+            $os = Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize, FreePhysicalMemory, LastBootUpTime, Caption, OSArchitecture
+            $uptimeSec = if ($os.LastBootUpTime) {{ [int]((Get-Date) - $os.LastBootUpTime).TotalSeconds }} else {{ 0 }}
+
+            # Drive type (SSD / HDD)
+            $physDisk = Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object DeviceId -eq 0 | Select-Object -First 1
+            $mediaType = if ($physDisk -and $physDisk.MediaType) {{ $physDisk.MediaType.ToString() }} else {{ 'Unknown' }}
 
             [PSCustomObject]@{{
                 DiskSize = $disk.Size
                 DiskFree = $disk.FreeSpace
+                DriveType = $mediaType
                 SpoolerStatus = if ($spooler) {{ $spooler.ToString() }} else {{ 'NotInstalled' }}
                 OneCStatus = if ($one_c) {{ $one_c.ToString() }} else {{ 'None' }}
-                ActiveUser = $user
+                ActiveUser = $cs.UserName
+                Manufacturer = $cs.Manufacturer
+                Model = $cs.Model
+                CpuName = $cpu.Name
+                CpuCores = $cpu.NumberOfCores
+                CpuThreads = $cpu.NumberOfLogicalProcessors
+                TotalRamKB = $os.TotalVisibleMemorySize
+                FreeRamKB = $os.FreePhysicalMemory
+                BootTime = if ($os.LastBootUpTime) {{ $os.LastBootUpTime.ToString("yyyy-MM-ddTHH:mm:ss") }} else {{ $null }}
+                UptimeSeconds = $uptimeSec
+                OsCaption = $os.Caption
+                OsArch = $os.OSArchitecture
             }}
         }} -ErrorAction Stop
 
@@ -354,9 +408,21 @@ def run_cim_winrm_metrics_sync(
             data = @{{
                 disk_total = $res.DiskSize
                 disk_free = $res.DiskFree
+                drive_type = $res.DriveType
                 spooler = $res.SpoolerStatus
                 onec = $res.OneCStatus
                 user = $res.ActiveUser
+                manufacturer = $res.Manufacturer
+                model = $res.Model
+                cpu_name = $res.CpuName
+                cpu_cores = $res.CpuCores
+                cpu_threads = $res.CpuThreads
+                total_ram_kb = $res.TotalRamKB
+                free_ram_kb = $res.FreeRamKB
+                boot_time = $res.BootTime
+                uptime_seconds = $res.UptimeSeconds
+                os_caption = $res.OsCaption
+                os_arch = $res.OsArch
             }}
         }})
     }} catch {{
@@ -394,7 +460,7 @@ async def collect_cim_metrics(
     target_pc: str, timeout_sec: int = 6
 ) -> dict[str, Any]:
     """
-    Асинхронная обертка сбора CIM метрик через пул потоков.
+    Асинхронная обертка сбора CIM метрик через пул потоков с расчетом паспорта железа и рисков.
     """
     try:
         raw_res = await asyncio.to_thread(
@@ -407,6 +473,7 @@ async def collect_cim_metrics(
                 "disk_c": None,
                 "services": {},
                 "logged_in_user": None,
+                "specs": None,
             }
 
         data = raw_res.get("data") or {}
@@ -434,11 +501,56 @@ async def collect_cim_metrics(
         if user and "\\" in user:
             user = user.split("\\")[-1]
 
+        # Расчет развернутого паспорта железа (Hardware Specs)
+        total_ram_kb = data.get("total_ram_kb") or 0
+        free_ram_kb = data.get("free_ram_kb") or 0
+        total_ram_gb = round(total_ram_kb / (1024 * 1024), 1) if total_ram_kb else None
+        free_ram_gb = round(free_ram_kb / (1024 * 1024), 1) if free_ram_kb else None
+        ram_used_pct = (
+            round(((total_ram_kb - free_ram_kb) / total_ram_kb * 100), 1)
+            if (total_ram_kb and total_ram_kb > 0)
+            else None
+        )
+
+        uptime_sec = data.get("uptime_seconds") or 0
+        uptime_days = int(uptime_sec // 86400)
+        uptime_hours = int((uptime_sec % 86400) // 3600)
+
+        raw_drive_type = str(data.get("drive_type") or "Unknown").strip()
+        drive_type = raw_drive_type.upper() if raw_drive_type.upper() in {"SSD", "HDD"} else "Unknown"
+
+        health_flags = compute_health_flags(data, disk_info)
+
+        specs_info = {
+            "pc_name": target_pc,
+            "manufacturer": data.get("manufacturer"),
+            "model": data.get("model"),
+            "cpu_name": data.get("cpu_name"),
+            "cpu_cores": data.get("cpu_cores"),
+            "cpu_threads": data.get("cpu_threads"),
+            "total_ram_gb": total_ram_gb,
+            "free_ram_gb": free_ram_gb,
+            "ram_used_percent": ram_used_pct,
+            "disk_c_total_gb": disk_info.get("total_gb") if disk_info else None,
+            "disk_c_free_gb": disk_info.get("free_gb") if disk_info else None,
+            "disk_c_free_percent": disk_info.get("free_percent") if disk_info else None,
+            "disk_type": drive_type,
+            "uptime_days": uptime_days,
+            "uptime_hours": uptime_hours,
+            "uptime_seconds": uptime_sec,
+            "boot_time_iso": data.get("boot_time"),
+            "os_caption": data.get("os_caption"),
+            "os_arch": data.get("os_arch"),
+            "logged_in_user": user,
+            **health_flags,
+        }
+
         return {
             "ok": True,
             "disk_c": disk_info,
             "services": services,
             "logged_in_user": user,
+            "specs": specs_info,
         }
     except Exception as e:
         logger.debug("Ошибка выполнения CIM метрик для %s: %s", target_pc, e)
@@ -448,6 +560,7 @@ async def collect_cim_metrics(
             "disk_c": None,
             "services": {},
             "logged_in_user": None,
+            "specs": None,
         }
 
 
@@ -546,6 +659,7 @@ async def collect_host_telemetry(
             "disk_c": None,
             "services": {},
             "logged_in_user": None,
+            "specs": None,
             "badge": "[Хост: ⚪ Не указан в заявке]",
             "collected_at": now_utc,
             "cached": False,
@@ -659,6 +773,7 @@ async def collect_host_telemetry(
                     "disk_c": None,
                     "services": {},
                     "logged_in_user": None,
+                    "specs": None,
                     "badge": f"[{canonical_pc}: 🔴 Оффлайн (Ping timeout)]",
                     "collected_at": now_utc,
                     "cached": False,
@@ -685,6 +800,7 @@ async def collect_host_telemetry(
             disk_c = None
             services = {}
             logged_in_user = None
+            specs = None
 
             if winrm_ok:
                 try:
@@ -698,6 +814,7 @@ async def collect_host_telemetry(
                             disk_c = cim_data.get("disk_c")
                             services = cim_data.get("services") or {}
                             logged_in_user = cim_data.get("logged_in_user")
+                            specs = cim_data.get("specs")
                 except HostConcurrencyLockError:
                     logger.debug(
                         "Хост %s занят другой сессией, сбор CIM пропущен",
@@ -731,6 +848,7 @@ async def collect_host_telemetry(
                 "disk_c": disk_c,
                 "services": services,
                 "logged_in_user": logged_in_user,
+                "specs": specs,
                 "badge": "",
                 "collected_at": now_utc,
                 "cached": False,
@@ -751,6 +869,12 @@ async def collect_host_telemetry(
                         json_dumps(result),
                         ex=TELEMETRY_CACHE_TTL_SEC,
                     )
+                    if specs:
+                        await r.set(
+                            f"diag:specs:{canonical_pc}",
+                            json_dumps(specs),
+                            ex=900,
+                        )
                 except Exception as e_save:
                     logger.debug(
                         "Ошибка сохранения телеметрии в Redis для %s: %s",
@@ -759,6 +883,54 @@ async def collect_host_telemetry(
                     )
 
             return result
+
+
+async def collect_hardware_specs(
+    pc_name: str,
+    use_cache: bool = True,
+    redis_client: Any = None,
+) -> dict[str, Any] | None:
+    """
+    Получает паспорт железа ПК (из кэша diag:specs:{canonical_pc} или путем сбора CIM).
+    """
+    norm = normalize_pc_name(pc_name)
+    canonical_pc = norm.upper() if norm else str(pc_name).strip().upper()
+    if not canonical_pc:
+        return None
+
+    r = redis_client if redis_client is not None else get_redis_client()
+    if use_cache and r:
+        try:
+            cached = await r.get(f"diag:specs:{canonical_pc}")
+            if cached:
+                return json_loads(cached)
+            cached_host = await r.get(f"diag:host:{canonical_pc}")
+            if cached_host:
+                parsed = json_loads(cached_host)
+                if isinstance(parsed, dict) and parsed.get("specs"):
+                    return parsed["specs"]
+        except Exception as e:
+            logger.debug("Ошибка чтения кэша specs для %s: %s", canonical_pc, e)
+
+    probe_ok = await probe_tcp_port(canonical_pc, 5985, timeout_sec=TCP_PROBE_TIMEOUT_SEC)
+    if not probe_ok:
+        return None
+
+    try:
+        async with host_concurrency_lock(canonical_pc, ttl=15, redis_client=r):
+            cim_data = await collect_cim_metrics(canonical_pc, timeout_sec=5)
+            if cim_data.get("ok") and cim_data.get("specs"):
+                specs = cim_data["specs"]
+                if r:
+                    try:
+                        await r.set(f"diag:specs:{canonical_pc}", json_dumps(specs), ex=900)
+                    except Exception:
+                        pass
+                return specs
+    except Exception as e:
+        logger.debug("Ошибка получения specs для %s: %s", canonical_pc, e)
+
+    return None
 
 
 # ---------------------------------------------------------------------------

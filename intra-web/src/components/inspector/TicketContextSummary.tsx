@@ -28,6 +28,7 @@ interface TicketContextSummaryProps {
   diagStatus: Record<string, DiagStatus>;
   onRunDiag: (host?: string) => void;
   onToast: (t: { type: 'success' | 'error' | 'warning' | 'info'; message: string }) => void;
+  hideHostSection?: boolean;
 }
 
 export function DiagBadge({ status, label }: { status: DiagStatus; label?: string }) {
@@ -55,6 +56,7 @@ export default function TicketContextSummary({
   diagStatus,
   onRunDiag,
   onToast,
+  hideHostSection = false,
 }: TicketContextSummaryProps) {
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [showWinRmAssistant, setShowWinRmAssistant] = useState(false);
@@ -188,7 +190,7 @@ export default function TicketContextSummary({
         )}
 
         {/* Оборудование: рабочие станции, сетевой статус и быстрое подключение */}
-        {hostList.length > 0 && (
+        {!hideHostSection && hostList.length > 0 && (
           <div className="rounded-xl border border-neutral-200/80 bg-neutral-50/50 p-3 dark:border-neutral-800 dark:bg-neutral-950/40 space-y-2.5">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">

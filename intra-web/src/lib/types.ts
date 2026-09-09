@@ -1,3 +1,31 @@
+export interface HardwareSpecs {
+  pc_name?: string;
+  manufacturer?: string | null;
+  model?: string | null;
+  cpu_name?: string | null;
+  cpu_cores?: number | null;
+  cpu_threads?: number | null;
+  total_ram_gb?: number | null;
+  free_ram_gb?: number | null;
+  ram_used_percent?: number | null;
+  disk_c_total_gb?: number | null;
+  disk_c_free_gb?: number | null;
+  disk_c_free_percent?: number | null;
+  disk_type?: 'SSD' | 'HDD' | 'Unknown';
+  uptime_days?: number;
+  uptime_hours?: number;
+  uptime_seconds?: number;
+  boot_time_iso?: string | null;
+  os_caption?: string | null;
+  os_arch?: string | null;
+  logged_in_user?: string | null;
+  flag_uptime_warning?: boolean;
+  flag_uptime_critical?: boolean;
+  flag_disk_low?: boolean;
+  flag_ram_low?: boolean;
+  flag_hdd_bottleneck?: boolean;
+}
+
 export interface SingleHostDiagnostics {
   host: string;
   resolved_ip?: string | null;
@@ -7,6 +35,7 @@ export interface SingleHostDiagnostics {
   winrm_ok?: boolean;
   rpc_ok?: boolean;
   status_label?: string;
+  specs?: HardwareSpecs | null;
 }
 
 export interface HostDiagnostics {
@@ -19,6 +48,7 @@ export interface HostDiagnostics {
   rpc_ok?: boolean;
   loading?: boolean;
   status_label?: string;
+  specs?: HardwareSpecs | null;
   hosts?: SingleHostDiagnostics[];
 }
 
@@ -141,6 +171,9 @@ export interface TaskDetails {
   phone: string;
   room: string;
   department: string;
+  company?: string;
+  custom_fields?: Record<string, string>;
+  rag_results?: any[];
   comments: TaskComment[];
   attachments: TaskAttachment[];
   cls_info: TaskClassification;
@@ -231,6 +264,8 @@ export interface DecisionEnvelope {
   evidence_refs: string[];
   confidence: number;
   status: string;
+  rule?: { rule_type?: string; scenario_key?: string; target_service?: string };
+  facts?: Record<string, any>;
 }
 
 export interface FactOverridePayload {

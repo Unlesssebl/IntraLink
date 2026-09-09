@@ -8,13 +8,23 @@ import {
   getCachedTaskDetails,
   setCachedTaskDetails,
 } from '../lib/tasks';
-import type { TaskDetails, TicketSummaryResult } from '../lib/types';
+import type { TaskDetails, TicketSummaryResult, HostDiagnostics } from '../lib/types';
 import InspectorHeader from './inspector/InspectorHeader';
 import AttachmentsSection from './inspector/AttachmentsSection';
 import CommentsTimeline from './inspector/CommentsTimeline';
 import UnifiedDecisionPanel from './inspector/UnifiedDecisionPanel';
 import UnifiedActionDock from './inspector/UnifiedActionDock';
 import TicketContextSummary from './inspector/TicketContextSummary';
+import InspectorWorkspace from './inspector/InspectorWorkspace';
+import type { SmartAction } from './inspector/SmartActionBar';
+import {
+  IconRefresh,
+  IconClock,
+  IconLock,
+  IconUser,
+  IconRedirect,
+  IconSparkles,
+} from './Icons';
 import { type DiagStatus } from './inspector/DiagnosticsSection';
 import { useUnifiedDecision } from './inspector/useUnifiedDecision';
 import { filterMeaningfulComments } from './inspector/commentsUtils';
@@ -49,6 +59,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     smb: 'idle',
     winrm: 'idle',
   });
+  const [hostDiagnostics, setHostDiagnostics] = useState<HostDiagnostics | null>(null);
+  const [loadingDiag, setLoadingDiag] = useState<boolean>(false);
 
   // AI Summary State
   const [aiSummary, setAiSummary] = useState<TicketSummaryResult | null>(null);
@@ -143,6 +155,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     if (!rawId) {
       setDetails(null);
       setLoadingDetails(false);
+      setHostDiagnostics(null);
+      setDiagStatus({ ping: 'idle', smb: 'idle', winrm: 'idle' });
       return;
     }
 
@@ -150,15 +164,52 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     if (cached) {
       setDetails(cached);
       setLoadingDetails(false);
+      if (cached.telemetry) {
+        const t = cached.telemetry;
+        setHostDiagnostics({
+          host: t.canonical_name || t.pc_name,
+          resolved_ip: t.resolved_ip,
+          is_online: t.status === 'ONLINE',
+          avg_rtt: t.avg_rtt,
+          smb_ok: t.smb_port_445,
+          winrm_ok: t.winrm_port_5985,
+          specs: t.specs,
+        });
+      }
     } else {
       setDetails(null);
       setLoadingDetails(true);
+      setHostDiagnostics(null);
+      setDiagStatus({ ping: 'idle', smb: 'idle', winrm: 'idle' });
     }
     setAiSummary(null);
 
     fetchTaskDetails(rawId)
       .then((data) => {
-        if (!cancelled) setDetails(data);
+        if (!cancelled && data) {
+          setDetails(data);
+          if (data.telemetry) {
+            const t = data.telemetry;
+            setHostDiagnostics({
+              host: t.canonical_name || t.pc_name,
+              resolved_ip: t.resolved_ip,
+              is_online: t.status === 'ONLINE',
+              avg_rtt: t.avg_rtt,
+              smb_ok: t.smb_port_445,
+              winrm_ok: t.winrm_port_5985,
+              specs: t.specs,
+            });
+            if (t.status === 'ONLINE') {
+              setDiagStatus({
+                ping: t.ping_ok ? 'ok' : 'fail',
+                smb: t.smb_port_445 ? 'ok' : 'fail',
+                winrm: t.winrm_port_5985 ? 'ok' : 'fail',
+              });
+            } else if (t.status === 'OFFLINE') {
+              setDiagStatus({ ping: 'fail', smb: 'fail', winrm: 'fail' });
+            }
+          }
+        }
       })
       .catch((err) => {
         if (!cancelled) console.warn('Не удалось загрузить подробности заявки:', err);
@@ -239,7 +290,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     }
   };
 
-  // Network diagnostic runner
+  // Network & hardware diagnostic runner
   const runDiag = async (targetHost?: string) => {
     const hostToTest = targetHost || effectiveHost;
     if (!hostToTest) {
@@ -248,8 +299,10 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     }
 
     setDiagStatus({ ping: 'checking', smb: 'checking', winrm: 'checking' });
+    setLoadingDiag(true);
     try {
-      const res = await fetchDiagnostics(hostToTest);
+      const res = await fetchDiagnostics(hostToTest, true);
+      setHostDiagnostics(res);
       setDiagStatus({
         ping: res.is_online ? 'ok' : 'fail',
         smb: res.smb_ok ? 'ok' : 'fail',
@@ -268,6 +321,8 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     } catch {
       setDiagStatus({ ping: 'fail', smb: 'fail', winrm: 'fail' });
       onToast({ type: 'error', message: `Ошибка диагностики хоста ${hostToTest}` });
+    } finally {
+      setLoadingDiag(false);
     }
   };
 
@@ -281,6 +336,116 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     onClose,
     onRefreshDetails: loadDetails,
   });
+
+  // Контекстные быстрые действия для полосы Smart Action Bar
+  const smartActions = useMemo<SmartAction[]>(() => {
+    const list: SmartAction[] = [];
+    const envelope = safeDetails?.decision_envelope;
+    const scenarioKey = (envelope?.rule?.scenario_key || envelope?.rule?.rule_type || '').toLowerCase();
+    const serviceName = (ticket.serviceName || '').toLowerCase();
+
+    // 1. Действия с рабочей станцией (Spooler restart, reboot)
+    if (hostList.length > 0 || scenarioKey.includes('offline') || scenarioKey.includes('hardware')) {
+      const pc = hostList[0] || effectiveHost;
+      if (pc) {
+        list.push({
+          id: 'restart_spooler',
+          label: 'Перезапустить Spooler',
+          icon: <IconRefresh size={11} />,
+          hint: `Перезапуск службы диспетчера печати на ${pc}`,
+          onClick: async () => {
+            try {
+              await navigator.clipboard.writeText(`Invoke-Command -ComputerName "${pc}" -ScriptBlock { Restart-Service Spooler -Force }`);
+              onToast({ type: 'info', message: `Команда рестарта Spooler на ${pc} скопирована` });
+            } catch {
+              onToast({ type: 'error', message: 'Не удалось скопировать команду' });
+            }
+          },
+        });
+
+        list.push({
+          id: 'reboot_pc',
+          label: 'Перезагрузить ПК',
+          icon: <IconClock size={11} />,
+          hint: `Плановая перезагрузка компьютера ${pc}`,
+          onClick: async () => {
+            try {
+              await navigator.clipboard.writeText(`Restart-Computer -ComputerName "${pc}" -Force`);
+              onToast({ type: 'info', message: `Команда перезагрузки ${pc} скопирована` });
+            } catch {
+              onToast({ type: 'error', message: 'Не удалось скопировать команду' });
+            }
+          },
+        });
+      }
+    }
+
+    // 2. Действия с учетными записями / Active Directory
+    if (scenarioKey.includes('create_user') || scenarioKey.includes('wlan') || serviceName.includes('учетн') || serviceName.includes('доступ')) {
+      const login = ticket.requesterLogin || envelope?.facts?.login;
+      if (login) {
+        list.push({
+          id: 'unlock_ad',
+          label: 'Разблокировать УЗ',
+          icon: <IconLock size={11} />,
+          hint: `Разблокировка учетной записи ${login} в Active Directory`,
+          onClick: async () => {
+            try {
+              await navigator.clipboard.writeText(`Unlock-ADAccount -Identity "${login}"`);
+              onToast({ type: 'info', message: `Команда разблокировки ${login} скопирована` });
+            } catch {
+              onToast({ type: 'error', message: 'Не удалось скопировать команду' });
+            }
+          },
+        });
+      }
+
+      list.push({
+        id: 'request_details_35',
+        label: 'Запросить данные (35)',
+        icon: <IconUser size={11} />,
+        hint: 'Перевести заявку в статус 35 (Ожидание заказчика) и запросить недостающие реквизиты',
+        onClick: () => {
+          decisionState.setSelectedStatusOverride(35);
+          const sep = decisionState.replyText.trim() ? '\n\n' : '';
+          decisionState.setReplyText(
+            `${decisionState.replyText.trim()}${sep}Здравствуйте!\nДля выполнения заявки, пожалуйста, уточните недостающие реквизиты: подразделение, кабинет и контактный телефон.`
+          );
+          onToast({ type: 'info', message: 'Выбран статус 35 и добавлен запрос реквизитов' });
+        },
+      });
+    }
+
+    // 3. Каталожный редирект
+    if (scenarioKey.includes('redirect') || envelope?.rule?.rule_type === 'redirect') {
+      list.push({
+        id: 'confirm_redirect_30',
+        label: 'Перенаправить и отменить (30)',
+        icon: <IconRedirect size={11} />,
+        hint: 'Установить статус 30 Отменена с комментарием перенаправления',
+        onClick: () => {
+          decisionState.setSelectedStatusOverride(30);
+          onToast({ type: 'info', message: 'Выбран статус 30 (Отменена для редиректа)' });
+        },
+      });
+    }
+
+    // 4. Подстановка ответа AI
+    const aiText = safeDetails?.decision_envelope?.response?.text;
+    if (aiText) {
+      list.push({
+        id: 'insert_ai_text',
+        label: 'Вставить ответ AI',
+        icon: <IconSparkles size={11} />,
+        hint: 'Подставить сформулированный AI ответ в поле ввода',
+        onClick: () => {
+          decisionState.insertSnippet(aiText);
+        },
+      });
+    }
+
+    return list;
+  }, [safeDetails, hostList, effectiveHost, ticket, decisionState, onToast]);
 
   // Быстрые сниппеты для подстановки в ответ
   const snippets = useMemo(() => {
@@ -347,6 +512,19 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                 diagStatus={diagStatus}
                 onRunDiag={runDiag}
                 onToast={onToast}
+                hideHostSection={true}
+              />
+              <InspectorWorkspace
+                ticket={ticket}
+                details={safeDetails}
+                rawId={rawId}
+                hostList={hostList}
+                diagStatus={diagStatus}
+                hostDiagnostics={hostDiagnostics}
+                loadingDiagnostics={loadingDiag}
+                onRunDiag={runDiag}
+                onToast={onToast}
+                onRefreshDetails={loadDetails}
               />
               <AttachmentsSection attachments={attachmentsList} rawId={rawId} />
               <CommentsTimeline
@@ -407,6 +585,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
               onDismissNewDraft={decisionState.dismissNewDraft}
               snippets={snippets}
               insertSnippet={decisionState.insertSnippet}
+              smartActions={smartActions}
             />
           </div>
         </div>
@@ -424,6 +603,20 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
                 diagStatus={diagStatus}
                 onRunDiag={runDiag}
                 onToast={onToast}
+                hideHostSection={true}
+              />
+
+              <InspectorWorkspace
+                ticket={ticket}
+                details={safeDetails}
+                rawId={rawId}
+                hostList={hostList}
+                diagStatus={diagStatus}
+                hostDiagnostics={hostDiagnostics}
+                loadingDiagnostics={loadingDiag}
+                onRunDiag={runDiag}
+                onToast={onToast}
+                onRefreshDetails={loadDetails}
               />
 
               <AttachmentsSection attachments={attachmentsList} rawId={rawId} />
@@ -482,6 +675,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             onDismissNewDraft={decisionState.dismissNewDraft}
             snippets={snippets}
             insertSnippet={decisionState.insertSnippet}
+            smartActions={smartActions}
           />
         </div>
       )}

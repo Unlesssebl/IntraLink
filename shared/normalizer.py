@@ -273,11 +273,14 @@ def is_valid_pc_name(name: str | None) -> bool:
 def is_valid_printer_name(name: str | None) -> bool:
     if not name:
         return False
-    norm = normalize_printer_address(name)
-    if not norm or len(norm) < 4:
+    cleaned = _strip_punct(name)
+    prefix, number = _split_prefix_and_number(cleaned)
+    if not prefix or not number:
         return False
-    upper = norm.upper()
-    return any(upper.startswith(p) for p in KNOWN_PRINTER_PREFIXES)
+    translit_prefix = _transliterate_prefix(prefix).upper()
+    if translit_prefix in KNOWN_PC_PREFIXES:
+        return False
+    return translit_prefix in KNOWN_PRINTER_PREFIXES
 
 
 def resolve_pc_candidates(raw_name: str | None, company: str = "", dept: str = "") -> list[str]:
