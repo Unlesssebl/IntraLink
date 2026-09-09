@@ -9,7 +9,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from shared.domain import FactObservation, FactSource, FactState, PersonCandidate, validate_person_candidate
-from shared.normalizer import extract_pc_names_from_text, is_valid_pc_name
+from shared.normalizer import (
+    extract_pc_names_from_text,
+    extract_printer_addresses_from_text,
+    is_valid_pc_name,
+    is_valid_printer_name,
+    normalize_printer_address,
+)
 
 from app.config import settings
 from app.services.fact_extractor import enrich_task_with_extracted_facts
@@ -31,13 +37,18 @@ IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 UNC_RE = re.compile(r"\\\\[^\s\\]+\\[^\s]+")
 PRINTER_MODEL_RE = re.compile(
     r"\b(?:HP|Canon|Kyocera|Samsung|Xerox|Epson|Brother|Ricoh|Pantum|LaserJet|ECOSYS|COMPA)"
-    r"[^,;\r\n()]{0,48}",
+    r"[^,;\r\n()]{0,96}",
     re.IGNORECASE,
 )
 
 
 def _clean_printer_model(value: str) -> str:
     value = IP_RE.sub("", value)
+    token_pattern = re.compile(r"(?i)\b([a-zа-яё]{2,6})[\s\-_]?([0-9]{2,6})\b")
+    for m in token_pattern.finditer(value):
+        norm = normalize_printer_address(f"{m.group(1)} {m.group(2)}") or normalize_printer_address(f"{m.group(1)}{m.group(2)}")
+        if norm and is_valid_printer_name(norm):
+            value = value[:m.start()] + " " + value[m.end():]
     value = re.split(r"\s+(?:к|на)\s+компьютер", value, maxsplit=1, flags=re.IGNORECASE)[0]
     value = re.split(r"\s+(?:с\s+Winscan|и\s+принтер)", value, maxsplit=1, flags=re.IGNORECASE)[0]
     return " ".join(value.strip(" .:-()\t").split())
@@ -58,12 +69,14 @@ def _printer_targets(text: str) -> list[dict[str, str | None]]:
         tail = re.split(r"[,;\r\n]", scan_text[match.end() : match.end() + 80], maxsplit=1)[0]
         ip_match = IP_RE.search(tail)
         local_context = f"{match.group(0)} {tail}"
-        connection = "usb" if re.search(r"\busb\b", local_context, re.IGNORECASE) or (wired_local and not ip_match) else (
-            "network" if ip_match else None
+        addrs = extract_printer_addresses_from_text(local_context)
+        resolved_addr = ip_match.group(0) if ip_match else (addrs[0] if addrs else None)
+        connection = "usb" if re.search(r"\busb\b", local_context, re.IGNORECASE) or (wired_local and not resolved_addr) else (
+            "network" if resolved_addr else None
         )
         target = {
             "printer_name": model,
-            "printer_address": ip_match.group(0) if ip_match else None,
+            "printer_address": resolved_addr,
             "connection_type": connection,
         }
         existing = next(
@@ -177,20 +190,74 @@ async def collect_structured(task: dict[str, Any]) -> list[FactObservation]:
     raw = ((task.get("_field_meta") or {}).get("raw") or {})
     pc_field = raw.get(str(settings.PRINTER_PC_CUSTOM_FIELD_ID)) or raw.get(settings.PRINTER_PC_CUSTOM_FIELD_ID)
     printer_field = raw.get(str(settings.PRINTER_IP_CUSTOM_FIELD_ID)) or raw.get(settings.PRINTER_IP_CUSTOM_FIELD_ID)
+    field_1104 = raw.get("1104") or raw.get(1104)
+    field_1111 = raw.get("1111") or raw.get(1111)
+
     if pc_field and is_valid_pc_name(str(pc_field).strip()):
         result.append(_observation(
             "pc_name", pc_field, source=FactSource.STRUCTURED_FIELD,
             source_ref=f"field:{settings.PRINTER_PC_CUSTOM_FIELD_ID}",
         ))
+
+    if field_1104:
+        addrs_1104 = extract_printer_addresses_from_text(str(field_1104).strip())
+        if addrs_1104:
+            result.append(_observation(
+                "printer_address",
+                addrs_1104[0],
+                source=FactSource.STRUCTURED_FIELD,
+                source_ref="field:1104",
+                evidence_span=str(field_1104).strip(),
+            ))
+
     if printer_field:
         printer_value = str(printer_field).strip()
-        field_ip = IP_RE.search(printer_value)
-        result.append(_observation(
-            "printer_address" if field_ip else "printer_name",
-            field_ip.group(0) if field_ip else printer_value,
-            source=FactSource.STRUCTURED_FIELD,
-            source_ref=f"field:{settings.PRINTER_IP_CUSTOM_FIELD_ID}",
-        ))
+        addrs = extract_printer_addresses_from_text(printer_value)
+        if addrs:
+            result.append(_observation(
+                "printer_address",
+                addrs[0],
+                source=FactSource.STRUCTURED_FIELD,
+                source_ref=f"field:{settings.PRINTER_IP_CUSTOM_FIELD_ID}",
+                evidence_span=addrs[0],
+            ))
+            clean_name = _clean_printer_model(printer_value)
+            if clean_name:
+                result.append(_observation(
+                    "printer_name",
+                    clean_name,
+                    source=FactSource.STRUCTURED_FIELD,
+                    source_ref=f"field:{settings.PRINTER_IP_CUSTOM_FIELD_ID}",
+                    evidence_span=clean_name,
+                ))
+        else:
+            result.append(_observation(
+                "printer_name",
+                printer_value,
+                source=FactSource.STRUCTURED_FIELD,
+                source_ref=f"field:{settings.PRINTER_IP_CUSTOM_FIELD_ID}",
+                evidence_span=printer_value,
+            ))
+    elif field_1111:
+        f1111_val = str(field_1111).strip()
+        addrs_1111 = extract_printer_addresses_from_text(f1111_val)
+        if addrs_1111:
+            result.append(_observation(
+                "printer_address",
+                addrs_1111[0],
+                source=FactSource.STRUCTURED_FIELD,
+                source_ref="field:1111",
+                evidence_span=addrs_1111[0],
+            ))
+        clean_1111 = _clean_printer_model(f1111_val)
+        if clean_1111:
+            result.append(_observation(
+                "printer_name",
+                clean_1111,
+                source=FactSource.STRUCTURED_FIELD,
+                source_ref="field:1111",
+                evidence_span=clean_1111,
+            ))
     raw_person: dict[str, Any] = {}
     raw_refs: dict[str, str] = {}
     for key, field_ids in PERSON_FIELD_IDS.items():
@@ -236,7 +303,18 @@ async def collect_deterministic(
         )
     ips = list(dict.fromkeys(IP_RE.findall(ticket_text)))
     ip = IP_RE.search(ticket_text)
-    if ip:
+    addrs = extract_printer_addresses_from_text(ticket_text)
+    if addrs:
+        result.append(
+            _observation(
+                "printer_address",
+                addrs[0],
+                source=FactSource.PARSER,
+                source_ref="parser:ticket_text:printer_address",
+                evidence_span=addrs[0],
+            )
+        )
+    elif ip:
         result.append(
             _observation(
                 "printer_address",
@@ -268,11 +346,11 @@ async def collect_deterministic(
         ))
     connection_type = (
         "mixed"
-        if ips and re.search(r"\busb\b", ticket_text, re.IGNORECASE)
+        if (ips or addrs) and re.search(r"\busb\b", ticket_text, re.IGNORECASE)
         else "usb"
         if re.search(r"\busb\b|локальн(?:ый|ого)\s+принтер|провод\w*\s+.*подключ", ticket_text, re.IGNORECASE)
         else "network"
-        if ip or re.search(r"сетев(?:ой|ого)\s+(?:принтер|мфу)", ticket_text, re.IGNORECASE)
+        if (ip or addrs) or re.search(r"сетев(?:ой|ого)\s+(?:принтер|мфу)", ticket_text, re.IGNORECASE)
         else None
     )
     if connection_type:
@@ -357,17 +435,29 @@ async def collect_deterministic(
                     evidence_span=comment_pcs[0],
                 )
             )
-        comment_ip = IP_RE.search(text)
-        if comment_ip:
+        comment_addrs = extract_printer_addresses_from_text(text)
+        if comment_addrs:
             result.append(
                 _observation(
                     "printer_address",
-                    comment_ip.group(0),
+                    comment_addrs[0],
                     source=FactSource.COMMENT,
-                    source_ref=f"{comment_ref}:ip",
-                    evidence_span=comment_ip.group(0),
+                    source_ref=f"{comment_ref}:printer_address",
+                    evidence_span=comment_addrs[0],
                 )
             )
+        else:
+            comment_ip = IP_RE.search(text)
+            if comment_ip:
+                result.append(
+                    _observation(
+                        "printer_address",
+                        comment_ip.group(0),
+                        source=FactSource.COMMENT,
+                        source_ref=f"{comment_ref}:ip",
+                        evidence_span=comment_ip.group(0),
+                    )
+                )
     return result
 
 
@@ -405,6 +495,7 @@ async def collect_llm(
     proposal = enriched.get("_llm_extracted_facts") or {}
     values: dict[str, Any] = {
         "pc_name": proposal.get("pc_name") or enriched.get("_extracted_pc_name"),
+        "printer_name": proposal.get("printer_name") or enriched.get("_extracted_printer_name"),
         "printer_address": proposal.get("printer_address") or enriched.get("_extracted_printer_address"),
         "file_path": proposal.get("file_path") or enriched.get("_extracted_file_path"),
         "clarification_answer": proposal.get("clarification_answer") or enriched.get("_extracted_clarification_answer"),

@@ -182,6 +182,7 @@ class DecisionEnvelope(StrictModel):
     decision_version: int = Field(default=1, ge=1)
     scenario_key: str
     scenario_version: int = Field(ge=1)
+    scenario_title: str | None = None
     facts_revision: int = Field(default=0, ge=0)
     analysis_state: Literal["succeeded", "manual_review", "system_error"] = "succeeded"
     facts_state: Literal["sufficient", "incomplete", "conflicting"] = "sufficient"
@@ -202,3 +203,82 @@ class DecisionEnvelope(StrictModel):
         "manual_review",
         "system_error",
     ] = "proposed"
+
+    @model_validator(mode="after")
+    def _populate_scenario_title(self) -> "DecisionEnvelope":
+        if not self.scenario_title and self.scenario_key:
+            self.scenario_title = get_scenario_display_name(
+                self.scenario_key, version=self.scenario_version
+            )
+        return self
+
+    @property
+    def response_draft(self) -> str:
+        return self.response.text if self.response else ""
+
+
+SCENARIO_DISPLAY_NAMES: dict[str, str] = {
+    "install_printer": "Установка принтера / МФУ",
+    "printer_installation": "Установка принтера / МФУ (legacy)",
+    "printer_hardware_service": "Сервисный ремонт оргтехники",
+    "printer_scan_failure": "Диагностика сетевого сканирования",
+    "printer_print_failure": "Устранение сбоя очереди печати",
+    "create_user": "Создание учётной записи (AD)",
+    "user_creation": "Создание учётной записи (AD legacy)",
+    "grant_wlan": "Доступ к корпоративному Wi-Fi",
+    "wlan_access": "Доступ к корпоративному Wi-Fi (legacy)",
+    "redirect": "Перенаправление в целевой сервис",
+    "service_redirect": "Перенаправление в целевой сервис (legacy)",
+    "offline_host": "Диагностика недоступного ПК",
+    "file_lock": "Снятие блокировки файла (SMB)",
+    "physical_device": "Ремонт и перемещение оборудования",
+    "hardware_repair": "Ремонт и перемещение оборудования (legacy)",
+    "rag_consultation": "Консультация по базе знаний (RAG)",
+    "duplicate_task": "Отмена заявки-дубликата",
+    "duplicate": "Отмена заявки-дубликата",
+    "consultation": "Стандартная обработка 1-й линией",
+}
+
+SCENARIO_SHORT_NAMES: dict[str, str] = {
+    "install_printer": "Установка МФУ",
+    "printer_installation": "Установка МФУ",
+    "printer_hardware_service": "Ремонт МФУ",
+    "printer_scan_failure": "Сбой сканирования",
+    "printer_print_failure": "Сбой печати",
+    "create_user": "Создание УЗ",
+    "user_creation": "Создание УЗ",
+    "grant_wlan": "Wi-Fi доступ",
+    "wlan_access": "Wi-Fi доступ",
+    "redirect": "Перенаправление",
+    "service_redirect": "Перенаправление",
+    "offline_host": "ПК офлайн",
+    "file_lock": "Блокировка файла",
+    "physical_device": "Каб. 112 (Ремонт)",
+    "hardware_repair": "Каб. 112 (Ремонт)",
+    "rag_consultation": "База знаний",
+    "duplicate_task": "Дубликат",
+    "duplicate": "Дубликат",
+    "consultation": "Консультация",
+}
+
+SUPPORTED_SCENARIO_KEYS: tuple[str, ...] = tuple(SCENARIO_DISPLAY_NAMES.keys())
+
+
+def get_scenario_display_name(
+    key: str | None,
+    version: int | None = None,
+    short: bool = False,
+) -> str:
+    """Возвращает понятное русскоязычное название сценария принятия решений."""
+    if not key:
+        return "Не определен" if not short else "—"
+    clean_key = str(key).strip()
+    source_map = SCENARIO_SHORT_NAMES if short else SCENARIO_DISPLAY_NAMES
+    name = source_map.get(clean_key)
+    if not name:
+        normalized = clean_key.replace("_", " ").replace("-", " ")
+        name = normalized.capitalize() if not short else clean_key
+    if version and version > 1 and not short:
+        return f"{name} (v{version})"
+    return name
+

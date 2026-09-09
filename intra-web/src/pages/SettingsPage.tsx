@@ -21,20 +21,8 @@ import {
   type ShadowMetricsResponse,
 } from '../lib/ticketRuns';
 import { useAuth } from '../lib/auth';
+import { SCENARIO_TITLES, SCENARIO_REGISTRY } from '../lib/scenarios';
 
-const SCENARIO_TITLES: Record<string, string> = {
-  create_user: 'Создание УЗ',
-  user_creation: 'Создание УЗ (legacy)',
-  install_printer: 'Установка принтера',
-  printer_installation: 'Установка принтера (legacy)',
-  grant_wlan: 'Доступ к корпоративному Wi-Fi',
-  redirect: 'Перенаправление сервиса',
-  offline_host: 'Диагностика недоступного ПК',
-  file_lock: 'Блокировка файла',
-  physical_device: 'Физическое устройство',
-  rag_consultation: 'RAG-консультация',
-  consultation: 'Консультация',
-};
 
 interface Props {
   theme: 'light' | 'dark';
@@ -371,14 +359,19 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
                 onChange={event => setScenarioKey(event.target.value as AutopilotScenarioKey)}
                 className="rounded border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-900 outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
               >
-                <option value="install_printer">Установка принтера</option>
-                <option value="create_user">Создание учётной записи</option>
-                <option value="grant_wlan">Доступ к Wi-Fi (WLAN)</option>
-                <option value="offline_host">Недоступный ПК</option>
-                <option value="redirect">Перенаправление</option>
-                <option value="file_lock">Блокировка файла</option>
-                <option value="physical_device">Физическое устройство</option>
-                <option value="rag_consultation">RAG-консультация</option>
+                <option value="install_printer">Установка принтера / МФУ</option>
+                <option value="printer_hardware_service">Сервисный ремонт оргтехники</option>
+                <option value="printer_scan_failure">Диагностика сетевого сканирования</option>
+                <option value="printer_print_failure">Устранение сбоя очереди печати</option>
+                <option value="create_user">Создание учётной записи (AD)</option>
+                <option value="grant_wlan">Доступ к корпоративному Wi-Fi</option>
+                <option value="offline_host">Диагностика недоступного ПК</option>
+                <option value="redirect">Перенаправление в целевой сервис</option>
+                <option value="file_lock">Снятие блокировки файла (SMB)</option>
+                <option value="physical_device">Ремонт и перемещение оборудования</option>
+                <option value="rag_consultation">Консультация по базе знаний (RAG)</option>
+                <option value="duplicate_task">Отмена заявки-дубликата</option>
+                <option value="consultation">Стандартная обработка 1-й линией</option>
               </select>
               <input
                 type="number"

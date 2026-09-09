@@ -87,16 +87,24 @@ export interface AutopilotSetting {
 }
 
 export type AutopilotScenarioKey =
-  | 'printer_installation'
-  | 'user_creation'
-  | 'create_user'
-  | 'offline_host'
-  | 'redirect'
   | 'install_printer'
+  | 'printer_installation'
+  | 'printer_hardware_service'
+  | 'printer_scan_failure'
+  | 'printer_print_failure'
+  | 'create_user'
+  | 'user_creation'
   | 'grant_wlan'
+  | 'wlan_access'
+  | 'redirect'
+  | 'service_redirect'
+  | 'offline_host'
   | 'file_lock'
   | 'physical_device'
+  | 'hardware_repair'
   | 'rag_consultation'
+  | 'duplicate_task'
+  | 'duplicate'
   | 'consultation';
 
 export interface ShadowMetricsScenarioStats {

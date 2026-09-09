@@ -9,6 +9,8 @@ from shared.normalizer import (
     is_valid_printer_name,
     resolve_pc_candidates,
     resolve_printer_candidates,
+    extract_pc_names_from_text,
+    extract_printer_addresses_from_text,
     KNOWN_PC_PREFIXES,
     KNOWN_PRINTER_PREFIXES,
 )
@@ -26,6 +28,10 @@ from shared.domain import (
     PersonCandidate,
     TicketFacts,
     validate_person_candidate,
+    SCENARIO_DISPLAY_NAMES,
+    SCENARIO_SHORT_NAMES,
+    SUPPORTED_SCENARIO_KEYS,
+    get_scenario_display_name,
 )
 
 __all__ = [
@@ -35,6 +41,8 @@ __all__ = [
     "is_valid_printer_name",
     "resolve_pc_candidates",
     "resolve_printer_candidates",
+    "extract_pc_names_from_text",
+    "extract_printer_addresses_from_text",
     "KNOWN_PC_PREFIXES",
     "KNOWN_PRINTER_PREFIXES",
     "run_host_diagnostics",
@@ -48,4 +56,9 @@ __all__ = [
     "PersonCandidate",
     "TicketFacts",
     "validate_person_candidate",
+    "SCENARIO_DISPLAY_NAMES",
+    "SCENARIO_SHORT_NAMES",
+    "SUPPORTED_SCENARIO_KEYS",
+    "get_scenario_display_name",
 ]
+

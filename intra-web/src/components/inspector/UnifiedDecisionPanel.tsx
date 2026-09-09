@@ -13,6 +13,7 @@ import {
 import type { UseUnifiedDecisionReturn } from './useUnifiedDecision';
 import FactBagSection from './FactBagSection';
 import FactOverrideModal from './FactOverrideModal';
+import { getScenarioTitle } from '../../lib/scenarios';
 
 interface UnifiedDecisionPanelProps {
   ticket: Ticket;
@@ -144,7 +145,20 @@ export default function UnifiedDecisionPanel({
   const riskWarning = proposal?.risk_warning || details?.suggested_action?.risk_warning || null;
   const isCriticalRisk = riskLevel === 'critical' || Boolean(riskWarning);
 
+  const scenarioKey =
+    envelope?.scenario_key ||
+    details?.suggested_action?.scenario_key ||
+    details?.suggested_action?.rule_type ||
+    ticket.scenarioKey;
+
+  const scenarioTitle =
+    (envelope as any)?.scenario_title ||
+    getScenarioTitle(scenarioKey, envelope?.scenario_version);
+
   const formatFriendlyAction = (action?: string, ruleType?: string): string => {
+    if (scenarioKey && scenarioKey !== 'consultation') {
+      return scenarioTitle;
+    }
     if (details?.suggested_action?.name) return details.suggested_action.name;
     if (ruleType === 'duplicate_task' || details?.suggested_action?.rule_type === 'duplicate_task')
       return 'Отмена дубликата';
@@ -153,16 +167,19 @@ export default function UnifiedDecisionPanel({
     if (action === 'grant_wlan') return 'Предоставление доступа к Wi-Fi';
     if (action === 'create_user') return 'Создание учетной записи';
     if (action === 'install_printer') return 'Установка принтера';
-    return proposal?.title || 'Обработка первой линией';
+    return proposal?.title || scenarioTitle || 'Обработка первой линией';
   };
 
   const actionTitle =
-    (envelopeOutcome.action
-      ? formatFriendlyAction(envelopeOutcome.action, details?.suggested_action?.rule_type)
-      : undefined) ||
-    proposal?.title ||
-    details?.suggested_action?.name ||
-    'Решение первой линии';
+    scenarioTitle !== 'Решение первой линии' && scenarioTitle !== 'Стандартная обработка 1-й линией'
+      ? scenarioTitle
+      : (envelopeOutcome.action
+          ? formatFriendlyAction(envelopeOutcome.action, details?.suggested_action?.rule_type)
+          : undefined) ||
+        scenarioTitle ||
+        proposal?.title ||
+        details?.suggested_action?.name ||
+        'Решение первой линии';
 
   const currentRunState = ticketRun?.state || 'pending';
   const runCfg = runStateConfig[currentRunState] || runStateConfig.pending;

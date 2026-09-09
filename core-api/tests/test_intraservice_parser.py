@@ -29,6 +29,21 @@ def test_normalize_printer_address():
     assert normalize_printer_address("кзмп1010") == "kzmp1010"
     assert normalize_printer_address("ztep0012") == "ztep0012"
     assert normalize_printer_address("itt1000") == "ittp1000"
+    assert normalize_printer_address("SCSP 0001") == "scsp0001"
+    assert normalize_printer_address("SCSp 0001") == "scsp0001"
+    assert normalize_printer_address("СКСП 0001") == "scsp0001"
+    assert normalize_printer_address("scsp0001") == "scsp0001"
+
+
+def test_extract_printer_addresses_from_text():
+    from app.utils.normalizer import extract_printer_addresses_from_text
+
+    text = "Kyocera Ecosys M8124 cidn . Ecosys M2040 dn KX SCSp 0001"
+    addrs = extract_printer_addresses_from_text(text)
+    assert addrs == ["scsp0001"]
+
+    text2 = "Прошу настроить печать на 10.244.15.55 и на резервный СКСП 0002"
+    assert extract_printer_addresses_from_text(text2) == ["10.244.15.55", "scsp0002"]
 
 
 def test_is_valid_pc_and_printer_name():

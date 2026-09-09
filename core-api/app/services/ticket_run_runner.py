@@ -31,15 +31,43 @@ class TicketRunRunner:
 
     @staticmethod
     def extract_printer_parameters(task: dict[str, Any]) -> tuple[str, str]:
-        pc_name = ""
-        printer_address = ""
+        from shared.normalizer import (
+            extract_pc_names_from_text,
+            extract_printer_addresses_from_text,
+            normalize_pc_name,
+            normalize_printer_address,
+        )
+
+        pc_name = str(task.get("_extracted_pc_name") or "").strip()
+        printer_address = str(task.get("_extracted_printer_address") or "").strip()
+
         for field in task.get("CustomFields", []) or []:
             field_id = field.get("CustomFieldId") or field.get("FieldId")
             value = str(field.get("Value") or "").strip()
-            if field_id == settings.PRINTER_PC_CUSTOM_FIELD_ID and value:
+            if field_id == settings.PRINTER_PC_CUSTOM_FIELD_ID and value and not pc_name:
                 pc_name = value
-            elif field_id == settings.PRINTER_IP_CUSTOM_FIELD_ID and value:
-                printer_address = value
+            elif field_id == settings.PRINTER_IP_CUSTOM_FIELD_ID and value and not printer_address:
+                addrs = extract_printer_addresses_from_text(value)
+                printer_address = addrs[0] if addrs else value
+            elif field_id in (1104, "1104", 1111, "1111") and value and not printer_address:
+                addrs = extract_printer_addresses_from_text(value)
+                if addrs:
+                    printer_address = addrs[0]
+
+        if not pc_name or not printer_address:
+            text_context = (
+                f"{task.get('Name', '')} {task.get('Description', '')} "
+                f"{task.get('_parsed_fields') or ''}"
+            )
+            if not pc_name:
+                pcs = extract_pc_names_from_text(text_context)
+                if pcs:
+                    pc_name = pcs[0]
+            if not printer_address:
+                addrs = extract_printer_addresses_from_text(text_context)
+                if addrs:
+                    printer_address = addrs[0]
+
         if not pc_name or not printer_address:
             extracted = IntentAnalyzer.analyze_fast_regex(
                 f"{task.get('Name', '')} {task.get('Description', '')}"
@@ -47,6 +75,12 @@ class TicketRunRunner:
             if extracted:
                 pc_name = pc_name or extracted.extracted_pc or ""
                 printer_address = printer_address or extracted.extracted_ip or ""
+
+        if pc_name:
+            pc_name = normalize_pc_name(pc_name) or pc_name
+        if printer_address:
+            printer_address = normalize_printer_address(printer_address) or printer_address
+
         return pc_name, printer_address
 
     @staticmethod

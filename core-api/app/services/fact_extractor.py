@@ -14,7 +14,7 @@ from shared.domain import (
     PersonCandidate,
     validate_person_candidate,
 )
-from shared.normalizer import normalize_pc_name
+from shared.normalizer import normalize_pc_name, normalize_printer_address
 
 from app.config import settings
 from app.services.ai.hub import ai_hub
@@ -167,8 +167,23 @@ async def enrich_task_with_extracted_facts(
     base_text = "\n".join(
         str(task.get(key) or "") for key in ("Name", "Description")
     ).strip()
+
+    fields_info: list[str] = []
+    parsed_fields = (
+        task.get("_parsed_fields")
+        or (task.get("_field_meta") or {}).get("friendly")
+        or {}
+    )
+    if isinstance(parsed_fields, dict):
+        for k, v in parsed_fields.items():
+            if v and str(v).strip():
+                fields_info.append(f"{k}: {str(v).strip()}")
+    fields_text = (
+        "\n[Поля заявки]:\n" + "\n".join(fields_info) if fields_info else ""
+    )
+
     comments_text, comments_count = _extract_comments_text(task, comments_history)
-    full_text = f"{base_text}\n{comments_text}".strip()
+    full_text = f"{base_text}\n{fields_text}\n{comments_text}".strip()
 
     if not full_text:
         return task
@@ -189,10 +204,15 @@ async def enrich_task_with_extracted_facts(
 
     if extracted is None:
         prompt = (
-            "Ты — сенсор фактов Helpdesk. Извлеки только явно указанные сущности: "
-            "ФИО/реквизиты сотрудника (если есть), имя рабочей станции/ПК (например, NTEMW0144), "
-            "IP или модель принтера, путь к файлу/папке (SMB), и ответ на уточнение (если заявитель отвечает в комментарии). "
-            "Не додумывай. Для каждого извлеченного значения добавь в evidence точную цитату (span).\n\n"
+            "Ты — сенсор фактов Helpdesk. Извлеки только явно указанные сущности:\n"
+            "- ФИО/реквизиты сотрудника (person: surname, name, patronymic, title, department, company, phone)\n"
+            "- Имя рабочей станции/ПК (pc_name, например NTEMW0144, GKT0011)\n"
+            "- Модель принтера/МФУ (printer_name, например 'Kyocera Ecosys M8124 cidn')\n"
+            "- Сетевой адрес принтера/МФУ (printer_address: IP-адрес 10.x.x.x или сетевое имя очереди печати, например 'scsp0001', 'SCSP 0001', 'kzmp1010', 'ztep0012')\n"
+            "- Сетевой путь к файлу/папке (file_path: UNC/SMB путь)\n"
+            "- Ответ на уточнение (clarification_answer, если заявитель отвечает в комментарии)\n"
+            "Не додумывай. Если сетевое имя принтера указано с пробелом (например 'SCSP 0001'), укажи его. "
+            "Для каждого извлеченного значения добавь в evidence точную цитату (span).\n\n"
             f"Заявка #{task_id}:\n{full_text}"
         )
         system_prompt = (
@@ -268,8 +288,11 @@ async def enrich_task_with_extracted_facts(
         if extracted.pc_name:
             norm_pc = normalize_pc_name(extracted.pc_name)
             enriched["_extracted_pc_name"] = norm_pc or extracted.pc_name
+        if extracted.printer_name:
+            enriched["_extracted_printer_name"] = extracted.printer_name
         if extracted.printer_address:
-            enriched["_extracted_printer_address"] = extracted.printer_address
+            norm_addr = normalize_printer_address(extracted.printer_address)
+            enriched["_extracted_printer_address"] = norm_addr or extracted.printer_address
         if extracted.file_path:
             enriched["_extracted_file_path"] = extracted.file_path
         if extracted.clarification_answer:

@@ -36,6 +36,10 @@ from shared.domain.scenario import (
     ScenarioDefinition,
     ScenarioMatch,
     SynthesisProposal,
+    SCENARIO_DISPLAY_NAMES,
+    SCENARIO_SHORT_NAMES,
+    SUPPORTED_SCENARIO_KEYS,
+    get_scenario_display_name,
 )
 
 __all__ = [
@@ -71,6 +75,10 @@ __all__ = [
     "ScenarioDefinition",
     "ScenarioMatch",
     "SynthesisProposal",
+    "SCENARIO_DISPLAY_NAMES",
+    "SCENARIO_SHORT_NAMES",
+    "SUPPORTED_SCENARIO_KEYS",
+    "get_scenario_display_name",
     "normalize_person_name",
     "validate_person_candidate",
 ]

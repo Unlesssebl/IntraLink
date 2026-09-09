@@ -9,9 +9,11 @@ interface FactBagSectionProps {
 
 const FRIENDLY_FACT_NAMES: Record<string, string> = {
   pc_name: 'Рабочая станция (ПК)',
-  printer_address: 'Сетевой принтер (IP / модель)',
+  printer_address: 'Сетевой адрес МФУ (IP / хост)',
   printer_ip: 'IP-адрес принтера',
-  printer_name: 'Имя принтера',
+  printer_name: 'Модель принтера / МФУ',
+  printer_targets: 'Целевые принтеры',
+  printer_connection_type: 'Тип подключения принтера',
   login: 'Учётная запись (логин)',
   account_name: 'Учётная запись AD',
   target_service: 'Целевой сервис каталога',

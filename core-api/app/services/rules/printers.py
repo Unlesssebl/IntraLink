@@ -2,6 +2,7 @@ import re
 from typing import Any
 
 from shared.domain import ClarificationRequired, DecisionOutcome, Evidence, NoMatch
+from shared.normalizer import extract_printer_addresses_from_text
 
 from .base import BaseRule, RuleDecision
 
@@ -60,15 +61,25 @@ class PrinterRule(BaseRule):
 
         # 2. Если требуется уточнение параметров подключения принтера
         if any(w in user_text for w in ["не печатает", "подключить принтер", "настроить принтер", "ip принтера"]):
-            # Проверяем, не указан ли уже IP адрес в полях заявки, модели или описании
+            # Проверяем, не указан ли уже IP адрес или сетевое имя принтера в полях заявки, модели или описании
             raw_fields = (
                 str(task.get("_parsed_fields") or "") + " " +
                 str(task.get("Data") or "") + " " +
+                str(task.get("_extracted_printer_address") or "") + " " +
                 desc + " " + name
             )
-            has_ip = bool(re.search(r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", raw_fields))
+            has_address = bool(
+                re.search(r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", raw_fields)
+                or extract_printer_addresses_from_text(raw_fields)
+                or task.get("_extracted_printer_address")
+                or (
+                    context
+                    and isinstance(context, dict)
+                    and context.get("facts", {}).get("facts", {}).get("printer_address", {}).get("value")
+                )
+            )
 
-            if diag and diag.get("is_online", False) and not has_ip:
+            if diag and diag.get("is_online", False) and not has_address:
                 # ПК в сети, но параметры/IP принтера не указаны
                 return RuleDecision(
                     template_key="printer_ip_clarify",
@@ -133,9 +144,20 @@ class PrinterRule(BaseRule):
                 desc + " " + name + " " +
                 str(task.get("_extracted_printer_address") or "")
             )
-            has_ip = bool(re.search(r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", raw_fields))
+            context_facts = (context or {}).get("facts") or {}
+            fact_address = ""
+            if isinstance(context_facts, dict):
+                inner_facts = context_facts.get("facts") or {}
+                if isinstance(inner_facts, dict) and "printer_address" in inner_facts:
+                    fact_address = str(inner_facts["printer_address"].get("value") or "")
+            has_address = bool(
+                re.search(r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", raw_fields)
+                or extract_printer_addresses_from_text(raw_fields)
+                or task.get("_extracted_printer_address")
+                or fact_address
+            )
 
-            if diag and diag.get("is_online", False) and not has_ip:
+            if diag and diag.get("is_online", False) and not has_address:
                 return ClarificationRequired(
                     rule_key="printer.management",
                     rule_version="2",

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from shared.domain import FactSensitivity
-from shared.normalizer import normalize_pc_name
+from shared.normalizer import normalize_pc_name, normalize_printer_address
 
 
 Normalizer = Callable[[Any], Any]
@@ -19,6 +19,11 @@ def _clean_text(value: Any) -> str:
 def _normalize_pc(value: Any) -> str:
     raw = _clean_text(value)
     return normalize_pc_name(raw) or raw.upper()
+
+
+def _normalize_printer_addr(value: Any) -> str:
+    raw = _clean_text(value)
+    return normalize_printer_address(raw) or raw.lower()
 
 
 def _identity(value: Any) -> Any:
@@ -85,8 +90,15 @@ def _build_default_registry() -> FactRegistry:
             clarification_key="clarify_pc_name",
         )
     )
+    registry.register(
+        FactSpec(
+            key="printer_address",
+            normalizer=_normalize_printer_addr,
+            sensitivity=FactSensitivity.INTERNAL,
+            clarification_key="clarify_printer_address",
+        )
+    )
     for key in (
-        "printer_address",
         "printer_name",
         "printer_connection_type",
         "file_path",

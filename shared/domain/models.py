@@ -84,6 +84,7 @@ class ExtractedTicketFacts(StrictModel):
     person: ExtractedPersonCandidate | None = None
     pc_name: str | None = None
     printer_address: str | None = None
+    printer_name: str | None = None
     file_path: str | None = None
     clarification_answer: str | None = None
     issue_summary: str | None = None

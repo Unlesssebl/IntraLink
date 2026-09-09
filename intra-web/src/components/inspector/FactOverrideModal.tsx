@@ -21,6 +21,7 @@ export default function FactOverrideModal({
 
   const [pcName, setPcName] = useState('');
   const [printerAddress, setPrinterAddress] = useState('');
+  const [printerName, setPrinterName] = useState('');
   const [login, setLogin] = useState('');
   const [customKey, setCustomKey] = useState('');
   const [customValue, setCustomValue] = useState('');
@@ -31,6 +32,7 @@ export default function FactOverrideModal({
     if (isOpen) {
       setPcName(String(currentFacts.pc_name?.value || ''));
       setPrinterAddress(String(currentFacts.printer_address?.value || currentFacts.printer_ip?.value || ''));
+      setPrinterName(String(currentFacts.printer_name?.value || ''));
       setLogin(String(currentFacts.login?.value || currentFacts.account_name?.value || ''));
       setCustomKey('');
       setCustomValue('');
@@ -75,6 +77,12 @@ export default function FactOverrideModal({
       facts.printer_address = printerAddress.trim();
     } else if (currentFacts.printer_address || currentFacts.printer_ip) {
       facts.printer_address = null;
+    }
+
+    if (printerName.trim()) {
+      facts.printer_name = printerName.trim();
+    } else if (currentFacts.printer_name) {
+      facts.printer_name = null;
     }
 
     if (login.trim()) {
@@ -164,10 +172,10 @@ export default function FactOverrideModal({
             <span className="text-[10.5px] text-neutral-400">Нормализуется автоматически (WS-0123 → WKS0123).</span>
           </div>
 
-          {/* Принтер / IP адрес */}
+          {/* Сетевой адрес принтера / МФУ (IP или хостнейм) */}
           <div className="space-y-1">
             <label className="flex items-center justify-between text-xs font-semibold text-neutral-700 dark:text-neutral-300">
-              <span>Сетевой принтер (IP или модель)</span>
+              <span>Сетевой адрес / имя МФУ (IP или хост)</span>
               {(currentFacts.printer_address || currentFacts.printer_ip) && (
                 <span className="text-[10.5px] font-normal text-neutral-400">
                   Текущий: <strong className="font-mono text-neutral-600 dark:text-neutral-300">{String((currentFacts.printer_address || currentFacts.printer_ip)?.value ?? 'нет')}</strong>
@@ -178,8 +186,28 @@ export default function FactOverrideModal({
               type="text"
               value={printerAddress}
               onChange={(e) => setPrinterAddress(e.target.value)}
-              placeholder="Например: 10.20.30.40 или HP LaserJet Pro M404"
+              placeholder="Например: 10.244.15.55 или scsp0001 (SCSP 0001)"
               className="w-full rounded-xl border border-neutral-200 bg-neutral-50/50 px-3 py-2 font-mono text-xs text-neutral-900 placeholder-neutral-400 outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-neutral-800 dark:bg-neutral-950/40 dark:text-neutral-100"
+            />
+            <span className="text-[10.5px] text-neutral-400">Нормализуется автоматически (SCSP 0001 → scsp0001, СКСП → SCSP).</span>
+          </div>
+
+          {/* Модель принтера */}
+          <div className="space-y-1">
+            <label className="flex items-center justify-between text-xs font-semibold text-neutral-700 dark:text-neutral-300">
+              <span>Модель принтера / МФУ</span>
+              {currentFacts.printer_name && (
+                <span className="text-[10.5px] font-normal text-neutral-400">
+                  Текущий: <strong className="font-mono text-neutral-600 dark:text-neutral-300">{String(currentFacts.printer_name?.value ?? 'нет')}</strong>
+                </span>
+              )}
+            </label>
+            <input
+              type="text"
+              value={printerName}
+              onChange={(e) => setPrinterName(e.target.value)}
+              placeholder="Например: Kyocera Ecosys M8124cidn"
+              className="w-full rounded-xl border border-neutral-200 bg-neutral-50/50 px-3 py-2 text-xs text-neutral-900 placeholder-neutral-400 outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-neutral-800 dark:bg-neutral-950/40 dark:text-neutral-100"
             />
           </div>
 

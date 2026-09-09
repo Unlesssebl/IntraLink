@@ -664,12 +664,27 @@ class TriageService:
             logger.exception("Scenario decision envelope failed for task %s", task_id)
 
         printer_address = ""
-        for field in task.get("CustomFields", []) or []:
-            field_id = field.get("CustomFieldId") or field.get("FieldId")
-            if field_id == settings.PRINTER_IP_CUSTOM_FIELD_ID:
-                printer_address = str(field.get("Value") or "").strip()
-                if printer_address:
-                    break
+        if decision_envelope and (decision_envelope.get("facts_summary") or {}).get("printer_address"):
+            p_fact = decision_envelope["facts_summary"]["printer_address"]
+            if p_fact.get("value"):
+                printer_address = str(p_fact["value"]).strip()
+
+        if not printer_address:
+            for field in task.get("CustomFields", []) or []:
+                field_id = field.get("CustomFieldId") or field.get("FieldId")
+                if field_id == settings.PRINTER_IP_CUSTOM_FIELD_ID:
+                    printer_address = str(field.get("Value") or "").strip()
+                    if printer_address:
+                        break
+
+        if not printer_address:
+            from shared.normalizer import extract_printer_addresses_from_text
+
+            search_scope = f"{t_name} {t_desc} {task.get('_parsed_fields') or ''}"
+            addrs = extract_printer_addresses_from_text(search_scope)
+            if addrs:
+                printer_address = addrs[0]
+
         if not printer_address:
             from app.services.lifecycle.intent_analyzer import IntentAnalyzer
 

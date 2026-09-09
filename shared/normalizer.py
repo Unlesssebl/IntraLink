@@ -89,16 +89,20 @@ CYRILLIC_PREFIX_ALIASES = {
     "НТЕНВ": "NTEMW",
     "КПК": "KPK",
     "НТЗ": "TKT",
+    "СКС": "SCS",
+    "СКСП": "SCSP",
+    "СЦС": "SCS",
+    "СЦСП": "SCSP",
 }
 
 # Официальные префиксы ПК (Таблица 1 + Таблица 2 + общедоменные)
-MAIN_PC_PREFIXES = ["ZTE", "KZM", "KMK", "TLK", "TKT", "TNT", "ITT", "TNM", "GKT"]
+MAIN_PC_PREFIXES = ["ZTE", "KZM", "KMK", "TLK", "TKT", "TNT", "ITT", "TNM", "GKT", "SCS"]
 BRANCH_PC_PREFIXES = ["ZT", "KZ", "KM", "TL", "NT", "TT", "TM", "GK"]
 DOMAIN_PC_PREFIXES = ["NTEMW", "KZMK", "ZTEO", "KPK", "NTZ", "TEMPO", "WKS", "PC", "SRV", "NOTE", "LAPTOP", "COMP"]
 KNOWN_PC_PREFIXES = MAIN_PC_PREFIXES + BRANCH_PC_PREFIXES + DOMAIN_PC_PREFIXES
 
 # Официальные префиксы МФУ/принтеров (Таблица 1 + 'P' и Таблица 2 + 'P')
-MAIN_PRINTER_PREFIXES = ["ZTEP", "KZMP", "KMKP", "TLKP", "TKTP", "TNTP", "ITTP", "TNMP", "GKTP"]
+MAIN_PRINTER_PREFIXES = ["ZTEP", "KZMP", "KMKP", "TLKP", "TKTP", "TNTP", "ITTP", "TNMP", "GKTP", "SCSP"]
 BRANCH_PRINTER_PREFIXES = ["ZTP", "KZP", "KMP", "TLP", "NTP", "TTP", "TMP", "GKP"]
 KNOWN_PRINTER_PREFIXES = MAIN_PRINTER_PREFIXES + BRANCH_PRINTER_PREFIXES
 
@@ -203,12 +207,18 @@ def normalize_pc_name(raw: str | None) -> str | None:
         return None
     if not number:
         norm_p = _transliterate_prefix(cleaned)
+        if norm_p in KNOWN_PRINTER_PREFIXES:
+            return None
         fixed_p = _try_fix_prefix(norm_p, KNOWN_PC_PREFIXES)
         return fixed_p or norm_p
     if not prefix:
         return number
     translit_prefix = _transliterate_prefix(prefix)
+    if translit_prefix.upper() in KNOWN_PRINTER_PREFIXES:
+        return None
     fixed_prefix = _try_fix_prefix(translit_prefix, KNOWN_PC_PREFIXES) or translit_prefix
+    if fixed_prefix.upper() in KNOWN_PRINTER_PREFIXES:
+        return None
     return f"{fixed_prefix.upper()}{number}"
 
 
@@ -216,7 +226,7 @@ def normalize_printer_address(raw: str | None) -> str | None:
     """
     Нормализует сетевой адрес или DNS-хостнейм принтера/МФУ:
     1. IP-адреса: исправляет опечатки с запятыми и пробелами (10,244 1.20 -> 10.244.1.20).
-    2. DNS-имена: транслитерирует кириллицу и нормализует префикс с добавлением "P" (KZMP, ITTP, TNMP...).
+    2. DNS-имена: транслитерирует кириллицу и нормализует префикс с добавлением "P" (KZMP, ITTP, TNMP, SCSP...).
     """
     if not raw:
         return None
@@ -235,7 +245,7 @@ def normalize_printer_address(raw: str | None) -> str | None:
 
     if prefix:
         translit_prefix = _transliterate_prefix(prefix)
-        # Если префикс заканчивается не на P, проверяем соответствие PC кодам с добавлением P (напр. KZM -> KZMP)
+        # Если префикс заканчивается не на P, проверяем соответствие PC кодам с добавлением P (напр. KZM -> KZMP, SCS -> SCSP)
         if not translit_prefix.endswith("P") and (translit_prefix in MAIN_PC_PREFIXES or translit_prefix in BRANCH_PC_PREFIXES):
             translit_prefix = f"{translit_prefix}P"
 
@@ -254,6 +264,8 @@ def is_valid_pc_name(name: str | None) -> bool:
     if norm.isdigit() or not any(ch.isdigit() for ch in norm):
         return False
     if norm in ("NTZ-TEMPO", "TEMPO", "KZMK-TEMPO", "ZTE-TEMPO", "ZTEO-TEMPO"):
+        return False
+    if any(norm.startswith(p) for p in KNOWN_PRINTER_PREFIXES):
         return False
     return any(norm.startswith(p) for p in KNOWN_PC_PREFIXES)
 
@@ -313,6 +325,9 @@ def resolve_pc_candidates(raw_name: str | None, company: str = "", dept: str = "
     # 10. КПК ТЭМПО
     elif any(k in comp_lower for k in ["кпк"]):
         candidates.extend([f"KPK{digits}", f"KMK{digits}", f"NTEMW{digits}"])
+    # 11. АО СКС ТЭМПО / СЦС
+    elif any(k in comp_lower for k in ["скс", "scs", "сцс", "сервисный центр стали", "стальной сервис"]):
+        candidates.extend([f"SCS{digits}", f"NTEMW{digits}"])
     else:
         candidates.extend([f"NTEMW{digits}", f"TKT{digits}", f"KMK{digits}", f"KZM{digits}", f"TLK{digits}"])
 
@@ -331,6 +346,7 @@ def resolve_printer_candidates(raw_name: str | None, company: str = "", dept: st
     - ITTP (АЙТИ ТЭМПО)
     - TNMP / TMP (Технотрон-Метиз)
     - GKTP / GKP (Группа компаний ТЭМПО)
+    - SCSP (АО СКС ТЭМПО)
     """
     if not raw_name:
         return []
@@ -363,8 +379,10 @@ def resolve_printer_candidates(raw_name: str | None, company: str = "", dept: st
         candidates.append(f"ittp{digits}")
     elif any(k in comp_lower for k in ["группа компаний", "ип ", "гкт"]):
         candidates.extend([f"gktp{digits}", f"gkp{digits}"])
+    elif any(k in comp_lower for k in ["скс", "scs", "сцс", "сервисный центр стали", "стальной сервис"]):
+        candidates.extend([f"scsp{digits}", f"ittp{digits}"])
     else:
-        candidates.extend([f"ittp{digits}", f"kzmp{digits}", f"kmkp{digits}", f"tktp{digits}", f"tlkp{digits}"])
+        candidates.extend([f"ittp{digits}", f"kzmp{digits}", f"kmkp{digits}", f"tktp{digits}", f"tlkp{digits}", f"scsp{digits}"])
 
     return list(dict.fromkeys(candidates))
 
@@ -382,7 +400,7 @@ def extract_pc_names_from_text(text: str | None) -> list[str]:
     for m in token_pattern.finditer(text):
         token = f"{m.group(1)}{m.group(2)}"
         norm = normalize_pc_name(token)
-        if norm and is_valid_pc_name(norm) and norm not in found:
+        if norm and is_valid_pc_name(norm) and not is_valid_printer_name(norm) and norm not in found:
             found.append(norm)
 
     # 2. Поиск конструкций с маркерами ПК (ПК: 1234, хост 1234, компьютер №1234, ноут NTEMW1234)
@@ -392,7 +410,7 @@ def extract_pc_names_from_text(text: str | None) -> list[str]:
     for m in marker_pattern.finditer(text):
         token = m.group(1).strip()
         norm = normalize_pc_name(token)
-        if norm and is_valid_pc_name(norm) and norm not in found:
+        if norm and is_valid_pc_name(norm) and not is_valid_printer_name(norm) and norm not in found:
             found.append(norm)
 
     # 3. Поиск корпоративных IP-адресов подсети
@@ -401,5 +419,44 @@ def extract_pc_names_from_text(text: str | None) -> list[str]:
         ip_addr = m.group(0)
         if ip_addr not in found:
             found.append(ip_addr)
+
+    return found
+
+
+def extract_printer_addresses_from_text(text: str | None) -> list[str]:
+    """
+    Извлекает и нормализует сетевые адреса (IP) и DNS-имена принтеров/МФУ из произвольного текста
+    (включая написания с пробелом, например 'SCSP 0001', 'ittp 1000', '10.244.1.20', 'сксп0001').
+    """
+    if not text:
+        return []
+
+    found: list[str] = []
+
+    # 1. Поиск IP-адресов
+    ip_pattern = re.compile(r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|(?:\d{1,3}\.){3}\d{1,3})\b")
+    for m in ip_pattern.finditer(text):
+        ip_addr = m.group(0)
+        if ip_addr not in found:
+            found.append(ip_addr)
+
+    # 2. Поиск токенов сетевых имён МФУ/принтеров (SCSP 0001, ittp1000, kzmp 0012, СКСП 0001 и т.п.)
+    token_pattern = re.compile(r"(?i)\b([a-zа-яё]{2,6})[\s\-_]?([0-9]{2,6})\b")
+    for m in token_pattern.finditer(text):
+        candidate_with_space = f"{m.group(1)} {m.group(2)}"
+        candidate_compact = f"{m.group(1)}{m.group(2)}"
+        norm = normalize_printer_address(candidate_with_space) or normalize_printer_address(candidate_compact)
+        if norm and is_valid_printer_name(norm) and norm not in found:
+            found.append(norm)
+
+    # 3. Маркеры МФУ/принтера (мфу scsp0001, принтер SCSP 0001, сетевой принтер: 10.244.1.2)
+    marker_pattern = re.compile(
+        r"(?i)(?:мфу|принтер|printer|mfu|prn)\s*[:#№.\-]?\s*([a-zа-яё0-9\-_]{2,20})"
+    )
+    for m in marker_pattern.finditer(text):
+        token = m.group(1).strip()
+        norm = normalize_printer_address(token)
+        if norm and is_valid_printer_name(norm) and norm not in found:
+            found.append(norm)
 
     return found

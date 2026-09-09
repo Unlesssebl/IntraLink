@@ -8,6 +8,7 @@ import sys
 from typing import Any
 
 from core_api_client import CoreApiClient
+from shared import get_scenario_display_name
 
 
 DOWNLOADS_DIR = os.path.join(
@@ -163,7 +164,10 @@ async def handle_task(args: Any) -> None:
 
             print(f"Рекомендованное действие {ai_badge}:")
             if scenario_key:
-                print(f"  Сценарий:       {scenario_key} (v{envelope.get('scenario_version', 1)})")
+                scenario_title = get_scenario_display_name(
+                    scenario_key, version=envelope.get("scenario_version", 1)
+                )
+                print(f"  Сценарий:       {scenario_title} [{scenario_key}]")
             print(f"  Исход (Kind):   {outcome.get('kind', action.get('rule_type', 'standard'))}")
             print(f"  Шаблон:         {outcome.get('template_key') or action.get('name') or '—'}")
             print(f"  Целевой статус: {outcome.get('target_status_id') or action.get('status_id')} ({outcome.get('expenses_minutes') or action.get('expenses', 10)} мин)")

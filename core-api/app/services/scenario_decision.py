@@ -119,15 +119,15 @@ class ScenarioDecisionService:
         facts = merge_observations(observations, revision=fact_revision)
         printer_targets = facts.valid_value("printer_targets", [])
         printer_address = facts.valid_value("printer_address")
-        if (
-            isinstance(printer_targets, list)
-            and len(printer_targets) == 1
-            and isinstance(printer_targets[0], dict)
-            and not printer_targets[0].get("printer_address")
-            and printer_address
-        ):
-            printer_targets[0]["printer_address"] = printer_address
-            printer_targets[0]["connection_type"] = "network"
+        if isinstance(printer_targets, list) and printer_address:
+            for target in printer_targets:
+                if (
+                    isinstance(target, dict)
+                    and not target.get("printer_address")
+                    and target.get("connection_type") != "usb"
+                ):
+                    target["printer_address"] = printer_address
+                    target["connection_type"] = "network"
         scenario_task = deepcopy(task)
         person_keys = (
             "surname",
@@ -149,6 +149,7 @@ class ScenarioDecisionService:
         for key, target in (
             ("pc_name", "_extracted_pc_name"),
             ("printer_address", "_extracted_printer_address"),
+            ("printer_name", "_extracted_printer_name"),
             ("file_path", "_extracted_file_path"),
             ("clarification_answer", "_extracted_clarification_answer"),
         ):

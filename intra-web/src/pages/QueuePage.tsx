@@ -292,7 +292,7 @@ function getAnalysisBadge(ticket: Ticket) {
 
   const scenarioKey = ticket.scenarioKey || ticket.envelope?.scenario_key || ticket.ruleType;
   const scenarioConfig = scenarioKey ? scenarioBadgeConfigs[scenarioKey] : undefined;
-  const label = scenarioConfig?.label || (ticket.isDuplicate ? 'Дубликат' : (scenarioKey ? String(scenarioKey) : 'Готово'));
+  const label = scenarioConfig?.label || (ticket.isDuplicate ? 'Дубликат' : (scenarioKey ? String(scenarioKey).replace(/_/g, ' ') : 'Готово'));
   const className = scenarioConfig?.badgeClass || 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-900';
 
   return {
@@ -1336,9 +1336,9 @@ export default function QueuePage({
 
                   className={`px-3 py-1 rounded-md text-[12.5px] font-semibold transition-colors cursor-pointer ${view === v
 
-                      ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-2xs'
+                    ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-2xs'
 
-                      : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
 
                     }`}
 
@@ -1366,9 +1366,9 @@ export default function QueuePage({
 
                 className={`flex items-center gap-2 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer ${processedTab === 'processed'
 
-                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 shadow-2xs'
+                  ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 shadow-2xs'
 
-                    : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100'
+                  : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100'
 
                   }`}
 
@@ -1380,9 +1380,9 @@ export default function QueuePage({
 
                   className={`text-[11px] tabular-nums font-mono px-1.5 py-0.2 rounded-full font-bold ${processedTab === 'processed'
 
-                      ? 'bg-white/20 text-white dark:bg-neutral-900/20 dark:text-neutral-900'
+                    ? 'bg-white/20 text-white dark:bg-neutral-900/20 dark:text-neutral-900'
 
-                      : 'bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'
+                    : 'bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'
 
                     }`}
 
@@ -1402,9 +1402,9 @@ export default function QueuePage({
 
                 className={`flex items-center gap-2 px-3 py-1 rounded-md text-[12.5px] font-semibold transition-all cursor-pointer ${processedTab === 'unprocessed'
 
-                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 shadow-2xs'
+                  ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 shadow-2xs'
 
-                    : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100'
+                  : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100'
 
                   }`}
 
@@ -1416,13 +1416,13 @@ export default function QueuePage({
 
                   className={`text-[11px] tabular-nums font-mono px-1.5 py-0.2 rounded-full font-bold ${processedTab === 'unprocessed'
 
-                      ? 'bg-white/20 text-white dark:bg-neutral-900/20 dark:text-neutral-900'
+                    ? 'bg-white/20 text-white dark:bg-neutral-900/20 dark:text-neutral-900'
 
-                      : countUnprocessed > 0
+                    : countUnprocessed > 0
 
-                        ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 font-semibold'
+                      ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 font-semibold'
 
-                        : 'bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'
+                      : 'bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400'
 
                     }`}
 
@@ -1558,10 +1558,10 @@ export default function QueuePage({
                     {activeBatch.status === 'cancelling'
                       ? 'Остановка пакетного анализа...'
                       : activeBatch.status === 'cancelled'
-                      ? 'Пакетный анализ остановлен'
-                      : activeBatch.status === 'completed'
-                      ? 'Пакетный анализ завершён'
-                      : 'Пакетный сценарный анализ очереди'}
+                        ? 'Пакетный анализ остановлен'
+                        : activeBatch.status === 'completed'
+                          ? 'Пакетный анализ завершён'
+                          : 'Пакетный сценарный анализ очереди'}
                   </span>
                   <span className="font-mono text-[11px] text-neutral-600 dark:text-neutral-400">
                     {activeBatch.processed + activeBatch.failed} / {activeBatch.total} ({activeBatch.pct}%)
@@ -1569,13 +1569,12 @@ export default function QueuePage({
                 </div>
                 <div className="w-full bg-neutral-200 dark:bg-neutral-800 h-1.5 rounded-full overflow-hidden">
                   <div
-                    className={`h-full transition-all duration-300 rounded-full ${
-                      activeBatch.status === 'cancelled'
+                    className={`h-full transition-all duration-300 rounded-full ${activeBatch.status === 'cancelled'
                         ? 'bg-amber-500'
                         : activeBatch.status === 'completed'
-                        ? 'bg-emerald-500'
-                        : 'bg-blue-600 dark:bg-blue-500'
-                    }`}
+                          ? 'bg-emerald-500'
+                          : 'bg-blue-600 dark:bg-blue-500'
+                      }`}
                     style={{ width: `${Math.min(100, Math.max(2, activeBatch.pct))}%` }}
                   />
                 </div>
@@ -1631,9 +1630,9 @@ export default function QueuePage({
 
             className={`shrink-0 px-4 py-2 border-b flex items-center justify-between gap-3 text-xs transition-colors ${activeExecution.state === 'waiting_approval'
 
-                ? 'bg-amber-50/90 dark:bg-amber-950/40 border-amber-200/80 dark:border-amber-900/60 text-amber-900 dark:text-amber-200'
+              ? 'bg-amber-50/90 dark:bg-amber-950/40 border-amber-200/80 dark:border-amber-900/60 text-amber-900 dark:text-amber-200'
 
-                : 'bg-blue-50/90 dark:bg-blue-950/40 border-blue-200/80 dark:border-blue-900/60 text-blue-900 dark:text-blue-200'
+              : 'bg-blue-50/90 dark:bg-blue-950/40 border-blue-200/80 dark:border-blue-900/60 text-blue-900 dark:text-blue-200'
 
               }`}
 
@@ -1691,9 +1690,9 @@ export default function QueuePage({
 
               className={`shrink-0 px-3 py-1 rounded-md text-[11.5px] font-semibold transition-colors cursor-pointer border ${activeExecution.state === 'waiting_approval'
 
-                  ? 'bg-amber-600 hover:bg-amber-500 text-white border-amber-500 shadow-2xs'
+                ? 'bg-amber-600 hover:bg-amber-500 text-white border-amber-500 shadow-2xs'
 
-                  : 'bg-white dark:bg-neutral-900 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950/60'
+                : 'bg-white dark:bg-neutral-900 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-950/60'
 
                 }`}
 
@@ -1743,7 +1742,7 @@ export default function QueuePage({
 
                   <th className="w-48 px-3.5 py-3 text-left text-[11.5px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
 
-                    {processedTab === 'processed' ? 'СЦЕНАРИЙ / РЕШЕНИЕ' : 'СОСТОЯНИЕ АНАЛИЗА'}
+                    {processedTab === 'processed' ? 'Сценарий' : 'СОСТОЯНИЕ АНАЛИЗА'}
 
                   </th>
 
@@ -1825,7 +1824,7 @@ export default function QueuePage({
 
                   const scenarioConfig = scenarioKey ? scenarioBadgeConfigs[scenarioKey] : undefined;
 
-                  const scenarioLabel = scenarioConfig?.label || (ticket.isDuplicate ? 'Дубликат' : (scenarioKey || '—'));
+                  const scenarioLabel = scenarioConfig?.label || (ticket.isDuplicate ? 'Дубликат' : (scenarioKey ? scenarioKey.replace(/_/g, ' ') : '—'));
 
                   const analysisBadge = getAnalysisBadge(ticket);
 
@@ -1913,9 +1912,9 @@ export default function QueuePage({
 
                                 className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border ${activeExecution.state === 'waiting_approval'
 
-                                    ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-800'
+                                  ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-800'
 
-                                    : 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 border-blue-300 dark:border-blue-800'
+                                  : 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 border-blue-300 dark:border-blue-800'
 
                                   }`}
 
@@ -2085,59 +2084,59 @@ export default function QueuePage({
 
                                       : ticket.aiPlan
 
-                                      ? `${ticket.aiPlan.actionTitle}\nОтвет: «${ticket.aiPlan.comment}»`
+                                        ? `${ticket.aiPlan.actionTitle}\nОтвет: «${ticket.aiPlan.comment}»`
 
-                                      : 'Принять в работу'
+                                        : 'Принять в работу'
 
                                   }
 
                                 >
 
-                                <span
+                                  <span
 
-                                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${getStatusDotClass(
+                                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${getStatusDotClass(
 
-                                    ticket.aiPlan?.targetStatusId ?? 27
+                                      ticket.aiPlan?.targetStatusId ?? 27
 
-                                  )}`}
+                                    )}`}
 
-                                />
+                                  />
 
-                                <span className="truncate max-w-[120px]">
+                                  <span className="truncate max-w-[120px]">
 
-                                  {ticket.aiPlan?.targetStatusName || 'В работу'}
+                                    {ticket.aiPlan?.targetStatusName || 'В работу'}
 
-                                </span>
+                                  </span>
 
-                                <IconArrowRight
+                                  <IconArrowRight
 
-                                  size={9}
+                                    size={9}
 
-                                  className="text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-colors ml-0.5 shrink-0"
+                                    className="text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 transition-colors ml-0.5 shrink-0"
 
-                                />
+                                  />
 
-                              </button>
+                                </button>
 
-                              {ticket.analysis && !ticket.analysis.can_quick_apply && ticket.analysis.blocked_reason && (
+                                {ticket.analysis && !ticket.analysis.can_quick_apply && ticket.analysis.blocked_reason && (
 
-                                <span
+                                  <span
 
-                                  tabIndex={0}
+                                    tabIndex={0}
 
-                                  className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate max-w-[130px] cursor-help focus-visible:ring-1 focus-visible:ring-blue-500 rounded outline-none"
+                                    className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate max-w-[130px] cursor-help focus-visible:ring-1 focus-visible:ring-blue-500 rounded outline-none"
 
-                                  title={ticket.analysis.blocked_reason}
+                                    title={ticket.analysis.blocked_reason}
 
-                                  aria-label={`Причина блокировки: ${ticket.analysis.blocked_reason}`}
+                                    aria-label={`Причина блокировки: ${ticket.analysis.blocked_reason}`}
 
-                                >
+                                  >
 
-                                  {ticket.analysis.blocked_reason}
+                                    {ticket.analysis.blocked_reason}
 
-                                </span>
+                                  </span>
 
-                              )}
+                                )}
 
                               </div>
 
@@ -2581,9 +2580,9 @@ export default function QueuePage({
 
                     className={`w-80 shrink-0 flex flex-col rounded-lg border transition-colors ${dragOver === col.status
 
-                        ? 'border-neutral-900 bg-neutral-100/50 dark:border-neutral-100 dark:bg-neutral-900/50'
+                      ? 'border-neutral-900 bg-neutral-100/50 dark:border-neutral-100 dark:bg-neutral-900/50'
 
-                        : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/40'
+                      : 'border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/40'
 
                       }`}
 
@@ -2641,9 +2640,9 @@ export default function QueuePage({
 
                           className={`bg-white dark:bg-neutral-850 rounded-md border p-3 cursor-pointer transition-all shadow-2xs hover:border-neutral-300 dark:hover:border-neutral-700 ${selectedTicketId === t.id
 
-                              ? 'border-neutral-900 dark:border-neutral-100 ring-1 ring-neutral-900 dark:ring-neutral-100'
+                            ? 'border-neutral-900 dark:border-neutral-100 ring-1 ring-neutral-900 dark:ring-neutral-100'
 
-                              : 'border-neutral-200 dark:border-neutral-800'
+                            : 'border-neutral-200 dark:border-neutral-800'
 
                             }`}
 
@@ -2699,9 +2698,9 @@ export default function QueuePage({
 
                                 className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium border ${activeExecution.state === 'waiting_approval'
 
-                                    ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-800'
+                                  ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-800'
 
-                                    : 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 border-blue-300 dark:border-blue-800'
+                                  : 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 border-blue-300 dark:border-blue-800'
 
                                   }`}
 

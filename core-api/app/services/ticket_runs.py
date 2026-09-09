@@ -24,6 +24,7 @@ from app.database.db import (
 )
 from app.config import settings
 from app.services.template_engine import render_template_strict
+from shared.domain import SUPPORTED_SCENARIO_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -257,19 +258,7 @@ class TicketRunService:
         expected_version: int | None,
         rollout_mode: str = "active",
     ) -> AutopilotScenario:
-        supported = {
-            "printer_installation",
-            "user_creation",
-            "install_printer",
-            "create_user",
-            "offline_host",
-            "grant_wlan",
-            "redirect",
-            "physical_device",
-            "file_lock",
-            "rag_consultation",
-            "consultation",
-        }
+        supported = set(SUPPORTED_SCENARIO_KEYS)
         if scenario_key not in supported:
             raise ValueError("unsupported_scenario_key")
         if rollout_mode not in {"legacy", "shadow", "canary", "active"}:

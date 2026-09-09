@@ -8,6 +8,7 @@ import sys
 from typing import Any
 
 from core_api_client import CoreApiClient
+from shared import get_scenario_display_name
 
 
 def register_parser(subparsers: Any) -> None:
@@ -194,7 +195,8 @@ async def handle_batch(args: Any) -> None:
 
             dup_badge = "[ДУБЛИКАТ]" if it.get("is_duplicate") else ""
             conf_badge = f"[LOW CONF: {conf:.2f} / ТРЕБУЕТСЯ ПРОВЕРКА]" if req_review else f"[CONF: {conf:.2f}]"
-            scenario_badge = f"[{scenario_key.upper()}]" if scenario_key else ""
+            scenario_short = get_scenario_display_name(scenario_key, short=True) if scenario_key else ""
+            scenario_badge = f"[{scenario_short.upper()}]" if scenario_short else ""
 
             status_text = outcome.get("target_status_name") or action.get("name") or "В работе"
             status_id = outcome.get("target_status_id") or action.get("status_id", 27)
