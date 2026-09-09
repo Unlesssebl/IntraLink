@@ -288,10 +288,6 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     if (aiDraft) {
       list.push({ label: 'Вставить ответ AI', text: aiDraft });
     }
-    const kbSolution = safeDetails?.kb_matches && safeDetails.kb_matches[0]?.solution;
-    if (kbSolution) {
-      list.push({ label: 'База знаний', text: kbSolution });
-    }
     return list;
   }, [safeDetails]);
 
