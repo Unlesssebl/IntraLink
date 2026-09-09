@@ -11,6 +11,8 @@ SCENARIO_KEY_ALIASES: dict[str, str] = {
     "user_creation": "create_user",
     "printer_installation": "install_printer",
 }
+MIN_SCENARIO_SCORE = 0.85
+MIN_SCENARIO_MARGIN = 0.10
 
 
 class ScenarioRegistry:
@@ -49,7 +51,28 @@ class ScenarioRegistry:
         eligible = [item for item in matches if item[0].matched]
         if not eligible:
             raise ValueError("no_scenario_fallback_registered")
-        return max(eligible, key=lambda item: (item[0].score, -item[1]))[2]
+        ranked = sorted(
+            eligible,
+            key=lambda item: (item[0].score, -item[1]),
+            reverse=True,
+        )
+        domain = [item for item in ranked if item[0].score >= MIN_SCENARIO_SCORE]
+        if domain:
+            top = domain[0]
+            runner_up = domain[1] if len(domain) > 1 else None
+            if runner_up is None or top[0].score - runner_up[0].score >= MIN_SCENARIO_MARGIN:
+                return top[2]
+        fallback = next(
+            (
+                item[2]
+                for item in ranked
+                if item[0].scenario_key == "consultation"
+            ),
+            None,
+        )
+        if fallback is None:
+            raise ValueError("ambiguous_scenario_without_fallback")
+        return fallback
 
     def all(self) -> tuple[Scenario, ...]:
         return tuple(self._scenarios[key] for key in self._order)

@@ -23,13 +23,15 @@ from app.database.db import (
     CommandInbox,
     CommandOutbox,
     CommandRecord,
+    DecisionApplication,
+    DecisionRecord,
     SecurityEvent,
     AutopilotSetting,
     TicketRun,
     TicketRunEvent,
 )
 from app.services.actions.registry import PolicyMode, get_action_registry
-from app.services.actions.policy import AUTO_ELIGIBLE_ACTIONS, AUTO_RETRY_ELIGIBLE_ACTIONS
+from app.services.actions.policy import AUTO_RETRY_ELIGIBLE_ACTIONS
 from app.config import settings
 
 TERMINAL_STATES = frozenset({"succeeded", "failed", "rejected", "cancelled", "needs_review"})
@@ -848,6 +850,45 @@ class CommandService:
                         actor=command.initiator,
                     )
                 )
+        if retry_delay is None and command.decision_id is not None:
+            existing_application = await self.db.scalar(
+                select(DecisionApplication).where(DecisionApplication.command_id == command.id)
+            )
+            if existing_application is None:
+                decision = await self.db.get(DecisionRecord, command.decision_id)
+                envelope = (decision.envelope_json if decision is not None else {}) or {}
+                policy = envelope.get("policy") or {}
+                decision_outcome = envelope.get("outcome") or {}
+                proposed = (
+                    {"action": decision_outcome.get("action"), "parameters": decision_outcome.get("parameters") or {}}
+                    if decision_outcome.get("kind") == "action"
+                    else {
+                        "action": "apply_triage",
+                        "parameters": {
+                            "status_id": policy.get("status_id") or policy.get("target_status_id"),
+                            "comment": (envelope.get("response") or {}).get("text"),
+                            "expenses": policy.get("expenses"),
+                        },
+                    }
+                )
+                applied = {"action": command.action, "parameters": command.params_json or {}}
+                comparable = set(proposed["parameters"]) & set(applied["parameters"])
+                unchanged = proposed["action"] == applied["action"] and all(
+                    proposed["parameters"][key] == applied["parameters"][key]
+                    for key in comparable
+                )
+                state = outcome if outcome in {"failed", "needs_review"} else (
+                    "applied_unmodified" if unchanged else "applied_modified"
+                )
+                self.db.add(DecisionApplication(
+                    decision_id=command.decision_id,
+                    command_id=command.id,
+                    state=state,
+                    proposed_action_json=proposed,
+                    applied_action_json=applied,
+                    verified_result_json=safe_result or {},
+                    operator=command.initiator,
+                ))
         await self.db.commit()
         await self.db.refresh(command)
         return command

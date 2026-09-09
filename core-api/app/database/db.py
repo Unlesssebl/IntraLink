@@ -34,7 +34,7 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
-CURRENT_SCHEMA_REVISION = "20260908_0011"
+CURRENT_SCHEMA_REVISION = "20260909_0012"
 
 
 
@@ -536,11 +536,8 @@ class DecisionRecord(Base):
     status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
     outcome: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     context_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    source_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     context_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
-    completeness_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
-    proposal_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
-    policy_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    envelope_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     build_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_by: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -593,6 +590,28 @@ class DecisionFeedback(Base):
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     final_action_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     actor: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
+class DecisionApplication(Base):
+    """Exactly-once projection of a verified Command v2 application."""
+
+    __tablename__ = "decision_applications"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    command_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    proposed_action_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    applied_action_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    verified_result_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    operator: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )

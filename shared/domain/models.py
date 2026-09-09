@@ -130,7 +130,7 @@ class ActionProposed(OutcomeBase):
     kind: Literal["action"] = "action"
     outcome_key: str
     action: Literal["create_user", "grant_wlan", "install_printer", "apply_triage"]
-    parameters: CreateUserParameters | dict[str, str]
+    parameters: CreateUserParameters | dict[str, Any]
     risk_level: Literal[0, 1, 2, 3]
     requires_approval: bool = True
 

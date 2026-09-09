@@ -162,35 +162,28 @@ async def create_command(
                 "ticket_context_unavailable",
             )
         journal = DecisionJournalService(db)
-        if decision_id is None:
-            generated = await journal.record_operational(
-                task_id=task_id,
-                ticket_run_id=payload.ticket_run_id,
-                action=payload.action,
-                target=payload.target,
-                parameters=payload.parameters,
-                actor=context.subject,
-                task=current_task,
-                history=current_history,
+        if decision_id is None or decision_version is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "decision_id_and_version_required_for_ticket_command",
             )
-            decision_id = generated.id
-            decision_version = generated.version
-        else:
-            if decision_version is None:
-                raise HTTPException(
-                    status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    "decision_version_and_task_id_required",
-                )
-            decision = await journal.require_current(
-                decision_id=decision_id,
-                task_id=task_id,
-                version=decision_version,
-            )
-            expected_fingerprint = decision.context_json.get("ticket_fingerprint")
-            if not expected_fingerprint:
-                raise HTTPException(status.HTTP_409_CONFLICT, "decision_context_unverifiable")
-            if expected_fingerprint != ticket_snapshot_fingerprint(current_task, current_history):
-                raise HTTPException(status.HTTP_409_CONFLICT, "decision_stale")
+        decision = await journal.require_current(
+            decision_id=decision_id,
+            task_id=task_id,
+            version=decision_version,
+        )
+        envelope = decision.envelope_json or {}
+        gates = envelope.get("gates") or {}
+        required_gate = (
+            "can_send_response" if payload.action == "apply_triage" else "can_execute_action"
+        )
+        if not gates.get(required_gate):
+            raise HTTPException(status.HTTP_409_CONFLICT, f"decision_gate_blocked:{required_gate}")
+        expected_fingerprint = decision.context_json.get("ticket_fingerprint")
+        if not expected_fingerprint:
+            raise HTTPException(status.HTTP_409_CONFLICT, "decision_context_unverifiable")
+        if expected_fingerprint != ticket_snapshot_fingerprint(current_task, current_history):
+            raise HTTPException(status.HTTP_409_CONFLICT, "decision_stale")
 
     command, duplicate = await CommandService(db).create(
         action=payload.action,

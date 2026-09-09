@@ -173,11 +173,10 @@ export default function UnifiedActionDock({
             <button
               type="button"
               onClick={() => setReplyMode('reply')}
-              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition-colors ${
-                replyMode === 'reply'
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition-colors ${replyMode === 'reply'
                   ? 'bg-white text-neutral-900 shadow-2xs dark:bg-neutral-900 dark:text-neutral-100'
                   : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
-              }`}
+                }`}
               title="Ответ будет отправлен заявителю в IntraService"
             >
               <IconGlobe size={12} />
@@ -186,15 +185,14 @@ export default function UnifiedActionDock({
             <button
               type="button"
               onClick={() => setReplyMode('internal')}
-              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition-colors ${
-                replyMode === 'internal'
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition-colors ${replyMode === 'internal'
                   ? 'bg-amber-100 text-amber-900 shadow-2xs dark:bg-amber-950 dark:text-amber-200'
                   : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
-              }`}
+                }`}
               title="Служебная заметка, видна только инженерам"
             >
               <IconLock size={12} />
-              <span>Служебный комментарий</span>
+              <span>Скрытый комментарий</span>
             </button>
           </div>
 
@@ -220,11 +218,10 @@ export default function UnifiedActionDock({
                       key={tmpl.key}
                       type="button"
                       onClick={() => handleSelectTemplate(tmpl)}
-                      className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
-                        selectedTemplateKey === tmpl.key
+                      className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${selectedTemplateKey === tmpl.key
                           ? 'bg-blue-50 font-semibold text-blue-700 dark:bg-blue-950/60 dark:text-blue-300'
                           : 'text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'
-                      }`}
+                        }`}
                     >
                       <span className="truncate">{tmpl.name}</span>
                       {tmpl.minutes && (
@@ -264,13 +261,12 @@ export default function UnifiedActionDock({
           onChange={(e) => setReplyText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Текст ответа или решения... (Ctrl+Enter для быстрой отправки)"
-          className={`w-full min-h-[115px] max-h-[280px] resize-y rounded-xl border p-3 text-xs leading-relaxed text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-neutral-100 ${
-            commentMissing
+          className={`w-full min-h-[115px] max-h-[280px] resize-y rounded-xl border p-3 text-xs leading-relaxed text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-neutral-100 ${commentMissing
               ? 'border-rose-400 bg-rose-50/20 dark:border-rose-800 dark:bg-rose-950/20'
               : replyMode === 'internal'
-              ? 'border-amber-300 bg-amber-50/40 dark:border-amber-800/80 dark:bg-amber-950/20'
-              : 'border-neutral-200 bg-neutral-50/50 dark:border-neutral-700 dark:bg-neutral-950/60'
-          }`}
+                ? 'border-amber-300 bg-amber-50/40 dark:border-amber-800/80 dark:bg-amber-950/20'
+                : 'border-neutral-200 bg-neutral-50/50 dark:border-neutral-700 dark:bg-neutral-950/60'
+            }`}
         />
 
         {replyText && (

@@ -198,7 +198,7 @@ export interface DecisionFactSummary {
 
 export interface DecisionEnvelope {
   schema_version: number;
-  decision_id?: string | null;
+  decision_id: string;
   decision_version: number;
   scenario_key: string;
   scenario_version: number;
@@ -213,10 +213,23 @@ export interface DecisionEnvelope {
   }>;
   outcome: Record<string, any>;
   policy: Record<string, any>;
-  response_draft: string;
+  analysis_state: string;
+  facts_state: string;
+  response: {
+    text: string;
+    mode: 'template' | 'llm' | 'fallback' | 'none';
+    state: 'valid' | 'fallback' | 'invalid';
+    violations: string[];
+    used_evidence_refs: string[];
+  };
+  gates: {
+    can_send_response: boolean;
+    can_execute_action: boolean;
+    requires_approval: boolean;
+    blocked_reasons: string[];
+  };
   evidence_refs: string[];
   confidence: number;
-  requires_approval: boolean;
   status: string;
 }
 

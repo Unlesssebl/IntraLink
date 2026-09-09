@@ -71,6 +71,19 @@ class ActionRegistry:
                         "printer_name": {"type": "string", "description": "Имя или модель принтера"},
                         "printer_ip": {"type": "string", "description": "IP-адрес принтера"},
                         "pc_name": {"type": "string", "description": "Целевая рабочая станция"},
+                        "printer_targets": {
+                            "type": "array",
+                            "description": "Связанные модель, адрес и тип подключения для каждого устройства",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "printer_name": {"type": "string"},
+                                    "printer_address": {"type": ["string", "null"]},
+                                    "connection_type": {"type": ["string", "null"]},
+                                },
+                                "required": ["printer_name"],
+                            },
+                        },
                     },
                     "required": ["pc_name", "printer_name"],
                 },

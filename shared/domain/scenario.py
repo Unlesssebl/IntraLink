@@ -159,21 +159,40 @@ class SynthesisProposal(StrictModel):
     response_plan: dict[str, Any] = Field(default_factory=dict)
 
 
+class DecisionResponse(StrictModel):
+    schema_version: Literal[1] = 1
+    text: str = Field(default="", max_length=900)
+    mode: Literal["template", "llm", "fallback", "none"] = "none"
+    state: Literal["valid", "fallback", "invalid"] = "invalid"
+    violations: list[str] = Field(default_factory=list)
+    used_evidence_refs: list[str] = Field(default_factory=list)
+
+
+class DecisionGates(StrictModel):
+    schema_version: Literal[1] = 1
+    can_send_response: bool = False
+    can_execute_action: bool = False
+    requires_approval: bool = False
+    blocked_reasons: list[str] = Field(default_factory=list)
+
+
 class DecisionEnvelope(StrictModel):
     schema_version: Literal[1] = 1
-    decision_id: str | None = None
+    decision_id: str
     decision_version: int = Field(default=1, ge=1)
     scenario_key: str
     scenario_version: int = Field(ge=1)
     facts_revision: int = Field(default=0, ge=0)
+    analysis_state: Literal["succeeded", "manual_review", "system_error"] = "succeeded"
+    facts_state: Literal["sufficient", "incomplete", "conflicting"] = "sufficient"
     facts_summary: dict[str, Any] = Field(default_factory=dict)
     candidates: list[CandidateOutcome] = Field(default_factory=list)
     outcome: DecisionOutcome
     policy: dict[str, Any] = Field(default_factory=dict)
-    response_draft: str = ""
+    response: DecisionResponse = Field(default_factory=DecisionResponse)
+    gates: DecisionGates = Field(default_factory=DecisionGates)
     evidence_refs: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    requires_approval: bool = False
     status: Literal[
         "proposed",
         "waiting_answer",

@@ -165,8 +165,8 @@ async def handle_batch(args: Any) -> None:
             phone = it.get("creator_phone") or "—"
             room = it.get("room") or "—"
             pc = it.get("pc_name") or "—"
-            action = it.get("suggested_action") or {}
-            envelope = it.get("decision_envelope") or action.get("_decision_envelope") or {}
+            action = {}
+            envelope = it.get("decision_envelope") or {}
             outcome = envelope.get("outcome") or {}
             scenario_key = envelope.get("scenario_key")
             conf = envelope.get("confidence") or it.get("confidence_score") or action.get("confidence") or 0.50
@@ -214,7 +214,7 @@ async def handle_batch(args: Any) -> None:
                 att_names = ", ".join(a.get("name") or a.get("FileName") or "файл" for a in attachments[:2])
                 print(f"    Вложение:   [ATTACHMENT: {att_names} -> вызовите 'скриншот {idx}']")
 
-            comment = envelope.get("response_draft") or action.get("comment")
+            comment = (envelope.get("response") or {}).get("text")
             if comment:
                 comment_text = comment.strip()
                 print(f"    Ответ заявителю:")

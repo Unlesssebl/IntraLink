@@ -112,8 +112,8 @@ async def handle_task(args: Any) -> None:
         stale_reason = analysis.get("stale_reason")
         disposition = analysis.get("disposition", "available")
 
-        action = card.get("suggested_action") or {}
-        envelope = card.get("decision_envelope") or action.get("_decision_envelope") or {}
+        action = {}
+        envelope = card.get("decision_envelope") or {}
         outcome = envelope.get("outcome") or {}
         scenario_key = envelope.get("scenario_key")
         conf = envelope.get("confidence") or card.get("confidence_score") or action.get("confidence") or 0.50
@@ -173,7 +173,7 @@ async def handle_task(args: Any) -> None:
                     print(f"  Факты (FactBag):{', '.join(fact_items)}")
             if blocked:
                 print(f"  Блокировки:     {', '.join(blocked)}")
-            comment = envelope.get("response_draft") or action.get("comment")
+            comment = (envelope.get("response") or {}).get("text")
             if comment:
                 print(f"  Комментарий:\n    {comment}\n")
             if freshness == "stale":

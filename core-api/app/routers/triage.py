@@ -45,25 +45,23 @@ from app.services.template_engine import load_templates
 from app.services.triage_service import TriageService
 from app.services.triage_session import TriageSessionManager
 from app.services.worker import get_redis_client
-from app.services.ai_suggestions import invalidate_suggestion
 from app.services.decision_journal import (
     DecisionJournalService,
     analysis_state,
-    decision_to_legacy,
     serialize_decision,
     ticket_snapshot_fingerprint,
 )
+from app.services.scenario_decision import ScenarioDecisionService
 
 from app.services.host_telemetry import (  # noqa: F401
     get_task_telemetry,
     prefetch_task_telemetry,
 )
-from app.services.ai_synthesis import synthesize_triage_resolution  # noqa: F401
 
 logger = logging.getLogger("core_api.routers.triage")
 
 router = APIRouter(
-    prefix="/api/v1/triage",
+    prefix="/api/v2/triage",
     tags=["Unified Triage Hub"],
     dependencies=[Depends(require_permission("triage:read"))],
 )
@@ -196,25 +194,20 @@ async def attach_durable_decision(
     analysis_fence: int,
     force: bool = False,
 ) -> DecisionRecord:
-    suggestion = card.get("ai_suggestion") or {}
-    record = await DecisionJournalService(db).record_triage(
+    journal = DecisionJournalService(db)
+    decision_id, decision_version = await journal.next_identity(task_id)
+    envelope = await ScenarioDecisionService(db).analyze(
+        task=card.get("task") or {},
+        comments=card.get("history") or [],
+        diagnostics=card.get("telemetry"),
+        decision_id=str(decision_id),
+        decision_version=decision_version,
+    )
+    record = await journal.record_envelope(
         task_id=task_id,
         task=card.get("task") or {},
         history=card.get("history") or [],
-        decision=card.get("suggested_action"),
-        kb_matches=card.get("kb_matches") or [],
-        ai_text=card.get("ai_suggested_resolution"),
-        ai_metadata=card.get("ai_metadata")
-        or {
-            "model": None,
-            "backend": None,
-            "circuit": card.get("circuit"),
-            "input_tokens": None,
-            "output_tokens": None,
-        },
-        policy=(card.get("suggested_action") or {}).get("_resolution_policy")
-        or suggestion.get("policy")
-        or {},
+        envelope=envelope,
         analysis_fence=analysis_fence,
         actor=actor,
         force=force,
@@ -229,12 +222,13 @@ async def attach_durable_decision(
         ).all()
     )
     card["decision"] = serialize_decision(record, steps=steps)
-    card["sources"] = record.source_json
+    card["decision_envelope"] = record.envelope_json
+    gates = (record.envelope_json or {}).get("gates") or {}
     card["readiness"] = {
-        "ready": bool(record.proposal_json.get("ready")),
-        "missing_data": record.completeness_json.get("missing_data", []),
-        "blocked_reasons": record.completeness_json.get("blocked_reasons", []),
-        "stale": suggestion.get("state") == "stale",
+        "ready": bool(gates.get("can_send_response") or gates.get("can_execute_action")),
+        "missing_data": ((record.envelope_json or {}).get("outcome") or {}).get("missing_fields", []),
+        "blocked_reasons": gates.get("blocked_reasons", []),
+        "stale": False,
     }
     card["analysis"] = analysis_state(
         record,
@@ -256,15 +250,7 @@ async def attach_existing_decision(
         task_obj = card.get("task") or {}
         tid = int(task_obj.get("Id") or (record.task_id if record else 0))
         card["telemetry"] = await get_task_telemetry(tid) if tid > 0 else None
-    card.setdefault("ai_metadata", {})
-    card.setdefault("sources", record.source_json if record else {})
-    card["suggested_action"] = decision_to_legacy(record) if record else None
-    card["decision_envelope"] = (
-        (record.proposal_json or {}).get("decision_envelope") if record else None
-    )
-    card["ai_suggested_resolution"] = (
-        (record.proposal_json or {}).get("comment") if record else None
-    )
+    card["decision_envelope"] = record.envelope_json if record else None
     journal = DecisionJournalService(db)
     last_attempt = await journal.latest_triage_attempt(
         int((card.get("task") or {}).get("Id") or (record.task_id if record else 0))
@@ -305,8 +291,8 @@ async def attach_existing_decision(
     card["decision"] = serialize_decision(record, steps=steps)
     card["readiness"] = {
         "ready": card["analysis"]["can_quick_apply"],
-        "missing_data": (record.completeness_json or {}).get("missing_data", []),
-        "blocked_reasons": (record.completeness_json or {}).get("blocked_reasons", []),
+        "missing_data": ((record.envelope_json or {}).get("outcome") or {}).get("missing_fields", []),
+        "blocked_reasons": ((record.envelope_json or {}).get("gates") or {}).get("blocked_reasons", []),
         "stale": card["analysis"]["freshness"] == "stale",
     }
     return card
@@ -380,14 +366,8 @@ async def run_explicit_analysis(
                     card=snapshot, record=existing, db=db
                 )
 
-        card = await TriageService.get_task_card_details(
-            service_auth_b64=service_auth_b64,
-            db=db,
-            task_id=task_id,
-            force=force,
-        )
-        if not card:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "ticket_not_found")
+        card = snapshot
+        card["telemetry"] = await get_task_telemetry(task_id)
         source_fingerprint = ticket_snapshot_fingerprint(
             card.get("task") or {}, card.get("history") or []
         )
@@ -521,21 +501,17 @@ async def get_triage_batch(
         )
     for item in tasks:
         record = records.get(int(item["task_id"]))
-        item["suggested_action"] = decision_to_legacy(record) if record else None
-        item["decision_envelope"] = (
-            (record.proposal_json or {}).get("decision_envelope") if record else None
-        )
+        item["decision_envelope"] = record.envelope_json if record else None
         item["analysis"] = analysis_state(
             record,
             task=item.get("task") or {},
             applied=bool(record and record.id in applied_decision_ids),
             last_attempt=all_scope_attempts.get(int(item["task_id"])),
         )
-        item["sources"] = record.source_json if record else {}
         item["readiness"] = {
             "ready": item["analysis"]["can_quick_apply"],
             "blocked_reasons": (
-                (record.completeness_json or {}).get("blocked_reasons", [])
+                ((record.envelope_json or {}).get("gates") or {}).get("blocked_reasons", [])
                 if record
                 else ["not_analyzed"]
             ),
@@ -971,11 +947,6 @@ def extract_operator_user_id(
     return None
 
 
-@router.post(
-    "/apply",
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(require_permission("triage:mutate"))],
-)
 async def apply_triage_action(
     payload: ApplyTriageRequest,
     service_auth_b64: str = Depends(get_service_auth_b64),
@@ -984,7 +955,8 @@ async def apply_triage_action(
     authorization: str | None = Header(None, alias="Authorization"),
     admin_session: str | None = Cookie(None),
 ):
-    """Атомарное применение решения к группе заявок (с защитой Dead Man's Switch)."""
+    """Removed legacy entry point; commands v2 is the only application path."""
+    raise HTTPException(status.HTTP_410_GONE, "use_api_v2_commands")
     if not payload.task_ids:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1137,7 +1109,6 @@ async def apply_triage_action(
                         },
                         actor=str(op_user_id or "operator"),
                     )
-                await invalidate_suggestion(redis, int(result["task_id"]))
 
         # Публикуем событие применения триажа в шину событий SSE
         if results and any(r.get("update_ok", False) for r in results):

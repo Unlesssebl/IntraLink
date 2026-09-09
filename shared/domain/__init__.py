@@ -20,7 +20,9 @@ from shared.domain.models import (
 from shared.domain.person import normalize_person_name, validate_person_candidate
 from shared.domain.scenario import (
     CandidateOutcome,
+    DecisionGates,
     DecisionEnvelope,
+    DecisionResponse,
     ExecutionPlan,
     FactBag,
     FactObservation,
@@ -53,7 +55,9 @@ __all__ = [
     "ValidPerson",
     "ValidationError",
     "CandidateOutcome",
+    "DecisionGates",
     "DecisionEnvelope",
+    "DecisionResponse",
     "ExecutionPlan",
     "FactBag",
     "FactObservation",

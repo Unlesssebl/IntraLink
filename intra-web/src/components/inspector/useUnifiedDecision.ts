@@ -109,8 +109,8 @@ export function useUnifiedDecision({
     const cached = sessionStorage.getItem(getDraftKey(rawId));
     if (cached !== null) return cached;
     return (
-      safeDetails?.decision_envelope?.response_draft ||
-      safeDetails?.ai_suggested_resolution ||
+      safeDetails?.decision_envelope?.response?.text ||
+      safeDetails?.decision_envelope?.response?.text ||
       ticket.aiPlan?.comment ||
       ticket.aiSuggestion ||
       ''
@@ -142,8 +142,8 @@ export function useUnifiedDecision({
       setReplyTextState(cached);
     } else {
       const init =
-        safeDetails?.decision_envelope?.response_draft ||
-        safeDetails?.ai_suggested_resolution ||
+        safeDetails?.decision_envelope?.response?.text ||
+        safeDetails?.decision_envelope?.response?.text ||
         ticket.aiPlan?.comment ||
         ticket.aiSuggestion ||
         '';
@@ -163,7 +163,7 @@ export function useUnifiedDecision({
   useEffect(() => {
     if (!safeDetails) return;
     const compiledDraft =
-      safeDetails.decision_envelope?.response_draft || safeDetails.ai_suggested_resolution;
+      safeDetails.decision_envelope?.response?.text;
     if (!compiledDraft) return;
 
     const cached = sessionStorage.getItem(getDraftKey(rawId));
@@ -176,8 +176,8 @@ export function useUnifiedDecision({
       setReplyTextState(compiledDraft);
     }
   }, [
-    safeDetails?.decision_envelope?.response_draft,
-    safeDetails?.ai_suggested_resolution,
+    safeDetails?.decision_envelope?.response?.text,
+    safeDetails?.decision_envelope?.response?.text,
     rawId,
     getDraftKey,
     ticket.aiPlan?.comment,
@@ -401,7 +401,7 @@ export function useUnifiedDecision({
       if (onRefreshDetails) {
         await onRefreshDetails(updated);
       }
-      const newDraft = updated.decision_envelope?.response_draft || updated.ai_suggested_resolution;
+      const newDraft = updated.decision_envelope?.response?.text;
       if (newDraft) {
         if (!replyText.trim()) {
           setReplyText(newDraft);
@@ -434,7 +434,7 @@ export function useUnifiedDecision({
       if (onRefreshDetails) {
         await onRefreshDetails(updated);
       }
-      const newDraft = updated.decision_envelope?.response_draft || updated.ai_suggested_resolution;
+      const newDraft = updated.decision_envelope?.response?.text;
       if (newDraft) {
         if (!replyText.trim()) {
           setReplyText(newDraft);
@@ -470,8 +470,8 @@ export function useUnifiedDecision({
           current_draft_text: replyText,
         });
 
-        if (res.decision_envelope?.response_draft && !replyText.trim()) {
-          setReplyText(res.decision_envelope.response_draft);
+        if (res.decision_envelope?.response?.text && !replyText.trim()) {
+          setReplyText(res.decision_envelope.response.text);
         }
 
         if (onRefreshDetails) {

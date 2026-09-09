@@ -1226,7 +1226,7 @@ export function mapTaskToTicket(task: TaskItem): Ticket {
 
 
 
-    const comment = envelope.response_draft || outcome.comment || task.suggested_comment || aiPlan.comment;
+    const comment = envelope.response?.text || outcome.comment || aiPlan.comment;
 
 
 
@@ -1567,7 +1567,7 @@ export async function fetchQueue(filterId = 984, limit = 50, includeRag = false)
 
 
 
-  const data = await apiFetch<any>(`/api/v1/triage/batch?filter_id=${filterId}&limit=${limit}&include_rag=${includeRag}`);
+  const data = await apiFetch<any>(`/api/v2/triage/batch?filter_id=${filterId}&limit=${limit}&include_rag=${includeRag}`);
 
 
 
@@ -2153,7 +2153,7 @@ export async function fetchTaskDetails(
 
   const reqPromise = (async () => {
     try {
-      const data = await apiFetch<any>(`/api/v1/triage/tasks/${taskId}`);
+      const data = await apiFetch<any>(`/api/v2/triage/tasks/${taskId}`);
       const normalized = normalizeTaskDetailsData(data);
       setCachedTaskDetails(taskId, normalized);
       return normalized;
@@ -2178,7 +2178,7 @@ export async function analyzeTask(taskId: number): Promise<TaskDetails> {
 
 
 
-  const data = await apiFetch<any>(`/api/v1/triage/tasks/${taskId}/analyze`, {
+  const data = await apiFetch<any>(`/api/v2/triage/tasks/${taskId}/analyze`, {
 
 
 
@@ -2207,7 +2207,7 @@ export async function reanalyzeTask(taskId: number): Promise<TaskDetails> {
 
 
 
-  const data = await apiFetch<any>(`/api/v1/triage/tasks/${taskId}/reanalyze`, {
+  const data = await apiFetch<any>(`/api/v2/triage/tasks/${taskId}/reanalyze`, {
 
 
 
@@ -3749,18 +3749,18 @@ export async function triggerQueueAnalysis(taskIds?: number[]): Promise<AnalyzeB
     );
   }
 
-  return apiFetch<AnalyzeBatchResponse>('/api/v1/triage/analyze-batch', {
+  return apiFetch<AnalyzeBatchResponse>('/api/v2/triage/analyze-batch', {
     method: 'POST',
     body: JSON.stringify(cleanIds && cleanIds.length > 0 ? { task_ids: cleanIds } : {}),
   });
 }
 
 export async function getBatchStatus(batchId: string): Promise<BatchStatusResponse> {
-  return apiFetch<BatchStatusResponse>(`/api/v1/triage/analyze-batch/${encodeURIComponent(batchId)}`);
+  return apiFetch<BatchStatusResponse>(`/api/v2/triage/analyze-batch/${encodeURIComponent(batchId)}`);
 }
 
 export async function cancelBatch(batchId: string): Promise<CancelBatchResponse> {
-  return apiFetch<CancelBatchResponse>(`/api/v1/triage/analyze-batch/${encodeURIComponent(batchId)}/cancel`, {
+  return apiFetch<CancelBatchResponse>(`/api/v2/triage/analyze-batch/${encodeURIComponent(batchId)}/cancel`, {
     method: 'POST',
   });
 }

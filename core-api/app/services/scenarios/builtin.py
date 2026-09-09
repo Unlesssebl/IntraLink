@@ -88,6 +88,27 @@ def _printer_install_match(context: ScenarioContext) -> tuple[bool, float, str]:
     return matched, 0.94 if matched else 0.0, reason
 
 
+def _printer_failure_match(kind: str) -> Matcher:
+    def matcher(context: ScenarioContext) -> tuple[bool, float, str]:
+        text = _text(context)
+        has_device = any(token in text for token in ("принтер", "мфу", "плоттер", "сканер"))
+        business_document = any(
+            token in text
+            for token in ("ттн", "доверенност", "подпис", "оплат", "в программе тис")
+        )
+        if not has_device or business_document:
+            return False, 0.0, ""
+        patterns = {
+            "printer_hardware_service": ("вызовите сервис", "сбой аппарата", "c7990", "с7990", "замят"),
+            "printer_scan_failure": ("не сканирует", "скан не", "ошибка скан", "сканер"),
+            "printer_print_failure": ("не печатает", "нет принтера", "очередь", "без остановки", "не принимает задания"),
+        }
+        found = [token for token in patterns[kind] if token in text]
+        return bool(found), 0.96 if found else 0.0, ",".join(found)
+
+    return matcher
+
+
 def _redirect_match(context: ScenarioContext) -> tuple[bool, float, str]:
     redirect = detect_service_redirect(context.task)
     if redirect:
@@ -188,6 +209,30 @@ class FactActionScenario(RuleBackedScenario):
         )
 
 
+class PrinterInstallScenario(FactActionScenario):
+    def requirements(
+        self, context: ScenarioContext
+    ) -> tuple[FactRequirement, ...]:
+        requirements = [
+            FactRequirement(key="pc_name", clarification_key="clarify_pc_name"),
+            FactRequirement(key="printer_name", clarification_key="clarify_printer_name"),
+        ]
+        if context.facts.valid_value("printer_connection_type") not in {"usb"}:
+            requirements.append(
+                FactRequirement(
+                    key="printer_address", clarification_key="clarify_printer_address"
+                )
+            )
+        return tuple(requirements)
+
+    def decide(self, context: ScenarioContext) -> DecisionOutcome:
+        outcome = super().decide(context)
+        targets = context.facts.valid_value("printer_targets", [])
+        if isinstance(outcome, ActionProposed) and targets:
+            outcome.parameters["printer_targets"] = targets
+        return outcome
+
+
 def built_in_scenarios() -> tuple[Scenario, ...]:
     return (
         RuleBackedScenario(
@@ -199,6 +244,36 @@ def built_in_scenarios() -> tuple[Scenario, ...]:
             ),
             _redirect_match,
             ServiceRedirectRule,
+        ),
+        RuleBackedScenario(
+            ScenarioDefinition(
+                key="printer_hardware_service",
+                version=1,
+                risk_level=0,
+                allowed_actions=["apply_triage"],
+            ),
+            _printer_failure_match("printer_hardware_service"),
+            StandardInWorkRule,
+        ),
+        RuleBackedScenario(
+            ScenarioDefinition(
+                key="printer_scan_failure",
+                version=1,
+                risk_level=0,
+                allowed_actions=["apply_triage"],
+            ),
+            _printer_failure_match("printer_scan_failure"),
+            StandardInWorkRule,
+        ),
+        RuleBackedScenario(
+            ScenarioDefinition(
+                key="printer_print_failure",
+                version=1,
+                risk_level=0,
+                allowed_actions=["apply_triage"],
+            ),
+            _printer_failure_match("printer_print_failure"),
+            StandardInWorkRule,
         ),
         RuleBackedScenario(
             ScenarioDefinition(
@@ -262,7 +337,7 @@ def built_in_scenarios() -> tuple[Scenario, ...]:
                 "printer_ip": "printer_address",
             },
         ),
-        FactActionScenario(
+        PrinterInstallScenario(
             ScenarioDefinition(
                 key="install_printer",
                 version=2,

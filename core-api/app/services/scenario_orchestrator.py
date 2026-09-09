@@ -77,15 +77,14 @@ class CommandDispatcher:
         task: dict[str, Any],
         comments: list[dict[str, Any]],
     ) -> CommandRecord:
-        decision = await DecisionJournalService(self.db).record_operational(
+        decision = await DecisionJournalService(self.db).record_envelope(
             task_id=run.task_id,
             ticket_run_id=run.id,
-            action=action,
-            target=target,
-            parameters=parameters,
+            envelope=envelope,
             actor=actor,
             task=task,
             history=comments,
+            force=True,
         )
         command, _duplicate = await CommandService(self.db).create_record(
             action=action,

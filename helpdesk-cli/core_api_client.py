@@ -59,7 +59,7 @@ class CoreApiClient:
     ) -> dict[str, Any]:
         """Получает подготовленную пачку заявок с авто-рекомендациями от Core API."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/triage/batch"
+        url = f"{self.base_url}/api/v2/triage/batch"
         params: dict[str, Any] = {
             "filter_id": filter_id,
             "limit": limit,
@@ -88,7 +88,7 @@ class CoreApiClient:
     async def get_task_details(self, task_id: int) -> dict[str, Any] | None:
         """Получает детальную карточку задачи от Core API."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/triage/tasks/{task_id}"
+        url = f"{self.base_url}/api/v2/triage/tasks/{task_id}"
         async with session.get(url) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -101,7 +101,7 @@ class CoreApiClient:
     async def get_task_card(self, task_id: int) -> dict[str, Any] | None:
         """Получает полную карточку (задача + история + RAG + рекомендация)."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/triage/tasks/{task_id}"
+        url = f"{self.base_url}/api/v2/triage/tasks/{task_id}"
         async with session.get(url) as resp:
             if resp.status == 200:
                 return await resp.json()
@@ -110,7 +110,7 @@ class CoreApiClient:
     async def analyze_task(self, task_id: int) -> dict[str, Any] | None:
         """Запускает первичный анализ задачи через POST /api/v1/triage/tasks/{task_id}/analyze."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/triage/tasks/{task_id}/analyze"
+        url = f"{self.base_url}/api/v2/triage/tasks/{task_id}/analyze"
         async with session.post(url) as resp:
             if resp.status == 200:
                 return await resp.json()
@@ -123,7 +123,7 @@ class CoreApiClient:
     async def reanalyze_task(self, task_id: int) -> dict[str, Any] | None:
         """Запускает принудительный повторный анализ задачи через POST /api/v1/triage/tasks/{task_id}/reanalyze."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/triage/tasks/{task_id}/reanalyze"
+        url = f"{self.base_url}/api/v2/triage/tasks/{task_id}/reanalyze"
         async with session.post(url) as resp:
             if resp.status == 200:
                 return await resp.json()
@@ -149,27 +149,24 @@ class CoreApiClient:
         decision_id: str | None = None,
         decision_version: int | None = None,
     ) -> bool:
-        """Атомарно применяет решение к списку задач через Core API."""
+        """Создаёт только версионированные Command v2; legacy apply удалён."""
+        if dry_run or len(task_ids) != 1 or not decision_id or decision_version is None:
+            logger.error("Command v2 requires one task and decision_id/decision_version")
+            return False
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/triage/apply"
+        url = f"{self.base_url}/api/v2/commands"
         payload: dict[str, Any] = {
-            "task_ids": task_ids,
-            "status_id": status_id,
-            "comment": comment,
-            "expenses": expenses,
-            "executor_ids": executor_ids,
-            "dry_run": dry_run,
+            "action": "apply_triage",
+            "target": {"task_id": task_ids[0]},
+            "parameters": {"task_ids": task_ids, "status_id": status_id, "comment": comment,
+                           "expenses": expenses, "executor_ids": executor_ids},
+            "source": "cli",
+            "decision_id": decision_id,
+            "decision_version": decision_version,
         }
-        if decision_id:
-            payload["decision_id"] = decision_id
-        if decision_version is not None:
-            payload["decision_version"] = decision_version
-
-        async with session.post(url, json=payload) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                results = data.get("results", [])
-                return all(r.get("status") == "success" for r in results)
+        async with session.post(url, json=payload, headers={"Idempotency-Key": str(uuid.uuid4())}) as resp:
+            if resp.status in {200, 201, 202}:
+                return True
             err_text = await resp.text()
             logger.error(
                 "Ошибка apply_decision (HTTP %d): %s", resp.status, err_text
@@ -181,7 +178,7 @@ class CoreApiClient:
     ) -> list[dict[str, Any]]:
         """Получает список обнаруженных дубликатов."""
         session = await self._get_session()
-        url = f"{self.base_url}/api/v1/triage/duplicates"
+        url = f"{self.base_url}/api/v2/triage/duplicates"
         params = {"filter_id": filter_id, "limit": limit}
         async with session.get(url, params=params) as resp:
             if resp.status == 200:

@@ -650,12 +650,11 @@ class TriageService:
                 comments=history,
                 diagnostics=rule_diag,
                 kb_matches=kb_matches,
-                generated_response=ai_resolution,
                 decision_version=int((decision or {}).get("version") or 1),
             )
             compiled_legacy = envelope_to_legacy(envelope)
             decision = {**(decision or {}), **compiled_legacy}
-            ai_resolution = envelope.response_draft
+            ai_resolution = envelope.response.text
             decision_envelope = envelope.model_dump(mode="json")
             decision["_decision_envelope"] = decision_envelope
             card_confidence = envelope.confidence

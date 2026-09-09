@@ -21,6 +21,10 @@ def _normalize_pc(value: Any) -> str:
     return normalize_pc_name(raw) or raw.upper()
 
 
+def _identity(value: Any) -> Any:
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class FactSpec:
     key: str
@@ -84,9 +88,11 @@ def _build_default_registry() -> FactRegistry:
     for key in (
         "printer_address",
         "printer_name",
+        "printer_connection_type",
         "file_path",
         "identity",
         "clarification_answer",
+        "attachments_state",
     ):
         registry.register(
             FactSpec(
@@ -97,6 +103,9 @@ def _build_default_registry() -> FactRegistry:
                 clarification_key=f"clarify_{key}",
             )
         )
+    registry.register(
+        FactSpec(key="printer_targets", normalizer=_identity, allow_llm=False)
+    )
     registry.register(FactSpec(key="issue_summary"))
     return registry
 

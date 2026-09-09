@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.database.db import DecisionFeedback, DecisionRecord, DecisionStep
-from app.services.ai_suggestions import action_for_decision, missing_data_for_decision
+from shared.domain import DecisionEnvelope
 
 
 SECRET_KEY_RE = re.compile(
@@ -161,42 +161,6 @@ def triage_context_fingerprint(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def decision_to_legacy(record: DecisionRecord) -> dict[str, Any] | None:
-    """Build the compatibility recommendation without recalculating it."""
-    proposal = record.proposal_json or {}
-    if not proposal:
-        return None
-    envelope = proposal.get("decision_envelope") or {}
-    policy = record.policy_json or {}
-    scenario_key = envelope.get("scenario_key") or record.source_json.get("rule_key")
-    status_id = (
-        proposal.get("status_id")
-        or policy.get("target_status_id")
-        or policy.get("status_id")
-    )
-    status_name = (
-        proposal.get("status_name")
-        or policy.get("target_status_name")
-        or policy.get("status_name")
-    )
-    return {
-        "name": proposal.get("title") or scenario_key,
-        "comment": proposal.get("comment"),
-        "status_id": status_id,
-        "target_status_id": status_id,
-        "status_name": status_name,
-        "target_status_name": status_name,
-        "expenses": proposal.get("expenses"),
-        "action": proposal.get("action"),
-        "action_parameters": proposal.get("action_parameters"),
-        "scenario_key": scenario_key,
-        "rule_type": (envelope.get("outcome") or {}).get("rule_key") or scenario_key,
-        "template_key": policy.get("template_key") or scenario_key,
-        "_decision_envelope": envelope or None,
-        "_resolution_policy": policy,
-    }
-
-
 def analysis_state(
     record: DecisionRecord | None,
     *,
@@ -216,7 +180,7 @@ def analysis_state(
     if last_attempt is not None:
         attempt_payload = {
             "state": "failed" if last_attempt.status == "failed" else "succeeded",
-            "error_code": (last_attempt.completeness_json or {}).get("error_code"),
+            "error_code": (last_attempt.envelope_json or {}).get("error_code"),
             "finished_at": (
                 last_attempt.finalized_at or last_attempt.created_at
             ).isoformat()
@@ -243,10 +207,15 @@ def analysis_state(
             "last_attempt": attempt_payload,
         }
 
-    proposal = record.proposal_json or {}
     context = record.context_json or {}
-    envelope = proposal.get("decision_envelope") or {}
-    ready = record.status == "finalized" and bool(proposal.get("ready"))
+    envelope = record.envelope_json or {}
+    gates = envelope.get("gates") or {}
+    response = envelope.get("response") or {}
+    ready = (
+        record.status == "finalized"
+        and response.get("state") in {"valid", "fallback"}
+        and bool(gates.get("can_send_response") or gates.get("can_execute_action"))
+    )
     stale_reason = None
     if not freshness_known or task is None:
         freshness = "unknown"
@@ -295,8 +264,7 @@ def analysis_state(
         "disposition": disposition,
         "decision_id": str(record.id),
         "decision_version": record.version,
-        "scenario_key": envelope.get("scenario_key")
-        or record.source_json.get("rule_key"),
+        "scenario_key": envelope.get("scenario_key"),
         "analyzed_at": (record.finalized_at or record.created_at).isoformat()
         if (record.finalized_at or record.created_at)
         else None,
@@ -337,11 +305,8 @@ def serialize_decision(
         "status": record.status,
         "outcome": record.outcome,
         "fingerprint": record.context_fingerprint,
-        "sources": record.source_json,
         "context": record.context_json,
-        "completeness": record.completeness_json,
-        "proposal": record.proposal_json,
-        "policy": record.policy_json,
+        "decision_envelope": record.envelope_json,
         "created_by": record.created_by,
         "created_at": record.created_at.isoformat() if record.created_at else None,
         "finalized_at": record.finalized_at.isoformat()
@@ -372,6 +337,121 @@ def serialize_decision(
 class DecisionJournalService:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    async def next_identity(self, task_id: int) -> tuple[uuid.UUID, int]:
+        previous_version = await self.db.scalar(
+            select(func.max(DecisionRecord.version)).where(
+                DecisionRecord.task_id == task_id
+            )
+        )
+        return uuid.uuid4(), int(previous_version or 0) + 1
+
+    async def record_envelope(
+        self,
+        *,
+        task_id: int,
+        task: dict[str, Any],
+        history: list[dict[str, Any]] | None,
+        envelope: DecisionEnvelope,
+        steps: list[dict[str, Any]] | None = None,
+        ticket_run_id: uuid.UUID | None = None,
+        analysis_fence: int | None = None,
+        actor: str = "system:triage",
+        force: bool = False,
+    ) -> DecisionRecord:
+        history = history or []
+        fingerprint = triage_context_fingerprint(task, history)
+        if not force:
+            existing = await self.db.scalar(
+                select(DecisionRecord).where(
+                    DecisionRecord.task_id == task_id,
+                    DecisionRecord.context_fingerprint == fingerprint,
+                    DecisionRecord.analysis_kind == "triage",
+                )
+            )
+            if existing is not None:
+                return existing
+
+        previous = await self.db.scalar(
+            select(DecisionRecord)
+            .where(DecisionRecord.task_id == task_id)
+            .order_by(DecisionRecord.version.desc())
+            .limit(1)
+        )
+        used_history, omitted_history = _history_context(history)
+        attachments = task.get("Attachments") or task.get("attachments") or []
+        record_id = uuid.UUID(envelope.decision_id)
+        record = DecisionRecord(
+            id=record_id,
+            task_id=task_id,
+            ticket_run_id=ticket_run_id,
+            previous_decision_id=previous.id if previous else None,
+            version=envelope.decision_version,
+            analysis_kind="triage",
+            status=("failed" if envelope.analysis_state == "system_error" else "finalized"),
+            outcome=envelope.outcome.kind,
+            context_fingerprint=(
+                hashlib.sha256(f"{fingerprint}:forced:{record_id}".encode()).hexdigest()
+                if force
+                else fingerprint
+            ),
+            context_json=sanitize_payload(
+                {
+                    "task": task,
+                    "ticket_fingerprint": ticket_snapshot_fingerprint(task, history),
+                    "ticket_fingerprint_task": ticket_snapshot_fingerprint(task, []),
+                    "analysis_revision": settings.ANALYSIS_REVISION,
+                    "analysis_fence": analysis_fence,
+                    "history_used": used_history,
+                    "history_omitted_ids": omitted_history,
+                    "history_limit": 5,
+                    "attachments": [
+                        {
+                            "id": item.get("Id") or item.get("id"),
+                            "name": item.get("Name") or item.get("name"),
+                            "state": "available",
+                        }
+                        for item in attachments
+                        if isinstance(item, dict)
+                    ],
+                }
+            ),
+            envelope_json=sanitize_payload(envelope.model_dump(mode="json")),
+            created_by=actor,
+            finalized_at=dt.datetime.now(dt.timezone.utc),
+        )
+        self.db.add(record)
+        await self.db.flush()
+        for sequence, item in enumerate(steps or [], start=1):
+            self.db.add(
+                DecisionStep(
+                    decision_id=record.id,
+                    sequence=sequence,
+                    component=str(item.get("component") or "pipeline"),
+                    status=str(item.get("status") or "succeeded"),
+                    input_json=sanitize_payload(item.get("input") or {}),
+                    output_json=sanitize_payload(item.get("output") or {}),
+                    metadata_json=sanitize_payload(item.get("metadata") or {}),
+                    error_code=item.get("error_code"),
+                    duration_ms=item.get("duration_ms"),
+                )
+            )
+        try:
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()
+            existing = await self.db.scalar(
+                select(DecisionRecord).where(
+                    DecisionRecord.task_id == task_id,
+                    DecisionRecord.context_fingerprint == fingerprint,
+                    DecisionRecord.analysis_kind == "triage",
+                )
+            )
+            if existing is None:
+                raise
+            return existing
+        await self.db.refresh(record)
+        return record
 
     async def record_triage(
         self,
@@ -618,7 +698,6 @@ class DecisionJournalService:
             status="failed",
             outcome="no_solution",
             context_fingerprint=fingerprint,
-            source_json={"rule": False, "rag": False, "ai": False},
             context_json=sanitize_payload(
                 {
                     "task": task,
@@ -627,14 +706,16 @@ class DecisionJournalService:
                     "analysis_revision": settings.ANALYSIS_REVISION,
                 }
             ),
-            completeness_json={
-                "complete": False,
-                "missing_data": [],
-                "blocked_reasons": [error_code],
+            envelope_json={
+                "analysis_state": "system_error",
                 "error_code": error_code,
+                "gates": {
+                    "can_send_response": False,
+                    "can_execute_action": False,
+                    "requires_approval": False,
+                    "blocked_reasons": [error_code],
+                },
             },
-            proposal_json={},
-            policy_json={},
             created_by=actor,
             finalized_at=now,
         )
@@ -755,8 +836,13 @@ class DecisionJournalService:
             != settings.ANALYSIS_REVISION
         ):
             raise HTTPException(status.HTTP_409_CONFLICT, "decision_stale")
-        if record.completeness_json.get("complete") is False:
-            raise HTTPException(status.HTTP_409_CONFLICT, "decision_incomplete")
+        envelope = record.envelope_json or {}
+        response = envelope.get("response") or {}
+        gates = envelope.get("gates") or {}
+        if response.get("state") not in {"valid", "fallback"}:
+            raise HTTPException(status.HTTP_409_CONFLICT, "decision_response_invalid")
+        if not (gates.get("can_send_response") or gates.get("can_execute_action")):
+            raise HTTPException(status.HTTP_409_CONFLICT, "decision_blocked")
         return record
 
     async def latest_triage(self, task_id: int) -> DecisionRecord | None:

@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/v2", tags=["Decision journal"])
 
 
 class FeedbackRequest(BaseModel):
-    verdict: Literal["accepted", "modified", "rejected", "correct", "partial", "incorrect", "insufficient_data"]
+    verdict: Literal["correct", "partial", "incorrect", "insufficient_data"]
     reason_code: str | None = Field(None, max_length=64)
     comment: str | None = Field(None, max_length=2_000)
     final_action: dict[str, Any] = Field(default_factory=dict)
@@ -221,7 +221,7 @@ async def override_task_facts(
             trigger_key=f"task:{task_id}:override:{uuid.uuid4().hex[:8]}",
             trigger_snapshot_json={"source": "operator_override", "actor": actor},
             current_step="operator_override",
-            scenario_key=card.get("suggested_action", {}).get("scenario_key") or "clarification",
+            scenario_key=(card.get("decision_envelope") or {}).get("scenario_key") or "consultation",
             scenario_version=1,
             fact_revision=0,
             decision_version=0,
@@ -253,8 +253,7 @@ async def override_task_facts(
         comments=card.get("history") or [],
         diagnostics=card.get("telemetry"),
         kb_matches=card.get("kb_matches"),
-        legacy_decision=card.get("suggested_action"),
-        generated_response=payload.current_draft_text or card.get("ai_suggested_resolution"),
+        decision_id=str(uuid.uuid4()),
         fact_revision=run.fact_revision + 1,
         decision_version=next_decision_version,
         observations=[*all_observations, *fresh_observations],

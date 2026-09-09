@@ -9,10 +9,15 @@ from typing import Any
 from shared.domain import (
     ActionProposed,
     CandidateOutcome,
+    ClarificationRequired,
     DecisionEnvelope,
+    DecisionGates,
+    DecisionResponse,
     FactBag,
     FactSensitivity,
     FactState,
+    ManualReviewRequired,
+    NoMatch,
     SynthesisProposal,
 )
 
@@ -168,8 +173,8 @@ class DecisionCompiler:
         facts: FactBag,
         candidates: list[CandidateOutcome],
         policy: dict[str, Any] | None = None,
-        response_draft: str = "",
-        decision_id: str | None = None,
+        response: DecisionResponse | None = None,
+        decision_id: str,
         decision_version: int = 1,
         service_id: int | None = None,
     ) -> DecisionEnvelope:
@@ -191,6 +196,51 @@ class DecisionCompiler:
                     selected = verified
 
         resolved_policy = policy or {}
+        response_artifact = response or DecisionResponse()
+        missing_or_invalid = [
+            key
+            for key, fact in facts.facts.items()
+            if fact.state
+            in {
+                FactState.MISSING,
+                FactState.INVALID,
+                FactState.AMBIGUOUS,
+                FactState.CONFLICTING,
+                FactState.STALE,
+            }
+        ]
+        if isinstance(selected.outcome, ClarificationRequired):
+            missing_or_invalid.extend(selected.outcome.missing_fields)
+            missing_or_invalid.extend(selected.outcome.invalid_fields)
+        facts_state = (
+            "conflicting"
+            if any(
+                fact.state in {FactState.CONFLICTING, FactState.INVALID}
+                for fact in facts.facts.values()
+            )
+            else "incomplete"
+            if missing_or_invalid
+            else "sufficient"
+        )
+        is_manual = isinstance(selected.outcome, (ManualReviewRequired, NoMatch))
+        can_send = response_artifact.state in {"valid", "fallback"} and not is_manual
+        can_execute = (
+            isinstance(selected.outcome, ActionProposed)
+            and facts_state == "sufficient"
+            and response_artifact.state in {"valid", "fallback"}
+        )
+        blocked_reasons: list[str] = []
+        if response_artifact.state == "invalid":
+            blocked_reasons.append("response_invalid")
+        if is_manual:
+            blocked_reasons.append("manual_review")
+        if isinstance(selected.outcome, ClarificationRequired):
+            blocked_reasons.extend(
+                f"missing_fact:{field}" for field in selected.outcome.missing_fields
+            )
+            blocked_reasons.extend(
+                f"invalid_fact:{field}" for field in selected.outcome.invalid_fields
+            )
         return DecisionEnvelope(
             decision_id=decision_id,
             decision_version=decision_version,
@@ -201,11 +251,23 @@ class DecisionCompiler:
             candidates=eligible,
             outcome=selected.outcome,
             policy=resolved_policy,
-            response_draft=response_draft,
+            response=response_artifact,
+            gates=DecisionGates(
+                can_send_response=can_send,
+                can_execute_action=can_execute,
+                requires_approval=bool(resolved_policy.get("requires_approval")),
+                blocked_reasons=blocked_reasons,
+            ),
+            analysis_state="manual_review" if is_manual else "succeeded",
+            facts_state=facts_state,
             evidence_refs=outcome_evidence_refs(selected),
             confidence=self._confidence(selected, facts),
-            requires_approval=bool(resolved_policy.get("requires_approval")),
             status=(
+                "manual_review"
+                if is_manual or response_artifact.state == "invalid"
+                else "waiting_answer"
+                if isinstance(selected.outcome, ClarificationRequired)
+                else
                 "waiting_approval"
                 if resolved_policy.get("requires_approval")
                 else "proposed"

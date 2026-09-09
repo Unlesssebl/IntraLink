@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from typing import Any
+import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,13 +13,19 @@ from shared.domain import (
     CandidateOutcome,
     ClarificationRequired,
     DecisionEnvelope,
-    DecisionOutcomeAdapter,
     FactObservation,
     FactState,
 )
 
-from app.services.decision_compiler import DecisionCompiler, outcome_evidence_refs
+from app.services.ai.hub import ai_hub
+from app.services.ai.schemas import RoutedInferenceRequest, RoutingMetadata
+from app.services.decision_compiler import (
+    DecisionCompiler,
+    outcome_evidence_refs,
+    redacted_fact_summary,
+)
 from app.services.facts import merge_observations
+from app.services.response_guard import GeneratedResponse, guarded_response
 from app.services.resolution_service import ResolutionUnavailable
 from app.services.scenario_pipeline import (
     FactCollectionPlanner,
@@ -38,6 +46,54 @@ class ScenarioDecisionService:
         self.policy_resolver = PolicyResolver(db)
         self.response_composer = ResponseComposer()
 
+    @staticmethod
+    async def _generate_low_risk_response(
+        *,
+        policy_comment: str,
+        outcome_kind: str,
+        facts_summary: dict[str, Any],
+        evidence_refs: list[str],
+        service_id: int | None,
+    ) -> GeneratedResponse | None:
+        safe_facts = {
+            key: value
+            for key, value in facts_summary.items()
+            if isinstance(value, dict)
+            and value.get("state") == "valid"
+            and value.get("value") not in (None, "", "<redacted>")
+        }
+        payload = {
+            "policy_text": policy_comment,
+            "outcome_kind": outcome_kind,
+            "confirmed_facts": safe_facts,
+            "allowed_evidence_refs": evidence_refs,
+            "constraints": [
+                "Rewrite only the supplied policy text in concise professional Russian",
+                "Do not claim that an action was completed or checked",
+                "Do not add identifiers, technical values, instructions, or historical cases",
+                "Return only JSON matching the schema",
+            ],
+        }
+        try:
+            response = await ai_hub.dispatch_routed_inference(
+                RoutedInferenceRequest(
+                    prompt=json.dumps(payload, ensure_ascii=False),
+                    system_prompt=(
+                        "Ты редактируешь безопасный готовый текст Helpdesk. "
+                        "Не добавляй факты и не меняй смысл решения."
+                    ),
+                    metadata=RoutingMetadata(service_id=service_id),
+                    temperature=0.0,
+                    max_tokens=800,
+                    response_schema=GeneratedResponse.model_json_schema(),
+                )
+            )
+            if response is None:
+                return None
+            return GeneratedResponse.model_validate_json(response.text)
+        except (ValueError, TypeError):
+            return None
+
     async def analyze(
         self,
         *,
@@ -45,8 +101,6 @@ class ScenarioDecisionService:
         comments: list[dict[str, Any]] | None = None,
         diagnostics: dict[str, Any] | None = None,
         kb_matches: list[dict[str, Any]] | None = None,
-        legacy_decision: dict[str, Any] | None = None,
-        generated_response: str | None = None,
         fact_revision: int = 0,
         decision_id: str | None = None,
         decision_version: int = 1,
@@ -63,6 +117,17 @@ class ScenarioDecisionService:
             # keeps one decision bound to one immutable fact snapshot.
             observations = list(observations)
         facts = merge_observations(observations, revision=fact_revision)
+        printer_targets = facts.valid_value("printer_targets", [])
+        printer_address = facts.valid_value("printer_address")
+        if (
+            isinstance(printer_targets, list)
+            and len(printer_targets) == 1
+            and isinstance(printer_targets[0], dict)
+            and not printer_targets[0].get("printer_address")
+            and printer_address
+        ):
+            printer_targets[0]["printer_address"] = printer_address
+            printer_targets[0]["connection_type"] = "network"
         scenario_task = deepcopy(task)
         person_keys = (
             "surname",
@@ -116,6 +181,15 @@ class ScenarioDecisionService:
             and facts.facts[requirement.key].state
             in {FactState.INVALID, FactState.AMBIGUOUS, FactState.CONFLICTING, FactState.STALE}
         ]
+        if scenario.definition.key == "install_printer":
+            printer_targets = facts.valid_value("printer_targets", [])
+            if isinstance(printer_targets, list) and any(
+                isinstance(target, dict)
+                and target.get("connection_type") != "usb"
+                and not target.get("printer_address")
+                for target in printer_targets
+            ):
+                invalid.append("printer_targets")
 
         if missing or invalid:
             outcome = ClarificationRequired(
@@ -156,23 +230,30 @@ class ScenarioDecisionService:
         candidate.evidence_refs = outcome_evidence_refs(candidate)
 
         policy: dict[str, Any] = {}
-        response_draft = generated_response or ""
         outcome_key = getattr(outcome, "outcome_key", None)
         kind = getattr(outcome, "kind", None)
         if outcome_key and kind in {"clarification", "action", "resolution"}:
             try:
                 policy = await self.policy_resolver.resolve(outcome)
-                response_draft = self.response_composer.compose(
-                    scenario_risk=scenario.definition.risk_level,
-                    outcome=outcome,
-                    policy=policy,
-                    generated_response=response_draft,
-                )
             except ResolutionUnavailable as exc:
                 policy = {"resolution_error": str(exc), "requires_approval": False}
-                response_draft = (
-                    "Решение требует ручной проверки: конфигурация ответа недоступна."
-                )
+        facts_summary = redacted_fact_summary(facts)
+        policy_comment = str(policy.get("comment") or "").strip()
+        generated = None
+        if scenario.definition.risk_level <= 1 and policy_comment:
+            generated = await self._generate_low_risk_response(
+                policy_comment=policy_comment,
+                outcome_kind=str(kind or "manual_review"),
+                facts_summary=facts_summary,
+                evidence_refs=candidate.evidence_refs,
+                service_id=task.get("ServiceId") or task.get("service_id"),
+            )
+        response = guarded_response(
+            generated=generated,
+            template_text=policy_comment,
+            allowed_evidence_refs=candidate.evidence_refs,
+            facts_summary=facts_summary,
+        )
 
         return await self.compiler.compile(
             scenario_key=scenario.definition.key,
@@ -182,8 +263,8 @@ class ScenarioDecisionService:
             facts=facts,
             candidates=[candidate],
             policy=policy,
-            response_draft=response_draft,
-            decision_id=decision_id,
+            response=response,
+            decision_id=decision_id or str(uuid.uuid4()),
             decision_version=decision_version,
             service_id=task.get("ServiceId") or task.get("service_id"),
         )

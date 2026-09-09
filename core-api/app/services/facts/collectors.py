@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from shared.domain import FactObservation, FactSource, FactState, PersonCandidate, validate_person_candidate
-from shared.normalizer import extract_pc_names_from_text
+from shared.normalizer import extract_pc_names_from_text, is_valid_pc_name
 
 from app.config import settings
 from app.services.fact_extractor import enrich_task_with_extracted_facts
@@ -29,6 +29,57 @@ PERSON_FIELD_IDS: dict[str, tuple[str, ...]] = {
 }
 IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 UNC_RE = re.compile(r"\\\\[^\s\\]+\\[^\s]+")
+PRINTER_MODEL_RE = re.compile(
+    r"\b(?:HP|Canon|Kyocera|Samsung|Xerox|Epson|Brother|Ricoh|Pantum|LaserJet|ECOSYS|COMPA)"
+    r"[^,;\r\n()]{0,48}",
+    re.IGNORECASE,
+)
+
+
+def _clean_printer_model(value: str) -> str:
+    value = IP_RE.sub("", value)
+    value = re.split(r"\s+(?:к|на)\s+компьютер", value, maxsplit=1, flags=re.IGNORECASE)[0]
+    value = re.split(r"\s+(?:с\s+Winscan|и\s+принтер)", value, maxsplit=1, flags=re.IGNORECASE)[0]
+    return " ".join(value.strip(" .:-()\t").split())
+
+
+def _printer_targets(text: str) -> list[dict[str, str | None]]:
+    targets: list[dict[str, str | None]] = []
+    scan_text = re.sub(
+        r"\s+и\s+(?=(?:принтер|мфу))", ", ", text, flags=re.IGNORECASE
+    )
+    wired_local = bool(
+        re.search(r"провод\w*\s+.*подключ", text, re.IGNORECASE)
+    )
+    for match in PRINTER_MODEL_RE.finditer(scan_text):
+        model = _clean_printer_model(match.group(0))
+        if not model:
+            continue
+        tail = re.split(r"[,;\r\n]", scan_text[match.end() : match.end() + 80], maxsplit=1)[0]
+        ip_match = IP_RE.search(tail)
+        local_context = f"{match.group(0)} {tail}"
+        connection = "usb" if re.search(r"\busb\b", local_context, re.IGNORECASE) or (wired_local and not ip_match) else (
+            "network" if ip_match else None
+        )
+        target = {
+            "printer_name": model,
+            "printer_address": ip_match.group(0) if ip_match else None,
+            "connection_type": connection,
+        }
+        existing = next(
+            (
+                item
+                for item in targets
+                if item["printer_name"].casefold() == model.casefold()
+            ),
+            None,
+        )
+        if existing is not None:
+            existing["printer_address"] = existing["printer_address"] or target["printer_address"]
+            existing["connection_type"] = existing["connection_type"] or target["connection_type"]
+        else:
+            targets.append(target)
+    return targets
 
 
 def _comment_source_ref(comment: dict[str, Any], text: str) -> str:
@@ -124,6 +175,22 @@ async def collect_structured(task: dict[str, Any]) -> list[FactObservation]:
             )
 
     raw = ((task.get("_field_meta") or {}).get("raw") or {})
+    pc_field = raw.get(str(settings.PRINTER_PC_CUSTOM_FIELD_ID)) or raw.get(settings.PRINTER_PC_CUSTOM_FIELD_ID)
+    printer_field = raw.get(str(settings.PRINTER_IP_CUSTOM_FIELD_ID)) or raw.get(settings.PRINTER_IP_CUSTOM_FIELD_ID)
+    if pc_field and is_valid_pc_name(str(pc_field).strip()):
+        result.append(_observation(
+            "pc_name", pc_field, source=FactSource.STRUCTURED_FIELD,
+            source_ref=f"field:{settings.PRINTER_PC_CUSTOM_FIELD_ID}",
+        ))
+    if printer_field:
+        printer_value = str(printer_field).strip()
+        field_ip = IP_RE.search(printer_value)
+        result.append(_observation(
+            "printer_address" if field_ip else "printer_name",
+            field_ip.group(0) if field_ip else printer_value,
+            source=FactSource.STRUCTURED_FIELD,
+            source_ref=f"field:{settings.PRINTER_IP_CUSTOM_FIELD_ID}",
+        ))
     raw_person: dict[str, Any] = {}
     raw_refs: dict[str, str] = {}
     for key, field_ids in PERSON_FIELD_IDS.items():
@@ -156,7 +223,7 @@ async def collect_deterministic(
     ticket_text = f"{subject}\n{description}".strip()
     result: list[FactObservation] = []
 
-    pcs = extract_pc_names_from_text(ticket_text)
+    pcs = [pc for pc in extract_pc_names_from_text(ticket_text) if not IP_RE.fullmatch(pc)]
     if pcs:
         result.append(
             _observation(
@@ -167,6 +234,7 @@ async def collect_deterministic(
                 evidence_span=pcs[0],
             )
         )
+    ips = list(dict.fromkeys(IP_RE.findall(ticket_text)))
     ip = IP_RE.search(ticket_text)
     if ip:
         result.append(
@@ -176,6 +244,58 @@ async def collect_deterministic(
                 source=FactSource.PARSER,
                 source_ref="parser:ticket_text:ip",
                 evidence_span=ip.group(0),
+            )
+        )
+    targets = _printer_targets(ticket_text)
+    if targets:
+        model_text = str(targets[0]["printer_name"])
+        result.append(
+            _observation(
+                "printer_name",
+                model_text,
+                source=FactSource.PARSER,
+                source_ref="parser:ticket_text:printer_name",
+                evidence_span=model_text,
+            )
+        )
+        result.append(_observation(
+            "printer_targets", targets, source=FactSource.PARSER,
+            source_ref="parser:ticket_text:printer_targets",
+            evidence_span="; ".join(
+                f"{target['printer_name']} {target['printer_address'] or ''}".strip()
+                for target in targets
+            ),
+        ))
+    connection_type = (
+        "mixed"
+        if ips and re.search(r"\busb\b", ticket_text, re.IGNORECASE)
+        else "usb"
+        if re.search(r"\busb\b|локальн(?:ый|ого)\s+принтер|провод\w*\s+.*подключ", ticket_text, re.IGNORECASE)
+        else "network"
+        if ip or re.search(r"сетев(?:ой|ого)\s+(?:принтер|мфу)", ticket_text, re.IGNORECASE)
+        else None
+    )
+    if connection_type:
+        result.append(
+            _observation(
+                "printer_connection_type",
+                connection_type,
+                source=FactSource.PARSER,
+                source_ref="parser:ticket_text:printer_connection_type",
+                evidence_span=connection_type,
+            )
+        )
+    attachments = task.get("Attachments") or task.get("attachments") or []
+    mentions_attachment = bool(
+        re.search(r"\b(?:скрин|скриншот|фото|вложен|прикреп)\w*", ticket_text, re.IGNORECASE)
+    )
+    if attachments or mentions_attachment:
+        result.append(
+            _observation(
+                "attachments_state",
+                "available" if attachments else "missing",
+                source=FactSource.STRUCTURED_FIELD,
+                source_ref="ticket:attachments",
             )
         )
     path = UNC_RE.search(ticket_text)
