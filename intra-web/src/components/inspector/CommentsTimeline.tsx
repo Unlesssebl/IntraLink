@@ -1,6 +1,11 @@
 import React from 'react';
 import { IconChevronDown, IconSparkles, IconCheckCircle } from '../Icons';
 import type { TicketSummaryResult } from '../../lib/types';
+import {
+  filterMeaningfulComments,
+  formatCommentsCount,
+  getCommentText,
+} from './commentsUtils';
 
 interface CommentsTimelineProps {
   commentsList: any[];
@@ -25,15 +30,6 @@ function formatTime(d: Date | string) {
   });
 }
 
-function formatCommentsCount(count: number) {
-  const mod100 = count % 100;
-  const mod10 = count % 10;
-  if (mod100 >= 11 && mod100 <= 14) return `${count} комментариев`;
-  if (mod10 === 1) return `${count} комментарий`;
-  if (mod10 >= 2 && mod10 <= 4) return `${count} комментария`;
-  return `${count} комментариев`;
-}
-
 export default function CommentsTimeline({
   commentsList,
   loadingDetails,
@@ -47,11 +43,15 @@ export default function CommentsTimeline({
 }: CommentsTimelineProps) {
   const isVisible = expandedMode || isCommentsExpanded;
 
+  const meaningfulComments = React.useMemo(
+    () => filterMeaningfulComments(commentsList),
+    [commentsList]
+  );
+
   return (
     <div
-      className={`rounded-2xl border border-neutral-200/90 bg-white p-4 shadow-xs dark:border-neutral-800 dark:bg-neutral-900 space-y-3 ${
-        expandedMode ? 'flex flex-col flex-1 min-h-0' : ''
-      }`}
+      className={`rounded-2xl border border-neutral-200/90 bg-white p-4 shadow-xs dark:border-neutral-800 dark:bg-neutral-900 space-y-3 ${expandedMode ? 'flex flex-col flex-1 min-h-0' : ''
+        }`}
     >
       <div className="flex items-center justify-between gap-2">
         <button
@@ -64,18 +64,17 @@ export default function CommentsTimeline({
             История переписки
           </span>
           <span className="rounded-full bg-neutral-100 px-2 py-0.5 font-mono text-[10.5px] font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-            {loadingDetails ? 'Загрузка...' : formatCommentsCount(commentsList.length)}
+            {loadingDetails ? 'Загрузка...' : formatCommentsCount(meaningfulComments.length)}
           </span>
           <IconChevronDown
             size={14}
-            className={`text-neutral-400 transition-transform duration-200 ${
-              isVisible ? 'rotate-180' : ''
-            }`}
+            className={`text-neutral-400 transition-transform duration-200 ${isVisible ? 'rotate-180' : ''
+              }`}
           />
         </button>
 
         {/* Кнопка генерации AI-сводки прямо в шапке ленты */}
-        {onGenerateAiSummary && !aiSummary && commentsList.length > 0 && (
+        {onGenerateAiSummary && !aiSummary && meaningfulComments.length > 0 && (
           <button
             type="button"
             onClick={onGenerateAiSummary}
@@ -84,16 +83,15 @@ export default function CommentsTimeline({
             title="Сформировать краткую AI-выжимку переписки"
           >
             <IconSparkles size={12} className={loadingAiSummary ? 'animate-spin' : ''} />
-            <span>{loadingAiSummary ? 'Анализ переписки...' : 'AI TL;DR'}</span>
+            <span>{loadingAiSummary ? 'Анализ переписки...' : 'AI-сводка переписки'}</span>
           </button>
         )}
       </div>
 
       {isVisible && (
         <div
-          className={`space-y-3 pt-2 border-t border-neutral-100 dark:border-neutral-800 ${
-            expandedMode ? 'flex-1 flex flex-col min-h-0' : ''
-          }`}
+          className={`space-y-3 pt-2 border-t border-neutral-100 dark:border-neutral-800 ${expandedMode ? 'flex-1 flex flex-col min-h-0' : ''
+            }`}
         >
           {/* AI Summary Slot / Card */}
           {aiSummarySlot ? (
@@ -142,13 +140,12 @@ export default function CommentsTimeline({
 
           {/* Comments Stream */}
           <div
-            className={`space-y-2 overflow-y-auto pr-1 ${
-              expandedMode ? 'flex-1 min-h-0' : 'max-h-[380px]'
-            }`}
+            className={`space-y-2 overflow-y-auto pr-1 ${expandedMode ? 'flex-1 min-h-0' : 'max-h-[380px]'
+              }`}
           >
-            {commentsList.map((c: any, idx: number) => {
+            {meaningfulComments.map((c: any, idx: number) => {
               const author = c.author || c.Editor || c.UserName || c.Creator || 'Сотрудник';
-              const text = c.text || c.Comments || c.Comment || c.Description || '';
+              const text = getCommentText(c);
               const isPrivate = Boolean(c.is_private || c.IsPrivate);
               const created = c.created || c.Date || c.Created || '';
               const commentId = c.id || c.Id || idx;
@@ -157,11 +154,10 @@ export default function CommentsTimeline({
               return (
                 <div
                   key={commentId}
-                  className={`rounded-xl border p-3 text-[12.5px] transition-colors ${
-                    isPrivate
+                  className={`rounded-xl border p-3 text-[12.5px] transition-colors ${isPrivate
                       ? 'border-amber-200/80 bg-amber-50/40 dark:border-amber-800/50 dark:bg-amber-950/20'
                       : 'border-neutral-200/80 bg-neutral-50/60 dark:border-neutral-800 dark:bg-neutral-900/60'
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center justify-between mb-1.5 gap-2">
                     <div className="flex items-center gap-1.5 min-w-0">
@@ -185,7 +181,7 @@ export default function CommentsTimeline({
               );
             })}
 
-            {commentsList.length === 0 && !loadingDetails && (
+            {meaningfulComments.length === 0 && !loadingDetails && (
               <div className="py-6 text-center text-xs italic text-neutral-400">
                 В этой заявке пока нет комментариев
               </div>

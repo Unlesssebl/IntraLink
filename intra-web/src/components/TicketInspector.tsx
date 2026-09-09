@@ -17,6 +17,7 @@ import UnifiedActionDock from './inspector/UnifiedActionDock';
 import TicketContextSummary from './inspector/TicketContextSummary';
 import { type DiagStatus } from './inspector/DiagnosticsSection';
 import { useUnifiedDecision } from './inspector/useUnifiedDecision';
+import { filterMeaningfulComments } from './inspector/commentsUtils';
 
 interface Props {
   ticket: Ticket;
@@ -180,22 +181,23 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   }, []);
 
   const commentsList: any[] = useMemo(() => {
+    let raw: any[] = [];
     const rawComments = safeDetails?.comments;
-    if (Array.isArray(rawComments)) return rawComments;
-    if (
+    if (Array.isArray(rawComments)) raw = rawComments;
+    else if (
       rawComments &&
       typeof rawComments === 'object' &&
       Array.isArray((rawComments as any).TaskLifetimes)
     )
-      return (rawComments as any).TaskLifetimes;
-    if (Array.isArray((details as any)?.history)) return (details as any).history;
-    if (
+      raw = (rawComments as any).TaskLifetimes;
+    else if (Array.isArray((details as any)?.history)) raw = (details as any).history;
+    else if (
       (details as any)?.history &&
       typeof (details as any).history === 'object' &&
       Array.isArray((details as any).history.TaskLifetimes)
     )
-      return (details as any).history.TaskLifetimes;
-    return [];
+      raw = (details as any).history.TaskLifetimes;
+    return filterMeaningfulComments(raw);
   }, [safeDetails, details]);
 
   const rawAttachments = safeDetails?.attachments ?? ticket.attachments;
@@ -284,7 +286,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   const snippets = useMemo(() => {
     const list: Array<{ label: string; text: string }> = [];
     const aiDraft =
-      safeDetails?.decision_envelope?.response_draft || safeDetails?.ai_suggested_resolution;
+      safeDetails?.decision_envelope?.response?.text;
     if (aiDraft) {
       list.push({ label: 'Вставить ответ AI', text: aiDraft });
     }

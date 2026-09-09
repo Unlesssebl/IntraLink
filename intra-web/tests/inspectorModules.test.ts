@@ -81,3 +81,126 @@ test('taskDetailsCache: сохранение, получение из кэша �
   invalidateTaskDetailsCache(888);
   assert.strictEqual(getCachedTaskDetails(888), null);
 });
+
+test('commentsUtils: formatCommentsCount склоняет числительные корректно', async () => {
+  const { formatCommentsCount } = await import(
+    '../src/components/inspector/commentsUtils.ts'
+  );
+
+  assert.strictEqual(formatCommentsCount(0), '0 комментариев');
+  assert.strictEqual(formatCommentsCount(1), '1 комментарий');
+  assert.strictEqual(formatCommentsCount(2), '2 комментария');
+  assert.strictEqual(formatCommentsCount(4), '4 комментария');
+  assert.strictEqual(formatCommentsCount(5), '5 комментариев');
+  assert.strictEqual(formatCommentsCount(11), '11 комментариев');
+  assert.strictEqual(formatCommentsCount(14), '14 комментариев');
+  assert.strictEqual(formatCommentsCount(21), '21 комментарий');
+  assert.strictEqual(formatCommentsCount(22), '22 комментария');
+  assert.strictEqual(formatCommentsCount(25), '25 комментариев');
+  assert.strictEqual(formatCommentsCount(101), '101 комментарий');
+});
+
+test('commentsUtils: системные события TaskLifetimes без текста комментария отсекаются', async () => {
+  const { getCommentText, filterMeaningfulComments, formatCommentsCount } = await import(
+    '../src/components/inspector/commentsUtils.ts'
+  );
+
+  // Системное создание заявки IntraService
+  const creationEvent = {
+    Id: 101,
+    TaskId: 555,
+    StatusId: 31,
+    Comments: null,
+    Description: 'Создание заявки',
+  };
+  assert.strictEqual(getCommentText(creationEvent), '');
+
+  // Системная смена статуса без ввода комментария
+  const statusChange = {
+    Id: 102,
+    StatusId: 32,
+    Comments: '',
+    Description: "Статус изменен с 'Новая' на 'В работе'",
+  };
+  assert.strictEqual(getCommentText(statusChange), '');
+
+  // Системное назначение исполнителя
+  const assignEvent = {
+    Id: 103,
+    Comments: null,
+    Description: 'Назначен исполнитель: Беликов Ален',
+  };
+  assert.strictEqual(getCommentText(assignEvent), '');
+
+  // Системное прикрепление файла
+  const fileEvent = {
+    Id: 104,
+    Comments: null,
+    Description: 'Добавлен файл: report.pdf',
+  };
+  assert.strictEqual(getCommentText(fileEvent), '');
+
+  // Заявка только что создана (в TaskLifetimes ровно 1 запись создания):
+  const rawHistoryOnlyCreation = [creationEvent];
+  const filtered = filterMeaningfulComments(rawHistoryOnlyCreation);
+  assert.strictEqual(filtered.length, 0);
+  assert.strictEqual(formatCommentsCount(filtered.length), '0 комментариев');
+});
+
+test('commentsUtils: содержательные комментарии пользователей и инженеров сохраняются', async () => {
+  const { getCommentText, filterMeaningfulComments, formatCommentsCount } = await import(
+    '../src/components/inspector/commentsUtils.ts'
+  );
+
+  // Обычный комментарий пользователя в поле Comments
+  const userComment = {
+    Id: 201,
+    UserName: 'Смирнова Е.',
+    Comments: 'Добрый день, принтер снова жует бумагу в лотке 2',
+    Description: '',
+  };
+  assert.strictEqual(
+    getCommentText(userComment),
+    'Добрый день, принтер снова жует бумагу в лотке 2'
+  );
+
+  // Смена статуса со служебным комментарием инженера
+  const engineerResolution = {
+    Id: 202,
+    UserName: 'Беликов Ален',
+    Comments: 'Ролик захвата бумаги очищен, тест печати успешен.',
+    Description: "Статус изменен на 'Выполнена'",
+  };
+  assert.strictEqual(
+    getCommentText(engineerResolution),
+    'Ролик захвата бумаги очищен, тест печати успешен.'
+  );
+
+  // Комментарий с HTML-разметкой очищается от тегов
+  const htmlComment = {
+    Id: 203,
+    Comments: '<p>Первая строка<br/>Вторая строка&nbsp;сообщения</p>',
+  };
+  assert.strictEqual(
+    getCommentText(htmlComment),
+    'Первая строка\nВторая строка сообщения'
+  );
+
+  // Пустой HTML-комментарий отсекается
+  const emptyHtml = {
+    Id: 204,
+    Comments: '<p>&nbsp;<br></p>',
+  };
+  assert.strictEqual(getCommentText(emptyHtml), '');
+
+  // Смешанная история: 1 событие создания + 2 реальных комментария + 1 событие статуса
+  const mixedHistory = [
+    { Id: 1, Description: 'Создание заявки', Comments: null },
+    userComment,
+    { Id: 2, Description: "Статус изменен на 'В работе'", Comments: '' },
+    engineerResolution,
+  ];
+  const filtered = filterMeaningfulComments(mixedHistory);
+  assert.strictEqual(filtered.length, 2);
+  assert.strictEqual(formatCommentsCount(filtered.length), '2 комментария');
+});
