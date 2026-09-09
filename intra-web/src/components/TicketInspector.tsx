@@ -286,7 +286,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     const aiDraft =
       safeDetails?.decision_envelope?.response_draft || safeDetails?.ai_suggested_resolution;
     if (aiDraft) {
-      list.push({ label: 'Черновик AI', text: aiDraft });
+      list.push({ label: 'Вставить ответ AI', text: aiDraft });
     }
     const kbSolution = safeDetails?.kb_matches && safeDetails.kb_matches[0]?.solution;
     if (kbSolution) {

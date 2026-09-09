@@ -168,12 +168,12 @@ export default function UnifiedActionDock({
       {/* Верхняя строка управления формой: Режим приватности, Шаблоны, Списание времени */}
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Режим приватности (Заявителю / Внутренний) */}
+          {/* Режим приватности (Ответ заявителю / Служебный комментарий) */}
           <div className="inline-flex rounded-lg border border-neutral-200 bg-neutral-100 p-0.5 dark:border-neutral-700 dark:bg-neutral-800">
             <button
               type="button"
               onClick={() => setReplyMode('reply')}
-              className={`flex items-center gap-1 rounded-md px-2.5 py-1 font-semibold transition-colors ${
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition-colors ${
                 replyMode === 'reply'
                   ? 'bg-white text-neutral-900 shadow-2xs dark:bg-neutral-900 dark:text-neutral-100'
                   : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
@@ -181,12 +181,12 @@ export default function UnifiedActionDock({
               title="Ответ будет отправлен заявителю в IntraService"
             >
               <IconGlobe size={12} />
-              <span>Заявителю</span>
+              <span>Ответ заявителю</span>
             </button>
             <button
               type="button"
               onClick={() => setReplyMode('internal')}
-              className={`flex items-center gap-1 rounded-md px-2.5 py-1 font-semibold transition-colors ${
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition-colors ${
                 replyMode === 'internal'
                   ? 'bg-amber-100 text-amber-900 shadow-2xs dark:bg-amber-950 dark:text-amber-200'
                   : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
@@ -194,7 +194,7 @@ export default function UnifiedActionDock({
               title="Служебная заметка, видна только инженерам"
             >
               <IconLock size={12} />
-              <span>Служебный</span>
+              <span>Служебный комментарий</span>
             </button>
           </div>
 
@@ -259,15 +259,17 @@ export default function UnifiedActionDock({
       {/* Поле ввода комментария */}
       <div className="relative">
         <textarea
-          rows={2}
+          rows={4}
           value={replyText}
           onChange={(e) => setReplyText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Текст ответа или решения... (Ctrl+Enter для быстрой отправки)"
-          className={`w-full resize-y rounded-xl border p-2.5 text-xs text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus-visible:ring-2 focus-visible:ring-blue-500 dark:bg-neutral-950/60 dark:text-neutral-100 ${
+          className={`w-full min-h-[115px] max-h-[280px] resize-y rounded-xl border p-3 text-xs leading-relaxed text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-neutral-100 ${
             commentMissing
               ? 'border-rose-400 bg-rose-50/20 dark:border-rose-800 dark:bg-rose-950/20'
-              : 'border-neutral-200 bg-neutral-50/50 dark:border-neutral-700'
+              : replyMode === 'internal'
+              ? 'border-amber-300 bg-amber-50/40 dark:border-amber-800/80 dark:bg-amber-950/20'
+              : 'border-neutral-200 bg-neutral-50/50 dark:border-neutral-700 dark:bg-neutral-950/60'
           }`}
         />
 
@@ -275,7 +277,7 @@ export default function UnifiedActionDock({
           <button
             type="button"
             onClick={() => setReplyText('')}
-            className="absolute top-2 right-2 rounded p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+            className="absolute top-2.5 right-2.5 rounded p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
             title="Очистить текст"
           >
             <IconClose size={12} />
@@ -286,7 +288,7 @@ export default function UnifiedActionDock({
       {/* Подсказка валидации, если комментарий обязателен для закрытия */}
       {commentMissing && (
         <div className="text-[11px] font-medium text-rose-600 dark:text-rose-400">
-          Для закрытия, отмены или запроса уточнения необходимо заполнить комментарий.
+          Для закрытия, отмены, запроса уточнения или ожидания устройства необходимо заполнить комментарий.
         </div>
       )}
 
@@ -383,7 +385,17 @@ export default function UnifiedActionDock({
                   }}
                   className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/40"
                 >
-                  <span>Запросить уточнение</span>
+                  <span>Запросить уточнение (Статус 35)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsDropdownOpen(false);
+                    setSelectedStatusOverride(48);
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/40"
+                >
+                  <span>Ожидание устройства (каб. 112)</span>
                 </button>
                 <button
                   type="button"

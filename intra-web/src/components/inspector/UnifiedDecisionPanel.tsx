@@ -1,14 +1,12 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState } from 'react';
 import type { Ticket } from '../../data/mock';
 import type { TaskDetails, RAGMatchItem } from '../../lib/types';
 import {
   IconPlay,
   IconPause,
   IconAlertCircle,
-  IconFileCode,
-  IconDatabase,
   IconSparkles,
-  IconChevronDown,
+  IconChevronRight,
   IconCheck,
   IconRefresh,
 } from '../Icons';
@@ -102,6 +100,7 @@ export default function UnifiedDecisionPanel({
   } = decisionState;
 
   const [isOverrideModalOpen, setIsOverrideModalOpen] = useState(false);
+  const [showTechnicalEvidence, setShowTechnicalEvidence] = useState(false);
   const [selectedVerdict, setSelectedVerdict] = useState<
     'correct' | 'partial' | 'incorrect' | 'insufficient_data' | null
   >(null);
@@ -167,6 +166,13 @@ export default function UnifiedDecisionPanel({
 
   const currentRunState = ticketRun?.state || 'pending';
   const runCfg = runStateConfig[currentRunState] || runStateConfig.pending;
+
+  // Данные для превью в заголовке аккордеона
+  const factsCount = Object.keys(envelope?.facts_summary || {}).length;
+  const bestRagMatch = details?.kb_matches && details.kb_matches[0];
+  const bestRagPct = bestRagMatch
+    ? Math.round(bestRagMatch.similarity_pct || (1 - (bestRagMatch.distance || 0.3)) * 100)
+    : null;
 
   return (
     <div className="rounded-2xl border border-neutral-200/90 bg-white p-4 shadow-xs dark:border-neutral-800 dark:bg-neutral-900 space-y-3.5">
@@ -282,8 +288,8 @@ export default function UnifiedDecisionPanel({
         </div>
       )}
 
-      {/* 4. Предлагаемое решение и индикаторы */}
-      <div className="rounded-xl border border-neutral-200/80 bg-neutral-50/60 p-3 dark:border-neutral-800 dark:bg-neutral-950/40 space-y-2">
+      {/* 4. Предлагаемое решение, индикаторы и Оценка решения (НЕ спрятана!) */}
+      <div className="rounded-xl border border-neutral-200/80 bg-neutral-50/60 p-3.5 dark:border-neutral-800 dark:bg-neutral-950/40 space-y-3">
         <div className="flex items-start justify-between gap-2">
           <div>
             <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 block">
@@ -325,247 +331,294 @@ export default function UnifiedDecisionPanel({
             ))}
           </div>
         )}
-      </div>
 
-      {/* 5. Доказательная база (Табы: Факты, Регламент, RAG, Аудит) */}
-      <div className="space-y-2.5">
-        <div className="flex items-center gap-1 overflow-x-auto border-b border-neutral-100 pb-1.5 dark:border-neutral-800">
-          <button
-            type="button"
-            onClick={() => setSelectedTab('facts')}
-            className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
-              selectedTab === 'facts'
-                ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
-            }`}
-          >
-            Факты (FactBag)
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelectedTab('rules')}
-            className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
-              selectedTab === 'rules'
-                ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
-            }`}
-          >
-            Регламент
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelectedTab('rag')}
-            className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
-              selectedTab === 'rag'
-                ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
-            }`}
-          >
-            База знаний (RAG)
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelectedTab('completeness')}
-            className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
-              selectedTab === 'completeness'
-                ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
-            }`}
-          >
-            Журнал цикла
-          </button>
-        </div>
-
-        {/* Содержимое табов */}
-        <div>
-          {/* ТАБ 1: Факты FactBag */}
-          {selectedTab === 'facts' && (
-            <FactBagSection
-              envelope={envelope}
-              onOpenOverride={() => setIsOverrideModalOpen(true)}
-            />
-          )}
-
-          {/* ТАБ 2: Правила регламента */}
-          {selectedTab === 'rules' && (
-            <div className="space-y-2 rounded-xl border border-neutral-200/80 bg-neutral-50/50 p-3 text-xs dark:border-neutral-800 dark:bg-neutral-950/30">
-              {details?.suggested_action?.target_service && (
-                <div className="flex items-center gap-2 text-neutral-800 dark:text-neutral-200 flex-wrap">
-                  <span className="font-semibold text-neutral-500">Маршрутизация:</span>
-                  <span className="px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 font-medium">
-                    {ticket.serviceName || 'Текущий раздел'}
-                  </span>
-                  <span>→</span>
-                  <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 font-bold">
-                    {details.suggested_action.target_service}
-                  </span>
-                </div>
-              )}
-
-              {details?.suggested_action?.reason && (
-                <div className="space-y-1">
-                  <span className="font-semibold text-neutral-500 block">Обоснование:</span>
-                  <p className="text-neutral-800 dark:text-neutral-200 leading-relaxed font-medium">
-                    {details.suggested_action.reason}
-                  </p>
-                </div>
-              )}
-
-              {details?.suggested_action?.trigger_markers &&
-                details.suggested_action.trigger_markers.length > 0 && (
-                  <div className="space-y-1 pt-1">
-                    <span className="font-semibold text-neutral-500 block">Ключевые маркеры:</span>
-                    <div className="flex flex-wrap gap-1">
-                      {details.suggested_action.trigger_markers.map((marker: string, idx: number) => (
-                        <span
-                          key={idx}
-                          className="rounded-md bg-white dark:bg-neutral-900 px-2 py-0.5 border border-neutral-200 dark:border-neutral-800 font-mono text-[11px]"
-                        >
-                          {marker}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-            </div>
-          )}
-
-          {/* ТАБ 3: База знаний RAG */}
-          {selectedTab === 'rag' && (
-            <div className="space-y-2">
-              {details?.kb_matches && details.kb_matches.length > 0 ? (
-                details.kb_matches.map((m: RAGMatchItem, i: number) => (
-                  <div
-                    key={m.task_id || i}
-                    className="rounded-xl border border-neutral-200/80 bg-neutral-50/60 p-3 dark:border-neutral-800 dark:bg-neutral-950/30 text-xs space-y-1.5"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-bold text-neutral-900 dark:text-neutral-100 font-mono">
-                        #{m.task_id} {m.name || m.problem}
-                      </span>
-                      <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-bold text-purple-800 dark:bg-purple-950 dark:text-purple-300">
-                        {Math.round(m.similarity_pct || (1 - (m.distance || 0.3)) * 100)}% сходство
-                      </span>
-                    </div>
-                    <div className="text-neutral-700 dark:text-neutral-300 leading-relaxed line-clamp-2">
-                      {m.solution}
-                    </div>
-                    <div className="flex justify-end pt-1">
-                      <button
-                        type="button"
-                        onClick={() => insertSnippet(m.solution)}
-                        className="text-purple-600 hover:text-purple-700 dark:text-purple-400 font-semibold text-[11px]"
-                      >
-                        + Вставить решение в ответ
-                      </button>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="py-4 text-center text-xs text-neutral-400 italic">
-                  Похожих решений в базе знаний не найдено
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ТАБ 4: Журнал событий TicketRun */}
-          {selectedTab === 'completeness' && (
-            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-              {runEvents.length > 0 ? (
-                runEvents.map((ev) => (
-                  <div
-                    key={ev.id}
-                    className="flex items-center justify-between rounded-lg border border-neutral-200/70 bg-neutral-50/50 p-2 text-[11px] dark:border-neutral-800 dark:bg-neutral-950/20"
-                  >
-                    <div>
-                      <div className="font-semibold text-neutral-900 dark:text-neutral-100">
-                        {ev.event_type}
-                      </div>
-                      <div className="text-[10px] text-neutral-400">Инициатор: {ev.actor}</div>
-                    </div>
-                    <span className="font-mono text-[10px] text-neutral-400">
-                      {ev.created_at ? new Date(ev.created_at).toLocaleTimeString() : ''}
-                    </span>
-                  </div>
-                ))
-              ) : (
-                <div className="py-4 text-center text-xs text-neutral-400 italic">
-                  Событий цикла пока не зафиксировано
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* 6. Компактный виджет оценки рекомендации (Feedback) */}
-      <div className="flex items-center justify-between gap-2 pt-2 border-t border-neutral-100 dark:border-neutral-800 text-xs">
-        <span className="text-neutral-400">Оценка решения:</span>
-
-        {feedbackSubmitted ? (
-          <span className="font-semibold text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1 text-[11px]">
-            <IconCheck size={12} />
-            <span>Спасибо за оценку</span>
+        {/* Оценка решения (Feedback) - на первом плане, прямо в карточке решения */}
+        <div className="flex items-center justify-between gap-2 pt-2 border-t border-neutral-200/60 dark:border-neutral-800 text-xs">
+          <span className="text-neutral-500 dark:text-neutral-400 font-medium">
+            Оценка решения:
           </span>
-        ) : (
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedVerdict('correct');
-                handleSubmitFeedback('correct');
-              }}
-              className="inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-neutral-50 px-2 py-0.5 font-medium text-neutral-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 transition-colors"
-              title="Рекомендация верна"
-            >
-              <span>👍 Точно</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedVerdict('incorrect');
-                setShowFeedbackDetails((prev) => !prev);
-              }}
-              className="inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-neutral-50 px-2 py-0.5 font-medium text-neutral-700 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-200 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 transition-colors"
-              title="Рекомендация неверна"
-            >
-              <span>👎 Неверно</span>
-            </button>
+
+          {feedbackSubmitted ? (
+            <span className="font-semibold text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1 text-[11px]">
+              <IconCheck size={12} />
+              <span>Спасибо за оценку</span>
+            </span>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedVerdict('correct');
+                  handleSubmitFeedback('correct');
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-white px-2.5 py-1 font-medium text-neutral-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 transition-colors shadow-2xs"
+                title="Рекомендация точна"
+              >
+                <span>👍 Точно</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedVerdict('incorrect');
+                  setShowFeedbackDetails((prev) => !prev);
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-white px-2.5 py-1 font-medium text-neutral-700 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-200 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 transition-colors shadow-2xs"
+                title="Рекомендация неверна"
+              >
+                <span>👎 Неверно</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Выпадающий выбор причины при отрицательной оценке */}
+        {showFeedbackDetails && !feedbackSubmitted && (
+          <div className="rounded-lg border border-neutral-200 bg-white p-2 text-xs space-y-1.5 dark:border-neutral-800 dark:bg-neutral-900 animate-in fade-in duration-100">
+            <div className="font-semibold text-neutral-700 dark:text-neutral-300 text-[11px]">
+              В чём неточность?
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                value={reasonCode}
+                onChange={(e) => setReasonCode(e.target.value)}
+                className="rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 flex-1 outline-none"
+              >
+                <option value="wrong_context">Неверно понята проблема</option>
+                <option value="wrong_action">Неверное действие</option>
+                <option value="wrong_status">Неверный статус</option>
+                <option value="wrong_fact">Ошибочные факты (ПК/Принтер)</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => {
+                  handleSubmitFeedback('incorrect', reasonCode);
+                  setShowFeedbackDetails(false);
+                }}
+                className="rounded-md bg-neutral-900 px-2.5 py-1 font-semibold text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900"
+              >
+                Отправить
+              </button>
+            </div>
           </div>
         )}
       </div>
 
-      {/* Выпадающий выбор причины при отрицательной оценке */}
-      {showFeedbackDetails && !feedbackSubmitted && (
-        <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-2 text-xs space-y-1.5 dark:border-neutral-800 dark:bg-neutral-950/40 animate-in fade-in duration-100">
-          <div className="font-semibold text-neutral-700 dark:text-neutral-300 text-[11px]">
-            В чём неточность?
+      {/* 5. Сворачиваемая техническая база и доказательства (FactBag, Регламент, RAG, Аудит) */}
+      <div className="rounded-xl border border-neutral-200/80 bg-neutral-50/50 dark:border-neutral-800 dark:bg-neutral-950/30 overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setShowTechnicalEvidence((prev) => !prev)}
+          className="flex items-center justify-between w-full p-3 text-left transition-colors hover:bg-neutral-100/70 dark:hover:bg-neutral-900/60 group"
+          aria-expanded={showTechnicalEvidence}
+        >
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <IconChevronRight
+              size={13}
+              className={`text-neutral-400 transition-transform duration-200 ${
+                showTechnicalEvidence ? 'rotate-90 text-neutral-700 dark:text-neutral-200' : ''
+              }`}
+            />
+            <span className="text-xs font-bold text-neutral-700 dark:text-neutral-300">
+              Техническая база и FactBag
+            </span>
+
+            {/* Компактные бейджи-индикаторы в свернутом виде */}
+            {factsCount > 0 && (
+              <span className="rounded-md bg-neutral-200/80 dark:bg-neutral-800 px-1.5 py-0.5 font-mono text-[10.5px] font-semibold text-neutral-600 dark:text-neutral-300">
+                {factsCount} {factsCount === 1 ? 'факт' : factsCount < 5 ? 'факта' : 'фактов'}
+              </span>
+            )}
+            {bestRagPct !== null && (
+              <span className="rounded-md bg-purple-100 dark:bg-purple-950/80 px-1.5 py-0.5 font-mono text-[10.5px] font-bold text-purple-700 dark:text-purple-300">
+                RAG {bestRagPct}%
+              </span>
+            )}
+            {envelope?.facts_revision && (
+              <span className="rounded-md bg-blue-50 dark:bg-blue-950 px-1.5 py-0.5 font-mono text-[10px] text-blue-700 dark:text-blue-300 border border-blue-200/60 dark:border-blue-900/60">
+                v{envelope.facts_revision}
+              </span>
+            )}
           </div>
-          <div className="flex items-center gap-2">
-            <select
-              value={reasonCode}
-              onChange={(e) => setReasonCode(e.target.value)}
-              className="rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 flex-1"
-            >
-              <option value="wrong_context">Неверно понята проблема</option>
-              <option value="wrong_action">Неверное действие</option>
-              <option value="wrong_status">Неверный статус</option>
-              <option value="wrong_fact">Ошибочные факты (ПК/Принтер)</option>
-            </select>
-            <button
-              type="button"
-              onClick={() => {
-                handleSubmitFeedback('incorrect', reasonCode);
-                setShowFeedbackDetails(false);
-              }}
-              className="rounded-md bg-neutral-900 px-2.5 py-1 font-semibold text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900"
-            >
-              Отправить
-            </button>
+
+          <span className="text-[11px] font-medium text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200 shrink-0">
+            {showTechnicalEvidence ? 'Свернуть' : 'Развернуть'}
+          </span>
+        </button>
+
+        {showTechnicalEvidence && (
+          <div className="p-3 pt-1 border-t border-neutral-200/70 dark:border-neutral-800 space-y-2.5 animate-in fade-in duration-150">
+            {/* Таб-бар */}
+            <div className="flex items-center gap-1 overflow-x-auto border-b border-neutral-200/60 pb-1.5 dark:border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setSelectedTab('facts')}
+                className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
+                  selectedTab === 'facts'
+                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                }`}
+              >
+                Факты (FactBag)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTab('rules')}
+                className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
+                  selectedTab === 'rules'
+                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                }`}
+              >
+                Регламент
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTab('rag')}
+                className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
+                  selectedTab === 'rag'
+                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                }`}
+              >
+                База знаний (RAG)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTab('completeness')}
+                className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors ${
+                  selectedTab === 'completeness'
+                    ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                }`}
+              >
+                Журнал цикла
+              </button>
+            </div>
+
+            {/* Контент табов */}
+            <div>
+              {/* Факты */}
+              {selectedTab === 'facts' && (
+                <FactBagSection
+                  envelope={envelope}
+                  onOpenOverride={() => setIsOverrideModalOpen(true)}
+                />
+              )}
+
+              {/* Регламент */}
+              {selectedTab === 'rules' && (
+                <div className="space-y-2 rounded-xl border border-neutral-200/80 bg-white p-3 text-xs dark:border-neutral-800 dark:bg-neutral-900">
+                  {details?.suggested_action?.target_service && (
+                    <div className="flex items-center gap-2 text-neutral-800 dark:text-neutral-200 flex-wrap">
+                      <span className="font-semibold text-neutral-500">Маршрутизация:</span>
+                      <span className="px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 font-medium">
+                        {ticket.serviceName || 'Текущий раздел'}
+                      </span>
+                      <span>→</span>
+                      <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 font-bold">
+                        {details.suggested_action.target_service}
+                      </span>
+                    </div>
+                  )}
+
+                  {details?.suggested_action?.reason && (
+                    <div className="space-y-1">
+                      <span className="font-semibold text-neutral-500 block">Обоснование:</span>
+                      <p className="text-neutral-800 dark:text-neutral-200 leading-relaxed font-medium">
+                        {details.suggested_action.reason}
+                      </p>
+                    </div>
+                  )}
+
+                  {details?.suggested_action?.trigger_markers &&
+                    details.suggested_action.trigger_markers.length > 0 && (
+                      <div className="space-y-1 pt-1">
+                        <span className="font-semibold text-neutral-500 block">Ключевые маркеры:</span>
+                        <div className="flex flex-wrap gap-1">
+                          {details.suggested_action.trigger_markers.map((marker: string, idx: number) => (
+                            <span
+                              key={idx}
+                              className="rounded-md bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 border border-neutral-200 dark:border-neutral-700 font-mono text-[11px]"
+                            >
+                              {marker}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                </div>
+              )}
+
+              {/* RAG */}
+              {selectedTab === 'rag' && (
+                <div className="space-y-2">
+                  {details?.kb_matches && details.kb_matches.length > 0 ? (
+                    details.kb_matches.map((m: RAGMatchItem, i: number) => (
+                      <div
+                        key={m.task_id || i}
+                        className="rounded-xl border border-neutral-200/80 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900 text-xs space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-neutral-900 dark:text-neutral-100 font-mono">
+                            #{m.task_id} {m.name || m.problem}
+                          </span>
+                          <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-bold text-purple-800 dark:bg-purple-950 dark:text-purple-300">
+                            {Math.round(m.similarity_pct || (1 - (m.distance || 0.3)) * 100)}% сходство
+                          </span>
+                        </div>
+                        <div className="text-neutral-700 dark:text-neutral-300 leading-relaxed line-clamp-2">
+                          {m.solution}
+                        </div>
+                        <div className="flex justify-end pt-1">
+                          <button
+                            type="button"
+                            onClick={() => insertSnippet(m.solution)}
+                            className="text-purple-600 hover:text-purple-700 dark:text-purple-400 font-semibold text-[11px]"
+                          >
+                            + Вставить решение в ответ
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="py-4 text-center text-xs text-neutral-400 italic">
+                      Похожих решений в базе знаний не найдено
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Журнал цикла */}
+              {selectedTab === 'completeness' && (
+                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  {runEvents.length > 0 ? (
+                    runEvents.map((ev) => (
+                      <div
+                        key={ev.id}
+                        className="flex items-center justify-between rounded-lg border border-neutral-200/70 bg-white p-2 text-[11px] dark:border-neutral-800 dark:bg-neutral-900"
+                      >
+                        <div>
+                          <div className="font-semibold text-neutral-900 dark:text-neutral-100">
+                            {ev.event_type}
+                          </div>
+                          <div className="text-[10px] text-neutral-400">Инициатор: {ev.actor}</div>
+                        </div>
+                        <span className="font-mono text-[10px] text-neutral-400">
+                          {ev.created_at ? new Date(ev.created_at).toLocaleTimeString() : ''}
+                        </span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="py-4 text-center text-xs text-neutral-400 italic">
+                      Событий цикла пока не зафиксировано
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Модальное окно корректировки фактов (FactOverrideModal) */}
       <FactOverrideModal

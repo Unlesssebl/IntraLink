@@ -671,7 +671,7 @@ export function useUnifiedDecision({
     29: 'Выполнена',
     30: 'Отменена',
     35: 'Требует уточнения',
-    48: 'Ожидание поставки',
+    48: 'Ожидание устройства',
   };
 
   const targetStatusName =
@@ -697,10 +697,10 @@ export function useUnifiedDecision({
     : targetStatusId === 35
     ? 'Запросить уточнение'
     : targetStatusId === 48
-    ? 'Перевести в «Ожидание поставки»'
+    ? 'Перевести в «Ожидание устройства»'
     : `Перевести в статус «${targetStatusName}»`;
 
-  const requiresComment = [29, 30, 35].includes(targetStatusId);
+  const requiresComment = [29, 30, 35, 48].includes(targetStatusId);
   const commentMissing = requiresComment && !replyText.trim();
   const actionUnavailable = !pendingCommand && (!isReady || policyBlocked || commentMissing);
 
