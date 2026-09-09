@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { invalidateTaskDetailsCache } from '../lib/tasks';
 
 export interface LiveEventPayload {
   event: string;
@@ -126,7 +127,14 @@ export function useLiveEvents({
           const payload: LiveEventPayload = { ...parsed, event: eventType };
 
           setLastEvent(payload);
-          callbacksRef.current.onEvent?.(payload);
+          // Инвалидация кэша TaskDetails для затронутых тикетов
+          if (Array.isArray(payload.task_ids)) {
+            payload.task_ids.forEach((id: number) => invalidateTaskDetailsCache(id));
+          } else if (typeof payload.task_id === 'number') {
+            invalidateTaskDetailsCache(payload.task_id);
+          } else if (payload.data && typeof payload.data.task_id === 'number') {
+            invalidateTaskDetailsCache(payload.data.task_id);
+          }
 
           // 1. Обработка применения триажа или смены статуса заявки
           if (eventType === 'triage_applied' && Array.isArray(payload.task_ids) && payload.status_id) {

@@ -2771,6 +2771,8 @@ export default function QueuePage({
 
         <TicketInspector
 
+          key={selectedTicket.rawId || selectedTicket.id}
+
           ticket={selectedTicket}
 
           onClose={() => onSelectTicket(null)}

@@ -5,6 +5,8 @@ import {
   fetchTaskDetails,
   fetchTemplatesCatalog,
   fetchTicketSummary,
+  getCachedTaskDetails,
+  setCachedTaskDetails,
 } from '../lib/tasks';
 import type { TaskDetails, TicketSummaryResult } from '../lib/types';
 import InspectorHeader from './inspector/InspectorHeader';
@@ -22,8 +24,10 @@ interface Props {
 }
 
 export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToast }: Props) {
-  const [details, setDetails] = useState<TaskDetails | null>(null);
-  const [loadingDetails, setLoadingDetails] = useState(false);
+  const rawId = ticket.rawId || parseInt(ticket.id.replace(/\D/g, ''), 10);
+  const initialCached = useMemo(() => (rawId ? getCachedTaskDetails(rawId) : null), [rawId]);
+  const [details, setDetails] = useState<TaskDetails | null>(() => initialCached);
+  const [loadingDetails, setLoadingDetails] = useState<boolean>(() => !Boolean(initialCached));
   const [expanded, setExpanded] = useState<boolean>(() => {
     return localStorage.getItem('intralink_inspector_expanded') === 'true';
   });
@@ -79,7 +83,14 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     };
   }, [isResizing, inspectorWidth]);
 
-  const rawId = ticket.rawId || parseInt(ticket.id.replace(/\D/g, ''), 10);
+  // Guard against details from previous ticket during async fetch
+  const isDetailsForCurrentTicket = Boolean(
+    details &&
+      (details.id === rawId ||
+        (details as any).task?.id === rawId ||
+        (details as any).task?.Id === rawId)
+  );
+  const safeDetails = isDetailsForCurrentTicket ? details : null;
   const effectiveHost = ticket.host || details?.pc_name || '';
   const hostList = useMemo(() => {
     return effectiveHost
@@ -98,12 +109,19 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   const loadDetails = useCallback(async (updated?: TaskDetails) => {
     if (!rawId) return;
     if (updated) {
-      setDetails(updated);
+      if (
+        updated.id === rawId ||
+        (updated as any).task?.id === rawId ||
+        (updated as any).task?.Id === rawId
+      ) {
+        setDetails(updated);
+        setCachedTaskDetails(rawId, updated);
+      }
       return;
     }
     setLoadingDetails(true);
     try {
-      const data = await fetchTaskDetails(rawId);
+      const data = await fetchTaskDetails(rawId, { bypassCache: true });
       setDetails(data);
     } catch (err: any) {
       console.warn('Не удалось загрузить подробности заявки:', err);
@@ -112,10 +130,40 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     }
   }, [rawId]);
 
-  // Initial load details and catalog
+  // Load Task Details with SWR (Stale-While-Revalidate) & cancellation
   useEffect(() => {
-    loadDetails();
-  }, [loadDetails]);
+    let cancelled = false;
+    if (!rawId) {
+      setDetails(null);
+      setLoadingDetails(false);
+      return;
+    }
+
+    const cached = getCachedTaskDetails(rawId);
+    if (cached) {
+      setDetails(cached);
+      setLoadingDetails(false);
+    } else {
+      setDetails(null);
+      setLoadingDetails(true);
+    }
+    setAiSummary(null);
+
+    fetchTaskDetails(rawId)
+      .then((data) => {
+        if (!cancelled) setDetails(data);
+      })
+      .catch((err) => {
+        if (!cancelled) console.warn('Не удалось загрузить подробности заявки:', err);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDetails(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rawId]);
 
   useEffect(() => {
     fetchTemplatesCatalog()
@@ -126,7 +174,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
   }, []);
 
   const commentsList: any[] = useMemo(() => {
-    const rawComments = details?.comments;
+    const rawComments = safeDetails?.comments;
     if (Array.isArray(rawComments)) return rawComments;
     if (
       rawComments &&
@@ -142,9 +190,9 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     )
       return (details as any).history.TaskLifetimes;
     return [];
-  }, [details]);
+  }, [safeDetails]);
 
-  const rawAttachments = details?.attachments ?? ticket.attachments;
+  const rawAttachments = safeDetails?.attachments ?? ticket.attachments;
   const attachmentsList: any[] = useMemo(() => {
     if (Array.isArray(rawAttachments)) return rawAttachments;
     if (
@@ -262,7 +310,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <div className="space-y-3.5 overflow-y-auto pr-1">
               <TicketContextSummary
                 ticket={ticket}
-                details={details}
+                details={safeDetails}
                 commentsList={commentsList}
                 attachmentsCount={attachmentsList.length}
                 hostList={hostList}
@@ -283,9 +331,11 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <div className="overflow-y-auto pr-1">
               <div className="lg:sticky lg:top-0">
               <UnifiedDecisionPanel
+                key={rawId}
                 ticket={ticket}
-                details={details}
+                details={safeDetails}
                 rawId={rawId}
+                loadingDetails={loadingDetails}
                 templates={templates}
                 aiSummary={aiSummary}
                 loadingAiSummary={loadingAiSummary}
@@ -305,7 +355,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
           <div className="p-4 space-y-3.5">
             <TicketContextSummary
               ticket={ticket}
-              details={details}
+              details={safeDetails}
               commentsList={commentsList}
               attachmentsCount={attachmentsList.length}
               hostList={hostList}
@@ -315,9 +365,11 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             <AttachmentsSection attachments={attachmentsList} rawId={rawId} />
 
             <UnifiedDecisionPanel
+              key={rawId}
               ticket={ticket}
-              details={details}
+              details={safeDetails}
               rawId={rawId}
+              loadingDetails={loadingDetails}
               templates={templates}
               aiSummary={aiSummary}
               loadingAiSummary={loadingAiSummary}

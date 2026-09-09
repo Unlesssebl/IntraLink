@@ -2124,18 +2124,46 @@ function normalizeTaskDetailsData(data: any): TaskDetails {
 
 
 
-export async function fetchTaskDetails(taskId: number): Promise<TaskDetails> {
+export {
+  getCachedTaskDetails,
+  setCachedTaskDetails,
+  invalidateTaskDetailsCache,
+} from './taskDetailsCache';
+import {
+  getCachedTaskDetails,
+  setCachedTaskDetails,
+  invalidateTaskDetailsCache,
+  getInFlightTaskDetailsRequest,
+  setInFlightTaskDetailsRequest,
+  clearInFlightTaskDetailsRequest,
+} from './taskDetailsCache';
 
+export async function fetchTaskDetails(
+  taskId: number,
+  options?: { bypassCache?: boolean }
+): Promise<TaskDetails> {
+  const bypassCache = options?.bypassCache ?? false;
 
+  if (!bypassCache) {
+    const existing = getInFlightTaskDetailsRequest(taskId);
+    if (existing) {
+      return existing;
+    }
+  }
 
-  const data = await apiFetch<any>(`/api/v1/triage/tasks/${taskId}`);
+  const reqPromise = (async () => {
+    try {
+      const data = await apiFetch<any>(`/api/v1/triage/tasks/${taskId}`);
+      const normalized = normalizeTaskDetailsData(data);
+      setCachedTaskDetails(taskId, normalized);
+      return normalized;
+    } finally {
+      clearInFlightTaskDetailsRequest(taskId);
+    }
+  })();
 
-
-
-  return normalizeTaskDetailsData(data);
-
-
-
+  setInFlightTaskDetailsRequest(taskId, reqPromise);
+  return reqPromise;
 }
 
 
@@ -2144,7 +2172,9 @@ export async function fetchTaskDetails(taskId: number): Promise<TaskDetails> {
 
 
 
+
 export async function analyzeTask(taskId: number): Promise<TaskDetails> {
+  invalidateTaskDetailsCache(taskId);
 
 
 
@@ -2173,6 +2203,7 @@ export async function analyzeTask(taskId: number): Promise<TaskDetails> {
 
 
 export async function reanalyzeTask(taskId: number): Promise<TaskDetails> {
+  invalidateTaskDetailsCache(taskId);
 
 
 
@@ -2325,6 +2356,7 @@ export async function fetchSanitizePreview(text: string): Promise<SanitizePrevie
 
 
 export async function applyTask(taskId: number, payload: SingleApplyPayload): Promise<any> {
+  invalidateTaskDetailsCache(taskId);
 
 
 

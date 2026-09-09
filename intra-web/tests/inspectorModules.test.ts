@@ -66,3 +66,18 @@ test('decision staleness: версия предыдущей заявки не п
   assert.deepStrictEqual(current, { taskId: 202, version: 2 });
   assert.strictEqual(isDecisionVersionStale(false, current, 202, 3), true);
 });
+
+test('taskDetailsCache: сохранение, получение из кэша и инвалидация', async () => {
+  const { getCachedTaskDetails, setCachedTaskDetails, invalidateTaskDetailsCache } = await import(
+    '../src/lib/taskDetailsCache.ts'
+  );
+
+  const mockDetails = { id: 888, task: { id: 888 }, comments: [] } as any;
+  setCachedTaskDetails(888, mockDetails);
+
+  const cached = getCachedTaskDetails(888);
+  assert.deepStrictEqual(cached, mockDetails);
+
+  invalidateTaskDetailsCache(888);
+  assert.strictEqual(getCachedTaskDetails(888), null);
+});
