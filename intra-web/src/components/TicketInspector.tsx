@@ -16,16 +16,6 @@ import UnifiedDecisionPanel from './inspector/UnifiedDecisionPanel';
 import UnifiedActionDock from './inspector/UnifiedActionDock';
 import TicketContextSummary from './inspector/TicketContextSummary';
 import InspectorWorkspace from './inspector/InspectorWorkspace';
-import type { SmartAction } from './inspector/SmartActionBar';
-import {
-  IconRefresh,
-  IconClock,
-  IconLock,
-  IconUser,
-  IconRedirect,
-  IconSparkles,
-  IconCopy,
-} from './Icons';
 import type { DiagStatus } from '../lib/types';
 import { useUnifiedDecision } from './inspector/useUnifiedDecision';
 import { useResolvedEntities } from './inspector/useResolvedEntities';
@@ -329,117 +319,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
     onRefreshDetails: loadDetails,
   });
 
-  // Контекстные быстрые действия для полосы Smart Action Bar
-  const smartActions = useMemo<SmartAction[]>(() => {
-    const list: SmartAction[] = [];
-    const envelope = safeDetails?.decision_envelope;
-    const scenarioKey = (envelope?.rule?.scenario_key || envelope?.rule?.rule_type || '').toLowerCase();
-    const serviceName = (ticket.serviceName || '').toLowerCase();
-
-    // 1. Действия с рабочей станцией (Spooler restart, reboot)
-    if (hostList.length > 0 || scenarioKey.includes('offline') || scenarioKey.includes('hardware')) {
-      const pc = hostList[0] || effectiveHost;
-      if (pc) {
-        list.push({
-          id: 'restart_spooler',
-          label: 'Скопировать рестарт Spooler',
-          icon: <IconCopy size={11} />,
-          hint: `Скопировать команду перезапуска службы Spooler на ${pc} в буфер обмена`,
-          onClick: async () => {
-            try {
-              await navigator.clipboard.writeText(`Invoke-Command -ComputerName "${pc}" -ScriptBlock { Restart-Service Spooler -Force }`);
-              onToast({ type: 'info', message: `Команда рестарта Spooler на ${pc} скопирована в буфер обмена` });
-            } catch {
-              onToast({ type: 'error', message: 'Не удалось скопировать команду' });
-            }
-          },
-        });
-
-        list.push({
-          id: 'reboot_pc',
-          label: 'Скопировать reboot ПК',
-          icon: <IconCopy size={11} />,
-          hint: `Скопировать команду перезагрузки компьютера ${pc} в буфер обмена`,
-          onClick: async () => {
-            try {
-              await navigator.clipboard.writeText(`Restart-Computer -ComputerName "${pc}" -Force`);
-              onToast({ type: 'info', message: `Команда перезагрузки ${pc} скопирована в буфер обмена` });
-            } catch {
-              onToast({ type: 'error', message: 'Не удалось скопировать команду' });
-            }
-          },
-        });
-      }
-    }
-
-    // 2. Действия с учетными записями / Active Directory
-    if (scenarioKey.includes('create_user') || scenarioKey.includes('wlan') || serviceName.includes('учетн') || serviceName.includes('доступ')) {
-      const login = ticket.requesterLogin || envelope?.facts?.login;
-      if (login) {
-        list.push({
-          id: 'unlock_ad',
-          label: 'Скопировать Unlock-AD',
-          icon: <IconCopy size={11} />,
-          hint: `Скопировать команду разблокировки учетной записи ${login} в Active Directory`,
-          onClick: async () => {
-            try {
-              await navigator.clipboard.writeText(`Unlock-ADAccount -Identity "${login}"`);
-              onToast({ type: 'info', message: `Команда разблокировки ${login} скопирована в буфер обмена` });
-            } catch {
-              onToast({ type: 'error', message: 'Не удалось скопировать команду' });
-            }
-          },
-        });
-      }
-
-      list.push({
-        id: 'request_details_35',
-        label: 'Запросить данные (35)',
-        icon: <IconUser size={11} />,
-        hint: 'Перевести заявку в статус 35 (Ожидание заказчика) и запросить недостающие реквизиты',
-        onClick: () => {
-          decisionState.setSelectedStatusOverride(35);
-          const sep = decisionState.replyText.trim() ? '\n\n' : '';
-          decisionState.setReplyText(
-            `${decisionState.replyText.trim()}${sep}Здравствуйте!\nДля выполнения заявки, пожалуйста, уточните недостающие реквизиты: подразделение, кабинет и контактный телефон.`
-          );
-          onToast({ type: 'info', message: 'Выбран статус 35 и добавлен запрос реквизитов' });
-        },
-      });
-    }
-
-    // 3. Каталожный редирект
-    if (scenarioKey.includes('redirect') || envelope?.rule?.rule_type === 'redirect') {
-      list.push({
-        id: 'confirm_redirect_30',
-        label: 'Перенаправить и отменить (30)',
-        icon: <IconRedirect size={11} />,
-        hint: 'Установить статус 30 Отменена с комментарием перенаправления',
-        onClick: () => {
-          decisionState.setSelectedStatusOverride(30);
-          onToast({ type: 'info', message: 'Выбран статус 30 (Отменена для редиректа)' });
-        },
-      });
-    }
-
-    // 4. Подстановка ответа AI
-    const aiText = safeDetails?.decision_envelope?.response?.text;
-    if (aiText) {
-      list.push({
-        id: 'insert_ai_text',
-        label: 'Вставить ответ AI',
-        icon: <IconSparkles size={11} />,
-        hint: 'Подставить сформулированный AI ответ в поле ввода',
-        onClick: () => {
-          decisionState.insertSnippet(aiText);
-        },
-      });
-    }
-
-    return list;
-  }, [safeDetails, hostList, effectiveHost, ticket, decisionState, onToast]);
-
-  // Быстрые сниппеты для подстановки в ответ (не дублируем то, что уже в SmartActionBar)
+  // Быстрые сниппеты для подстановки в ответ
   const snippets = useMemo(() => {
     return [];
   }, []);
@@ -616,7 +496,6 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             onDismissNewDraft={decisionState.dismissNewDraft}
             snippets={snippets}
             insertSnippet={decisionState.insertSnippet}
-            smartActions={smartActions}
           />
         </div>
       </div>

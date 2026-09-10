@@ -2,7 +2,7 @@
 
 Дата: 2026-09-09. Статус: подготовлен к реализации; перечисленные исправления ещё не выполнены.
 
-Связанные материалы: [roadmap](ticket-scenario-quality-roadmap.md), [исходный отчёт](../reports/ticket-scenario-quality-baseline.md), [готовность сценарного ядра](scenario-core-readiness.md).
+Связанные материалы: [roadmap](ticket-scenario-quality-roadmap.md), [исходный отчёт](../reports/ticket-scenario-quality-baseline.md), [готовность сценарного ядра](archive/scenario-core-readiness.md).
 
 ## 1. Результат и границы выпуска
 

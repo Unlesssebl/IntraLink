@@ -6,11 +6,11 @@
 
 ## 🚀 Активные архитектурные этапы
 
-1. **[Переход на сценарный контур](plans/scenario-orchestration/transition-roadmap.md):** перевод жизненного цикла заявок на конечный автомат `TicketRunOrchestrator`, сбор фактов (`FactBag`) с контролем источника правды (Provenance), компиляция решений `DecisionCompiler` и безопасная раскатка через режимы `shadow` / `canary` / `active`. Спецификация: [сценарный план](plans/scenario-orchestration/execution-plan.md).
+1. **[Переход на сценарный контур](plans/archive/scenario-orchestration/transition-roadmap.md):** перевод жизненного цикла заявок на конечный автомат `TicketRunOrchestrator`, сбор фактов (`FactBag`) с контролем источника правды (Provenance), компиляция решений `DecisionCompiler` и безопасная раскатка через режимы `shadow` / `canary` / `active`. Спецификация: [сценарный план](plans/archive/scenario-orchestration/execution-plan.md).
 2. **[Асинхронная платформа пакетного триажа (ADR 0003)](adr/0003-asynchronous-batch-triage-platform.md):** перевод анализа очередей на неблокирующий шлюз `202 Accepted`, Redis Job Queue, Single-flight lock и стриминг прогресса через SSE (`/api/v1/events/stream`).
-3. **[Эволюция модульной Worker Platform](plans/worker-platform-evolution.md):** безопасное исполнение действий, модульный SDK хэндлеров, маршрутизация fleet и пилот удаленной установки принтеров.
+3. **[Эволюция модульной Worker Platform](plans/archive/worker-platform-evolution.md):** безопасное исполнение действий, модульный SDK хэндлеров, маршрутизация fleet и пилот удаленной установки принтеров.
 4. **[Desktop Companion](services/desktop-companion/README.md):** нативный Windows tray-helper на Tauri 2 для запуска DameWare, LiteManager и RDP из веб-интерфейса по одноразовым deep links Core API.
-5. **[Roadmap качества RAG](plans/rag-quality-roadmap.md):** гибридный поиск (pgvector BGE-M3 + FTS Russian tsvector) и Cross-Encoder `BAAI/bge-reranker-v2-m3` на FastEmbed (Recall@5 97.5%, Hit@5 100%).
+5. **[Roadmap качества RAG](plans/archive/rag-quality-roadmap.md):** гибридный поиск (pgvector BGE-M3 + FTS Russian tsvector) и Cross-Encoder `BAAI/bge-reranker-v2-m3` на FastEmbed (Recall@5 97.5%, Hit@5 100%).
 
 ---
 
@@ -39,12 +39,20 @@ docs/
 │   └── telegram-bot/              ← Мобильный пейджер и HITL-согласования (aiogram 3.x)
 │
 ├── plans/                         ← Планы развития и дорожные карты
-│   ├── scenario-orchestration/    ← Переход на модульный сценарный контур
-│   ├── worker-platform/           ← Эволюция платформы исполнения воркеров
-│   ├── rag-quality-roadmap.md     ← План и верификация качества RAG
 │   ├── intent-classification.md   ← Трехуровневый гибридный каскад классификации
-│   ├── desktop-companion-blueprint.md ← Концептуальный блупринт Desktop Companion
+│   ├── model-adaptive-rag-and-tone-orchestration.md ← Адаптивный контекст RAG и тональность
+│   ├── scenarios-roadmap.md       ← Дорожная карта сценариев автоматизации
+│   ├── ticket-scenario-quality-roadmap.md ← Roadmap качества сценариев
+│   ├── ticket-scenario-quality-stage-2-plan.md ← План этапа 2 качества сценариев
 │   └── archive/                   ← Архив реализованных планов и чекпоинтов
+│       ├── scenario-orchestration/ ← Реализованный сценарный контур
+│       ├── worker-platform/       ← Реализованная платформа воркеров
+│       ├── adaptive-inspector-implementation-plan.md
+│       ├── desktop-companion-blueprint.md
+│       ├── hardware-specs-implementation-plan.md
+│       ├── rag-quality-roadmap.md
+│       ├── scenario-core-readiness.md
+│       └── worker-platform-evolution.md
 │
 ├── runbooks/                      ← Инструкции по эксплуатации и безопасность
 │   ├── identity-bootstrap.md      ← Инициализация сервисной учетной записи AD
@@ -92,11 +100,15 @@ docs/
 | **Регламенты** | [Triage Lifecycle](runbooks/triage-lifecycle.md) | 🟢 Актуален | Управление `ANALYSIS_REVISION`, Redis-локи и кэши |
 | **Регламенты** | [Identity Bootstrap](runbooks/identity-bootstrap.md) | 🟢 Актуален | Настройка сервисной учетной записи и доступов AD |
 | **Регламенты** | [AI Production Readiness](runbooks/production-readiness-ai.md) | 🟢 Актуален | Границы автономности ИИ, DLP-фильтры и eval-gate |
-| **Планы** | [Scenario Transition](plans/scenario-orchestration/transition-roadmap.md) | 🟡 В работе | 5-этапный роадмап выкатки сценарного контура |
-| **Планы** | [Scenario Execution Plan](plans/scenario-orchestration/execution-plan.md) | 🟡 В работе | Спецификация FSM `TicketRunOrchestrator` |
-| **Планы** | [Worker Platform Evolution](plans/worker-platform-evolution.md) | 🟡 В работе | План масштабирования и модульности воркеров |
-| **Планы** | [RAG Quality Roadmap](plans/rag-quality-roadmap.md) | 🟢 Реализован | Внедрение FastEmbed Cross-Encoder и FTS |
 | **Планы** | [Intent Classification](plans/intent-classification.md) | 🟡 В работе | Трехуровневый каскад классификации намерений |
+| **Планы** | [Model-Adaptive RAG & Tone](plans/model-adaptive-rag-and-tone-orchestration.md) | 🟡 В работе | Адаптивный контекст RAG и тональность |
+| **Планы** | [Scenarios Roadmap](plans/scenarios-roadmap.md) | 🟡 В работе | Дорожная карта сценариев автоматизации |
+| **Планы** | [Ticket Scenario Quality](plans/ticket-scenario-quality-roadmap.md) | 🟡 В работе | Повышение качества сценариев заявок |
+| **Планы** | [Quality Stage 2 Plan](plans/ticket-scenario-quality-stage-2-plan.md) | 🟡 В работе | Факты, маршрутизация и проверка решений |
+| **Архив** | [Scenario Transition](plans/archive/scenario-orchestration/transition-roadmap.md) | 🟢 Реализован | 5-этапный роадмап выкатки сценарного контура |
+| **Архив** | [Scenario Execution Plan](plans/archive/scenario-orchestration/execution-plan.md) | 🟢 Реализован | Спецификация FSM `TicketRunOrchestrator` |
+| **Архив** | [Worker Platform Evolution](plans/archive/worker-platform-evolution.md) | 🟢 Реализован | План масштабирования и модульности воркеров |
+| **Архив** | [RAG Quality Roadmap](plans/archive/rag-quality-roadmap.md) | 🟢 Реализован | Внедрение FastEmbed Cross-Encoder и FTS |
 
 ---
 

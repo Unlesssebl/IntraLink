@@ -3,9 +3,9 @@
 Документ фиксирует стратегические горизонты, этапы технологической эволюции и архитектурные инварианты системы **IntraLink**.
 
 Ближайшие этапы реализации:
-* [Переход на сценарный контур](plans/scenario-orchestration/transition-roadmap.md) — типизированные сценарии, сбор фактов с Provenance, Rollout Modes (Shadow/Canary/Active).
-* [Эволюция модульной Worker Platform](plans/worker-platform-evolution.md) — границы безопасного исполнения, масштабирование воркеров, принтерный пилот.
-* [Roadmap качества RAG](plans/rag-quality-roadmap.md) — этапы A–D реализованы и верифицированы (FastEmbed + BGE-Reranker-v2-m3 + PostgreSQL FTS).
+* [Переход на сценарный контур](plans/archive/scenario-orchestration/transition-roadmap.md) — типизированные сценарии, сбор фактов с Provenance, Rollout Modes (Shadow/Canary/Active).
+* [Эволюция модульной Worker Platform](plans/archive/worker-platform-evolution.md) — границы безопасного исполнения, масштабирование воркеров, принтерный пилот.
+* [Roadmap качества RAG](plans/archive/rag-quality-roadmap.md) — этапы A–D реализованы и верифицированы (FastEmbed + BGE-Reranker-v2-m3 + PostgreSQL FTS).
 
 ---
 
@@ -69,7 +69,7 @@ timeline
 * **Безопасность (Zero Trust DLP):** Трехконтурная маршрутизация инференса (🔴 RED On-Prem / 🟡 YELLOW PII Vault / 🟢 GREEN Cloud).
 * **Фоновая телеметрия (0ms latency):** Fail-Fast сетевой опрос (Ping 400ms, SMB:445, WinRM:5985, CIM Spooler/1C) с защитой подсетей и кэшем в Redis.
 * **Защитные контуры:** Distributed Host Concurrency Lock (`lock:host:<pc>`, TTL 30s) и аварийный тормоз Dead Man's Switch (Rate-Limiter).
-* **База знаний (RAG):** Dense pgvector (1024-dim, BGE-M3), лексический поиск через `ILIKE` и RRF. Адаптер Cross-Encoder существует, но в проверенном runtime от 2026-09-08 отсутствует FastEmbed. Настоящий FTS и работоспособный reranker входят в [ближайший roadmap](plans/rag-quality-roadmap.md).
+* **База знаний (RAG):** Dense pgvector (1024-dim, BGE-M3), лексический поиск через `ILIKE` и RRF. Адаптер Cross-Encoder существует, но в проверенном runtime от 2026-09-08 отсутствует FastEmbed. Настоящий FTS и работоспособный reranker входят в [архивный roadmap](plans/archive/rag-quality-roadmap.md).
 * **Клиенты:** React SPA (`/operator-panel`), Telegram-бот (aiogram 3.x) и Tooling SDK `helpdesk-cli` для AI-агента Antigravity.
 
 ---
@@ -203,6 +203,6 @@ timeline
 |---|:---:|:---:|:---:|
 | **Среднее время первичного триажа (MTTA)** | 15–30 мин | **< 1 мин** (пакетный разбор) | **< 10 сек** (авто-триаж + pre-fetch) |
 | **Время закрытия типовых заявок (MTTR)** | 20–40 мин | **3–5 мин** (AD / Wi-Fi CLI) | **< 1 мин** (Zero-Touch execution) |
-| **Качество RAG-рекомендаций** | — | Baseline не подтверждён; см. аудит 2026-09-08 | Измеряемое улучшение retrieval и отсутствие ложных рекомендаций на контрольном наборе; критерии в [RAG roadmap](plans/rag-quality-roadmap.md) |
+| **Качество RAG-рекомендаций** | — | Baseline не подтверждён; см. аудит 2026-09-08 | Измеряемое улучшение retrieval и отсутствие ложных рекомендаций на контрольном наборе; критерии в [RAG roadmap](plans/archive/rag-quality-roadmap.md) |
 | **Утечки конфиденциальных данных (DLP)** | Высокий риск | **0%** (DLP Sanitizer + Vault) | **0%** (Формально верифицировано) |
 | **Доля рутинных операций (Zero-Touch)** | 0% | **25%** | **65%+** |
