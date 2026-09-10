@@ -1,8 +1,8 @@
-\"\"\"stage 3 diagnostic plans and truthfulness policies
+"""stage 3 diagnostic plans and truthfulness policies
 
 Revision ID: 20260910_0013
 Revises: 20260909_0012
-\"\"\"
+"""
 
 from typing import Sequence, Union
 
@@ -160,23 +160,23 @@ def upgrade() -> None:
         if is_postgres:
             op.execute(
                 sa.text(
-                    \"\"\"
+                    """
                     INSERT INTO response_templates (key, version, name, template_text, required_variables, is_active, created_by)
                     VALUES (:key, :version, :name, :text, '[]'::jsonb, true, 'system:migration:0013')
                     ON CONFLICT (key, version) DO NOTHING
-                    \"\"\"
+                    """
                 ).bindparams(key=key, version=version, name=name, text=text)
             )
             op.execute(
                 sa.text(
-                    \"\"\"
+                    """
                     INSERT INTO resolution_policies
                         (outcome_key, version, outcome_kind, template_id, target_status_id, status_name, expenses, risk_level, requires_approval, is_active, created_by)
                     SELECT :key, :version, :kind, template.id, :target_status, :status_name, :expenses, 0, :requires_approval, true, 'system:migration:0013'
                     FROM response_templates AS template
                     WHERE template.key = :key AND template.version = :version
                     ON CONFLICT (outcome_key, version) DO NOTHING
-                    \"\"\"
+                    """
                 ).bindparams(
                     key=key,
                     version=version,
