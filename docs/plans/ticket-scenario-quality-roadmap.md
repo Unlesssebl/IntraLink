@@ -81,7 +81,7 @@
 
 ## Этап 4. AI, fallback и объяснимость
 
-Технический план адаптивного контекста и тональности: [модель адаптивного RAG и оркестрации тонов](model-adaptive-rag-and-tone-orchestration.md).
+Порядок реализации, контракты и тесты: [технический план этапа 4](ticket-scenario-quality-stage-4-plan.md). Исходная концепция и Fast Fix: [модель адаптивного RAG и оркестрации тонов](model-adaptive-rag-and-tone-orchestration.md).
 
 - Настроить Core API на опубликованный LiteLLM alias `intralink-chat` и отдельно проверить резервную Ollama и сервис эмбеддингов.
 - Реализовать **Model-Adaptive Context Budgeting (Capacity-Aware Prompting)**: для локальной модели Ollama (`RED` контур / 1.5B–7B параметры) передавать строго 1 (макс. 2) прецедента из базы знаний для исключения эффекта *Lost in the Middle* и перегрузки VRAM; для облачной модели LiteLLM/Gemini (`YELLOW`/`GREEN`) передавать до 3–4 прецедентов. Вынести лимиты в `.env` (`AI_OLLAMA_MAX_RAG_MATCHES`, `AI_CLOUD_MAX_RAG_MATCHES`).

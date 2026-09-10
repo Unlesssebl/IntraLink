@@ -494,6 +494,14 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             pendingNewAiDraft={decisionState.pendingNewAiDraft}
             onApplyNewDraft={decisionState.applyNewDraft}
             onDismissNewDraft={decisionState.dismissNewDraft}
+            originalAiDraft={decisionState.originalAiDraft}
+            isAiDraftApplied={decisionState.isAiDraftApplied}
+            isAiDraftEdited={decisionState.isAiDraftEdited}
+            recommendedStatusId={decisionState.recommendedStatusId}
+            recommendedStatusName={decisionState.recommendedStatusName}
+            recommendedExpenses={decisionState.recommendedExpenses}
+            onRestoreAiDraft={decisionState.handleRestoreAiDraft}
+            onAppendAiDraft={decisionState.handleAppendAiDraft}
             snippets={snippets}
             insertSnippet={decisionState.insertSnippet}
           />

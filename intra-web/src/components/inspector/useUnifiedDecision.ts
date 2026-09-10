@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import type { Ticket } from '../../data/mock';
 import type { TaskDetails } from '../../lib/types';
 import {
@@ -56,6 +56,16 @@ export interface UseUnifiedDecisionReturn {
   pendingNewAiDraft: string | null;
   applyNewDraft: () => void;
   dismissNewDraft: () => void;
+
+  // Управление черновиком ответа нейросети
+  originalAiDraft: string;
+  isAiDraftApplied: boolean;
+  isAiDraftEdited: boolean;
+  recommendedStatusId: number | null;
+  recommendedStatusName: string;
+  recommendedExpenses: number;
+  handleRestoreAiDraft: (syncMetadata?: boolean) => void;
+  handleAppendAiDraft: () => void;
 
   // Резолюция статуса и готовности
   targetStatusId: number;
@@ -750,6 +760,121 @@ export function useUnifiedDecision({
   const actionUnavailable =
     !pendingCommand && (!isReady || policyBlocked || commentMissing || isPrivateCloseBlocked);
 
+  // 5. Вычисление и управление оригинальным черновиком нейросети
+  const originalAiDraft = useMemo(() => {
+    return (
+      safeDetails?.decision_envelope?.response?.text ||
+      ticket.aiPlan?.comment ||
+      ticket.aiSuggestion ||
+      ''
+    ).trim();
+  }, [
+    safeDetails?.decision_envelope?.response?.text,
+    ticket.aiPlan?.comment,
+    ticket.aiSuggestion,
+  ]);
+
+  const recommendedStatusId: number | null =
+    envelope?.outcome?.target_status_id ??
+    envelopePolicy.status_id ??
+    proposal?.status_id ??
+    (safeDetails?.suggested_action as any)?.status_id ??
+    ticket.aiPlan?.targetStatusId ??
+    null;
+
+  const recommendedStatusName: string =
+    (recommendedStatusId ? statusNameMap[recommendedStatusId] : null) ||
+    proposal?.status_name ||
+    envelopePolicy.status_name ||
+    (safeDetails?.suggested_action as any)?.status_name ||
+    ticket.aiPlan?.targetStatusName ||
+    'В работе';
+
+  const recommendedExpenses: number =
+    envelopePolicy.expenses ??
+    ticket.aiPlan?.expensesMinutes ??
+    (safeDetails?.suggested_action as any)?.expenses ??
+    ticket.expenses ??
+    10;
+
+  const isAiDraftApplied = Boolean(
+    originalAiDraft && replyText.trim() === originalAiDraft
+  );
+  const isAiDraftEdited = Boolean(
+    originalAiDraft && replyText.trim() && replyText.trim() !== originalAiDraft
+  );
+
+  const handleRestoreAiDraft = useCallback(
+    (syncMetadata = false) => {
+      if (!originalAiDraft) {
+        onToast({
+          type: 'warning',
+          message: 'Ответ нейросети пока не сформирован. Запустите анализ заявки.',
+        });
+        return;
+      }
+
+      setReplyText(originalAiDraft);
+
+      if (syncMetadata) {
+        setExpenses(recommendedExpenses);
+        if (recommendedStatusId) {
+          setSelectedStatusOverride(recommendedStatusId);
+        }
+        if (recommendedStatusId === 29 && replyMode === 'internal') {
+          setReplyMode('reply');
+          onToast({
+            type: 'info',
+            message: 'Режим переключен на «Ответ заявителю» (закрытие требует публичного ответа)',
+          });
+        }
+        onToast({
+          type: 'success',
+          message: 'Ответ нейросети, статус и трудозатраты синхронизированы',
+        });
+      } else {
+        onToast({
+          type: 'success',
+          message: 'Оригинальный ответ нейросети восстановлен',
+        });
+      }
+    },
+    [
+      originalAiDraft,
+      setReplyText,
+      setExpenses,
+      recommendedExpenses,
+      recommendedStatusId,
+      setSelectedStatusOverride,
+      replyMode,
+      setReplyMode,
+      onToast,
+    ]
+  );
+
+  const handleAppendAiDraft = useCallback(() => {
+    if (!originalAiDraft) {
+      onToast({
+        type: 'warning',
+        message: 'Ответ нейросети пока не сформирован. Запустите анализ заявки.',
+      });
+      return;
+    }
+    if (replyText.includes(originalAiDraft)) {
+      onToast({
+        type: 'info',
+        message: 'Этот ответ нейросети уже присутствует в тексте',
+      });
+      return;
+    }
+    const separator = replyText.trim() ? '\n\n' : '';
+    setReplyText(replyText ? `${replyText.trim()}${separator}${originalAiDraft}` : originalAiDraft);
+    onToast({
+      type: 'success',
+      message: 'Ответ нейросети добавлен в конец комментария',
+    });
+  }, [originalAiDraft, replyText, setReplyText, onToast]);
+
   return {
     replyText,
     setReplyText,
@@ -782,6 +907,14 @@ export function useUnifiedDecision({
     pendingNewAiDraft,
     applyNewDraft,
     dismissNewDraft,
+    originalAiDraft,
+    isAiDraftApplied,
+    isAiDraftEdited,
+    recommendedStatusId,
+    recommendedStatusName,
+    recommendedExpenses,
+    handleRestoreAiDraft,
+    handleAppendAiDraft,
     handleApplyDecision,
     handleCancelTicket,
     handleTakeTicket,

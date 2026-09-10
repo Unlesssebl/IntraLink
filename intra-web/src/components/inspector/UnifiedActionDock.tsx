@@ -46,6 +46,14 @@ export interface UnifiedActionDockProps {
   pendingNewAiDraft: string | null;
   onApplyNewDraft: () => void;
   onDismissNewDraft: () => void;
+  originalAiDraft?: string;
+  isAiDraftApplied?: boolean;
+  isAiDraftEdited?: boolean;
+  recommendedStatusId?: number | null;
+  recommendedStatusName?: string;
+  recommendedExpenses?: number;
+  onRestoreAiDraft?: (syncMetadata?: boolean) => void;
+  onAppendAiDraft?: () => void;
   snippets?: Array<{ label: string; text: string }>;
   insertSnippet: (snippet: string) => void;
 }
@@ -78,14 +86,24 @@ export default function UnifiedActionDock({
   pendingNewAiDraft,
   onApplyNewDraft,
   onDismissNewDraft,
+  originalAiDraft = '',
+  isAiDraftApplied = false,
+  isAiDraftEdited = false,
+  recommendedStatusId = null,
+  recommendedStatusName = 'В работе',
+  recommendedExpenses = 10,
+  onRestoreAiDraft,
+  onAppendAiDraft,
   snippets = [],
   insertSnippet,
 }: UnifiedActionDockProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
+  const [isAiMenuOpen, setIsAiMenuOpen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const templateMenuRef = useRef<HTMLDivElement>(null);
+  const aiMenuRef = useRef<HTMLDivElement>(null);
 
   // Сброс таймера подтверждения очистки
   useEffect(() => {
@@ -108,7 +126,7 @@ export default function UnifiedActionDock({
     setConfirmClear(false);
   };
 
-  // Закрытие выпадающих списков при клике снаружи
+  // Закрытие выпадающих списков при клике снаружи и клавише Escape
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -117,9 +135,25 @@ export default function UnifiedActionDock({
       if (templateMenuRef.current && !templateMenuRef.current.contains(event.target as Node)) {
         setIsTemplatesOpen(false);
       }
+      if (aiMenuRef.current && !aiMenuRef.current.contains(event.target as Node)) {
+        setIsAiMenuOpen(false);
+      }
     }
+
+    function handleGlobalKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setIsDropdownOpen(false);
+        setIsTemplatesOpen(false);
+        setIsAiMenuOpen(false);
+      }
+    }
+
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleGlobalKeyDown);
+    };
   }, []);
 
   // Хоткей Ctrl+Enter / Cmd+Enter для отправки
@@ -153,6 +187,28 @@ export default function UnifiedActionDock({
         setReplyText(`${replyText.trim()}${sep}${tmpl.template}`);
       }
     }
+  };
+
+  // Обработчик кнопки «AI-ответ»
+  const handleAiButtonClick = () => {
+    // 1. Если ответа нейросети вообще нет: запустить анализ
+    if (!originalAiDraft) {
+      if (onReanalyze && !reanalyzing) {
+        onReanalyze();
+      }
+      return;
+    }
+
+    // 2. Если поле ввода пустое: мгновенная подстановка оригинала
+    if (!replyText.trim()) {
+      if (onRestoreAiDraft) {
+        onRestoreAiDraft(false);
+      }
+      return;
+    }
+
+    // 3. Если поле не пустое: открыть/закрыть контекстный поповер
+    setIsAiMenuOpen((prev) => !prev);
   };
 
   const selectedTemplate = templates.find((t) => t.key === selectedTemplateKey);
@@ -268,6 +324,128 @@ export default function UnifiedActionDock({
               )}
             </div>
           )}
+
+          {/* Кнопка вставки ответа нейросети с контекстным поповером */}
+          <div className="relative" ref={aiMenuRef}>
+            <button
+              type="button"
+              onClick={handleAiButtonClick}
+              disabled={reanalyzing}
+              aria-haspopup="menu"
+              aria-expanded={isAiMenuOpen}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 font-medium text-xs transition-colors cursor-pointer ${
+                isAiDraftApplied
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-900/50'
+                  : 'border-purple-200 bg-purple-50/70 text-purple-700 hover:bg-purple-100 dark:border-purple-900/60 dark:bg-purple-950/40 dark:text-purple-300 dark:hover:bg-purple-900/50'
+              } disabled:opacity-50`}
+              title={
+                !originalAiDraft
+                  ? 'Запустить AI-анализ заявки и сформировать ответ'
+                  : isAiDraftApplied
+                  ? 'Ответ нейросети уже подставлен (нажмите для меню управления)'
+                  : 'Вставить сформированный ответ нейросети'
+              }
+            >
+              {reanalyzing ? (
+                <IconRefresh size={12} className="animate-spin text-purple-500" />
+              ) : isAiDraftApplied ? (
+                <IconCheck size={12} className="text-emerald-600 dark:text-emerald-400" />
+              ) : (
+                <IconSparkles size={12} className="text-purple-600 dark:text-purple-400" />
+              )}
+              <span>{reanalyzing ? 'Анализ...' : 'AI-ответ'}</span>
+              {originalAiDraft ? (
+                <IconChevronDown
+                  size={11}
+                  className={`text-purple-400 transition-transform ${isAiMenuOpen ? 'rotate-180' : ''}`}
+                />
+              ) : null}
+            </button>
+
+            {isAiMenuOpen && originalAiDraft && (
+              <div
+                role="menu"
+                className="absolute left-0 bottom-full mb-1.5 w-80 rounded-xl border border-neutral-200 bg-white p-1.5 shadow-2xl dark:border-neutral-800 dark:bg-neutral-900 z-30 space-y-1 animate-in fade-in duration-100"
+              >
+                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-neutral-400 border-b border-neutral-100 dark:border-neutral-800 flex items-center justify-between">
+                  <span>Ответ нейросети</span>
+                  {isAiDraftEdited && (
+                    <span className="text-amber-600 dark:text-amber-400 font-semibold normal-case">
+                      текст изменён
+                    </span>
+                  )}
+                  {isAiDraftApplied && (
+                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold normal-case">
+                      актуален
+                    </span>
+                  )}
+                </div>
+
+                {/* Действие 1: Восстановить оригинальный ответ */}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsAiMenuOpen(false);
+                    onRestoreAiDraft?.(false);
+                  }}
+                  className="flex w-full items-start gap-2 rounded-lg p-2 text-left text-xs transition-colors hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 cursor-pointer"
+                >
+                  <IconRefresh size={13} className="text-blue-500 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <div className="font-semibold text-neutral-900 dark:text-neutral-100">
+                      Восстановить оригинальный ответ
+                    </div>
+                    <div className="text-[11px] text-neutral-400 leading-tight">
+                      Заменит набранный текст, сохранив текущий статус и трудозатраты
+                    </div>
+                  </div>
+                </button>
+
+                {/* Действие 2: Восстановить всё (текст + статус + время) */}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsAiMenuOpen(false);
+                    onRestoreAiDraft?.(true);
+                  }}
+                  className="flex w-full items-start gap-2 rounded-lg p-2 text-left text-xs transition-colors hover:bg-purple-50 dark:hover:bg-purple-950/50 text-purple-900 dark:text-purple-200 cursor-pointer"
+                >
+                  <IconSparkles size={13} className="text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <div className="font-semibold">
+                      Восстановить всё (текст + статус + время)
+                    </div>
+                    <div className="text-[11px] text-purple-700/80 dark:text-purple-300/80 leading-tight">
+                      Синхронизирует статус ({recommendedStatusName}) и трудозатраты ({recommendedExpenses}м)
+                    </div>
+                  </div>
+                </button>
+
+                {/* Действие 3: Добавить в конец */}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsAiMenuOpen(false);
+                    onAppendAiDraft?.();
+                  }}
+                  className="flex w-full items-start gap-2 rounded-lg p-2 text-left text-xs transition-colors hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 cursor-pointer"
+                >
+                  <IconChevronDown size={13} className="text-neutral-400 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <div className="font-semibold text-neutral-900 dark:text-neutral-100">
+                      Добавить в конец текста
+                    </div>
+                    <div className="text-[11px] text-neutral-400 leading-tight">
+                      Допишет ответ нейросети после вашего текста с новой строки
+                    </div>
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Списание времени (минуты) */}

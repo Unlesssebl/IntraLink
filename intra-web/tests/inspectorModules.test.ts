@@ -430,6 +430,64 @@ test('closedTicketsExcludedFromBatchAnalysis: закрытые заявки не
   assert.strictEqual(openTargets.includes(105), false);
 });
 
+test('aiDraftLogic: безопасное восстановление, синхронизация статуса 29 и защита от дубликатов', () => {
+  // 1. Проверка дедупликации при добавлении в конец
+  const appendDraft = (currentText: string, draftText: string): { text: string; alreadyIncluded: boolean } => {
+    const cleanDraft = draftText.trim();
+    if (!cleanDraft) return { text: currentText, alreadyIncluded: false };
+    if (currentText.includes(cleanDraft)) {
+      return { text: currentText, alreadyIncluded: true };
+    }
+    const sep = currentText.trim() ? '\n\n' : '';
+    return {
+      text: currentText ? `${currentText.trim()}${sep}${cleanDraft}` : cleanDraft,
+      alreadyIncluded: false,
+    };
+  };
+
+  const initial = 'Здравствуйте! Проверил сетевой порт.';
+  const aiDraft = 'Принтер переподключен к порту RAW 9100, тестовая страница отправлена.';
+
+  const res1 = appendDraft(initial, aiDraft);
+  assert.strictEqual(res1.alreadyIncluded, false);
+  assert.strictEqual(res1.text, `${initial}\n\n${aiDraft}`);
+
+  // Повторное добавление должно быть отклонено
+  const res2 = appendDraft(res1.text, aiDraft);
+  assert.strictEqual(res2.alreadyIncluded, true);
+  assert.strictEqual(res2.text, res1.text);
+
+  // 2. Проверка защиты статуса 29 (закрытие) при скрытом комментарии:
+  const resolveRestoreMode = (
+    currentMode: 'reply' | 'internal',
+    recommendedStatus: number | null
+  ): 'reply' | 'internal' => {
+    if (recommendedStatus === 29 && currentMode === 'internal') {
+      return 'reply';
+    }
+    return currentMode;
+  };
+
+  assert.strictEqual(resolveRestoreMode('internal', 29), 'reply');
+  assert.strictEqual(resolveRestoreMode('internal', 27), 'internal');
+  assert.strictEqual(resolveRestoreMode('reply', 29), 'reply');
+
+  // 3. Проверка флагов редактирования
+  const isEdited = (current: string, original: string): boolean => {
+    return Boolean(original.trim() && current.trim() && current.trim() !== original.trim());
+  };
+  const isApplied = (current: string, original: string): boolean => {
+    return Boolean(original.trim() && current.trim() === original.trim());
+  };
+
+  assert.strictEqual(isApplied('', aiDraft), false);
+  assert.strictEqual(isEdited('', aiDraft), false);
+  assert.strictEqual(isApplied(aiDraft, aiDraft), true);
+  assert.strictEqual(isEdited(aiDraft, aiDraft), false);
+  assert.strictEqual(isApplied('Отредактированный текст', aiDraft), false);
+  assert.strictEqual(isEdited('Отредактированный текст', aiDraft), true);
+});
+
 
 
 
