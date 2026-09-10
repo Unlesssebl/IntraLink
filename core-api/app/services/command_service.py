@@ -267,6 +267,8 @@ class CommandService:
         run = await self._assert_ticket_run_allows_execution(
             ticket_run_id, task_id=task_id, action=action
         )
+        if decision_id is not None and task_id is None and run is not None:
+            task_id = run.task_id
 
         # Вычисление эффективного статуса:
         # Для действий из сценария в режиме manual мутирующие действия требуют подтверждения (awaiting_approval);
@@ -291,11 +293,52 @@ class CommandService:
                 )
             from app.services.decision_journal import DecisionJournalService
 
-            await DecisionJournalService(self.db).require_current(
+            decision_record = await DecisionJournalService(self.db).require_current(
                 decision_id=decision_id,
                 task_id=task_id,
                 version=decision_version,
             )
+            if action == "apply_triage":
+                from app.services.truthfulness_guard import (
+                    TruthfulnessGuard,
+                    TruthfulnessViolation,
+                )
+                from shared.domain import parse_execution_plan
+
+                raw_status = parameters.get("status_id")
+                try:
+                    status_id_val = int(raw_status) if raw_status is not None else 0
+                except (ValueError, TypeError):
+                    status_id_val = 0
+                comment_val = str(parameters.get("comment") or "")
+                is_private_val = bool(parameters.get("is_private", False))
+
+                envelope_data = (
+                    decision_record.envelope_json
+                    if decision_record and isinstance(decision_record.envelope_json, dict)
+                    else {}
+                )
+                plan_raw = envelope_data.get("execution_plan")
+                plan = parse_execution_plan(plan_raw) if plan_raw else None
+                evidence_refs = envelope_data.get("evidence_refs", [])
+
+                try:
+                    TruthfulnessGuard.validate_apply_triage_payload(
+                        status_id=status_id_val,
+                        comment=comment_val,
+                        is_private=is_private_val,
+                        execution_plan=plan,
+                        evidence_refs=evidence_refs,
+                    )
+                except TruthfulnessViolation as exc:
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        {
+                            "detail": exc.code,
+                            "message": str(exc),
+                            "details": exc.details,
+                        },
+                    )
         elif task_id is not None:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,

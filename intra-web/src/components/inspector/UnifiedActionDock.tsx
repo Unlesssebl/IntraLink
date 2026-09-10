@@ -206,12 +206,23 @@ export default function UnifiedActionDock({
             </button>
             <button
               type="button"
-              onClick={() => setReplyMode('internal')}
-              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition-colors ${replyMode === 'internal'
+              onClick={() => {
+                if (targetStatusId === 29) return;
+                setReplyMode('internal');
+              }}
+              disabled={targetStatusId === 29}
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition-colors ${
+                replyMode === 'internal'
                   ? 'bg-amber-100 text-amber-900 shadow-2xs dark:bg-amber-950 dark:text-amber-200'
+                  : targetStatusId === 29
+                  ? 'opacity-40 cursor-not-allowed text-neutral-400'
                   : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
-                }`}
-              title="Служебная заметка, видна только инженерам"
+              }`}
+              title={
+                targetStatusId === 29
+                  ? 'Закрытие заявки (статус 29) запрещено со скрытым комментарием'
+                  : 'Служебная заметка, видна только инженерам'
+              }
             >
               <IconLock size={12} />
               <span>Скрытый комментарий</span>
@@ -323,6 +334,13 @@ export default function UnifiedActionDock({
         </div>
       )}
 
+      {/* Подсказка валидации: запрет закрытия со скрытым комментарием */}
+      {targetStatusId === 29 && replyMode === 'internal' && (
+        <div className="text-[11px] font-medium text-rose-600 dark:text-rose-400">
+          Закрытие заявки (статус «Выполнена») запрещено со скрытым комментарием. Переключите режим на «Ответ заявителю».
+        </div>
+      )}
+
       {/* Быстрые сниппеты (если доступны) */}
       {snippets.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
@@ -403,6 +421,9 @@ export default function UnifiedActionDock({
                   onClick={() => {
                     setIsDropdownOpen(false);
                     setSelectedStatusOverride(29);
+                    if (replyMode === 'internal') {
+                      setReplyMode('reply');
+                    }
                   }}
                   className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/40"
                 >

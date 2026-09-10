@@ -30,7 +30,36 @@ Matcher = Callable[[ScenarioContext], tuple[bool, float, str]]
 
 
 def _text(context: ScenarioContext) -> str:
-    return f"{context.task.get('Name') or ''} {context.task.get('Description') or ''}".casefold()
+    parts = [str(context.task.get("Name") or ""), str(context.task.get("Description") or "")]
+    author_login = str(
+        context.task.get("CreatorLogin") or context.task.get("Creator") or ""
+    ).strip().lower()
+    for comment in (context.comments or []):
+        if not isinstance(comment, dict):
+            continue
+        author = str(
+            comment.get("AuthorLogin")
+            or comment.get("CreatorLogin")
+            or comment.get("Author")
+            or comment.get("Creator")
+            or ""
+        ).strip().lower()
+        is_private = bool(comment.get("IsPrivate") or comment.get("is_private"))
+        if is_private:
+            continue
+        comment_text = str(
+            comment.get("Comment")
+            or comment.get("comment")
+            or comment.get("Text")
+            or ""
+        ).strip()
+        if not comment_text:
+            continue
+        if comment_text.startswith("---") or "автоматическое оповещение" in comment_text.lower():
+            continue
+        if not author_login or author == author_login or not author:
+            parts.append(comment_text)
+    return " ".join(parts).casefold()
 
 
 def _contains(*keywords: str) -> Matcher:
@@ -360,6 +389,36 @@ class PrinterInstallScenario(FactActionScenario):
         return outcome
 
 
+class PrinterScanFailureScenario(RuleBackedScenario):
+    def requirements(self, context: ScenarioContext) -> tuple[FactRequirement, ...]:
+        conn_type = context.facts.valid_value("connection_type")
+        if conn_type == "network":
+            return (
+                FactRequirement(key="printer_address", clarification_key="clarify_printer_address"),
+            )
+        if conn_type == "usb":
+            return (
+                FactRequirement(key="pc_name", clarification_key="clarify_pc_name"),
+            )
+        return (
+            FactRequirement(key="connection_type", clarification_key="clarify_connection_type"),
+        )
+
+
+class PrinterHardwareServiceScenario(RuleBackedScenario):
+    def requirements(self, context: ScenarioContext) -> tuple[FactRequirement, ...]:
+        return (
+            FactRequirement(key="defect_type", clarification_key="clarify_defect_type"),
+        )
+
+
+class PrinterPrintFailureScenario(RuleBackedScenario):
+    def requirements(self, context: ScenarioContext) -> tuple[FactRequirement, ...]:
+        return (
+            FactRequirement(key="pc_name", clarification_key="clarify_pc_name"),
+        )
+
+
 def built_in_scenarios() -> tuple[Scenario, ...]:
     return (
         RuleBackedScenario(
@@ -372,6 +431,7 @@ def built_in_scenarios() -> tuple[Scenario, ...]:
             _redirect_match,
             ServiceRedirectRule,
         ),
+        # Legacy v1 definitions kept addressable for pinned runs
         RuleBackedScenario(
             ScenarioDefinition(
                 key="printer_hardware_service",
@@ -379,7 +439,7 @@ def built_in_scenarios() -> tuple[Scenario, ...]:
                 risk_level=0,
                 allowed_actions=["apply_triage"],
             ),
-            _printer_failure_match("printer_hardware_service"),
+            lambda _context: (False, 0.0, "legacy_pinned_only"),
             StandardInWorkRule,
         ),
         RuleBackedScenario(
@@ -389,7 +449,7 @@ def built_in_scenarios() -> tuple[Scenario, ...]:
                 risk_level=0,
                 allowed_actions=["apply_triage"],
             ),
-            _printer_failure_match("printer_scan_failure"),
+            lambda _context: (False, 0.0, "legacy_pinned_only"),
             StandardInWorkRule,
         ),
         RuleBackedScenario(
@@ -398,6 +458,40 @@ def built_in_scenarios() -> tuple[Scenario, ...]:
                 version=1,
                 risk_level=0,
                 allowed_actions=["apply_triage"],
+            ),
+            lambda _context: (False, 0.0, "legacy_pinned_only"),
+            StandardInWorkRule,
+        ),
+        # Modern v2 definitions for scenario routing
+        PrinterHardwareServiceScenario(
+            ScenarioDefinition(
+                key="printer_hardware_service",
+                version=2,
+                risk_level=0,
+                allowed_actions=["apply_triage"],
+                clarification_outcome_key="defect_type_clarify",
+            ),
+            _printer_failure_match("printer_hardware_service"),
+            StandardInWorkRule,
+        ),
+        PrinterScanFailureScenario(
+            ScenarioDefinition(
+                key="printer_scan_failure",
+                version=2,
+                risk_level=0,
+                allowed_actions=["apply_triage"],
+                clarification_outcome_key="scan_connection_clarify",
+            ),
+            _printer_failure_match("printer_scan_failure"),
+            StandardInWorkRule,
+        ),
+        PrinterPrintFailureScenario(
+            ScenarioDefinition(
+                key="printer_print_failure",
+                version=2,
+                risk_level=0,
+                allowed_actions=["apply_triage"],
+                clarification_outcome_key="printer_queue_clarify",
             ),
             _printer_failure_match("printer_print_failure"),
             StandardInWorkRule,

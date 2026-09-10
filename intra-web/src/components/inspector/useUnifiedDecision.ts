@@ -64,6 +64,7 @@ export interface UseUnifiedDecisionReturn {
   requiresComment: boolean;
   commentMissing: boolean;
   actionUnavailable: boolean;
+  isPrivateCloseBlocked: boolean;
   isReady: boolean;
 
   // Действия оператора
@@ -93,8 +94,6 @@ export function useUnifiedDecision({
   onClose,
   onRefreshDetails,
 }: UseUnifiedDecisionProps): UseUnifiedDecisionReturn {
-  const getDraftKey = useCallback((id: number) => `intralink_draft_${id}`, []);
-
   // Валидация принадлежности объекта details текущей заявке rawId
   const isDetailsForCurrentTask = Boolean(
     details &&
@@ -104,13 +103,22 @@ export function useUnifiedDecision({
   );
   const safeDetails = isDetailsForCurrentTask ? details : null;
 
+  const [replyMode, setReplyModeState] = useState<'reply' | 'internal'>('reply');
+
+  const getDraftKey = useCallback(
+    (id: number, mode: 'reply' | 'internal' = 'reply', version?: number | null) => {
+      const v = version ?? safeDetails?.decision_envelope?.decision_version ?? 1;
+      return `intralink_draft_${id}_v${v}_${mode}`;
+    },
+    [safeDetails?.decision_envelope?.decision_version]
+  );
+
   // 1. Изолированный буфер черновика ответа (sessionStorage)
   const [replyText, setReplyTextState] = useState<string>(() => {
     if (!rawId) return '';
-    const cached = sessionStorage.getItem(getDraftKey(rawId));
+    const cached = sessionStorage.getItem(getDraftKey(rawId, 'reply'));
     if (cached !== null) return cached;
     return (
-      safeDetails?.decision_envelope?.response?.text ||
       safeDetails?.decision_envelope?.response?.text ||
       ticket.aiPlan?.comment ||
       ticket.aiSuggestion ||
@@ -118,14 +126,40 @@ export function useUnifiedDecision({
     );
   });
 
+  const setReplyMode = useCallback(
+    (newMode: 'reply' | 'internal') => {
+      if (newMode === replyMode) return;
+      if (rawId) {
+        sessionStorage.setItem(getDraftKey(rawId, replyMode), replyText);
+      }
+      setReplyModeState(newMode);
+      if (rawId) {
+        const cached = sessionStorage.getItem(getDraftKey(rawId, newMode));
+        if (cached !== null) {
+          setReplyTextState(cached);
+        } else if (newMode === 'internal') {
+          setReplyTextState(safeDetails?.decision_envelope?.internal_summary || '');
+        } else {
+          const init =
+            safeDetails?.decision_envelope?.response?.text ||
+            ticket.aiPlan?.comment ||
+            ticket.aiSuggestion ||
+            '';
+          setReplyTextState(init);
+        }
+      }
+    },
+    [replyMode, rawId, getDraftKey, replyText, safeDetails, ticket.aiPlan?.comment, ticket.aiSuggestion]
+  );
+
   const setReplyText = useCallback(
     (text: string) => {
       setReplyTextState(text);
       if (rawId) {
-        sessionStorage.setItem(getDraftKey(rawId), text);
+        sessionStorage.setItem(getDraftKey(rawId, replyMode), text);
       }
     },
-    [rawId, getDraftKey]
+    [rawId, replyMode, getDraftKey]
   );
 
   // Сброс сопутствующих состояний и загрузка изолированного черновика при смене rawId
@@ -138,12 +172,12 @@ export function useUnifiedDecision({
     initialDecisionRef.current = null;
 
     if (!rawId) return;
-    const cached = sessionStorage.getItem(getDraftKey(rawId));
+    setReplyModeState('reply');
+    const cached = sessionStorage.getItem(getDraftKey(rawId, 'reply'));
     if (cached !== null) {
       setReplyTextState(cached);
     } else {
       const init =
-        safeDetails?.decision_envelope?.response?.text ||
         safeDetails?.decision_envelope?.response?.text ||
         ticket.aiPlan?.comment ||
         ticket.aiSuggestion ||
@@ -163,29 +197,27 @@ export function useUnifiedDecision({
   // Подстановка единого черновика, когда safeDetails подгружаются асинхронно
   useEffect(() => {
     if (!safeDetails) return;
-    const compiledDraft =
-      safeDetails.decision_envelope?.response?.text;
-    if (!compiledDraft) return;
+    if (replyMode === 'reply') {
+      const compiledDraft = safeDetails.decision_envelope?.response?.text;
+      if (!compiledDraft) return;
 
-    const cached = sessionStorage.getItem(getDraftKey(rawId));
-    // Если оператор уже сохранил собственный черновик, не перезаписываем его
-    if (cached !== null) return;
+      const cached = sessionStorage.getItem(getDraftKey(rawId, 'reply'));
+      if (cached !== null) return;
 
-    const fallbackComment = (ticket.aiPlan?.comment || ticket.aiSuggestion || '').trim();
-    // Обновляем, если поле пустое или совпадает со стандартной заготовкой из очереди
-    if (!replyText.trim() || replyText.trim() === fallbackComment) {
-      setReplyTextState(compiledDraft);
+      const fallbackComment = (ticket.aiPlan?.comment || ticket.aiSuggestion || '').trim();
+      if (!replyText.trim() || replyText.trim() === fallbackComment) {
+        setReplyTextState(compiledDraft);
+      }
     }
   }, [
     safeDetails?.decision_envelope?.response?.text,
-    safeDetails?.decision_envelope?.response?.text,
     rawId,
     getDraftKey,
+    replyMode,
+    replyText,
     ticket.aiPlan?.comment,
     ticket.aiSuggestion,
   ]);
-
-  const [replyMode, setReplyMode] = useState<'reply' | 'internal'>('reply');
   const [expenses, setExpenses] = useState<number>(
     ticket.aiPlan?.expensesMinutes || ticket.expenses || 10
   );
@@ -278,6 +310,15 @@ export function useUnifiedDecision({
         (details?.suggested_action as any)?.status_id ||
         27;
 
+      if (targetStatusId === 29 && replyMode === 'internal') {
+        onToast({
+          type: 'error',
+          message:
+            'Закрытие заявки (статус 29 «Выполнена») запрещено со скрытым комментарием. Переключите режим на «Ответ заявителю».',
+        });
+        return;
+      }
+
       await applyTask(rawId, {
         status_id: targetStatusId,
         comment: replyText,
@@ -288,8 +329,9 @@ export function useUnifiedDecision({
         ticket_run_id: ticketRun?.id,
       });
 
-      // Очищаем локальный буфер черновика
-      sessionStorage.removeItem(getDraftKey(rawId));
+      // Очищаем локальные буферы черновиков
+      sessionStorage.removeItem(getDraftKey(rawId, 'reply'));
+      sessionStorage.removeItem(getDraftKey(rawId, 'internal'));
 
       onUpdateTicket(ticket.id, {
         status: targetStatusId === 29 || targetStatusId === 30 ? 'resolved' : 'in_progress',
@@ -320,6 +362,7 @@ export function useUnifiedDecision({
     expenses,
     replyMode,
     getDraftKey,
+    ticketRun?.id,
     onUpdateTicket,
     ticket.id,
     onToast,
@@ -341,7 +384,8 @@ export function useUnifiedDecision({
         is_private: false,
       });
 
-      sessionStorage.removeItem(getDraftKey(rawId));
+      sessionStorage.removeItem(getDraftKey(rawId, 'reply'));
+      sessionStorage.removeItem(getDraftKey(rawId, 'internal'));
       onUpdateTicket(ticket.id, {
         status: 'resolved',
         statusId: 30,
@@ -373,7 +417,8 @@ export function useUnifiedDecision({
         minutes: expenses || 10,
         is_private: false,
       });
-      sessionStorage.removeItem(getDraftKey(rawId));
+      sessionStorage.removeItem(getDraftKey(rawId, 'reply'));
+      sessionStorage.removeItem(getDraftKey(rawId, 'internal'));
       onUpdateTicket(ticket.id, {
         status: 'in_progress',
         statusId: 27,
@@ -501,10 +546,10 @@ export function useUnifiedDecision({
       setReplyText(pendingNewAiDraft);
       setPendingNewAiDraft(null);
       if (rawId) {
-        sessionStorage.setItem(getDraftKey(rawId), pendingNewAiDraft);
+        sessionStorage.setItem(getDraftKey(rawId, replyMode), pendingNewAiDraft);
       }
     }
-  }, [pendingNewAiDraft, rawId, getDraftKey, setReplyText]);
+  }, [pendingNewAiDraft, rawId, getDraftKey, replyMode, setReplyText]);
 
   const dismissNewDraft = useCallback(() => {
     setPendingNewAiDraft(null);
@@ -701,7 +746,9 @@ export function useUnifiedDecision({
 
   const requiresComment = [29, 30, 35, 48].includes(targetStatusId);
   const commentMissing = requiresComment && !replyText.trim();
-  const actionUnavailable = !pendingCommand && (!isReady || policyBlocked || commentMissing);
+  const isPrivateCloseBlocked = targetStatusId === 29 && replyMode === 'internal';
+  const actionUnavailable =
+    !pendingCommand && (!isReady || policyBlocked || commentMissing || isPrivateCloseBlocked);
 
   return {
     replyText,
@@ -721,6 +768,7 @@ export function useUnifiedDecision({
     primaryActionLabel,
     requiresComment,
     commentMissing,
+    isPrivateCloseBlocked,
     isReady,
     actionUnavailable,
     ticketRun,

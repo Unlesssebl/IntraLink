@@ -310,6 +310,14 @@ async def test_api_apply_rate_limit_allows_under_threshold():
         new_callable=AsyncMock,
         return_value=2,
     ) as mock_enforce, patch(
+        "app.services.intraservice.get_single_task",
+        new_callable=AsyncMock,
+        return_value={"Id": 140001, "StatusId": 27},
+    ), patch(
+        "app.routers.triage.index_task_knowledge",
+        new_callable=AsyncMock,
+        return_value=True,
+    ), patch(
         "app.services.intraservice.update_task_full",
         new_callable=AsyncMock,
         return_value=True,
@@ -382,6 +390,14 @@ async def test_api_apply_mass_tickets_with_human_confirmation():
         new_callable=AsyncMock,
         return_value=15,
     ) as mock_enforce, patch(
+        "app.services.intraservice.get_single_task",
+        new_callable=AsyncMock,
+        return_value={"Id": 140001, "StatusId": 27},
+    ), patch(
+        "app.routers.triage.index_task_knowledge",
+        new_callable=AsyncMock,
+        return_value=True,
+    ), patch(
         "app.services.intraservice.update_task_full",
         new_callable=AsyncMock,
         return_value=True,

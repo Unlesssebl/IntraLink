@@ -9,10 +9,12 @@ import {
   IconChevronRight,
   IconCheck,
   IconRefresh,
+  IconLock,
 } from '../Icons';
 import type { UseUnifiedDecisionReturn } from './useUnifiedDecision';
 import FactBagSection from './FactBagSection';
 import FactOverrideModal from './FactOverrideModal';
+import DiagnosticPlanView from './DiagnosticPlanView';
 import { getScenarioTitle } from '../../lib/scenarios';
 
 interface UnifiedDecisionPanelProps {
@@ -112,6 +114,8 @@ export default function UnifiedDecisionPanel({
   // Вычисление параметров решения
   const decision = details?.decision;
   const envelope = details?.decision_envelope;
+  const executionPlan = envelope?.execution_plan || envelope?.diagnostic_plan || details?.diagnostic_plan;
+  const internalSummary = envelope?.internal_summary;
   const envelopeOutcome = envelope?.outcome || {};
   const envelopePolicy = envelope?.policy || {};
   const proposal = decision?.proposal;
@@ -430,6 +434,24 @@ export default function UnifiedDecisionPanel({
           </div>
         )}
       </div>
+
+      {/* 4.1 Диагностический план выполнения */}
+      {executionPlan && executionPlan.steps && executionPlan.steps.length > 0 && (
+        <DiagnosticPlanView plan={executionPlan} />
+      )}
+
+      {/* 4.2 Инженерная сводка (не видна заявителю) */}
+      {internalSummary && (
+        <div className="rounded-xl border border-amber-200/80 bg-amber-50/50 p-3 dark:border-amber-900/60 dark:bg-amber-950/30 space-y-1.5">
+          <div className="flex items-center gap-1.5 text-xs font-bold text-amber-900 dark:text-amber-200">
+            <IconLock size={12} className="text-amber-600 dark:text-amber-400 shrink-0" />
+            <span>Инженерная сводка (не видна заявителю)</span>
+          </div>
+          <div className="text-xs text-amber-950/90 dark:text-amber-200/90 leading-relaxed font-mono whitespace-pre-wrap bg-white/70 dark:bg-neutral-900/70 p-2.5 rounded-lg border border-amber-200/50 dark:border-amber-900/40">
+            {internalSummary}
+          </div>
+        </div>
+      )}
 
       {/* 5. Сворачиваемая техническая база и доказательства (FactBag, Регламент, RAG, Аудит) */}
       <div className="rounded-xl border border-neutral-200/80 bg-neutral-50/50 dark:border-neutral-800 dark:bg-neutral-950/30 overflow-hidden">

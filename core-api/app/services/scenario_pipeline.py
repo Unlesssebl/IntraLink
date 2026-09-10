@@ -35,11 +35,27 @@ class ScenarioRouter:
             scenario = self.registry.get(pinned_key, pinned_version)
             if scenario is None:
                 raise ValueError("pinned_scenario_version_unavailable")
+            natural_res = self.registry.route_result(context)
+            transition_proposed = None
+            if (
+                natural_res.scenario.definition.key != pinned_key
+                and natural_res.score >= 0.85
+                and not natural_res.is_ambiguous
+            ):
+                transition_proposed = {
+                    "current_key": pinned_key,
+                    "current_version": pinned_version or scenario.definition.version,
+                    "proposed_key": natural_res.scenario.definition.key,
+                    "proposed_version": natural_res.scenario.definition.version,
+                    "reasons": natural_res.reasons,
+                    "score": natural_res.score,
+                }
             return RouteResult(
                 scenario=scenario,
                 score=0.95 if scenario.definition.risk_level >= 2 else 0.85,
                 reasons=["pinned_version"],
                 is_ambiguous=False,
+                transition_proposed=transition_proposed,
             )
         return self.registry.route_result(context)
 

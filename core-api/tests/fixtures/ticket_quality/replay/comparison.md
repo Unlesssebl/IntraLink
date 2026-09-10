@@ -12,8 +12,8 @@
 | Запрещённые редиректы | 2 | 0 | -2 |
 | Запрещённые допуски | 0 | 0 | +0 |
 | Ошибочные уточнения устройства | 2 | 0 | -2 |
-| Идентичные решения (0 diff) | - | 59/99 | - |
-| Решения с различиями | - | 40/99 | - |
+| Идентичные решения (0 diff) | - | 56/99 | - |
+| Решения с различиями | - | 43/99 | - |
 
 ## Подтверждённые регрессии (4 контрольных случая)
 
@@ -72,6 +72,15 @@
 | 139241 | `gates.blocked_reasons` | `[]` | `['missing_fact:pc_name']` |
 | 139241 | `facts.pc_name` | `{'source': 'structured_field', 'source_ref': 'field:1112', 'state': 'valid', 'value': 'TNT1004'}` | `None` |
 | 139286 | `scenario_key` | `consultation` | `pc_performance` |
+| 139317 | `outcome.kind` | `resolution` | `clarification` |
+| 139317 | `outcome.outcome_key` | `in_work_standard` | `scan_connection_clarify` |
+| 139317 | `outcome.missing_fields` | `None` | `['connection_type']` |
+| 139317 | `outcome.invalid_fields` | `None` | `[]` |
+| 139317 | `policy.status_id` | `27` | `35` |
+| 139317 | `policy.status_name` | `В работе` | `Ожидание ответа` |
+| 139317 | `policy.requires_approval` | `True` | `False` |
+| 139317 | `gates.requires_approval` | `True` | `False` |
+| 139317 | `gates.blocked_reasons` | `[]` | `['missing_fact:connection_type']` |
 | 139561 | `scenario_key` | `consultation` | `pc_performance` |
 | 139576 | `scenario_key` | `redirect` | `pc_performance` |
 | 139576 | `outcome.outcome_key` | `wrong_service` | `in_work_standard` |
@@ -112,6 +121,15 @@
 | 140116 | `facts.pc_name` | `{'source': 'parser', 'source_ref': 'parser:ticket_text:pc_name', 'state': 'valid', 'value': 'NTEMW1006'}` | `{'state': 'ambiguous'}` |
 | 140124 | `facts.printer_address` | `{'source': 'parser', 'source_ref': 'parser:ticket_text:printer_address', 'state': 'valid', 'value': 'kmkp1008'}` | `{'source': 'parser', 'source_ref': 'parser:ticket_text:printer_address', 'state': 'valid', 'value': 'kmkp1007'}` |
 | 140191 | `scenario_key` | `consultation` | `pc_performance` |
+| 140233 | `outcome.kind` | `resolution` | `clarification` |
+| 140233 | `outcome.outcome_key` | `in_work_standard` | `scan_connection_clarify` |
+| 140233 | `outcome.missing_fields` | `None` | `['connection_type']` |
+| 140233 | `outcome.invalid_fields` | `None` | `[]` |
+| 140233 | `policy.status_id` | `27` | `35` |
+| 140233 | `policy.status_name` | `В работе` | `Ожидание ответа` |
+| 140233 | `policy.requires_approval` | `True` | `False` |
+| 140233 | `gates.requires_approval` | `True` | `False` |
+| 140233 | `gates.blocked_reasons` | `[]` | `['missing_fact:connection_type']` |
 | 140237 | `scenario_key` | `consultation` | `peripheral_setup` |
 | 140237 | `outcome.kind` | `resolution` | `clarification` |
 | 140237 | `outcome.outcome_key` | `in_work_standard` | `peripheral_clarify` |
@@ -170,3 +188,12 @@
 | 140669 | `facts.pc_name` | `{'source': 'structured_field', 'source_ref': 'field:1112', 'state': 'valid', 'value': 'KMK1031'}` | `{'state': 'ambiguous'}` |
 | 140669 | `facts.printer_address` | `{'source': 'comment', 'source_ref': 'comment:sha256:d64c294a1b20660e615fa82196583281:printer_address', 'state': 'valid', 'value': 'kmkp1032'}` | `{'source': 'parser', 'source_ref': 'parser:ticket_text:printer_address', 'state': 'valid', 'value': 'kmkp1031'}` |
 | 140669 | `facts.printer_targets` | `{'source': 'parser', 'source_ref': 'parser:ticket_text:printer_targets', 'state': 'valid', 'value': [{'connection_type': 'network', 'printer_address': 'kmkp1032', 'printer_name': 'KYOCERA TASKalfa 1801 GX: ntemw1028'}]}` | `{'source': 'parser', 'source_ref': 'parser:ticket_text:printer_targets', 'state': 'valid', 'value': [{'connection_type': 'network', 'printer_address': 'kmkp1031', 'printer_name': 'KYOCERA TASKalfa 1801 GX: ntemw1028'}]}` |
+| 140707 | `outcome.kind` | `resolution` | `clarification` |
+| 140707 | `outcome.outcome_key` | `in_work_standard` | `printer_queue_clarify` |
+| 140707 | `outcome.missing_fields` | `None` | `['pc_name']` |
+| 140707 | `outcome.invalid_fields` | `None` | `[]` |
+| 140707 | `policy.status_id` | `27` | `35` |
+| 140707 | `policy.status_name` | `В работе` | `Ожидание ответа` |
+| 140707 | `policy.requires_approval` | `True` | `False` |
+| 140707 | `gates.requires_approval` | `True` | `False` |
+| 140707 | `gates.blocked_reasons` | `[]` | `['missing_fact:pc_name']` |

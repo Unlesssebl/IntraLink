@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.database.db import DecisionFeedback, DecisionRecord, DecisionStep
+from app.services.ai_suggestions import action_for_decision, missing_data_for_decision
 from shared.domain import DecisionEnvelope
 
 
@@ -358,6 +359,7 @@ class DecisionJournalService:
         analysis_fence: int | None = None,
         actor: str = "system:triage",
         force: bool = False,
+        commit: bool = True,
     ) -> DecisionRecord:
         history = history or []
         fingerprint = triage_context_fingerprint(task, history)
@@ -437,7 +439,10 @@ class DecisionJournalService:
                 )
             )
         try:
-            await self.db.commit()
+            if commit:
+                await self.db.commit()
+            else:
+                await self.db.flush()
         except IntegrityError:
             await self.db.rollback()
             existing = await self.db.scalar(
@@ -450,7 +455,8 @@ class DecisionJournalService:
             if existing is None:
                 raise
             return existing
-        await self.db.refresh(record)
+        if commit:
+            await self.db.refresh(record)
         return record
 
     async def record_triage(
@@ -512,6 +518,78 @@ class DecisionJournalService:
         if rule_errors:
             blocked_reasons.append("Одно или несколько правил завершились ошибкой")
         outcome = "proposal" if decision else "no_solution"
+        envelope_data = (decision or {}).get("_decision_envelope")
+        if not isinstance(envelope_data, dict):
+            envelope_data = {
+                "scenario_key": (decision or {}).get("rule_type") or "legacy_triage",
+                "scenario_version": 1,
+                "outcome": {
+                    "kind": (
+                        "resolution"
+                        if (decision or {}).get("status_id") == 29
+                        else "action"
+                        if action
+                        else "clarification"
+                    ),
+                    "action": action,
+                    "target_status_id": (decision or {}).get("status_id"),
+                },
+                "policy": sanitize_payload(policy or {}),
+                "response": {
+                    "text": ai_text or (decision or {}).get("comment") or "",
+                    "state": "valid" if decision else "invalid",
+                },
+                "gates": {
+                    "can_send_response": bool(decision),
+                    "can_execute_action": bool(action or decision),
+                    "requires_approval": bool((policy or {}).get("requires_approval")),
+                    "blocked_reasons": blocked_reasons,
+                },
+                "analysis_state": "succeeded" if decision else "manual_review",
+                "status": "proposed" if decision else "manual_review",
+                "source": {
+                    "rule": rule_source,
+                    "rag": rag_source,
+                    "ai": ai_source,
+                },
+                "completeness": {
+                    "complete": not missing_data and not rule_errors,
+                    "missing_data": missing_data,
+                    "blocked_reasons": blocked_reasons,
+                    "limitations": limitations,
+                    "history_total": len(history),
+                    "history_used": len(used_history),
+                    "attachments_total": len(attachments),
+                    "attachments_read": 0,
+                },
+            }
+        else:
+            envelope_data.setdefault("gates", {
+                "can_send_response": bool(decision),
+                "can_execute_action": bool(action or decision),
+                "requires_approval": bool((policy or {}).get("requires_approval")),
+                "blocked_reasons": blocked_reasons,
+            })
+            envelope_data.setdefault("response", {
+                "text": ai_text or (decision or {}).get("comment") or "",
+                "state": "valid" if decision else "invalid",
+            })
+            envelope_data.setdefault("source", {
+                "rule": rule_source,
+                "rag": rag_source,
+                "ai": ai_source,
+            })
+            envelope_data.setdefault("completeness", {
+                "complete": not missing_data and not rule_errors,
+                "missing_data": missing_data,
+                "blocked_reasons": blocked_reasons,
+                "limitations": limitations,
+                "history_total": len(history),
+                "history_used": len(used_history),
+                "attachments_total": len(attachments),
+                "attachments_read": 0,
+            })
+
         record = DecisionRecord(
             task_id=task_id,
             ticket_run_id=ticket_run_id,
@@ -521,14 +599,6 @@ class DecisionJournalService:
             status="finalized",
             outcome=outcome,
             context_fingerprint=fingerprint,
-            source_json={
-                "rule": rule_source,
-                "rag": rag_source,
-                "ai": ai_source,
-                "typed_outcome_schema": (typed_outcome or {}).get("schema_version"),
-                "rule_key": (typed_outcome or {}).get("rule_key"),
-                "rule_version": (typed_outcome or {}).get("rule_version"),
-            },
             context_json=sanitize_payload(
                 {
                     "task": task,
@@ -550,37 +620,7 @@ class DecisionJournalService:
                     ],
                 }
             ),
-            completeness_json={
-                "complete": not missing_data and not rule_errors,
-                "missing_data": missing_data,
-                "blocked_reasons": blocked_reasons,
-                "limitations": limitations,
-                "history_total": len(history),
-                "history_used": len(used_history),
-                "attachments_total": len(attachments),
-                "attachments_read": 0,
-            },
-            proposal_json=sanitize_payload(
-                {
-                    "action": action,
-                    "title": (decision or {}).get("name"),
-                    "comment": ai_text or (decision or {}).get("comment"),
-                    "status_id": (decision or {}).get("status_id"),
-                    "status_name": (decision or {}).get("status_name"),
-                    "expenses": (decision or {}).get("expenses"),
-                    "consequences": "Изменит заявку в IntraService"
-                    if decision
-                    else None,
-                    "ready": bool(decision) and not missing_data and not rule_errors,
-                    "trigger_markers": (decision or {}).get("trigger_markers", []),
-                    "risk_level": (decision or {}).get("risk_level", "normal"),
-                    "risk_warning": (decision or {}).get("risk_warning"),
-                    "typed_outcome": typed_outcome,
-                    "decision_envelope": (decision or {}).get("_decision_envelope"),
-                    "action_parameters": (decision or {}).get("action_parameters"),
-                }
-            ),
-            policy_json=sanitize_payload(policy or {}),
+            envelope_json=envelope_data,
             created_by=actor,
             finalized_at=dt.datetime.now(dt.timezone.utc),
         )
@@ -773,27 +813,35 @@ class DecisionJournalService:
             status="finalized",
             outcome="proposal",
             context_fingerprint=fingerprint,
-            source_json={"rule": False, "rag": False, "ai": False},
+            envelope_json=sanitize_payload(
+                {
+                    "action": action,
+                    "parameters": parameters,
+                    "ready": True,
+                    "policy": {},
+                    "response": {"state": "valid", "text": "", "mode": "none"},
+                    "gates": {
+                        "can_execute_action": True,
+                        "can_send_response": True,
+                        "requires_approval": False,
+                        "blocked_reasons": [],
+                    },
+                    "source": {"rule": False, "rag": False, "ai": False},
+                    "completeness": {
+                        "complete": True,
+                        "missing_data": [],
+                        "blocked_reasons": [],
+                        "attachments_read": 0,
+                    },
+                }
+            ),
             context_json=sanitize_payload(
                 {
                     "task": task_snapshot,
-                    "ticket_fingerprint": (
-                        ticket_snapshot_fingerprint(task_snapshot, history)
-                        if task is not None
-                        else None
-                    ),
+                    "ticket_fingerprint": ticket_snapshot_fingerprint(task_snapshot, history),
                     "target": target,
                 }
             ),
-            completeness_json={
-                "complete": True,
-                "missing_data": [],
-                "blocked_reasons": [],
-            },
-            proposal_json=sanitize_payload(
-                {"action": action, "parameters": parameters, "ready": True}
-            ),
-            policy_json={},
             created_by=actor,
             finalized_at=dt.datetime.now(dt.timezone.utc),
         )

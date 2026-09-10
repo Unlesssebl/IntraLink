@@ -174,7 +174,7 @@ def test_extract_printer_parameters_from_text_fallback():
         "CustomFields": [],
     }
     pc_name, printer_ip = TicketRunRunner.extract_printer_parameters(task)
-    assert pc_name == "PC-081"
+    assert pc_name == "PC081"
     assert printer_ip == "10.20.30.40"
 
 

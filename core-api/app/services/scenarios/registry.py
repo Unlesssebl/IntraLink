@@ -24,6 +24,7 @@ class RouteResult:
     runner_up_score: float = 0.0
     reasons: list[str] = field(default_factory=list)
     is_ambiguous: bool = False
+    transition_proposed: dict[str, Any] | None = None
 
 
 class ScenarioRegistry:

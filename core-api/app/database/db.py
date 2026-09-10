@@ -548,6 +548,73 @@ class DecisionRecord(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    @property
+    def source_json(self) -> dict:
+        return (self.envelope_json or {}).get("source") or {}
+
+    @source_json.setter
+    def source_json(self, value: dict) -> None:
+        if not isinstance(self.envelope_json, dict):
+            self.envelope_json = {}
+        self.envelope_json["source"] = value or {}
+
+    @property
+    def completeness_json(self) -> dict:
+        return (self.envelope_json or {}).get("completeness") or {}
+
+    @completeness_json.setter
+    def completeness_json(self, value: dict) -> None:
+        if not isinstance(self.envelope_json, dict):
+            self.envelope_json = {}
+        self.envelope_json["completeness"] = value or {}
+
+    @property
+    def proposal_json(self) -> dict:
+        env = self.envelope_json or {}
+        outcome = env.get("outcome") or {}
+        response = env.get("response") or {}
+        gates = env.get("gates") or {}
+        return {
+            "decision_envelope": env,
+            "comment": response.get("text"),
+            "ready": bool(gates.get("can_send_response") or gates.get("can_execute_action")),
+            "status_id": outcome.get("target_status_id"),
+            "action": outcome.get("action"),
+            **outcome,
+        }
+
+    @proposal_json.setter
+    def proposal_json(self, value: dict) -> None:
+        if not isinstance(self.envelope_json, dict):
+            self.envelope_json = {}
+        val = value or {}
+        if "decision_envelope" in val and isinstance(val["decision_envelope"], dict):
+            self.envelope_json = {**self.envelope_json, **val["decision_envelope"]}
+        else:
+            outcome = self.envelope_json.setdefault("outcome", {})
+            if "status_id" in val:
+                outcome["target_status_id"] = val["status_id"]
+            if "action" in val:
+                outcome["action"] = val["action"]
+            if "ready" in val:
+                gates = self.envelope_json.setdefault("gates", {})
+                gates["can_send_response"] = val["ready"]
+                gates["can_execute_action"] = val["ready"]
+            if "comment" in val:
+                resp = self.envelope_json.setdefault("response", {})
+                resp["text"] = val["comment"]
+                resp.setdefault("state", "valid")
+
+    @property
+    def policy_json(self) -> dict:
+        return (self.envelope_json or {}).get("policy") or {}
+
+    @policy_json.setter
+    def policy_json(self, value: dict) -> None:
+        if not isinstance(self.envelope_json, dict):
+            self.envelope_json = {}
+        self.envelope_json["policy"] = value or {}
+
 
 class DecisionStep(Base):
     """Append-only facts produced by one component while making a decision."""

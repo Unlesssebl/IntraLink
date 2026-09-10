@@ -20,7 +20,9 @@ from shared.domain import (
     CandidateOutcome,
     ClarificationRequired,
     DecisionEnvelope,
+    DecisionResponse,
     Evidence,
+    FactBag,
     ManualReviewRequired,
     NoMatch,
     ResolutionProposed,
@@ -30,7 +32,12 @@ from app.database.db import CommandRecord, TicketRun, TicketRunEvent
 from app.services.command_service import CommandService
 from app.services.command_delivery import CommandDeliveryService
 from app.services.decision_journal import DecisionJournalService
-from app.services.facts import TicketFactStore, collect_ticket_observations
+from app.services.facts import (
+    TicketFactStore,
+    collect_ticket_observations,
+    merge_observations,
+)
+from app.services.plan_builder import PlanBuilder
 from app.services.scenario_decision import ScenarioDecisionService
 from app.services.resolution_service import ResolutionUnavailable, resolve_outcome
 from app.services.scenarios import get_scenario_registry
@@ -85,6 +92,7 @@ class CommandDispatcher:
             task=task,
             history=comments,
             force=True,
+            commit=False,
         )
         command, _duplicate = await CommandService(self.db).create_record(
             action=action,
@@ -354,29 +362,45 @@ class TicketRunOrchestrator:
                             )
                         ],
                     )
-                    envelope = DecisionEnvelope(
-                        decision_version=(run.decision_version or 0) + 1,
+                    observations = await self.facts.load(run.id)
+                    facts = (
+                        merge_observations(observations, revision=run.fact_revision)
+                        if observations
+                        else FactBag(revision=run.fact_revision)
+                    )
+                    execution_plan = PlanBuilder.build(
                         scenario_key=scenario.definition.key,
                         scenario_version=scenario.definition.version,
-                        facts_revision=run.fact_revision,
-                        facts_summary={},
-                        candidates=[
-                            CandidateOutcome(
-                                candidate_id=f"verified:{command.id}",
-                                source="diagnostic",
-                                outcome=outcome,
-                                evidence_refs=["worker:command_id:verified_success"],
-                                score=1.0,
-                                can_authorize_action=False,
-                            )
-                        ],
+                        facts=facts,
+                        commands=[command],
+                        latest_command=command,
+                    )
+                    candidate = CandidateOutcome(
+                        candidate_id=f"verified:{command.id}",
+                        source="diagnostic",
                         outcome=outcome,
-                        policy=policy,
-                        response_draft=policy["comment"],
                         evidence_refs=["worker:command_id:verified_success"],
-                        confidence=0.99,
-                        requires_approval=bool(policy.get("requires_approval")),
-                        status="proposed",
+                        score=1.0,
+                        can_authorize_action=False,
+                    )
+                    policy_comment = policy.get("comment", "")
+                    response_artifact = DecisionResponse(
+                        text=policy_comment,
+                        mode="template",
+                        state="valid",
+                        used_evidence_refs=["worker:command_id:verified_success"],
+                    )
+                    envelope = await self.decisions.compiler.compile(
+                        scenario_key=scenario.definition.key,
+                        scenario_version=scenario.definition.version,
+                        scenario_risk=scenario.definition.risk_level,
+                        allowed_actions=set(scenario.definition.allowed_actions),
+                        facts=facts,
+                        candidates=[candidate],
+                        policy=policy,
+                        response=response_artifact,
+                        execution_plan=execution_plan,
+                        decision_version=(run.decision_version or 0) + 1,
                     )
                     final_command = await self.commands.dispatch(
                         run=run,
@@ -401,6 +425,7 @@ class TicketRunOrchestrator:
                     )
                     command = final_command
                 except (KeyError, ResolutionUnavailable, ValueError) as exc:
+                    logger.exception("Verified action finalization failed: %s", exc)
                     run.state = TicketRunState.PAUSED.value
                     run.pause_reason = "verified_action_requires_finalization"
                     run.error_message = str(exc)

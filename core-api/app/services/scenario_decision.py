@@ -14,6 +14,7 @@ from shared.domain import (
     ClarificationRequired,
     DecisionEnvelope,
     DecisionRoutingInfo,
+    ExecutionPlan,
     FactObservation,
     FactState,
     ManualReviewRequired,
@@ -27,6 +28,7 @@ from app.services.decision_compiler import (
     redacted_fact_summary,
 )
 from app.services.facts import merge_observations
+from app.services.plan_builder import PlanBuilder
 from app.services.response_guard import GeneratedResponse, guarded_response
 from app.services.resolution_service import ResolutionUnavailable
 from app.services.scenario_pipeline import (
@@ -36,6 +38,67 @@ from app.services.scenario_pipeline import (
     ScenarioRouter,
 )
 from app.services.scenarios import ScenarioContext, get_scenario_registry
+
+
+def build_internal_summary(
+    *,
+    scenario_key: str,
+    scenario_version: int,
+    facts_summary: dict[str, Any],
+    diagnostics: dict[str, Any] | None,
+    plan: ExecutionPlan | None,
+    task: dict[str, Any],
+) -> str:
+    lines: list[str] = []
+    task_id = task.get("id") or task.get("task_id") or task.get("Id")
+    prefix = f"Инженерная сводка по заявке #{task_id}" if task_id else "Инженерная сводка"
+    lines.append(prefix)
+    lines.append(f"Сценарий: {scenario_key} (v{scenario_version})")
+
+    key_params: list[str] = []
+    for param_name in (
+        "pc_name",
+        "printer_name",
+        "printer_address",
+        "file_path",
+        "connection_type",
+        "device_type",
+    ):
+        val = facts_summary.get(param_name, {})
+        if isinstance(val, dict) and val.get("value") and val.get("value") != "<redacted>":
+            key_params.append(f"{param_name}: {val['value']}")
+    if key_params:
+        lines.append("Параметры: " + ", ".join(key_params))
+
+    if diagnostics:
+        diag_parts: list[str] = []
+        host = diagnostics.get("host") or diagnostics.get("pc_name")
+        if host:
+            diag_parts.append(f"хост {host}")
+        if "ping" in diagnostics or "ping_ok" in diagnostics:
+            ping_val = diagnostics.get("ping_ok", diagnostics.get("ping"))
+            diag_parts.append(f"ping: {'OK' if ping_val else 'FAIL'}")
+        if "smb_ok" in diagnostics or "smb_445" in diagnostics:
+            smb_val = diagnostics.get("smb_ok", diagnostics.get("smb_445"))
+            diag_parts.append(f"SMB(445): {'OK' if smb_val else 'FAIL'}")
+        if "winrm_ok" in diagnostics or "winrm_5985" in diagnostics:
+            winrm_val = diagnostics.get("winrm_ok", diagnostics.get("winrm_5985"))
+            diag_parts.append(f"WinRM(5985): {'OK' if winrm_val else 'FAIL'}")
+        if diag_parts:
+            lines.append("Диагностика: " + ", ".join(diag_parts))
+
+    if plan:
+        lines.append(
+            f"Фаза плана: {plan.phase}. Следующее действие: {plan.next_action_description}"
+        )
+        step_lines = []
+        for s in plan.steps:
+            mark = "x" if s.status.value == "completed" else "-" if s.status.value == "skipped" else " "
+            step_lines.append(f"  [{mark}] {s.title}")
+        if step_lines:
+            lines.append("Шаги плана:\n" + "\n".join(step_lines))
+
+    return "\n".join(lines)
 
 
 class ScenarioDecisionService:
@@ -282,6 +345,21 @@ class ScenarioDecisionService:
             facts_summary=facts_summary,
         )
 
+        plan = PlanBuilder.build(
+            scenario_key=scenario.definition.key,
+            scenario_version=scenario.definition.version,
+            facts=facts,
+            diagnostics=diagnostics,
+        )
+        internal_summary = build_internal_summary(
+            scenario_key=scenario.definition.key,
+            scenario_version=scenario.definition.version,
+            facts_summary=facts_summary,
+            diagnostics=diagnostics,
+            plan=plan,
+            task=task,
+        )
+
         return await self.compiler.compile(
             scenario_key=scenario.definition.key,
             scenario_version=scenario.definition.version,
@@ -291,6 +369,9 @@ class ScenarioDecisionService:
             candidates=[candidate],
             policy=policy,
             response=response,
+            execution_plan=plan,
+            internal_summary=internal_summary,
+            diagnostics=diagnostics,
             decision_id=decision_id or str(uuid.uuid4()),
             decision_version=decision_version,
             service_id=task.get("ServiceId") or task.get("service_id"),

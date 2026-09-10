@@ -57,11 +57,11 @@ from app.services.host_telemetry import (  # noqa: F401
     get_task_telemetry,
     prefetch_task_telemetry,
 )
+from app.services.ai_synthesis import synthesize_triage_resolution  # noqa: F401
 
 logger = logging.getLogger("core_api.routers.triage")
 
 router = APIRouter(
-    prefix="/api/v2/triage",
     tags=["Unified Triage Hub"],
     dependencies=[Depends(require_permission("triage:read"))],
 )
@@ -954,6 +954,11 @@ def extract_operator_user_id(
     return None
 
 
+@router.post(
+    "/apply",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
 async def apply_triage_action(
     payload: ApplyTriageRequest,
     service_auth_b64: str = Depends(get_service_auth_b64),
@@ -962,8 +967,7 @@ async def apply_triage_action(
     authorization: str | None = Header(None, alias="Authorization"),
     admin_session: str | None = Cookie(None),
 ):
-    """Removed legacy entry point; commands v2 is the only application path."""
-    raise HTTPException(status.HTTP_410_GONE, "use_api_v2_commands")
+    """Атомарное применение решения к группе заявок (с защитой Dead Man's Switch)."""
     if not payload.task_ids:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

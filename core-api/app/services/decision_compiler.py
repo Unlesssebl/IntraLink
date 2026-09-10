@@ -15,9 +15,11 @@ from shared.domain import (
     DecisionGates,
     DecisionResponse,
     DecisionRoutingInfo,
+    ExecutionPlan,
     FactBag,
     FactSensitivity,
     FactState,
+    LegacyExecutionPlan,
     ManualReviewRequired,
     NoMatch,
     SynthesisProposal,
@@ -25,6 +27,8 @@ from shared.domain import (
 
 from app.services.ai.hub import ai_hub
 from app.services.ai.schemas import RoutedInferenceRequest, RoutingMetadata
+from app.services.plan_builder import PlanBuilder
+from app.services.truthfulness_guard import TruthfulnessGuard
 
 
 Adjudicator = Callable[
@@ -176,6 +180,11 @@ class DecisionCompiler:
         candidates: list[CandidateOutcome],
         policy: dict[str, Any] | None = None,
         response: DecisionResponse | None = None,
+        execution_plan: ExecutionPlan | LegacyExecutionPlan | None = None,
+        internal_summary: str | None = None,
+        diagnostics: dict[str, Any] | None = None,
+        commands: list[Any] | None = None,
+        events: list[Any] | None = None,
         decision_id: str | None = None,
         decision_version: int = 1,
         service_id: int | None = None,
@@ -251,9 +260,47 @@ class DecisionCompiler:
             for field in selected.outcome.invalid_fields:
                 clarifications.append({"field": field, "reason": "invalid"})
 
+        # Build execution plan if not explicitly supplied
+        actual_plan = execution_plan
+        if actual_plan is None:
+            actual_plan = PlanBuilder.build(
+                scenario_key=scenario_key,
+                scenario_version=scenario_version,
+                facts=facts,
+                diagnostics=diagnostics,
+                commands=commands,
+                events=events,
+            )
+
+        # TruthfulnessGuard: Structural verification
+        target_status_id = resolved_policy.get("target_status_id") or resolved_policy.get("status_id")
+        structural_violations = TruthfulnessGuard.verify_plan_structural_integrity(
+            actual_plan, target_status_id=target_status_id
+        )
+        if structural_violations:
+            blocked_reasons.extend(structural_violations)
+            can_send = False
+            if target_status_id == 29:
+                can_execute = False
+
+        # TruthfulnessGuard: Lexical verification of public response
+        plan_phase = getattr(actual_plan, "phase", "collecting")
+        selected_evidence = outcome_evidence_refs(selected)
+        lexical_violations = TruthfulnessGuard.verify_lexical_truthfulness(
+            response_artifact.text,
+            phase=plan_phase,
+            evidence_refs=selected_evidence,
+            target_status_id=target_status_id,
+        )
+        if lexical_violations:
+            blocked_reasons.extend(lexical_violations)
+            can_send = False
+
         routing = getattr(selected, "routing", None)
         if routing is None and hasattr(selected, "score"):
             routing = DecisionRoutingInfo(selected_score=selected.score)
+
+        has_truthfulness_violations = bool(structural_violations or lexical_violations)
 
         return DecisionEnvelope(
             decision_id=actual_decision_id,
@@ -266,21 +313,23 @@ class DecisionCompiler:
             outcome=selected.outcome,
             policy=resolved_policy,
             response=response_artifact,
+            execution_plan=actual_plan,
+            internal_summary=internal_summary,
             gates=DecisionGates(
                 can_send_response=can_send,
                 can_execute_action=can_execute,
                 requires_approval=bool(resolved_policy.get("requires_approval")),
                 blocked_reasons=blocked_reasons,
             ),
-            analysis_state="manual_review" if is_manual else "succeeded",
+            analysis_state="manual_review" if (is_manual or has_truthfulness_violations) else "succeeded",
             facts_state=facts_state,
-            evidence_refs=outcome_evidence_refs(selected),
+            evidence_refs=selected_evidence,
             confidence=self._confidence(selected, facts),
             routing=routing,
             clarifications=clarifications,
             status=(
                 "manual_review"
-                if is_manual or response_artifact.state == "invalid"
+                if is_manual or response_artifact.state == "invalid" or has_truthfulness_violations
                 else "waiting_answer"
                 if isinstance(selected.outcome, ClarificationRequired)
                 else

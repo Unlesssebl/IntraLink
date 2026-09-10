@@ -195,6 +195,8 @@ export interface TaskDetails {
   sources?: DecisionSources;
   readiness?: DecisionReadiness;
   analysis?: AnalysisState;
+  diagnostic_plan?: ExecutionPlan | null;
+  execution_plan?: ExecutionPlan | null;
 }
 
 export interface AnalysisState {
@@ -231,12 +233,77 @@ export interface DecisionFactSummary {
   source_ref?: string | null;
 }
 
+export type StepKind =
+  | 'collect'
+  | 'clarify'
+  | 'decide'
+  | 'approve'
+  | 'dispatch'
+  | 'wait'
+  | 'finalize'
+  | 'manual_review'
+  | 'check'
+  | 'action'
+  | 'manual'
+  | 'verify';
+
+export type StepStatus =
+  | 'not_started'
+  | 'waiting_input'
+  | 'ready'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'skipped'
+  | 'unsupported';
+
+export interface PlanStep {
+  schema_version?: number;
+  id: string;
+  title: string;
+  description?: string;
+  kind: StepKind;
+  status: StepStatus;
+  required_for_resolution?: boolean;
+  capability_id?: string | null;
+  executor?: 'backend' | 'windows' | 'engineer' | null;
+  action_id?: string | null;
+  parameters?: Record<string, any>;
+  target_ref?: string | null;
+  result_summary?: string | null;
+  error_message?: string | null;
+  unsupported_reason?: string | null;
+  requires?: string[];
+  evidence_refs?: string[];
+  status_source?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  completed_by?: string | null;
+  skip_reason?: string | null;
+  metadata?: Record<string, any>;
+}
+
+export interface ExecutionPlan {
+  schema_version: number;
+  scenario_key: string;
+  scenario_version: number;
+  fact_revision: number;
+  title?: string;
+  phase: 'collecting' | 'ready' | 'dispatched' | 'running' | 'verifying' | 'completed' | 'blocked';
+  next_action_description?: string;
+  target?: Record<string, any>;
+  steps: PlanStep[];
+  created_at?: string;
+  expires_at?: string | null;
+}
+
 export interface DecisionEnvelope {
   schema_version: number;
   decision_id: string;
   decision_version: number;
   scenario_key: string;
   scenario_version: number;
+  scenario_title?: string | null;
   facts_revision: number;
   facts_summary: Record<string, DecisionFactSummary>;
   candidates: Array<{
@@ -263,6 +330,9 @@ export interface DecisionEnvelope {
     requires_approval: boolean;
     blocked_reasons: string[];
   };
+  execution_plan?: ExecutionPlan | null;
+  diagnostic_plan?: ExecutionPlan | null;
+  internal_summary?: string | null;
   evidence_refs: string[];
   confidence: number;
   routing?: {

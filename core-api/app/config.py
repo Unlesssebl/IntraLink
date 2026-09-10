@@ -73,7 +73,7 @@ class Settings(BaseSettings):
         10, description="Лимит одновременных подключений к IntraService"
     )
     ANALYSIS_REVISION: str = Field(
-        "3",
+        "4",
         description=(
             "Текущая ревизия логики триажа. Повышается при изменении правил, "
             "сценариев или политик, способном изменить результат анализа."

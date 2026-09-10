@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Any, Literal
+import uuid
 
 from pydantic import Field, model_validator
 
@@ -111,7 +112,69 @@ class ScenarioMatch(StrictModel):
     reason: str | None = None
 
 
+class StepKind(str, Enum):
+    # orchestration kinds
+    COLLECT = "collect"
+    CLARIFY = "clarify"
+    DECIDE = "decide"
+    APPROVE = "approve"
+    DISPATCH = "dispatch"
+    WAIT = "wait"
+    FINALIZE = "finalize"
+    MANUAL_REVIEW = "manual_review"
+
+    # diagnostic kinds
+    CHECK = "check"
+    ACTION = "action"
+    MANUAL = "manual"
+    VERIFY = "verify"
+
+
+class StepStatus(str, Enum):
+    NOT_STARTED = "not_started"
+    WAITING_INPUT = "waiting_input"
+    READY = "ready"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    UNSUPPORTED = "unsupported"
+
+
 class PlanStep(StrictModel):
+    schema_version: Literal[2] = 2
+    id: str
+    title: str = ""
+    kind: StepKind
+    status: StepStatus = StepStatus.NOT_STARTED
+    required_for_resolution: bool = False
+    capability_id: str | None = None
+    executor: Literal["backend", "windows", "engineer"] | None = None
+    target_ref: str | None = None
+    result_summary: str | None = None
+    requires: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    status_source: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    completed_by: str | None = None
+    skip_reason: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_step_invariants(self) -> "PlanStep":
+        if self.status == StepStatus.COMPLETED:
+            if not self.evidence_refs:
+                raise ValueError(f"completed step {self.id} must have non-empty evidence_refs")
+            if self.kind == StepKind.MANUAL and not (self.completed_by and self.completed_at):
+                raise ValueError(f"completed manual step {self.id} requires completed_by and completed_at")
+        if self.status == StepStatus.SKIPPED and not self.skip_reason:
+            raise ValueError(f"skipped step {self.id} requires skip_reason")
+        return self
+
+
+class LegacyPlanStep(StrictModel):
+    schema_version: Literal[1] = 1
     id: str
     kind: Literal[
         "collect",
@@ -128,11 +191,55 @@ class PlanStep(StrictModel):
 
 
 class ExecutionPlan(StrictModel):
+    schema_version: Literal[2] = 2
+    scenario_key: str
+    scenario_version: int = Field(ge=1)
+    fact_revision: int = Field(default=0, ge=0)
+    title: str = ""
+    phase: Literal[
+        "collecting", "ready", "dispatched", "running", "verifying", "completed", "blocked"
+    ] = "collecting"
+    next_action_description: str = ""
+    steps: list[PlanStep] = Field(default_factory=list)
+
+
+class LegacyExecutionPlan(StrictModel):
     schema_version: Literal[1] = 1
     scenario_key: str
     scenario_version: int = Field(ge=1)
     fact_revision: int = Field(ge=0)
-    steps: list[PlanStep] = Field(default_factory=list)
+    steps: list[LegacyPlanStep] = Field(default_factory=list)
+
+
+def parse_execution_plan(
+    data: Any,
+) -> ExecutionPlan | LegacyExecutionPlan | None:
+    if data is None:
+        return None
+    if isinstance(data, (ExecutionPlan, LegacyExecutionPlan)):
+        return data
+    if isinstance(data, dict):
+        schema_version = data.get("schema_version")
+        if schema_version == 1:
+            return LegacyExecutionPlan.model_validate(data)
+        # If schema_version is 2 or missing, validate as ExecutionPlan v2
+        # Unless it only matches LegacyExecutionPlan fields and steps have no v2 fields
+        steps = data.get("steps", [])
+        has_v2_fields = (
+            "phase" in data
+            or "title" in data
+            or any(
+                isinstance(s, dict) and ("title" in s or "status" in s or s.get("schema_version") == 2)
+                for s in steps
+            )
+        )
+        if schema_version == 2 or has_v2_fields or not steps:
+            return ExecutionPlan.model_validate(data)
+        try:
+            return LegacyExecutionPlan.model_validate(data)
+        except Exception:
+            return ExecutionPlan.model_validate(data)
+    raise ValueError(f"unsupported execution plan data: {type(data)}")
 
 
 class DecisionRoutingInfo(StrictModel):
@@ -186,8 +293,8 @@ class DecisionGates(StrictModel):
 
 
 class DecisionEnvelope(StrictModel):
-    schema_version: Literal[1] = 1
-    decision_id: str
+    schema_version: Literal[1, 2] = 2
+    decision_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     decision_version: int = Field(default=1, ge=1)
     scenario_key: str
     scenario_version: int = Field(ge=1)
@@ -201,6 +308,8 @@ class DecisionEnvelope(StrictModel):
     policy: dict[str, Any] = Field(default_factory=dict)
     response: DecisionResponse = Field(default_factory=DecisionResponse)
     gates: DecisionGates = Field(default_factory=DecisionGates)
+    execution_plan: ExecutionPlan | LegacyExecutionPlan | None = None
+    internal_summary: str | None = None
     evidence_refs: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     routing: DecisionRoutingInfo | None = None
@@ -215,6 +324,50 @@ class DecisionEnvelope(StrictModel):
         "system_error",
     ] = "proposed"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_envelope_inputs(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Backward compatibility for response_draft / requires_approval
+            if "response_draft" in data and "response" not in data:
+                draft = data.pop("response_draft")
+                data["response"] = DecisionResponse(
+                    text=str(draft or ""),
+                    mode="template",
+                    state="fallback",
+                )
+            elif "response_draft" in data:
+                data.pop("response_draft")
+            if "gates" not in data:
+                outcome = data.get("outcome")
+                is_action = (
+                    getattr(outcome, "kind", None) == "action"
+                    or (isinstance(outcome, dict) and outcome.get("kind") == "action")
+                )
+                req_app = data.pop("requires_approval", False)
+                data["gates"] = DecisionGates(
+                    can_send_response=True,
+                    can_execute_action=is_action,
+                    requires_approval=bool(req_app),
+                )
+            elif "requires_approval" in data:
+                req_app = data.pop("requires_approval")
+                gates = data["gates"]
+                if isinstance(gates, dict):
+                    gates.setdefault("requires_approval", bool(req_app))
+                elif hasattr(gates, "requires_approval") and not getattr(gates, "requires_approval", False):
+                    gates.requires_approval = bool(req_app)
+            if not data.get("decision_id"):
+                data["decision_id"] = str(uuid.uuid4())
+            # Compatibility with diagnostic_plan alias
+            if "diagnostic_plan" in data and "execution_plan" not in data:
+                data["execution_plan"] = data.pop("diagnostic_plan")
+            elif "diagnostic_plan" in data:
+                data.pop("diagnostic_plan")
+            if "execution_plan" in data and data["execution_plan"] is not None:
+                data["execution_plan"] = parse_execution_plan(data["execution_plan"])
+        return data
+
     @model_validator(mode="after")
     def _populate_scenario_title(self) -> "DecisionEnvelope":
         if not self.scenario_title and self.scenario_key:
@@ -226,6 +379,11 @@ class DecisionEnvelope(StrictModel):
     @property
     def response_draft(self) -> str:
         return self.response.text if self.response else ""
+
+    @property
+    def diagnostic_plan(self) -> ExecutionPlan | LegacyExecutionPlan | None:
+        """Compatibility accessor for UI/Inspector without duplicating JSON serialization."""
+        return self.execution_plan
 
 
 SCENARIO_DISPLAY_NAMES: dict[str, str] = {
