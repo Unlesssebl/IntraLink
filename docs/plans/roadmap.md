@@ -113,16 +113,22 @@ timeline
 * **Маршрутизация и скоринг (`RouteResult`):** Введение внутреннего `RouteResult`, устранение ложных редиректов в 1С при сопутствующих симптомах тормозов (#139762), распознавание явных запросов КриптоПро (#140094). Добавление ручных меток: `peripheral_setup`, `peripheral_diagnostics`, `pc_performance`, `network_diagnostics`, `os_reinstallation`.
 
 #### 1.2. Model-Adaptive RAG & Tone Orchestration ([`model-adaptive-rag-and-tone-orchestration.md`](model-adaptive-rag-and-tone-orchestration.md))
-* **Capacity-Aware Context Budgeting:**
-  - Локальная модель Ollama (`RED` контур / Qwen 1.5B/7B на RTX 3050): передача **строго 1 (макс. 2)** наиболее релевантного прецедента (`threshold >= 0.80`) для полного исключения эффекта *Lost in the Middle* и просадок VRAM.
-  - Облачная модель LiteLLM/Gemini (`YELLOW`/`GREEN` контуры): передача **до 3–4** прецедентов для взвешенного сравнительного синтеза.
-  - Конфигурация в `.env`: `AI_OLLAMA_MAX_RAG_MATCHES: int = 1`, `AI_CLOUD_MAX_RAG_MATCHES: int = 3`.
+* **Fast Fix AI-контура (✅ Реализовано):**
+  - **Capacity-Aware Context Budgeting:** Внедрено адаптивное усечение прецедентов RAG на уровне `ai_synthesis.py`: Ollama (`RED` контур / локальный режим) получает строго `AI_OLLAMA_MAX_RAG_MATCHES=1` (порог 0.80), а облачный контур (`YELLOW`/`GREEN`) — до `AI_CLOUD_MAX_RAG_MATCHES=3`. Исключен эффект *Lost in the Middle* и перегрузка VRAM локальной GPU.
+  - **Dual-Key ротация и Failover в LiteLLM:** Подключен пул деплойментов с двумя бесплатными ключами (`GEMINI_API_KEY`, `GEMINI_API_KEY_2`) с балансировкой `least-busy` и кулдауном 60 сек при 429 ошибках. В случае исчерпания облачной квоты запрос автоматически перенаправляется на локальную Ollama (`intralink-local`).
+  - **Устранение обрывов генерации Gemini:** Исправлен скрытый баг бюджетирования токенов рассуждений (`thoughtsTokenCount` в семействе Gemini 2.5/3.x). В `app/services/ai/hub.py` зафиксирован динамический потолок `AI_CLOUD_MAX_TOKENS = 1536`, исключающий обрыв ответов по `MAX_TOKENS`.
+  - **Защита от зацикливания повторов токенов:** Внедрена клиентская regex-санитация повторяющихся фраз в `AIHub` (`re.sub`), предотвращающая патологические повторы слов без риска получить `HTTP 400 Penalty is not enabled` от Gemini API.
+  - **Ролевое заземление инженера в `system_prompt`:** Зафиксирован запрет на перекладывание переустановки ОС/правки реестров на рядового пользователя и блокировка требований IP принтера для аудиоустройств и манипуляторов.
 * **Single Grounded Answer по умолчанию:** Один каноничный, заземленный на факты ответ от первого лица дежурного инженера Helpdesk.
-* **On-Demand Tone Orchestration:** Выпадающее меню в `UnifiedActionDock.tsx` с перегенерацией по требованию оператора:
+* **On-Demand Tone Orchestration (⏳ Запланировано в UI):** Выпадающее меню в `UnifiedActionDock.tsx` с перегенерацией по требованию оператора:
   - ⚡ **Краткий статус (`concise`):** 1–2 лаконичных предложения о статусе диагностики или принятии в работу.
   - 📋 **Подробная инструкция (`detailed`):** Пошаговый алгоритм, команды cmd/powershell для заявителя.
   - 🏛️ **По регламенту (`regulatory`):** Детерминированный корпоративный шаблон компании без обращения к LLM.
   - Изоляция кэша в Redis по составному ключу `ai:resolution:{task_id}:{digest}:{tone}`.
+* **Долгосрочные Best Practices (Production Evolution):**
+  1. *3-Уровневый каскад LiteLLM:* Flash (2 ключа) ➔ Flash-Lite (2 ключа) ➔ Ollama (RTX 3050).
+  2. *Сквозная телеметрия моделей:* фиксация фактического провайдера в `decision_envelope` и отображение бейджа в UI Инспектора.
+  3. *Автоматический бенчмарк-раннер (`tools/benchmark_rag_capacity.py`):* мониторинг задержек, VRAM и качества синтеза при обновлении весов моделей.
 
 #### 1.3. Обратная связь оператора и аудит ([`ticket-scenario-quality-roadmap.md`](ticket-scenario-quality-roadmap.md))
 * Фиксация этапов анализа в `decision_steps`, подтверждений и ручных правок оператора в `decision_feedback` с привязкой к версии решения для постоянного пополнения регрессионного датасета.

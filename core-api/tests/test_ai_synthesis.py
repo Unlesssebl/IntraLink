@@ -486,3 +486,52 @@ async def test_deep_audit_solution_with_llm_logic():
         assert r_tech["score"] >= 0.7
         assert r_tech["verdict"] == "keep"
         assert len(r_tech["key_steps"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_capacity_aware_rag_slicing():
+    """Проверка capacity-aware среза контекста: 1 для RED, 3 для YELLOW/GREEN."""
+    from app.services.ai_synthesis import synthesize_triage_resolution
+    from app.services.ai.schemas import DataCircuit
+
+    matches = [
+        {"task_id": 1, "problem": "P1", "solution": "Решение 1 подробное", "similarity_pct": 95.0, "is_valid_solution": True},
+        {"task_id": 2, "problem": "P2", "solution": "Решение 2 подробное", "similarity_pct": 90.0, "is_valid_solution": True},
+        {"task_id": 3, "problem": "P3", "solution": "Решение 3 подробное", "similarity_pct": 88.0, "is_valid_solution": True},
+        {"task_id": 4, "problem": "P4", "solution": "Решение 4 подробное", "similarity_pct": 85.0, "is_valid_solution": True},
+    ]
+
+    captured_prompts = []
+
+    async def mock_dispatch(req):
+        captured_prompts.append(req.prompt)
+        mock_resp = MagicMock()
+        mock_resp.text = "Тестовый ответ"
+        return mock_resp
+
+    with patch("app.services.ai.hub.ai_hub.dispatch_routed_inference", side_effect=mock_dispatch):
+        # 1. Локальный провайдер (ollama_only): строго 1 прецедент
+        captured_prompts.clear()
+        with patch("app.config.settings.LLM_PROVIDER_PREFERENCE", "ollama_only"):
+            await synthesize_triage_resolution(
+                task={"Id": 100, "Name": "Печать", "Description": "Ошибка печати"},
+                kb_matches=matches,
+                circuit=DataCircuit.YELLOW,
+            )
+            assert len(captured_prompts) == 1
+            assert "Заявка #1" in captured_prompts[0]
+            assert "Заявка #2" not in captured_prompts[0]
+
+        # 2. Облачный провайдер (gemini_first): до 3 прецедентов
+        captured_prompts.clear()
+        with patch("app.config.settings.LLM_PROVIDER_PREFERENCE", "gemini_first"):
+            await synthesize_triage_resolution(
+                task={"Id": 100, "Name": "Печать", "Description": "Ошибка печати"},
+                kb_matches=matches,
+                circuit=DataCircuit.YELLOW,
+            )
+            assert len(captured_prompts) == 1
+            assert "Заявка #1" in captured_prompts[0]
+            assert "Заявка #2" in captured_prompts[0]
+            assert "Заявка #3" in captured_prompts[0]
+            assert "Заявка #4" not in captured_prompts[0]

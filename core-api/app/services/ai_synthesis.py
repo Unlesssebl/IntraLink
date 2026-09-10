@@ -1043,15 +1043,32 @@ async def synthesize_triage_resolution(
         if is_valid_solution_source(m) and float(m.get("similarity_pct") if m.get("similarity_pct") is not None else 100.0) >= 75.0
     ]
 
-    if valid_matches:
-        top_sol = valid_matches[0].get("solution", "").strip()
-        tid = valid_matches[0].get("task_id")
-        if top_sol:
-            fact_block = (
-                f"ИСТОРИЧЕСКИЙ ПРЕЦЕДЕНТ РЕШЕНИЯ (Заявка #{tid}, ранее применялось): {top_sol}\n"
-                "ВНИМАНИЕ: Это решение по аналогичной прошлой заявке. "
-                "Запрещено утверждать, что это действие уже выполнено по текущей поступившей заявке!"
-            )
+    is_local_circuit = (eval_circuit == DataCircuit.RED) or (settings.LLM_PROVIDER_PREFERENCE == "ollama_only")
+    max_rag = settings.AI_OLLAMA_MAX_RAG_MATCHES if is_local_circuit else settings.AI_CLOUD_MAX_RAG_MATCHES
+    effective_matches = valid_matches[:max_rag]
+
+    if effective_matches:
+        if len(effective_matches) == 1:
+            top_sol = effective_matches[0].get("solution", "").strip()
+            tid = effective_matches[0].get("task_id")
+            if top_sol:
+                fact_block = (
+                    f"ИСТОРИЧЕСКИЙ ПРЕЦЕДЕНТ РЕШЕНИЯ (Заявка #{tid}, ранее применялось): {top_sol}\n"
+                    "ВНИМАНИЕ: Это решение по аналогичной прошлой заявке. "
+                    "Запрещено утверждать, что это действие уже выполнено по текущей поступившей заявке!"
+                )
+        else:
+            parts = [
+                f"- Заявка #{m.get('task_id')}: {m.get('solution', '').strip()}"
+                for m in effective_matches if m.get("solution")
+            ]
+            if parts:
+                fact_block = (
+                    "ИСТОРИЧЕСКИЕ ПРЕЦЕДЕНТЫ РЕШЕНИЯ (ранее применялись):\n"
+                    + "\n".join(parts)
+                    + "\nВНИМАНИЕ: Это решения по аналогичным прошлым заявкам. "
+                    "Запрещено утверждать, что это действие уже выполнено по текущей поступившей заявке!"
+                )
 
     telemetry_fact = ""
     if telemetry:
@@ -1097,6 +1114,10 @@ async def synthesize_triage_resolution(
         "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать, что проблема решена! Сообщи о проведении диагностики и предложи 1-2 первичных действия для проверки.\n"
         "   - ЕСЛИ ЕСТЬ ИСТОРИЧЕСКИЙ ПРЕЦЕДЕНТ: Опирайся на него как на ранее подтвержденное решение аналогичной проблемы, "
         "но не утверждай, что оно уже выполнено в текущей поступившей заявке.\n"
+        "   - РАЗГРАНИЧЕНИЕ ОТВЕТСТВЕННОСТИ: Сложные системные действия (переустановка ОС, замена дисков/комплектующих, настройка прав Active Directory, сетевой маршрутизации) "
+        "выполняются инженером Helpdesk. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО требовать от пользователя самостоятельной переустановки Windows или правки системных реестров!\n"
+        "   - ТИПИЗАЦИЯ ОБОРУДОВАНИЯ: Для аудиоустройств (наушники, колонки, гарнитуры), веб-камер и манипуляторов (мыши, клавиатуры) "
+        "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО запрашивать сетевой IP-адрес принтера!\n"
         f"{greeting_instruction}\n"
     )
 

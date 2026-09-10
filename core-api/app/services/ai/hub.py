@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any, List, Optional
@@ -403,7 +404,7 @@ class AIHub:
             "stream": False,
             "options": {
                 "temperature": temperature,
-                "num_predict": max_tokens,
+                "num_predict": max_tokens or settings.AI_OLLAMA_MAX_TOKENS,
             },
         }
         if response_schema is not None:
@@ -441,10 +442,11 @@ class AIHub:
             "Authorization": f"Bearer {settings.LITELLM_API_KEY}",
             "Content-Type": "application/json",
         }
+        eff_max_tokens = max(max_tokens or 512, settings.AI_CLOUD_MAX_TOKENS)
         payload: dict[str, Any] = {
             "model": settings.GEMINI_MODEL,
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_tokens": eff_max_tokens,
             "temperature": temperature,
         }
         if response_schema is not None:
@@ -470,7 +472,10 @@ class AIHub:
                 data = await resp.json()
                 choices = data.get("choices", [])
                 if choices:
-                    return choices[0].get("message", {}).get("content", "").strip()
+                    content = choices[0].get("message", {}).get("content", "").strip()
+                    # Санитация аномального зацикливания токенов (более 3 одинаковых слов подряд)
+                    content = re.sub(r"(\b\w+\b)(?:\s+\1){3,}", r"\1", content, flags=re.IGNORECASE)
+                    return content
                 return None
         except Exception as e:
             logger.error("Сбой облачного инференса Gemini via LiteLLM: %s", e)

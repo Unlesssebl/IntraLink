@@ -135,6 +135,20 @@ class Settings(BaseSettings):
         1024, description="Размерность векторов модели эмбеддингов (BGE-M3)"
     )
 
+    # Параметры адаптивного контекста RAG и лимитов токенов
+    AI_OLLAMA_MAX_RAG_MATCHES: int = Field(
+        1, ge=1, le=5, description="Лимит прецедентов RAG для локальной модели Ollama"
+    )
+    AI_CLOUD_MAX_RAG_MATCHES: int = Field(
+        3, ge=1, le=10, description="Лимит прецедентов RAG для облачного LiteLLM"
+    )
+    AI_CLOUD_MAX_TOKENS: int = Field(
+        1536, ge=256, le=4096, description="Лимит токенов облачной генерации с учетом Thinking"
+    )
+    AI_OLLAMA_MAX_TOKENS: int = Field(
+        256, ge=64, le=1024, description="Лимит токенов генерации для локальной Ollama"
+    )
+
     # Параметры Ollama (локальный AI инференс)
     OLLAMA_BASE_URL: str = Field(
         "http://ollama:11434", description="URL-адрес для подключения к сервису Ollama"

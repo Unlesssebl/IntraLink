@@ -45,6 +45,7 @@ services:
     environment:
       - LITELLM_API_KEY=${LITELLM_API_KEY:-dev-only-litellm-key}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_API_KEY_2=${GEMINI_API_KEY_2:-${GEMINI_API_KEY}}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command:
