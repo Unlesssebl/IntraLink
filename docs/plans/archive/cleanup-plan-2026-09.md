@@ -11,7 +11,7 @@
 
 ### 1.1. Временные и устаревшие файлы в корне Git
 * **`.codex-stage-commands.patch`** (2.2 КБ) — временный патч предыдущей сессии. Все изменения уже закоммичены в `commands_v2.py`.
-* **`diag.md`** (16 КБ) — черновик из чата по паттерну Functional Core / Imperative Shell. Полностью перенесён в `docs/adr/0002-modular-worker-platform.md` и `docs/plans/worker-platform-evolution.md`.
+* **`diag.md`** (16 КБ) — черновик из чата по паттерну Functional Core / Imperative Shell. Полностью перенесён в `docs/adr/0002-modular-worker-platform.md` и `docs/plans/archive/worker-platform/`.
 * **`plan.md`** (12 КБ) — старый черновик плана модернизации Rule Engine. Уже реализован в коммитах `1910a3b`, `cd3bb9d`, `a57f9cf` и влит в `develop`.
 
 ### 1.2. Заброшенные папки и кэши на диске (освободит ~2.8 ГБ)

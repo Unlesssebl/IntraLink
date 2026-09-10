@@ -8,7 +8,7 @@
 
 1. **[Переход на сценарный контур](plans/archive/scenario-orchestration/transition-roadmap.md):** перевод жизненного цикла заявок на конечный автомат `TicketRunOrchestrator`, сбор фактов (`FactBag`) с контролем источника правды (Provenance), компиляция решений `DecisionCompiler` и безопасная раскатка через режимы `shadow` / `canary` / `active`. Спецификация: [сценарный план](plans/archive/scenario-orchestration/execution-plan.md).
 2. **[Асинхронная платформа пакетного триажа (ADR 0003)](adr/0003-asynchronous-batch-triage-platform.md):** перевод анализа очередей на неблокирующий шлюз `202 Accepted`, Redis Job Queue, Single-flight lock и стриминг прогресса через SSE (`/api/v1/events/stream`).
-3. **[Эволюция модульной Worker Platform](plans/archive/worker-platform-evolution.md):** безопасное исполнение действий, модульный SDK хэндлеров, маршрутизация fleet и пилот удаленной установки принтеров.
+3. **[Модульная Worker Platform (5 инкрементов)](plans/archive/worker-platform/README.md):** безопасное исполнение действий, модульный SDK хэндлеров, маршрутизация fleet и пилот удаленной установки принтеров.
 4. **[Desktop Companion](services/desktop-companion/README.md):** нативный Windows tray-helper на Tauri 2 для запуска DameWare, LiteManager и RDP из веб-интерфейса по одноразовым deep links Core API.
 5. **[Roadmap качества RAG](plans/archive/rag-quality-roadmap.md):** гибридный поиск (pgvector BGE-M3 + FTS Russian tsvector) и Cross-Encoder `BAAI/bge-reranker-v2-m3` на FastEmbed (Recall@5 97.5%, Hit@5 100%).
 
@@ -22,7 +22,6 @@ docs/
 ├── architecture.md                ← SSOT архитектуры, схемы C4, шины, контуры безопасности
 ├── developer_guide.md             ← Инварианты, правила и настольная книга инженера/агента
 ├── brandbook.md                   ← Дизайн-система, токены интерфейса, Zero-Emoji Policy
-├── roadmap.md                     ← Стратегический продуктовый план развития 2026–2027
 │
 ├── adr/                           ← Архитектурные решения (Architecture Decision Records)
 │   ├── 0001-transactional-command-platform.md
@@ -39,6 +38,7 @@ docs/
 │   └── telegram-bot/              ← Мобильный пейджер и HITL-согласования (aiogram 3.x)
 │
 ├── plans/                         ← Планы развития и дорожные карты
+│   ├── roadmap.md                 ← Стратегический продуктовый план развития 2026–2027
 │   ├── intent-classification.md   ← Трехуровневый гибридный каскад классификации
 │   ├── model-adaptive-rag-and-tone-orchestration.md ← Адаптивный контекст RAG и тональность
 │   ├── scenarios-roadmap.md       ← Дорожная карта сценариев автоматизации
@@ -46,13 +46,14 @@ docs/
 │   ├── ticket-scenario-quality-stage-2-plan.md ← План этапа 2 качества сценариев
 │   └── archive/                   ← Архив реализованных планов и чекпоинтов
 │       ├── scenario-orchestration/ ← Реализованный сценарный контур
-│       ├── worker-platform/       ← Реализованная платформа воркеров
+│       ├── worker-platform/       ← Реализованная платформа воркеров (5 инкрементов)
 │       ├── adaptive-inspector-implementation-plan.md
+│       ├── async-triage-implementation-plan.md
+│       ├── cleanup-plan-2026-09.md
 │       ├── desktop-companion-blueprint.md
 │       ├── hardware-specs-implementation-plan.md
 │       ├── rag-quality-roadmap.md
-│       ├── scenario-core-readiness.md
-│       └── worker-platform-evolution.md
+│       └── scenario-core-readiness.md
 │
 ├── runbooks/                      ← Инструкции по эксплуатации и безопасность
 │   ├── identity-bootstrap.md      ← Инициализация сервисной учетной записи AD
@@ -86,7 +87,7 @@ docs/
 | **Ядро** | [architecture.md](architecture.md) | 🟢 Актуален | Целевая архитектура, схемы C4, шины, контуры DLP |
 | **Ядро** | [developer_guide.md](developer_guide.md) | 🟢 Актуален | Настольная книга архитектурных инвариантов и правил |
 | **Ядро** | [brandbook.md](brandbook.md) | 🟢 Актуален | Манифест информации, токены и Zero-Emoji Policy |
-| **Ядро** | [roadmap.md](roadmap.md) | 🟢 Актуален | Стратегические горизонты 2026–2027 |
+| **Ядро** | [roadmap.md](plans/roadmap.md) | 🟢 Актуален | Стратегические горизонты 2026–2027 |
 | **ADR** | [ADR 0001](adr/0001-transactional-command-platform.md) | 🟢 Принят | Транзакционная шина команд и Transactional Outbox |
 | **ADR** | [ADR 0002](adr/0002-modular-worker-platform.md) | 🟢 Принят | Модульная архитектура воркеров и Functional Core |
 | **ADR** | [ADR 0003](adr/0003-asynchronous-batch-triage-platform.md) | 🟢 Принят | Асинхронная платформа пакетного анализа очереди |
@@ -107,7 +108,8 @@ docs/
 | **Планы** | [Quality Stage 2 Plan](plans/ticket-scenario-quality-stage-2-plan.md) | 🟡 В работе | Факты, маршрутизация и проверка решений |
 | **Архив** | [Scenario Transition](plans/archive/scenario-orchestration/transition-roadmap.md) | 🟢 Реализован | 5-этапный роадмап выкатки сценарного контура |
 | **Архив** | [Scenario Execution Plan](plans/archive/scenario-orchestration/execution-plan.md) | 🟢 Реализован | Спецификация FSM `TicketRunOrchestrator` |
-| **Архив** | [Worker Platform Evolution](plans/archive/worker-platform-evolution.md) | 🟢 Реализован | План масштабирования и модульности воркеров |
+| **Архив** | [Worker Platform (5 инкрементов)](plans/archive/worker-platform/README.md) | 🟢 Реализован | Модульная платформа и доверенный PowerShell runner |
+| **Архив** | [Async Triage Implementation Plan](plans/archive/async-triage-implementation-plan.md) | 🟢 Реализован | Пакетный анализ очереди (HTTP 202, Redis, SSE) |
 | **Архив** | [RAG Quality Roadmap](plans/archive/rag-quality-roadmap.md) | 🟢 Реализован | Внедрение FastEmbed Cross-Encoder и FTS |
 
 ---
@@ -117,7 +119,7 @@ docs/
 ### 1. Архитектура и стандарты разработки
 * **[Архитектура системы (`architecture.md`)](architecture.md)** — схемы компонентов, слои, каналы связи (HTTP REST, Redis Streams), контуры безопасности DLP и принципы надежного исполнения.
 * **[Руководство разработчика (`developer_guide.md`)](developer_guide.md)** — ключевые архитектурные инварианты («ПОЧЕМУ»), правила безопасности, межсервисные шины и стандарты кода.
-* **[Дорожная карта развития (`roadmap.md`)](roadmap.md)** — стратегические горизонты развития 2026–2027 (AIOps, Hybrid RAG, Outage Detection).
+* **[Дорожная карта развития (`roadmap.md`)](plans/roadmap.md)** — стратегические горизонты развития 2026–2027 (AIOps, Hybrid RAG, Outage Detection).
 * **[Брендбук и дизайн-система (`brandbook.md`)](brandbook.md)** — манифест информации, цветовые токены и Zero-Emoji Policy.
 
 ### 2. Архитектурные решения (ADR)

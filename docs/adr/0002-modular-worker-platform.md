@@ -1,7 +1,7 @@
 # ADR 0002: Модульная платформа умений и распределенная среда исполнения Windows
 
 Статус: accepted — 2026-09-07  
-Связанные документы: [ADR 0001](0001-transactional-command-platform.md), [`docs/plans/archive/worker-platform-evolution.md`](../plans/archive/worker-platform-evolution.md)
+Связанные документы: [ADR 0001](0001-transactional-command-platform.md), [`docs/plans/archive/worker-platform/`](../plans/archive/worker-platform/README.md)
 
 ---
 

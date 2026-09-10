@@ -1,8 +1,7 @@
 # 🧭 Worker Platform: Декомпозиция и дорожная карта реализации
 
-Статус: активный  
+Статус: реализован (Baseline)  
 Дата создания: 2026-09-07  
-Базовый план: [`../worker-platform-evolution.md`](../worker-platform-evolution.md)  
 Архитектурный контракт: [`../../adr/0002-modular-worker-platform.md`](../../adr/0002-modular-worker-platform.md)
 
 ---
