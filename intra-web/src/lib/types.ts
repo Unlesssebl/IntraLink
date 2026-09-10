@@ -265,6 +265,14 @@ export interface DecisionEnvelope {
   };
   evidence_refs: string[];
   confidence: number;
+  routing?: {
+    schema_version?: number;
+    selected_score: number;
+    runner_up_score: number;
+    reasons: string[];
+    is_ambiguous: boolean;
+  } | null;
+  clarifications?: Array<Record<string, any>>;
   status: string;
   rule?: { rule_type?: string; scenario_key?: string; target_service?: string };
   facts?: Record<string, any>;

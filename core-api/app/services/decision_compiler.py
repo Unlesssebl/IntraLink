@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
+import uuid
 
 from shared.domain import (
     ActionProposed,
@@ -13,6 +14,7 @@ from shared.domain import (
     DecisionEnvelope,
     DecisionGates,
     DecisionResponse,
+    DecisionRoutingInfo,
     FactBag,
     FactSensitivity,
     FactState,
@@ -174,10 +176,11 @@ class DecisionCompiler:
         candidates: list[CandidateOutcome],
         policy: dict[str, Any] | None = None,
         response: DecisionResponse | None = None,
-        decision_id: str,
+        decision_id: str | None = None,
         decision_version: int = 1,
         service_id: int | None = None,
     ) -> DecisionEnvelope:
+        actual_decision_id = decision_id or str(uuid.uuid4())
         eligible = self._eligible(candidates, allowed_actions)
         if not eligible:
             raise ValueError("no_eligible_decision_candidate")
@@ -241,8 +244,19 @@ class DecisionCompiler:
             blocked_reasons.extend(
                 f"invalid_fact:{field}" for field in selected.outcome.invalid_fields
             )
+        clarifications: list[dict[str, Any]] = []
+        if isinstance(selected.outcome, ClarificationRequired):
+            for field in selected.outcome.missing_fields:
+                clarifications.append({"field": field, "reason": "missing"})
+            for field in selected.outcome.invalid_fields:
+                clarifications.append({"field": field, "reason": "invalid"})
+
+        routing = getattr(selected, "routing", None)
+        if routing is None and hasattr(selected, "score"):
+            routing = DecisionRoutingInfo(selected_score=selected.score)
+
         return DecisionEnvelope(
-            decision_id=decision_id,
+            decision_id=actual_decision_id,
             decision_version=decision_version,
             scenario_key=scenario_key,
             scenario_version=scenario_version,
@@ -262,6 +276,8 @@ class DecisionCompiler:
             facts_state=facts_state,
             evidence_refs=outcome_evidence_refs(selected),
             confidence=self._confidence(selected, facts),
+            routing=routing,
+            clarifications=clarifications,
             status=(
                 "manual_review"
                 if is_manual or response_artifact.state == "invalid"

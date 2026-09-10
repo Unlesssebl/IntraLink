@@ -15,6 +15,17 @@ MIN_SCENARIO_SCORE = 0.85
 MIN_SCENARIO_MARGIN = 0.10
 
 
+from dataclasses import dataclass, field
+
+@dataclass(slots=True)
+class RouteResult:
+    scenario: Scenario
+    score: float
+    runner_up_score: float = 0.0
+    reasons: list[str] = field(default_factory=list)
+    is_ambiguous: bool = False
+
+
 class ScenarioRegistry:
     def __init__(self, scenarios: tuple[Scenario, ...] | None = None) -> None:
         self._scenarios: dict[tuple[str, int], Scenario] = {}
@@ -42,7 +53,7 @@ class ScenarioRegistry:
             return None
         return self._scenarios[max(versions, key=lambda item: item[1])]
 
-    def route(self, context: ScenarioContext) -> Scenario:
+    def route_result(self, context: ScenarioContext) -> RouteResult:
         matches = [
             (scenario.match(context), position, scenario)
             for position, key in enumerate(self._order)
@@ -56,23 +67,69 @@ class ScenarioRegistry:
             key=lambda item: (item[0].score, -item[1]),
             reverse=True,
         )
-        domain = [item for item in ranked if item[0].score >= MIN_SCENARIO_SCORE]
+        domain = [
+            item for item in ranked
+            if item[0].scenario_key not in ("rag_consultation", "consultation")
+            and item[0].score >= MIN_SCENARIO_SCORE
+        ]
         if domain:
             top = domain[0]
             runner_up = domain[1] if len(domain) > 1 else None
-            if runner_up is None or top[0].score - runner_up[0].score >= MIN_SCENARIO_MARGIN:
-                return top[2]
+            top_match = top[0]
+            top_scenario = top[2]
+            runner_up_score = runner_up[0].score if runner_up is not None else 0.0
+            reasons = [top_match.reason] if top_match.reason else []
+
+            if runner_up is not None and (top_match.score - runner_up_score) < MIN_SCENARIO_MARGIN:
+                return RouteResult(
+                    scenario=top_scenario,
+                    score=top_match.score,
+                    runner_up_score=runner_up_score,
+                    reasons=reasons + [f"ambiguous_with:{runner_up[0].scenario_key}"],
+                    is_ambiguous=True,
+                )
+            return RouteResult(
+                scenario=top_scenario,
+                score=top_match.score,
+                runner_up_score=runner_up_score,
+                reasons=reasons,
+                is_ambiguous=False,
+            )
+
+        rag_match = next(
+            (item for item in ranked if item[0].scenario_key == "rag_consultation"),
+            None,
+        )
+        if rag_match is not None and bool(context.kb_matches):
+            return RouteResult(
+                scenario=rag_match[2],
+                score=rag_match[0].score,
+                reasons=[rag_match[0].reason] if rag_match[0].reason else [],
+                is_ambiguous=False,
+            )
+
         fallback = next(
-            (
-                item[2]
-                for item in ranked
-                if item[0].scenario_key == "consultation"
-            ),
+            (item for item in ranked if item[0].scenario_key == "consultation"),
             None,
         )
         if fallback is None:
             raise ValueError("ambiguous_scenario_without_fallback")
-        return fallback
+        return RouteResult(
+            scenario=fallback[2],
+            score=fallback[0].score,
+            reasons=[fallback[0].reason] if fallback[0].reason else [],
+            is_ambiguous=False,
+        )
+
+    def route(self, context: ScenarioContext) -> Scenario:
+        res = self.route_result(context)
+        if res.is_ambiguous:
+            fallback = next(
+                (scenario for key, scenario in self._scenarios.items() if key[0] == "consultation"),
+                None,
+            )
+            return fallback or res.scenario
+        return res.scenario
 
     def all(self) -> tuple[Scenario, ...]:
         return tuple(self._scenarios[key] for key in self._order)

@@ -67,5 +67,50 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(targets[2]['connection_type'], 'usb')
 
 
+    def test_check_fixtures_and_checksum_verification(self):
+        manifest = baseline.check_fixtures()
+        self.assertEqual(manifest['actual_count'], 99)
+        # Test tampered fixture detection
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            (tmp_path / 'manifest.json').write_text(json.dumps({'sha256': {'file.txt': 'dummy'}}), encoding='utf-8')
+            (tmp_path / 'file.txt').write_text('bad content', encoding='utf-8')
+            with self.assertRaises(ValueError):
+                baseline.check_fixtures(tmp_path)
+
+    def test_prevent_network_blocks_socket(self):
+        import socket
+        with baseline.prevent_network():
+            with self.assertRaises(baseline.BlockedNetworkCallError):
+                socket.create_connection(('1.1.1.1', 80))
+
+    def test_replay_and_compare_lifecycle(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            # Replay a subset of 2 tickets to keep unit test fast
+            sub_dec = tmp_path / 'sub_decisions.json'
+            sub_dec.write_bytes(baseline.encoded(self.rows[:2]))
+            
+            # Replay into tmp_path
+            results = baseline.replay(
+                output_dir=tmp_path / 'replay',
+                decisions_path=sub_dec,
+            )
+            self.assertEqual(len(results), 2)
+            self.assertTrue((tmp_path / 'replay/decisions-after.json').exists())
+            self.assertTrue((tmp_path / 'replay/manifest.json').exists())
+
+            # Compare against the subset
+            cmp_res = baseline.compare(
+                candidate_path=tmp_path / 'replay/decisions-after.json',
+                baseline_path=sub_dec,
+                output_path=tmp_path / 'replay/comparison.md',
+            )
+            self.assertEqual(cmp_res['total'], 2)
+            self.assertTrue((tmp_path / 'replay/comparison.md').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

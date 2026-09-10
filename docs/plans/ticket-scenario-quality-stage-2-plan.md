@@ -1,8 +1,8 @@
 # Технический план этапа 2: факты, маршрутизация и проверка решений
 
-Дата: 2026-09-09. Статус: подготовлен к реализации; перечисленные исправления ещё не выполнены.
+Дата: 2026-09-10. Статус: реализован и верифицирован (Этап 1.1 / Шаги A–F выполнены в полном объёме).
 
-Связанные материалы: [roadmap](ticket-scenario-quality-roadmap.md), [исходный отчёт](../reports/ticket-scenario-quality-baseline.md), [готовность сценарного ядра](archive/scenario-core-readiness.md).
+Связанные материалы: [roadmap](ticket-scenario-quality-roadmap.md), [исходный отчёт](../reports/ticket-scenario-quality-baseline.md), [сравнение replay](../../core-api/tests/fixtures/ticket_quality/replay/comparison.md), [готовность сценарного ядра](archive/scenario-core-readiness.md).
 
 ## 1. Результат и границы выпуска
 

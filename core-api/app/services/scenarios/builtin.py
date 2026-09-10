@@ -42,6 +42,7 @@ def _contains(*keywords: str) -> Matcher:
     return matcher
 
 
+
 def _create_user_match(context: ScenarioContext) -> tuple[bool, float, str]:
     text = _text(context)
     phrases = (
@@ -59,7 +60,16 @@ def _create_user_match(context: ScenarioContext) -> tuple[bool, float, str]:
 
 
 def _printer_install_match(context: ScenarioContext) -> tuple[bool, float, str]:
+    dev_type = context.facts.valid_value("device_type")
+    if dev_type in ("audio", "other"):
+        return False, 0.0, "non_printer_device"
+
     text = _text(context)
+    if any(tok in text for tok in ("наушник", "колонки", "коллонки", "гарнитур", "микрофон")) and not any(
+        tok in text for tok in ("принтер", "мфу", "printer")
+    ):
+        return False, 0.0, "audio_device"
+
     device_tokens = ("принтер", "мфу", "printer")
     install_tokens = (
         "установ",
@@ -76,6 +86,8 @@ def _printer_install_match(context: ScenarioContext) -> tuple[bool, float, str]:
         "полос",
         "ошибка печати",
         "очередь зависла",
+        "не подключа",
+        "не видит",
     )
     has_device = any(token in text for token in device_tokens) or bool(
         context.facts.valid_value("printer_name")
@@ -86,6 +98,121 @@ def _printer_install_match(context: ScenarioContext) -> tuple[bool, float, str]:
     matched = has_device and bool(matched_intents) and (not matched_failures or is_reinstall)
     reason = ",".join([*matched_intents, *matched_failures])
     return matched, 0.94 if matched else 0.0, reason
+
+
+def _peripheral_setup_match(context: ScenarioContext) -> tuple[bool, float, str]:
+    text = _text(context)
+    dev_type = context.facts.valid_value("device_type")
+    audio_keywords = ("колонк", "коллонк", "наушник", "микрофон", "гарнитур", "звук", "динамик")
+    is_peripheral = dev_type in ("audio", "other") or any(kw in text for kw in audio_keywords)
+    if not is_peripheral:
+        return False, 0.0, ""
+
+    install_keywords = ("установ", "подключ", "настро", "добав")
+    failure_keywords = (
+        "не подключа", "не работ", "не видит", "не слыш", "нет звука",
+        "хрип", "фонит", "тихо", "отходит", "сбоит", "не определя",
+        "проблема с", "не находит", "не может найти"
+    )
+
+    has_install = any(kw in text for kw in install_keywords)
+    has_failure = any(kw in text for kw in failure_keywords)
+
+    if has_install and not has_failure:
+        matched = [kw for kw in install_keywords if kw in text]
+        return True, 0.95, ",".join(matched)
+    return False, 0.0, ""
+
+
+def _peripheral_diag_match(context: ScenarioContext) -> tuple[bool, float, str]:
+    text = _text(context)
+    dev_type = context.facts.valid_value("device_type")
+    audio_keywords = ("колонк", "коллонк", "наушник", "микрофон", "гарнитур", "звук", "динамик")
+    is_peripheral = dev_type in ("audio", "other") or any(kw in text for kw in audio_keywords)
+    if not is_peripheral:
+        return False, 0.0, ""
+
+    failure_keywords = (
+        "не подключа", "не работ", "не видит", "не слыш", "нет звука",
+        "хрип", "фонит", "тихо", "отходит", "сбоит", "не определя",
+        "проблема с", "не находит", "не может найти"
+    )
+    has_failure = any(kw in text for kw in failure_keywords)
+    if has_failure:
+        matched = [kw for kw in failure_keywords if kw in text]
+        return True, 0.95, ",".join(matched)
+    return False, 0.0, ""
+
+
+def _pc_performance_match(context: ScenarioContext) -> tuple[bool, float, str]:
+    text = _text(context)
+    phrases = (
+        "медленно грузит",
+        "долго грузится",
+        "очень долго",
+        "все грузится",
+        "тормозит компьютер",
+        "медленно работает",
+        "зависает компьютер",
+        "зависает пк",
+        "зависает весь пк",
+        "виснет пк",
+        "виснет компьютер",
+        "виснет комп",
+        "сильно виснет",
+        "невозможно работать,тормозит",
+        "программы могут загружаться",
+        "компьютер медленно",
+    )
+    found = [p for p in phrases if p in text]
+    if found:
+        return True, 0.95, ",".join(found)
+    return False, 0.0, ""
+
+
+def _network_diag_match(context: ScenarioContext) -> tuple[bool, float, str]:
+    text = _text(context)
+    phrases = (
+        "прерывается интернет",
+        "прерывается работа интернета",
+        "отваливается сеть",
+        "обрыв сети",
+        "потери пакетов",
+        "потеря пакетов",
+        "не работает интернет",
+        "пропадает интернет",
+        "нет доступа к сети",
+        "падает сеть",
+        "сетевой сбой",
+    )
+    found = [p for p in phrases if p in text]
+    if not found:
+        return False, 0.0, ""
+
+    # Если в тикете явно заявлены общие тормоза ПК, проблемы сети являются сопутствующими
+    pc_lag_phrases = ("медленно грузит", "долго грузится", "все грузится", "тормозит компьютер", "зависает пк", "виснет комп")
+    is_secondary = any(p in text for p in pc_lag_phrases)
+    score = 0.80 if is_secondary else 0.95
+    return True, score, ",".join(found)
+
+
+def _os_reinstall_match(context: ScenarioContext) -> tuple[bool, float, str]:
+    text = _text(context)
+    phrases = (
+        "переустановка операционной системы",
+        "переустановка ос",
+        "переустановить ос",
+        "переустановка windows",
+        "переустановить windows",
+        "переустановить виндовс",
+        "переустановка винды",
+        "переустановить винду",
+        "надо переустановить ос",
+    )
+    found = [p for p in phrases if p in text]
+    if found:
+        return True, 0.95, ",".join(found)
+    return False, 0.0, ""
 
 
 def _printer_failure_match(kind: str) -> Matcher:
@@ -363,6 +490,64 @@ def built_in_scenarios() -> tuple[Scenario, ...]:
                 "printer_name": "printer_name",
                 "printer_ip": "printer_address",
             },
+        ),
+        RuleBackedScenario(
+            ScenarioDefinition(
+                key="peripheral_setup",
+                version=1,
+                risk_level=0,
+                allowed_actions=["apply_triage"],
+                clarification_outcome_key="peripheral_clarify",
+                required_facts=[
+                    FactRequirement(key="pc_name", clarification_key="clarify_pc_name")
+                ],
+            ),
+            _peripheral_setup_match,
+            StandardInWorkRule,
+        ),
+        RuleBackedScenario(
+            ScenarioDefinition(
+                key="peripheral_diagnostics",
+                version=1,
+                risk_level=0,
+                allowed_actions=["apply_triage"],
+                clarification_outcome_key="peripheral_clarify",
+                required_facts=[
+                    FactRequirement(key="pc_name", clarification_key="clarify_pc_name")
+                ],
+            ),
+            _peripheral_diag_match,
+            StandardInWorkRule,
+        ),
+        RuleBackedScenario(
+            ScenarioDefinition(
+                key="pc_performance",
+                version=1,
+                risk_level=0,
+                allowed_actions=["apply_triage"],
+            ),
+            _pc_performance_match,
+            StandardInWorkRule,
+        ),
+        RuleBackedScenario(
+            ScenarioDefinition(
+                key="network_diagnostics",
+                version=1,
+                risk_level=0,
+                allowed_actions=["apply_triage"],
+            ),
+            _network_diag_match,
+            StandardInWorkRule,
+        ),
+        RuleBackedScenario(
+            ScenarioDefinition(
+                key="os_reinstallation",
+                version=1,
+                risk_level=0,
+                allowed_actions=["apply_triage"],
+            ),
+            _os_reinstall_match,
+            StandardInWorkRule,
         ),
         RuleBackedScenario(
             ScenarioDefinition(

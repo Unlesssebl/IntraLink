@@ -13,8 +13,10 @@ from shared.domain import (
     CandidateOutcome,
     ClarificationRequired,
     DecisionEnvelope,
+    DecisionRoutingInfo,
     FactObservation,
     FactState,
+    ManualReviewRequired,
 )
 
 from app.services.ai.hub import ai_hub
@@ -37,14 +39,25 @@ from app.services.scenarios import ScenarioContext, get_scenario_registry
 
 
 class ScenarioDecisionService:
-    def __init__(self, db: AsyncSession):
+    def __init__(
+        self,
+        db: AsyncSession,
+        *,
+        compiler: DecisionCompiler | None = None,
+        router: ScenarioRouter | None = None,
+        fact_planner: FactCollectionPlanner | None = None,
+        policy_resolver: PolicyResolver | None = None,
+        response_composer: ResponseComposer | None = None,
+        ai_enabled: bool = True,
+    ):
         self.db = db
         self.registry = get_scenario_registry()
-        self.compiler = DecisionCompiler()
-        self.router = ScenarioRouter(self.registry)
-        self.fact_planner = FactCollectionPlanner()
-        self.policy_resolver = PolicyResolver(db)
-        self.response_composer = ResponseComposer()
+        self.compiler = compiler or DecisionCompiler()
+        self.router = router or ScenarioRouter(self.registry)
+        self.fact_planner = fact_planner or FactCollectionPlanner()
+        self.policy_resolver = policy_resolver or PolicyResolver(db)
+        self.response_composer = response_composer or ResponseComposer()
+        self.ai_enabled = ai_enabled
 
     @staticmethod
     async def _generate_low_risk_response(
@@ -163,11 +176,12 @@ class ScenarioDecisionService:
             kb_matches=kb_matches or [],
             comments=comments or [],
         )
-        scenario = self.router.route(
+        route_res = self.router.route_result(
             context,
             pinned_key=pinned_scenario_key,
             pinned_version=pinned_scenario_version,
         )
+        scenario = route_res.scenario
         requirements = scenario.requirements(context)
         missing = [
             requirement.key
@@ -192,7 +206,13 @@ class ScenarioDecisionService:
             ):
                 invalid.append("printer_targets")
 
-        if missing or invalid:
+        if route_res.is_ambiguous:
+            outcome = ManualReviewRequired(
+                rule_key=f"scenario.{scenario.definition.key}",
+                rule_version=str(scenario.definition.version),
+                reason=f"Ambiguous scenario match between candidates: {', '.join(route_res.reasons)}",
+            )
+        elif missing or invalid:
             outcome = ClarificationRequired(
                 rule_key=f"scenario.{scenario.definition.key}",
                 rule_version=str(scenario.definition.version),
@@ -225,8 +245,14 @@ class ScenarioDecisionService:
             ),
             outcome=outcome,
             evidence_refs=[],
-            score=0.95 if scenario.definition.risk_level >= 2 else 0.85,
-            can_authorize_action=scenario.definition.key != "rag_consultation",
+            score=route_res.score,
+            can_authorize_action=scenario.definition.key != "rag_consultation" and not route_res.is_ambiguous,
+            routing=DecisionRoutingInfo(
+                selected_score=route_res.score,
+                runner_up_score=route_res.runner_up_score,
+                reasons=route_res.reasons,
+                is_ambiguous=route_res.is_ambiguous,
+            ),
         )
         candidate.evidence_refs = outcome_evidence_refs(candidate)
 
@@ -241,7 +267,7 @@ class ScenarioDecisionService:
         facts_summary = redacted_fact_summary(facts)
         policy_comment = str(policy.get("comment") or "").strip()
         generated = None
-        if scenario.definition.risk_level <= 1 and policy_comment:
+        if self.ai_enabled and scenario.definition.risk_level <= 1 and policy_comment:
             generated = await self._generate_low_risk_response(
                 policy_comment=policy_comment,
                 outcome_kind=str(kind or "manual_review"),

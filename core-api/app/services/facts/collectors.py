@@ -41,6 +41,38 @@ PRINTER_MODEL_RE = re.compile(
     re.IGNORECASE,
 )
 
+AUDIO_DEVICE_TOKENS: tuple[str, ...] = (
+    "колонк", "коллонк", "наушник", "гарнитур", "микрофон",
+    "динамик", "headphone", "headset", "speaker", "soundbar",
+)
+PRINTER_DEVICE_TOKENS: tuple[str, ...] = (
+    "принтер", "мфу", "printer", "mfu", "плоттер", "сканер",
+    "scanner", "ризограф", "копир",
+)
+OTHER_PERIPHERAL_TOKENS: tuple[str, ...] = (
+    "клавиатур", "клава", "мышь", "мышк", "монитор", "дисплей",
+    "экран", "веб-камер", "вебкамер", "вебка", "картридер", "флешк",
+    "источник бесперебойного", "ибп", "ups",
+)
+
+
+def detect_device_type(
+    text: str,
+    *,
+    service_id: int | None = None,
+    field_1111: str | None = None,
+) -> str:
+    combined = f"{text} {field_1111 or ''}".casefold()
+    if any(tok in combined for tok in AUDIO_DEVICE_TOKENS):
+        return "audio"
+    if any(tok in combined for tok in PRINTER_DEVICE_TOKENS) or PRINTER_MODEL_RE.search(combined):
+        return "printer"
+    if any(tok in combined for tok in OTHER_PERIPHERAL_TOKENS):
+        return "other"
+    if service_id == 57:
+        return "other"
+    return "unknown"
+
 
 def _clean_printer_model(value: str) -> str:
     value = IP_RE.sub("", value)
@@ -55,6 +87,8 @@ def _clean_printer_model(value: str) -> str:
 
 
 def _printer_targets(text: str) -> list[dict[str, str | None]]:
+    if detect_device_type(text) == "audio":
+        return []
     targets: list[dict[str, str | None]] = []
     scan_text = re.sub(
         r"\s+и\s+(?=(?:принтер|мфу))", ", ", text, flags=re.IGNORECASE
@@ -138,9 +172,16 @@ def _observation(
 ) -> FactObservation:
     spec = get_fact_registry().require(key)
     normalized = spec.normalize(value) if value not in (None, "") else value
-    effective_state = state or (
-        FactState.VALID if normalized not in (None, "", [], {}) else FactState.MISSING
-    )
+    if key == "pc_name" and state is None:
+        effective_state = (
+            FactState.VALID
+            if normalized and is_valid_pc_name(normalized)
+            else (FactState.MISSING if normalized in (None, "", [], {}) else FactState.INVALID)
+        )
+    else:
+        effective_state = state or (
+            FactState.VALID if normalized not in (None, "", [], {}) else FactState.MISSING
+        )
     expires_at = None
     if spec.ttl_seconds:
         expires_at = (datetime.now(timezone.utc) + timedelta(seconds=spec.ttl_seconds)).isoformat()
@@ -193,11 +234,36 @@ async def collect_structured(task: dict[str, Any]) -> list[FactObservation]:
     field_1104 = raw.get("1104") or raw.get(1104)
     field_1111 = raw.get("1111") or raw.get(1111)
 
-    if pc_field and is_valid_pc_name(str(pc_field).strip()):
-        result.append(_observation(
-            "pc_name", pc_field, source=FactSource.STRUCTURED_FIELD,
-            source_ref=f"field:{settings.PRINTER_PC_CUSTOM_FIELD_ID}",
-        ))
+    f1111_val = str(field_1111).strip() if field_1111 is not None else ""
+    dev_type_1111 = None
+    if f1111_val:
+        svc_id = task.get("ServiceId") or task.get("service_id")
+        dev_type_1111 = detect_device_type("", service_id=svc_id, field_1111=f1111_val)
+        result.append(
+            _observation(
+                "device_type",
+                dev_type_1111,
+                source=FactSource.STRUCTURED_FIELD,
+                source_ref="field:1111",
+                evidence_span=f1111_val,
+            )
+        )
+
+    if pc_field:
+        pc_str = str(pc_field).strip()
+        if pc_str:
+            norm_pc = normalize_pc_name(pc_str)
+            valid = is_valid_pc_name(norm_pc or pc_str)
+            result.append(
+                _observation(
+                    "pc_name",
+                    norm_pc or pc_str,
+                    source=FactSource.STRUCTURED_FIELD,
+                    source_ref=f"field:{settings.PRINTER_PC_CUSTOM_FIELD_ID}",
+                    evidence_span=pc_str,
+                    state=FactState.VALID if valid else FactState.INVALID,
+                )
+            )
 
     if field_1104:
         addrs_1104 = extract_printer_addresses_from_text(str(field_1104).strip())
@@ -238,8 +304,7 @@ async def collect_structured(task: dict[str, Any]) -> list[FactObservation]:
                 source_ref=f"field:{settings.PRINTER_IP_CUSTOM_FIELD_ID}",
                 evidence_span=printer_value,
             ))
-    elif field_1111:
-        f1111_val = str(field_1111).strip()
+    elif field_1111 and dev_type_1111 == "printer":
         addrs_1111 = extract_printer_addresses_from_text(f1111_val)
         if addrs_1111:
             result.append(_observation(
@@ -283,15 +348,54 @@ async def collect_structured(task: dict[str, Any]) -> list[FactObservation]:
 
 
 async def collect_deterministic(
-    task: dict[str, Any], comments: list[dict[str, Any]] | None
+    task: dict[str, Any], comments: list[dict[str, Any]] | None = None
 ) -> list[FactObservation]:
     subject = str(task.get("Name") or "")
     description = str(task.get("Description") or "")
     ticket_text = f"{subject}\n{description}".strip()
     result: list[FactObservation] = []
 
+    if ticket_text:
+        dev_type = detect_device_type(
+            ticket_text, service_id=task.get("ServiceId") or task.get("service_id")
+        )
+        result.append(
+            _observation(
+                "device_type",
+                dev_type,
+                source=FactSource.PARSER,
+                source_ref="parser:ticket_text:device_type",
+                evidence_span=ticket_text[:100],
+            )
+        )
+    else:
+        dev_type = "unknown"
+
     pcs = [pc for pc in extract_pc_names_from_text(ticket_text) if not IP_RE.fullmatch(pc)]
-    if pcs:
+    valid_pcs = list(dict.fromkeys(pc for pc in pcs if is_valid_pc_name(pc)))
+    if len(valid_pcs) == 1:
+        result.append(
+            _observation(
+                "pc_name",
+                valid_pcs[0],
+                source=FactSource.PARSER,
+                source_ref="parser:ticket_text:pc_name",
+                evidence_span=valid_pcs[0],
+                state=FactState.VALID,
+            )
+        )
+    elif len(valid_pcs) > 1:
+        result.append(
+            _observation(
+                "pc_name",
+                ", ".join(valid_pcs),
+                source=FactSource.PARSER,
+                source_ref="parser:ticket_text:pc_name",
+                evidence_span=", ".join(valid_pcs),
+                state=FactState.AMBIGUOUS,
+            )
+        )
+    elif pcs:
         result.append(
             _observation(
                 "pc_name",
@@ -299,70 +403,73 @@ async def collect_deterministic(
                 source=FactSource.PARSER,
                 source_ref="parser:ticket_text:pc_name",
                 evidence_span=pcs[0],
+                state=FactState.INVALID,
             )
         )
-    ips = list(dict.fromkeys(IP_RE.findall(ticket_text)))
-    ip = IP_RE.search(ticket_text)
-    addrs = extract_printer_addresses_from_text(ticket_text)
-    if addrs:
-        result.append(
-            _observation(
-                "printer_address",
-                addrs[0],
-                source=FactSource.PARSER,
-                source_ref="parser:ticket_text:printer_address",
-                evidence_span=addrs[0],
+
+    if dev_type != "audio":
+        ips = list(dict.fromkeys(IP_RE.findall(ticket_text)))
+        ip = IP_RE.search(ticket_text)
+        addrs = extract_printer_addresses_from_text(ticket_text)
+        if addrs:
+            result.append(
+                _observation(
+                    "printer_address",
+                    addrs[0],
+                    source=FactSource.PARSER,
+                    source_ref="parser:ticket_text:printer_address",
+                    evidence_span=addrs[0],
+                )
             )
-        )
-    elif ip:
-        result.append(
-            _observation(
-                "printer_address",
-                ip.group(0),
-                source=FactSource.PARSER,
-                source_ref="parser:ticket_text:ip",
-                evidence_span=ip.group(0),
+        elif ip:
+            result.append(
+                _observation(
+                    "printer_address",
+                    ip.group(0),
+                    source=FactSource.PARSER,
+                    source_ref="parser:ticket_text:ip",
+                    evidence_span=ip.group(0),
+                )
             )
-        )
-    targets = _printer_targets(ticket_text)
-    if targets:
-        model_text = str(targets[0]["printer_name"])
-        result.append(
-            _observation(
-                "printer_name",
-                model_text,
-                source=FactSource.PARSER,
-                source_ref="parser:ticket_text:printer_name",
-                evidence_span=model_text,
+        targets = _printer_targets(ticket_text)
+        if targets:
+            model_text = str(targets[0]["printer_name"])
+            result.append(
+                _observation(
+                    "printer_name",
+                    model_text,
+                    source=FactSource.PARSER,
+                    source_ref="parser:ticket_text:printer_name",
+                    evidence_span=model_text,
+                )
             )
+            result.append(_observation(
+                "printer_targets", targets, source=FactSource.PARSER,
+                source_ref="parser:ticket_text:printer_targets",
+                evidence_span="; ".join(
+                    f"{target['printer_name']} {target['printer_address'] or ''}".strip()
+                    for target in targets
+                ),
+            ))
+        connection_type = (
+            "mixed"
+            if (ips or addrs) and re.search(r"\busb\b", ticket_text, re.IGNORECASE)
+            else "usb"
+            if re.search(r"\busb\b|локальн(?:ый|ого)\s+принтер|провод\w*\s+.*подключ", ticket_text, re.IGNORECASE)
+            else "network"
+            if (ip or addrs) or re.search(r"сетев(?:ой|ого)\s+(?:принтер|мфу)", ticket_text, re.IGNORECASE)
+            else None
         )
-        result.append(_observation(
-            "printer_targets", targets, source=FactSource.PARSER,
-            source_ref="parser:ticket_text:printer_targets",
-            evidence_span="; ".join(
-                f"{target['printer_name']} {target['printer_address'] or ''}".strip()
-                for target in targets
-            ),
-        ))
-    connection_type = (
-        "mixed"
-        if (ips or addrs) and re.search(r"\busb\b", ticket_text, re.IGNORECASE)
-        else "usb"
-        if re.search(r"\busb\b|локальн(?:ый|ого)\s+принтер|провод\w*\s+.*подключ", ticket_text, re.IGNORECASE)
-        else "network"
-        if (ip or addrs) or re.search(r"сетев(?:ой|ого)\s+(?:принтер|мфу)", ticket_text, re.IGNORECASE)
-        else None
-    )
-    if connection_type:
-        result.append(
-            _observation(
-                "printer_connection_type",
-                connection_type,
-                source=FactSource.PARSER,
-                source_ref="parser:ticket_text:printer_connection_type",
-                evidence_span=connection_type,
+        if connection_type:
+            result.append(
+                _observation(
+                    "printer_connection_type",
+                    connection_type,
+                    source=FactSource.PARSER,
+                    source_ref="parser:ticket_text:printer_connection_type",
+                    evidence_span=connection_type,
+                )
             )
-        )
     attachments = task.get("Attachments") or task.get("attachments") or []
     mentions_attachment = bool(
         re.search(r"\b(?:скрин|скриншот|фото|вложен|прикреп)\w*", ticket_text, re.IGNORECASE)
@@ -425,7 +532,30 @@ async def collect_deterministic(
             continue
         comment_ref = _comment_source_ref(comment, text)
         comment_pcs = extract_pc_names_from_text(text)
-        if comment_pcs:
+        comment_valid = list(dict.fromkeys(pc for pc in comment_pcs if is_valid_pc_name(pc)))
+        if len(comment_valid) == 1:
+            result.append(
+                _observation(
+                    "pc_name",
+                    comment_valid[0],
+                    source=FactSource.COMMENT,
+                    source_ref=f"{comment_ref}:pc_name",
+                    evidence_span=comment_valid[0],
+                    state=FactState.VALID,
+                )
+            )
+        elif len(comment_valid) > 1:
+            result.append(
+                _observation(
+                    "pc_name",
+                    ", ".join(comment_valid),
+                    source=FactSource.COMMENT,
+                    source_ref=f"{comment_ref}:pc_name",
+                    evidence_span=", ".join(comment_valid),
+                    state=FactState.AMBIGUOUS,
+                )
+            )
+        elif comment_pcs:
             result.append(
                 _observation(
                     "pc_name",
@@ -433,6 +563,7 @@ async def collect_deterministic(
                     source=FactSource.COMMENT,
                     source_ref=f"{comment_ref}:pc_name",
                     evidence_span=comment_pcs[0],
+                    state=FactState.INVALID,
                 )
             )
         comment_addrs = extract_printer_addresses_from_text(text)

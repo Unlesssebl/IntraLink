@@ -26,6 +26,13 @@ def _normalize_printer_addr(value: Any) -> str:
     return normalize_printer_address(raw) or raw.lower()
 
 
+def _normalize_device_type(value: Any) -> str:
+    raw = _clean_text(value).lower()
+    if raw in {"printer", "audio", "other", "unknown"}:
+        return raw
+    return "unknown"
+
+
 def _identity(value: Any) -> Any:
     return value
 
@@ -117,6 +124,14 @@ def _build_default_registry() -> FactRegistry:
         )
     registry.register(
         FactSpec(key="printer_targets", normalizer=_identity, allow_llm=False)
+    )
+    registry.register(
+        FactSpec(
+            key="device_type",
+            normalizer=_normalize_device_type,
+            sensitivity=FactSensitivity.INTERNAL,
+            clarification_key="clarify_device_type",
+        )
     )
     registry.register(FactSpec(key="issue_summary"))
     return registry

@@ -61,12 +61,12 @@ class OfflineHostRule(BaseRule):
         if is_decommission or is_hardware_pc_issue or is_delivery:
             return None
 
-        # Проверка статуса хоста
-        if diag and not diag.get("is_online", False):
+        # Проверка статуса хоста (только завершённая проверка с подтверждённым отрицательным результатом)
+        if diag and diag.get("is_online") is False and diag.get("status") not in ("error", "unknown"):
             target = diag.get("target") or "ПК"
             if target != "UNKNOWN":
                 comment = (
-                    f"Не вижу ПК {target} в сети.\n"
+                    f"Не удалось связаться с ПК {target} по сети.\n"
                     f"1. Убедитесь в корректности имени ПК;\n"
                     f"2. Перезагрузите компьютер;\n"
                     f"3. Проверьте подключение сетевого кабеля;\n"
@@ -126,7 +126,7 @@ class OfflineHostRule(BaseRule):
             return NoMatch(rule_key="host.offline", rule_version="2")
 
         # Strict Jinja Guard: Проверяем доступность хоста и обязательно валидное имя ПК
-        if diag and not diag.get("is_online", False):
+        if diag and diag.get("is_online") is False and diag.get("status") not in ("error", "unknown"):
             target = diag.get("target")
             # Если имя ПК не указано или UNKNOWN, запрещаем рендер шаблона pc_offline (fail closed to NoMatch)
             if not target or str(target).strip() == "" or str(target).upper() == "UNKNOWN":

@@ -135,6 +135,14 @@ class ExecutionPlan(StrictModel):
     steps: list[PlanStep] = Field(default_factory=list)
 
 
+class DecisionRoutingInfo(StrictModel):
+    schema_version: Literal[1] = 1
+    selected_score: float = 0.0
+    runner_up_score: float = 0.0
+    reasons: list[str] = Field(default_factory=list)
+    is_ambiguous: bool = False
+
+
 class CandidateOutcome(StrictModel):
     schema_version: Literal[1] = 1
     candidate_id: str
@@ -143,6 +151,7 @@ class CandidateOutcome(StrictModel):
     evidence_refs: list[str] = Field(default_factory=list)
     score: float = Field(default=0.0, ge=0.0, le=1.0)
     can_authorize_action: bool = False
+    routing: DecisionRoutingInfo | None = None
 
 
 class RejectedCandidate(StrictModel):
@@ -194,6 +203,8 @@ class DecisionEnvelope(StrictModel):
     gates: DecisionGates = Field(default_factory=DecisionGates)
     evidence_refs: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    routing: DecisionRoutingInfo | None = None
+    clarifications: list[dict[str, Any]] = Field(default_factory=list)
     status: Literal[
         "proposed",
         "waiting_answer",
@@ -223,6 +234,11 @@ SCENARIO_DISPLAY_NAMES: dict[str, str] = {
     "printer_hardware_service": "Сервисный ремонт оргтехники",
     "printer_scan_failure": "Диагностика сетевого сканирования",
     "printer_print_failure": "Устранение сбоя очереди печати",
+    "peripheral_setup": "Установка и подключение периферии",
+    "peripheral_diagnostics": "Диагностика периферийных устройств",
+    "pc_performance": "Диагностика производительности ПК",
+    "network_diagnostics": "Диагностика сетевого подключения",
+    "os_reinstallation": "Переустановка операционной системы",
     "create_user": "Создание учётной записи (AD)",
     "user_creation": "Создание учётной записи (AD legacy)",
     "grant_wlan": "Доступ к корпоративному Wi-Fi",
@@ -245,6 +261,11 @@ SCENARIO_SHORT_NAMES: dict[str, str] = {
     "printer_hardware_service": "Ремонт МФУ",
     "printer_scan_failure": "Сбой сканирования",
     "printer_print_failure": "Сбой печати",
+    "peripheral_setup": "Периферия",
+    "peripheral_diagnostics": "Сбой периферии",
+    "pc_performance": "Тормоза ПК",
+    "network_diagnostics": "Сбой сети",
+    "os_reinstallation": "Переустановка ОС",
     "create_user": "Создание УЗ",
     "user_creation": "Создание УЗ",
     "grant_wlan": "Wi-Fi доступ",

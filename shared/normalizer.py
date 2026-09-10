@@ -158,7 +158,7 @@ def _transliterate_prefix(prefix: str) -> str:
 
 
 def _try_fix_prefix(prefix: str, known_prefixes: list[str]) -> str | None:
-    if not prefix:
+    if not prefix or len(prefix) < 2:
         return None
 
     clean_p = prefix.upper().replace("-", "").replace("_", "")
@@ -210,14 +210,20 @@ def normalize_pc_name(raw: str | None) -> str | None:
         if norm_p in KNOWN_PRINTER_PREFIXES:
             return None
         fixed_p = _try_fix_prefix(norm_p, KNOWN_PC_PREFIXES)
-        return fixed_p or norm_p
+        if fixed_p and fixed_p.upper() in KNOWN_PC_PREFIXES:
+            return fixed_p.upper()
+        if norm_p.upper() in KNOWN_PC_PREFIXES:
+            return norm_p.upper()
+        return None
     if not prefix:
-        return number
+        return None
     translit_prefix = _transliterate_prefix(prefix)
     if translit_prefix.upper() in KNOWN_PRINTER_PREFIXES:
         return None
     fixed_prefix = _try_fix_prefix(translit_prefix, KNOWN_PC_PREFIXES) or translit_prefix
     if fixed_prefix.upper() in KNOWN_PRINTER_PREFIXES:
+        return None
+    if fixed_prefix.upper() not in KNOWN_PC_PREFIXES and translit_prefix.upper() not in KNOWN_PC_PREFIXES:
         return None
     return f"{fixed_prefix.upper()}{number}"
 
@@ -440,6 +446,15 @@ def extract_printer_addresses_from_text(text: str | None) -> list[str]:
     ip_pattern = re.compile(r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|(?:\d{1,3}\.){3}\d{1,3})\b")
     for m in ip_pattern.finditer(text):
         ip_addr = m.group(0)
+        parts = ip_addr.split(".")
+        if any(int(p) > 255 for p in parts):
+            continue
+        prefix_text = text[: m.start()]
+        if re.search(r"(?i)\b(?:верси[яиею]|ver|build|v|платформ[аые]|1[сc])\s*[:#№.\-]?\s*$", prefix_text):
+            continue
+        tail_text = text[m.end() :]
+        if tail_text.startswith("."):
+            continue
         if ip_addr not in found:
             found.append(ip_addr)
 
