@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import type { Ticket } from '../../data/mock';
-import type { TaskDetails } from '../../lib/types';
+import type { TaskDetails, ResponseProvenance, DecisionResponseVariant } from '../../lib/types';
 import {
   fetchTicketRun,
   controlTicketRun,
@@ -9,13 +9,35 @@ import {
   type TicketRunEvent,
   type TicketRunCommand,
 } from '../../lib/ticketRuns';
-import { analyzeTask, applyTask, reanalyzeTask, confirmExecutionJob } from '../../lib/tasks';
+import {
+  analyzeTask,
+  applyTask,
+  reanalyzeTask,
+  confirmExecutionJob,
+  createResponseVariant,
+} from '../../lib/tasks';
 import { submitDecisionFeedback, overrideTaskFacts } from '../../lib/decisionsApi';
 import {
   captureInitialDecisionVersion,
   isDecisionVersionStale,
   type InitialDecisionVersion,
 } from './decisionStaleness';
+
+export type ResponseTone = 'default' | 'concise' | 'detailed' | 'regulatory';
+
+export function getToneLabel(tone: ResponseTone): string {
+  switch (tone) {
+    case 'concise':
+      return 'Краткий';
+    case 'detailed':
+      return 'Подробный';
+    case 'regulatory':
+      return 'По регламенту';
+    case 'default':
+    default:
+      return 'Каноничный';
+  }
+}
 
 export interface UseUnifiedDecisionProps {
   ticket: Ticket;
@@ -66,6 +88,13 @@ export interface UseUnifiedDecisionReturn {
   recommendedExpenses: number;
   handleRestoreAiDraft: (syncMetadata?: boolean) => void;
   handleAppendAiDraft: () => void;
+
+  // Управление тональностью и объяснимостью (Этап 4)
+  selectedTone: ResponseTone;
+  responseProvenance: ResponseProvenance | null;
+  isGeneratingVariant: boolean;
+  currentVariantId: string | null;
+  handleSelectTone: (tone: ResponseTone, force?: boolean) => Promise<boolean>;
 
   // Резолюция статуса и готовности
   targetStatusId: number;
@@ -178,6 +207,10 @@ export function useUnifiedDecision({
     setSelectedStatusOverride(null);
     setPendingNewAiDraft(null);
     setFeedbackSubmitted(false);
+    setSelectedTone('default');
+    setCurrentVariantId(null);
+    setIsGeneratingVariant(false);
+    variantCacheRef.current.clear();
     setExpenses(ticket.aiPlan?.expensesMinutes || ticket.expenses || 10);
     initialDecisionRef.current = null;
 
@@ -234,6 +267,10 @@ export function useUnifiedDecision({
   const [selectedTemplateKey, setSelectedTemplateKey] = useState<string>('');
   const [selectedStatusOverride, setSelectedStatusOverride] = useState<number | null>(null);
   const [selectedTab, setSelectedTab] = useState<'facts' | 'completeness'>('facts');
+  const [selectedTone, setSelectedTone] = useState<ResponseTone>('default');
+  const [currentVariantId, setCurrentVariantId] = useState<string | null>(null);
+  const [isGeneratingVariant, setIsGeneratingVariant] = useState<boolean>(false);
+  const variantCacheRef = useRef<Map<ResponseTone, DecisionResponseVariant>>(new Map());
 
   const [ticketRun, setTicketRun] = useState<TicketRun | null>(null);
   const [runEvents, setRunEvents] = useState<TicketRunEvent[]>([]);
@@ -337,6 +374,7 @@ export function useUnifiedDecision({
         decision_id: decision?.id,
         decision_version: decision?.version,
         ticket_run_id: ticketRun?.id,
+        response_variant_id: currentVariantId || undefined,
       });
 
       // Очищаем локальные буферы черновиков
@@ -373,6 +411,7 @@ export function useUnifiedDecision({
     replyMode,
     getDraftKey,
     ticketRun?.id,
+    currentVariantId,
     onUpdateTicket,
     ticket.id,
     onToast,
@@ -814,6 +853,8 @@ export function useUnifiedDecision({
         return;
       }
 
+      setSelectedTone('default');
+      setCurrentVariantId(null);
       setReplyText(originalAiDraft);
 
       if (syncMetadata) {
@@ -875,6 +916,80 @@ export function useUnifiedDecision({
     });
   }, [originalAiDraft, replyText, setReplyText, onToast]);
 
+  const currentVariant = variantCacheRef.current.get(selectedTone);
+  const responseProvenance: ResponseProvenance | null = useMemo(() => {
+    return currentVariant?.provenance || safeDetails?.decision_envelope?.response?.provenance || null;
+  }, [currentVariant, safeDetails?.decision_envelope?.response?.provenance]);
+
+  const handleSelectTone = useCallback(
+    async (tone: ResponseTone, force = false): Promise<boolean> => {
+      if (!rawId) return false;
+      if (tone === selectedTone) return true;
+
+      // Если текст ответа отредактирован вручную оператором и нет force-флага
+      const isCustomEdited = Boolean(
+        originalAiDraft && replyText.trim() && replyText.trim() !== originalAiDraft
+      );
+      if (isCustomEdited && !force) {
+        return false;
+      }
+
+      const cachedVariant = variantCacheRef.current.get(tone);
+      if (cachedVariant) {
+        setSelectedTone(tone);
+        setCurrentVariantId(cachedVariant.id);
+        setReplyText(cachedVariant.response_text);
+        onToast({
+          type: 'success',
+          message: `Применён стиль: «${getToneLabel(tone)}»`,
+        });
+        return true;
+      }
+
+      if (tone === 'default' && originalAiDraft) {
+        setSelectedTone('default');
+        setCurrentVariantId(null);
+        setReplyText(originalAiDraft);
+        onToast({
+          type: 'success',
+          message: `Применён стиль: «${getToneLabel(tone)}»`,
+        });
+        return true;
+      }
+
+      setIsGeneratingVariant(true);
+      try {
+        const variant = await createResponseVariant(rawId, tone);
+        variantCacheRef.current.set(tone, variant);
+        setSelectedTone(tone);
+        setCurrentVariantId(variant.id);
+        setReplyText(variant.response_text);
+
+        if (variant.provenance?.fallback_used) {
+          onToast({
+            type: 'warning',
+            message: `Стиль «${getToneLabel(tone)}» сформирован через резервный бэкенд (${variant.provenance.actual_backend || 'local'})`,
+          });
+        } else {
+          onToast({
+            type: 'success',
+            message: `Сформирован ответ в стиле «${getToneLabel(tone)}»`,
+          });
+        }
+        return true;
+      } catch (err: any) {
+        onToast({
+          type: 'error',
+          message: `Ошибка генерации стиля «${getToneLabel(tone)}»: ${err.message || err}`,
+        });
+        return false;
+      } finally {
+        setIsGeneratingVariant(false);
+      }
+    },
+    [rawId, selectedTone, originalAiDraft, replyText, setReplyText, onToast]
+  );
+
   return {
     replyText,
     setReplyText,
@@ -888,6 +1003,11 @@ export function useUnifiedDecision({
     setSelectedStatusOverride,
     selectedTab,
     setSelectedTab,
+    selectedTone,
+    responseProvenance,
+    isGeneratingVariant,
+    currentVariantId,
+    handleSelectTone,
     targetStatusId,
     targetStatusName,
     primaryActionLabel,

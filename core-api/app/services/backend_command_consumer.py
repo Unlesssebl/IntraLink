@@ -45,6 +45,7 @@ async def _execute(action: str, values: dict, db) -> dict:
             operator_user_id=values.get("operator_user_id"),
             verified_execution_job_id=values.get("verified_execution_job_id"),
             is_private=bool(values.get("is_private", False)),
+            response_variant_id=values.get("response_variant_id"),
         )
         if not results or any(not item.get("update_ok", False) for item in results):
             raise RuntimeError("One or more triage updates failed")

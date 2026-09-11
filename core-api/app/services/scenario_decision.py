@@ -18,10 +18,16 @@ from shared.domain import (
     FactObservation,
     FactState,
     ManualReviewRequired,
+    ResponseProvenance,
 )
 
 from app.services.ai.hub import ai_hub
-from app.services.ai.schemas import RoutedInferenceRequest, RoutingMetadata
+from app.services.ai.schemas import (
+    InferencePurpose,
+    RoutedInferenceRequest,
+    RoutingMetadata,
+)
+from app.services.response_context import ResponseContext, ResponseContextBuilder
 from app.services.decision_compiler import (
     DecisionCompiler,
     outcome_evidence_refs,
@@ -125,50 +131,75 @@ class ScenarioDecisionService:
     @staticmethod
     async def _generate_low_risk_response(
         *,
-        policy_comment: str,
-        outcome_kind: str,
-        facts_summary: dict[str, Any],
-        evidence_refs: list[str],
+        response_context: ResponseContext,
         service_id: int | None,
-    ) -> GeneratedResponse | None:
-        safe_facts = {
-            key: value
-            for key, value in facts_summary.items()
-            if isinstance(value, dict)
-            and value.get("state") == "valid"
-            and value.get("value") not in (None, "", "<redacted>")
-        }
-        payload = {
-            "policy_text": policy_comment,
-            "outcome_kind": outcome_kind,
-            "confirmed_facts": safe_facts,
-            "allowed_evidence_refs": evidence_refs,
-            "constraints": [
-                "Rewrite only the supplied policy text in concise professional Russian",
-                "Do not claim that an action was completed or checked",
-                "Do not add identifiers, technical values, instructions, or historical cases",
-                "Return only JSON matching the schema",
-            ],
-        }
+    ) -> tuple[GeneratedResponse | None, ResponseProvenance]:
+        variants = ResponseContextBuilder.build_prompt_variants(
+            response_context, tone="default"
+        )
+        primary = variants[1] if len(variants) > 1 else variants[0]
         try:
-            response = await ai_hub.dispatch_routed_inference(
+            inference_resp = await ai_hub.dispatch_routed_inference(
                 RoutedInferenceRequest(
-                    prompt=json.dumps(payload, ensure_ascii=False),
-                    system_prompt=(
-                        "Ты редактируешь безопасный готовый текст Helpdesk. "
-                        "Не добавляй факты и не меняй смысл решения."
-                    ),
+                    prompt=primary.prompt,
+                    system_prompt=primary.system_prompt,
                     metadata=RoutingMetadata(service_id=service_id),
                     temperature=0.0,
-                    max_tokens=800,
+                    max_tokens=primary.max_tokens,
                     response_schema=GeneratedResponse.model_json_schema(),
+                    prompt_variants=variants,
+                    purpose=InferencePurpose.RESPONSE_DEFAULT,
                 )
             )
-            if response is None:
-                return None
-            return GeneratedResponse.model_validate_json(response.text)
-        except (ValueError, TypeError):
-            return None
+            if inference_resp is None:
+                provenance = ResponseProvenance(
+                    source="fallback_template",
+                    requested_backend="litellm_gemini",
+                    fallback_used=True,
+                    fallback_reason_code="all_providers_failed",
+                    rag_candidate_count=len(response_context.rag_candidates),
+                    rag_used_count=0,
+                )
+                return None, provenance
+
+            circuit_val = (
+                inference_resp.circuit.value
+                if hasattr(inference_resp.circuit, "value")
+                else str(inference_resp.circuit)
+            )
+            provenance = ResponseProvenance(
+                source="llm" if not inference_resp.fallback_used else "fallback_template",
+                requested_backend=inference_resp.requested_backend,
+                actual_backend=inference_resp.actual_backend,
+                model_alias=inference_resp.model_alias,
+                resolved_model=inference_resp.resolved_model,
+                circuit=circuit_val if circuit_val in ("red", "yellow", "green") else "unknown",
+                context_profile=inference_resp.context_profile,
+                tone="default",
+                fallback_used=inference_resp.fallback_used,
+                fallback_reason_code=inference_resp.fallback_reason_code,
+                rag_candidate_count=len(response_context.rag_candidates),
+                rag_used_count=len(inference_resp.rag_refs),
+                rag_refs=inference_resp.rag_refs,
+                attempts=inference_resp.attempts,
+                duration_ms=int(inference_resp.execution_time_ms),
+            )
+            try:
+                generated = GeneratedResponse.model_validate_json(inference_resp.text)
+                return generated, provenance
+            except Exception:
+                provenance.source = "fallback_template"
+                provenance.fallback_used = True
+                provenance.fallback_reason_code = "invalid_schema"
+                return None, provenance
+        except Exception:
+            provenance = ResponseProvenance(
+                source="fallback_template",
+                fallback_used=True,
+                fallback_reason_code="all_providers_failed",
+                rag_candidate_count=len(response_context.rag_candidates),
+            )
+            return None, provenance
 
     async def analyze(
         self,
@@ -329,21 +360,6 @@ class ScenarioDecisionService:
                 policy = {"resolution_error": str(exc), "requires_approval": False}
         facts_summary = redacted_fact_summary(facts)
         policy_comment = str(policy.get("comment") or "").strip()
-        generated = None
-        if self.ai_enabled and scenario.definition.risk_level <= 1 and policy_comment:
-            generated = await self._generate_low_risk_response(
-                policy_comment=policy_comment,
-                outcome_kind=str(kind or "manual_review"),
-                facts_summary=facts_summary,
-                evidence_refs=candidate.evidence_refs,
-                service_id=task.get("ServiceId") or task.get("service_id"),
-            )
-        response = guarded_response(
-            generated=generated,
-            template_text=policy_comment,
-            allowed_evidence_refs=candidate.evidence_refs,
-            facts_summary=facts_summary,
-        )
 
         plan = PlanBuilder.build(
             scenario_key=scenario.definition.key,
@@ -351,6 +367,44 @@ class ScenarioDecisionService:
             facts=facts,
             diagnostics=diagnostics,
         )
+
+        response_ctx = ResponseContextBuilder.build_context(
+            decision_id=decision_id or str(uuid.uuid4()),
+            decision_version=decision_version,
+            scenario_key=scenario.definition.key,
+            scenario_version=scenario.definition.version,
+            outcome_kind=str(kind or "manual_review"),
+            policy_comment=policy_comment,
+            facts_summary=facts_summary,
+            evidence_refs=candidate.evidence_refs,
+            plan=plan,
+            kb_matches=kb_matches,
+        )
+
+        generated = None
+        provenance = None
+        if self.ai_enabled and scenario.definition.risk_level <= 1 and policy_comment:
+            generated, provenance = await self._generate_low_risk_response(
+                response_context=response_ctx,
+                service_id=task.get("ServiceId") or task.get("service_id"),
+            )
+        elif policy_comment:
+            provenance = ResponseProvenance(
+                source="template",
+                tone="default",
+                fallback_used=False,
+                rag_candidate_count=len(kb_matches or []),
+                rag_used_count=0,
+            )
+
+        response = guarded_response(
+            generated=generated,
+            template_text=policy_comment,
+            allowed_evidence_refs=candidate.evidence_refs,
+            facts_summary=facts_summary,
+            provenance=provenance,
+        )
+
         internal_summary = build_internal_summary(
             scenario_key=scenario.definition.key,
             scenario_version=scenario.definition.version,

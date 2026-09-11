@@ -275,6 +275,27 @@ class SynthesisProposal(StrictModel):
     response_plan: dict[str, Any] = Field(default_factory=dict)
 
 
+class ResponseProvenance(StrictModel):
+    schema_version: Literal[1] = 1
+    source: Literal["template", "fallback_template", "llm", "unknown"] = "unknown"
+    requested_backend: str | None = None
+    actual_backend: str | None = None
+    model_alias: str | None = None
+    resolved_model: str | None = None
+    circuit: Literal["red", "yellow", "green", "unknown"] = "unknown"
+    context_profile: Literal["local", "cloud", "none"] = "none"
+    tone: Literal["default", "concise", "detailed", "regulatory"] = "default"
+    fallback_used: bool = False
+    fallback_reason_code: str | None = None
+    prompt_revision: str | None = None
+    rag_candidate_count: int = 0
+    rag_used_count: int = 0
+    rag_refs: list[str] = Field(default_factory=list)
+    attempts: list[dict[str, Any]] = Field(default_factory=list)
+    generated_at: str | None = None
+    duration_ms: int | None = None
+
+
 class DecisionResponse(StrictModel):
     schema_version: Literal[1] = 1
     text: str = Field(default="", max_length=900)
@@ -282,6 +303,7 @@ class DecisionResponse(StrictModel):
     state: Literal["valid", "fallback", "invalid"] = "invalid"
     violations: list[str] = Field(default_factory=list)
     used_evidence_refs: list[str] = Field(default_factory=list)
+    provenance: ResponseProvenance | None = None
 
 
 class DecisionGates(StrictModel):

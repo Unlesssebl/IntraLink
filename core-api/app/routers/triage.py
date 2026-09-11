@@ -52,6 +52,7 @@ from app.services.decision_journal import (
     ticket_snapshot_fingerprint,
 )
 from app.services.scenario_decision import ScenarioDecisionService
+from app.services.response_variant_service import ResponseVariantService
 
 from app.services.host_telemetry import (  # noqa: F401
     get_task_telemetry,
@@ -105,6 +106,18 @@ class ApplyTriageRequest(BaseModel):
     decision_version: int | None = Field(
         None, description="Версия зафиксированного решения"
     )
+    response_variant_id: str | None = Field(
+        None, description="ID примененного варианта ответа"
+    )
+
+
+class CreateResponseVariantRequest(BaseModel):
+    decision_id: str | None = Field(None, description="ID зафиксированного решения (если не указан, берется последнее)")
+    decision_version: int | None = Field(None, description="Версия зафиксированного решения")
+    tone: Literal["default", "concise", "detailed", "regulatory"] = Field(
+        "default", description="Запрашиваемый тон ответа"
+    )
+    regenerate: bool = Field(False, description="Принудительная перегенерация")
 
 
 class SkipSessionRequest(BaseModel):
@@ -200,6 +213,7 @@ async def attach_durable_decision(
         task=card.get("task") or {},
         comments=card.get("history") or [],
         diagnostics=card.get("telemetry"),
+        kb_matches=card.get("kb_matches") or [],
         decision_id=str(decision_id),
         decision_version=decision_version,
     )
@@ -371,6 +385,33 @@ async def run_explicit_analysis(
 
         card = snapshot
         card["telemetry"] = await get_task_telemetry(task_id)
+
+        # Bounded RAG retrieval для явного анализа
+        task_data = card.get("task") or {}
+        query_parts = [
+            str(task_data.get("Name") or "").strip(),
+            str(task_data.get("Description") or "").strip(),
+        ]
+        rag_query = " ".join(p for p in query_parts if p).strip()
+        kb_matches: list[dict[str, Any]] = []
+        if rag_query:
+            try:
+                kb_matches = await asyncio.wait_for(
+                    search_knowledge_base(
+                        db=db,
+                        query_text=rag_query,
+                        limit=settings.AI_CLOUD_MAX_RAG_MATCHES,
+                        service_id=task_data.get("ServiceId"),
+                    ),
+                    timeout=2.5,
+                )
+            except Exception as e:
+                logger.warning(
+                    "RAG retrieval timed out or failed for task %s: %s", task_id, e
+                )
+                kb_matches = []
+        card["kb_matches"] = kb_matches
+
         source_fingerprint = ticket_snapshot_fingerprint(
             card.get("task") or {}, card.get("history") or []
         )
@@ -592,6 +633,95 @@ async def reanalyze_task_endpoint(
         db=db,
         force=True,
     )
+
+
+@router.post(
+    "/tasks/{task_id}/response-variants",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:mutate"))],
+)
+async def create_response_variant_endpoint(
+    task_id: int,
+    payload: CreateResponseVariantRequest,
+    operator: str = Depends(principal_subject),
+    _origin: None = Depends(verify_trusted_origin),
+    db: AsyncSession = Depends(get_db),
+):
+    service = ResponseVariantService(db)
+    dec_id = payload.decision_id
+    dec_ver = payload.decision_version
+    if not dec_id:
+        dec = await db.scalar(
+            select(DecisionRecord)
+            .where(DecisionRecord.task_id == task_id)
+            .order_by(DecisionRecord.version.desc())
+            .limit(1)
+        )
+        if not dec:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Для заявки #{task_id} еще не сформировано решение",
+            )
+        dec_id = str(dec.id)
+        dec_ver = dec.version
+
+    variant = await service.generate_or_get_variant(
+        task_id=task_id,
+        decision_id=dec_id,
+        decision_version=dec_ver or 1,
+        tone=payload.tone,
+        actor=operator,
+        regenerate=payload.regenerate,
+    )
+    return {
+        "id": str(variant.id),
+        "decision_id": str(variant.decision_id),
+        "decision_version": variant.decision_version,
+        "task_id": variant.task_id,
+        "tone": variant.tone,
+        "response_text": variant.response_text,
+        "mode": variant.mode,
+        "state": variant.state,
+        "violations": variant.violations_json or [],
+        "provenance": variant.provenance_json or {},
+        "is_active": variant.is_active,
+        "created_at": variant.created_at.isoformat() if variant.created_at else None,
+    }
+
+
+@router.get(
+    "/tasks/{task_id}/response-variants",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("triage:read"))],
+)
+async def list_response_variants_endpoint(
+    task_id: int,
+    decision_id: str = Query(...),
+    decision_version: int = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    service = ResponseVariantService(db)
+    variants = await service.list_variants(
+        decision_id=decision_id,
+        decision_version=decision_version,
+    )
+    return [
+        {
+            "id": str(v.id),
+            "decision_id": str(v.decision_id),
+            "decision_version": v.decision_version,
+            "task_id": v.task_id,
+            "tone": v.tone,
+            "response_text": v.response_text,
+            "mode": v.mode,
+            "state": v.state,
+            "violations": v.violations_json or [],
+            "provenance": v.provenance_json or {},
+            "is_active": v.is_active,
+            "created_at": v.created_at.isoformat() if v.created_at else None,
+        }
+        for v in variants
+    ]
 
 
 async def _execute_triage_batch_worker(

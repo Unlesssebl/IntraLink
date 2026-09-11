@@ -3,7 +3,7 @@ Pydantic-схемы для структурированного вывода AI 
 и многоконтурного роутинга данных (Red/Yellow/Green).
 """
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -74,6 +74,22 @@ class RouteDecision(BaseModel):
     )
 
 
+class PromptVariant(BaseModel):
+    """Вариант промпта, оптимизированный под размер контекста и возможности backend."""
+    profile: Literal["local", "cloud"]
+    prompt: str
+    system_prompt: Optional[str] = None
+    rag_refs: List[str] = Field(default_factory=list)
+    max_tokens: int = 512
+
+
+class InferencePurpose(str, Enum):
+    RESPONSE_DEFAULT = "response_default"
+    RESPONSE_CONCISE = "response_concise"
+    RESPONSE_DETAILED = "response_detailed"
+    RESPONSE_REGULATORY = "response_regulatory"
+
+
 class RoutedInferenceRequest(BaseModel):
     """Запрос на генерацию с автоматической маршрутизацией по контурам."""
     prompt: str = Field(description="Основной текст запроса / промпт")
@@ -92,6 +108,9 @@ class RoutedInferenceRequest(BaseModel):
         description="JSON Schema для constrained output на любом выбранном backend",
     )
     bypass_cache: bool = False
+    prompt_variants: Optional[List[PromptVariant]] = None
+    purpose: InferencePurpose = InferencePurpose.RESPONSE_DEFAULT
+    prompt_revision: Optional[str] = None
 
 
 class RoutedInferenceResponse(BaseModel):
@@ -108,6 +127,15 @@ class RoutedInferenceResponse(BaseModel):
         description="Время выполнения запроса в миллисекундах",
     )
     cached: bool = Field(default=False, description="Был ли ответ получен из L2 кэша")
+    actual_backend: Optional[str] = None
+    requested_backend: Optional[str] = None
+    model_alias: Optional[str] = None
+    resolved_model: Optional[str] = None
+    fallback_used: bool = False
+    fallback_reason_code: Optional[str] = None
+    context_profile: Literal["local", "cloud", "none"] = "none"
+    rag_refs: List[str] = Field(default_factory=list)
+    attempts: List[dict[str, Any]] = Field(default_factory=list)
 
 
 class SanitizePreviewRequest(BaseModel):

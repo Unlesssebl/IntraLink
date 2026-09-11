@@ -504,6 +504,10 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             onAppendAiDraft={decisionState.handleAppendAiDraft}
             snippets={snippets}
             insertSnippet={decisionState.insertSnippet}
+            selectedTone={decisionState.selectedTone}
+            responseProvenance={decisionState.responseProvenance}
+            isGeneratingVariant={decisionState.isGeneratingVariant}
+            onSelectTone={decisionState.handleSelectTone}
           />
         </div>
       </div>

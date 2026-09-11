@@ -521,9 +521,15 @@ class AIHub:
             return None
 
         # 2. Проверяем L2 кэш по хэшу промпта и выбранного контура
+        prompt_identity = request.prompt
+        if request.prompt_variants:
+            prompt_identity += ":" + "|".join(
+                f"{v.profile}:{v.prompt}" for v in request.prompt_variants
+            )
         cache_hash = hashlib.sha256(
             (
-                f"{request.prompt}:{request.system_prompt}:{request.temperature}:"
+                f"{prompt_identity}:{request.system_prompt}:{request.temperature}:"
+                f"{request.purpose.value}:{request.prompt_revision or ''}:"
                 f"{json.dumps(request.response_schema, sort_keys=True, default=str)}:"
                 f"{decision.circuit.value}:{decision.target_backend}:{decision.target_model}"
             ).encode()
@@ -544,6 +550,16 @@ class AIHub:
             except Exception as e:
                 logger.debug("Промах кэша для routed AI: %s", e)
 
+        # Выбираем варианты под local / cloud
+        local_var = None
+        cloud_var = None
+        if request.prompt_variants:
+            for v in request.prompt_variants:
+                if v.profile == "local":
+                    local_var = v
+                elif v.profile == "cloud":
+                    cloud_var = v
+
         model_name = (
             self.ollama_model
             if decision.circuit == DataCircuit.RED
@@ -551,23 +567,51 @@ class AIHub:
         )
         sanitized_count = 0
         raw_output: Optional[str] = None
+        requested_backend = "ollama" if decision.circuit == DataCircuit.RED else "litellm_gemini"
+        actual_backend = requested_backend
+        fallback_used = False
+        fallback_reason_code: Optional[str] = None
+        context_profile: Literal["local", "cloud", "none"] = "local" if decision.circuit == DataCircuit.RED else "cloud"
+        rag_refs: list[str] = []
+        attempts: list[dict[str, Any]] = []
 
         # 3. Маршрутизация по контурам
         if decision.circuit == DataCircuit.RED:
-            # ЗАКРЫТЫЙ КОНТУР: строго локальный инференс
+            # ЗАКРЫТЫЙ КОНТУР: строго локальный инференс с локальным профилем
             logger.info("Маршрутизация в ЗАКРЫТЫЙ контур (RED): %s", decision.reason)
+            p = local_var.prompt if local_var else request.prompt
+            sp = (local_var.system_prompt if local_var else None) or request.system_prompt
+            mt = local_var.max_tokens if local_var else request.max_tokens
+            rag_refs = local_var.rag_refs if local_var else []
+            context_profile = "local"
+            actual_backend = "ollama"
+
+            att_start = time.perf_counter()
             raw_output = await self.generate_ollama_completion(
-                prompt=request.prompt,
-                system_prompt=request.system_prompt,
-                max_tokens=request.max_tokens,
+                prompt=p,
+                system_prompt=sp,
+                max_tokens=mt,
                 temperature=request.temperature,
                 response_schema=request.response_schema,
             )
+            att_dur = round((time.perf_counter() - att_start) * 1000, 2)
+            attempts.append({
+                "backend": "ollama",
+                "profile": "local",
+                "outcome": "success" if raw_output is not None else "failed",
+                "reason_code": None if raw_output is not None else "local_unavailable",
+                "duration_ms": att_dur,
+            })
             final_text = raw_output
 
         elif decision.circuit == DataCircuit.YELLOW:
-            # ТРАНСФОРМИРУЕМЫЙ КОНТУР: маскирование -> облако -> деанонимизация
-            sanitized_count = len(san_res.entity_map)
+            # ТРАНСФОРМИРУЕМЫЙ КОНТУР: маскирование -> облако (cloud profil) -> fallback локально (local profil)
+            c_prompt = cloud_var.prompt if cloud_var else request.prompt
+            c_sp = (cloud_var.system_prompt if cloud_var else None) or request.system_prompt
+            c_mt = cloud_var.max_tokens if cloud_var else request.max_tokens
+
+            c_san = data_sanitizer.sanitize(c_prompt)
+            sanitized_count = len(c_san.entity_map)
             session_id = uuid.uuid4().hex
             logger.info(
                 "Маршрутизация в ТРАНСФОРМИРУЕМЫЙ контур (YELLOW) [Сессия %s, замаскировано %s сущностей]: %s",
@@ -576,74 +620,151 @@ class AIHub:
                 decision.reason,
             )
             await data_sanitizer.save_vault(
-                session_id, san_res.entity_map, ttl_sec=300
+                session_id, c_san.entity_map, ttl_sec=300
             )
 
             # Пробуем облачный инференс
+            att_start = time.perf_counter()
             try:
                 raw_output = await self.generate_cloud_completion(
-                    prompt=san_res.sanitized_text,
-                    system_prompt=request.system_prompt,
-                    max_tokens=request.max_tokens,
+                    prompt=c_san.sanitized_text,
+                    system_prompt=c_sp,
+                    max_tokens=c_mt,
                     temperature=request.temperature,
                     response_schema=request.response_schema,
                 )
             except Exception as exc:
                 logger.warning("Cloud inference failed in YELLOW circuit: %s", exc)
                 raw_output = None
+            att_dur = round((time.perf_counter() - att_start) * 1000, 2)
 
-            # Fallback на локальную Ollama, если облако недоступно
-            if raw_output is None:
+            if raw_output is not None:
+                attempts.append({
+                    "backend": "litellm_gemini",
+                    "profile": "cloud",
+                    "outcome": "success",
+                    "duration_ms": att_dur,
+                })
+                context_profile = "cloud"
+                rag_refs = cloud_var.rag_refs if cloud_var else []
+                actual_backend = "litellm_gemini"
+                final_text = data_sanitizer.deanonymize(raw_output, c_san.entity_map)
+            else:
+                attempts.append({
+                    "backend": "litellm_gemini",
+                    "profile": "cloud",
+                    "outcome": "failed",
+                    "reason_code": "cloud_unavailable",
+                    "duration_ms": att_dur,
+                })
+                fallback_used = True
+                fallback_reason_code = "cloud_unavailable"
                 logger.warning(
-                    "LiteLLM/Gemini недоступен для YELLOW, fallback на локальную Ollama"
+                    "LiteLLM/Gemini недоступен для YELLOW, fallback на локальную Ollama с local-профилем"
                 )
+
+                # Fallback на локальную Ollama с local-профилем
+                l_prompt = local_var.prompt if local_var else request.prompt
+                l_sp = (local_var.system_prompt if local_var else None) or request.system_prompt
+                l_mt = local_var.max_tokens if local_var else request.max_tokens
+                l_san = data_sanitizer.sanitize(l_prompt)
+
+                loc_start = time.perf_counter()
                 raw_output = await self.generate_ollama_completion(
-                    prompt=san_res.sanitized_text,
-                    system_prompt=request.system_prompt,
-                    max_tokens=request.max_tokens,
+                    prompt=l_san.sanitized_text,
+                    system_prompt=l_sp,
+                    max_tokens=l_mt,
                     temperature=request.temperature,
                     response_schema=request.response_schema,
                 )
+                loc_dur = round((time.perf_counter() - loc_start) * 1000, 2)
+                attempts.append({
+                    "backend": "ollama",
+                    "profile": "local",
+                    "outcome": "success" if raw_output is not None else "failed",
+                    "reason_code": None if raw_output is not None else "local_unavailable",
+                    "duration_ms": loc_dur,
+                })
                 model_name = f"{self.ollama_model} (fallback)"
-
-            # Восстанавливаем оригинальные сущности в ответе
-            if raw_output is not None:
-                final_text = data_sanitizer.deanonymize(
-                    raw_output, san_res.entity_map
-                )
-            else:
-                final_text = None
+                context_profile = "local"
+                rag_refs = local_var.rag_refs if local_var else []
+                actual_backend = "ollama"
+                if raw_output is not None:
+                    final_text = data_sanitizer.deanonymize(raw_output, l_san.entity_map)
+                else:
+                    final_text = None
 
         else:  # GREEN
             # ОТКРЫТЫЙ КОНТУР: прямой вызов Gemini
             logger.info("Маршрутизация в ОТКРЫТЫЙ контур (GREEN): %s", decision.reason)
+            c_prompt = cloud_var.prompt if cloud_var else request.prompt
+            c_sp = (cloud_var.system_prompt if cloud_var else None) or request.system_prompt
+            c_mt = cloud_var.max_tokens if cloud_var else request.max_tokens
+
+            att_start = time.perf_counter()
             try:
                 raw_output = await self.generate_cloud_completion(
-                    prompt=request.prompt,
-                    system_prompt=request.system_prompt,
-                    max_tokens=request.max_tokens,
+                    prompt=c_prompt,
+                    system_prompt=c_sp,
+                    max_tokens=c_mt,
                     temperature=request.temperature,
                     response_schema=request.response_schema,
                 )
             except Exception as exc:
                 logger.warning("Cloud inference failed in GREEN circuit: %s", exc)
                 raw_output = None
+            att_dur = round((time.perf_counter() - att_start) * 1000, 2)
 
-            # Fallback на локальную Ollama
-            if raw_output is None:
+            if raw_output is not None:
+                attempts.append({
+                    "backend": "litellm_gemini",
+                    "profile": "cloud",
+                    "outcome": "success",
+                    "duration_ms": att_dur,
+                })
+                context_profile = "cloud"
+                rag_refs = cloud_var.rag_refs if cloud_var else []
+                actual_backend = "litellm_gemini"
+                final_text = raw_output
+            else:
+                attempts.append({
+                    "backend": "litellm_gemini",
+                    "profile": "cloud",
+                    "outcome": "failed",
+                    "reason_code": "cloud_unavailable",
+                    "duration_ms": att_dur,
+                })
+                fallback_used = True
+                fallback_reason_code = "cloud_unavailable"
                 logger.warning(
-                    "LiteLLM/Gemini недоступен для GREEN, fallback на локальную Ollama"
+                    "LiteLLM/Gemini недоступен для GREEN, fallback на локальную Ollama с local-профилем"
                 )
+
+                l_prompt = local_var.prompt if local_var else request.prompt
+                l_sp = (local_var.system_prompt if local_var else None) or request.system_prompt
+                l_mt = local_var.max_tokens if local_var else request.max_tokens
+
+                loc_start = time.perf_counter()
                 raw_output = await self.generate_ollama_completion(
-                    prompt=request.prompt,
-                    system_prompt=request.system_prompt,
-                    max_tokens=request.max_tokens,
+                    prompt=l_prompt,
+                    system_prompt=l_sp,
+                    max_tokens=l_mt,
                     temperature=request.temperature,
                     response_schema=request.response_schema,
                 )
+                loc_dur = round((time.perf_counter() - loc_start) * 1000, 2)
+                attempts.append({
+                    "backend": "ollama",
+                    "profile": "local",
+                    "outcome": "success" if raw_output is not None else "failed",
+                    "reason_code": None if raw_output is not None else "local_unavailable",
+                    "duration_ms": loc_dur,
+                })
                 model_name = f"{self.ollama_model} (fallback)"
-
-            final_text = raw_output
+                context_profile = "local"
+                rag_refs = local_var.rag_refs if local_var else []
+                actual_backend = "ollama"
+                final_text = raw_output
 
         if final_text is None:
             logger.error("Не удалось получить ответ ни от одного AI-бэкенда")
@@ -657,6 +778,15 @@ class AIHub:
             sanitized_entities_count=sanitized_count,
             execution_time_ms=exec_time,
             cached=False,
+            actual_backend=actual_backend,
+            requested_backend=requested_backend,
+            model_alias=settings.GEMINI_MODEL if actual_backend == "litellm_gemini" else self.ollama_model,
+            resolved_model=model_name,
+            fallback_used=fallback_used,
+            fallback_reason_code=fallback_reason_code,
+            context_profile=context_profile,
+            rag_refs=rag_refs,
+            attempts=attempts,
         )
 
         # Сохраняем в L2 кэш Redis на 1 час

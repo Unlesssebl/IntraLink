@@ -297,6 +297,44 @@ export interface ExecutionPlan {
   expires_at?: string | null;
 }
 
+export interface ResponseProvenance {
+  schema_version?: number;
+  source: 'template' | 'fallback_template' | 'llm' | 'unknown';
+  requested_backend?: string | null;
+  actual_backend?: string | null;
+  model_alias?: string | null;
+  resolved_model?: string | null;
+  circuit: 'red' | 'yellow' | 'green' | 'unknown';
+  context_profile: 'local' | 'cloud' | 'none';
+  tone: 'default' | 'concise' | 'detailed' | 'regulatory';
+  fallback_used: boolean;
+  fallback_reason_code?: string | null;
+  prompt_revision?: string | null;
+  rag_candidate_count: number;
+  rag_used_count: number;
+  rag_matches_count?: number;
+  rag_refs: string[];
+  attempts?: Array<Record<string, any>>;
+  generated_at?: string | null;
+  duration_ms?: number | null;
+}
+
+export interface DecisionResponseVariant {
+  id: string;
+  decision_id: string;
+  decision_version: number;
+  task_id: number;
+  tone: 'default' | 'concise' | 'detailed' | 'regulatory';
+  response_text: string;
+  mode: 'template' | 'llm' | 'fallback';
+  state: 'valid' | 'fallback' | 'invalid';
+  violations: string[];
+  provenance?: ResponseProvenance | null;
+  is_active: boolean;
+  created_by?: string;
+  created_at: string;
+}
+
 export interface DecisionEnvelope {
   schema_version: number;
   decision_id: string;
@@ -323,6 +361,7 @@ export interface DecisionEnvelope {
     state: 'valid' | 'fallback' | 'invalid';
     violations: string[];
     used_evidence_refs: string[];
+    provenance?: ResponseProvenance | null;
   };
   gates: {
     can_send_response: boolean;
@@ -538,6 +577,7 @@ export interface SingleApplyPayload {
   ticket_run_id?: string;
   decision_id?: string;
   decision_version?: number;
+  response_variant_id?: string | null;
 }
 
 export interface BulkApplyItemPayload {

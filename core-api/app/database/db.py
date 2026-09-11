@@ -34,7 +34,7 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
-CURRENT_SCHEMA_REVISION = "20260910_0013"
+CURRENT_SCHEMA_REVISION = "20260910_0014"
 
 
 
@@ -657,6 +657,34 @@ class DecisionFeedback(Base):
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     final_action_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     actor: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
+class DecisionResponseVariant(Base):
+    """Append-only presentation variant of an approved or synthesized decision response."""
+
+    __tablename__ = "decision_response_variants"
+    __table_args__ = (
+        Index("ix_decision_response_variants_decision_version", "decision_id", "decision_version"),
+        Index("ix_decision_response_variants_task_active", "task_id", "is_active"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    decision_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    tone: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    response_text: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, default="template")
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="valid")
+    violations_json: Mapped[list] = mapped_column(JSON_TYPE, nullable=False, default=list)
+    provenance_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False, default="system")
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )

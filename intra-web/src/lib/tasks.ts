@@ -70,6 +70,10 @@ import type {
 
 
 
+  DecisionResponseVariant,
+
+
+
 } from './types';
 
 
@@ -2218,6 +2222,19 @@ export async function reanalyzeTask(taskId: number): Promise<TaskDetails> {
 
 }
 
+export async function fetchResponseVariants(taskId: number): Promise<DecisionResponseVariant[]> {
+  const data = await apiFetch<{ items: DecisionResponseVariant[] }>(`/api/v2/triage/tasks/${taskId}/response-variants`);
+  return data?.items || [];
+}
+
+export async function createResponseVariant(taskId: number, tone: string): Promise<DecisionResponseVariant> {
+  const data = await apiFetch<DecisionResponseVariant>(`/api/v2/triage/tasks/${taskId}/response-variants`, {
+    method: 'POST',
+    body: JSON.stringify({ tone }),
+  });
+  return data;
+}
+
 
 
 
@@ -2410,6 +2427,10 @@ export async function applyTask(taskId: number, payload: SingleApplyPayload): Pr
 
 
         verified_execution_job_id: payload.verified_execution_job_id,
+
+
+
+        response_variant_id: payload.response_variant_id,
 
 
 

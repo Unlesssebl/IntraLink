@@ -9,6 +9,9 @@ import {
   IconClose,
   IconClock,
 } from '../Icons';
+import type { ResponseTone } from './useUnifiedDecision';
+import { getToneLabel } from './useUnifiedDecision';
+import type { ResponseProvenance } from '../../lib/types';
 
 export interface TemplateItem {
   key: string;
@@ -56,6 +59,10 @@ export interface UnifiedActionDockProps {
   onAppendAiDraft?: () => void;
   snippets?: Array<{ label: string; text: string }>;
   insertSnippet: (snippet: string) => void;
+  selectedTone?: ResponseTone;
+  responseProvenance?: ResponseProvenance | null;
+  isGeneratingVariant?: boolean;
+  onSelectTone?: (tone: ResponseTone, force?: boolean) => Promise<boolean>;
 }
 
 export default function UnifiedActionDock({
@@ -96,11 +103,16 @@ export default function UnifiedActionDock({
   onAppendAiDraft,
   snippets = [],
   insertSnippet,
+  selectedTone = 'default',
+  responseProvenance = null,
+  isGeneratingVariant = false,
+  onSelectTone,
 }: UnifiedActionDockProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
   const [isAiMenuOpen, setIsAiMenuOpen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [pendingToneConfirm, setPendingToneConfirm] = useState<ResponseTone | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const templateMenuRef = useRef<HTMLDivElement>(null);
   const aiMenuRef = useRef<HTMLDivElement>(null);
@@ -330,7 +342,7 @@ export default function UnifiedActionDock({
             <button
               type="button"
               onClick={handleAiButtonClick}
-              disabled={reanalyzing}
+              disabled={reanalyzing || isGeneratingVariant}
               aria-haspopup="menu"
               aria-expanded={isAiMenuOpen}
               className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 font-medium text-xs transition-colors cursor-pointer ${
@@ -342,18 +354,26 @@ export default function UnifiedActionDock({
                 !originalAiDraft
                   ? 'Запустить AI-анализ заявки и сформировать ответ'
                   : isAiDraftApplied
-                  ? 'Ответ нейросети уже подставлен (нажмите для меню управления)'
+                  ? 'Ответ нейросети уже подставлен (нажмите для выбора стиля и аудита)'
                   : 'Вставить сформированный ответ нейросети'
               }
             >
-              {reanalyzing ? (
+              {reanalyzing || isGeneratingVariant ? (
                 <IconRefresh size={12} className="animate-spin text-purple-500" />
               ) : isAiDraftApplied ? (
                 <IconCheck size={12} className="text-emerald-600 dark:text-emerald-400" />
               ) : (
                 <IconSparkles size={12} className="text-purple-600 dark:text-purple-400" />
               )}
-              <span>{reanalyzing ? 'Анализ...' : 'AI-ответ'}</span>
+              <span>
+                {reanalyzing
+                  ? 'Анализ...'
+                  : isGeneratingVariant
+                  ? 'Стиль...'
+                  : selectedTone !== 'default'
+                  ? `AI: ${getToneLabel(selectedTone)}`
+                  : 'AI-ответ'}
+              </span>
               {originalAiDraft ? (
                 <IconChevronDown
                   size={11}
@@ -365,87 +385,239 @@ export default function UnifiedActionDock({
             {isAiMenuOpen && originalAiDraft && (
               <div
                 role="menu"
-                className="absolute left-0 bottom-full mb-1.5 w-80 rounded-xl border border-neutral-200 bg-white p-1.5 shadow-2xl dark:border-neutral-800 dark:bg-neutral-900 z-30 space-y-1 animate-in fade-in duration-100"
+                className="absolute left-0 bottom-full mb-1.5 w-84 rounded-xl border border-neutral-200 bg-white p-2 shadow-2xl dark:border-neutral-800 dark:bg-neutral-900 z-30 space-y-2 animate-in fade-in duration-100"
               >
-                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-neutral-400 border-b border-neutral-100 dark:border-neutral-800 flex items-center justify-between">
-                  <span>Ответ нейросети</span>
+                <div className="px-1 text-[10px] font-bold uppercase tracking-wider text-neutral-400 flex items-center justify-between">
+                  <span>Стиль и тональность</span>
                   {isAiDraftEdited && (
                     <span className="text-amber-600 dark:text-amber-400 font-semibold normal-case">
-                      текст изменён
+                      текст изменён вручную
                     </span>
                   )}
-                  {isAiDraftApplied && (
+                  {isAiDraftApplied && !isAiDraftEdited && (
                     <span className="text-emerald-600 dark:text-emerald-400 font-semibold normal-case">
                       актуален
                     </span>
                   )}
                 </div>
 
-                {/* Действие 1: Восстановить оригинальный ответ */}
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setIsAiMenuOpen(false);
-                    onRestoreAiDraft?.(false);
-                  }}
-                  className="flex w-full items-start gap-2 rounded-lg p-2 text-left text-xs transition-colors hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 cursor-pointer"
-                >
-                  <IconRefresh size={13} className="text-blue-500 shrink-0 mt-0.5" />
-                  <div className="min-w-0">
-                    <div className="font-semibold text-neutral-900 dark:text-neutral-100">
-                      Восстановить оригинальный ответ
-                    </div>
-                    <div className="text-[11px] text-neutral-400 leading-tight">
-                      Заменит набранный текст, сохранив текущий статус и трудозатраты
-                    </div>
-                  </div>
-                </button>
+                {/* Выбор стиля / тона ответа (Этап 4) */}
+                <div className="grid grid-cols-2 gap-1.5">
+                  {[
+                    { tone: 'concise' as const, label: '⚡ Краткий', desc: 'Суть решения без лишнего' },
+                    { tone: 'detailed' as const, label: '📋 Подробный', desc: 'Пошагово с инструкцией' },
+                    { tone: 'regulatory' as const, label: '🏛️ Регламент', desc: 'Канонический регламент' },
+                    { tone: 'default' as const, label: '🔄 Каноничный', desc: 'Базовый тон инженера' },
+                  ].map((item) => {
+                    const isActive = selectedTone === item.tone;
+                    return (
+                      <button
+                        key={item.tone}
+                        type="button"
+                        disabled={isGeneratingVariant}
+                        onClick={async () => {
+                          if (isActive) return;
+                          if (isAiDraftEdited) {
+                            setPendingToneConfirm(item.tone);
+                            return;
+                          }
+                          await onSelectTone?.(item.tone, false);
+                        }}
+                        className={`flex flex-col items-start rounded-lg p-2 text-left text-xs transition-colors cursor-pointer border ${
+                          isActive
+                            ? 'bg-purple-100 text-purple-950 font-semibold dark:bg-purple-950 dark:text-purple-200 border-purple-300 dark:border-purple-800'
+                            : 'border-transparent hover:bg-neutral-100 text-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800'
+                        } disabled:opacity-50`}
+                      >
+                        <span className="text-[11.5px] font-medium">{item.label}</span>
+                        <span className="text-[10px] text-neutral-400 dark:text-neutral-500 leading-tight">
+                          {item.desc}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
 
-                {/* Действие 2: Восстановить всё (текст + статус + время) */}
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setIsAiMenuOpen(false);
-                    onRestoreAiDraft?.(true);
-                  }}
-                  className="flex w-full items-start gap-2 rounded-lg p-2 text-left text-xs transition-colors hover:bg-purple-50 dark:hover:bg-purple-950/50 text-purple-900 dark:text-purple-200 cursor-pointer"
-                >
-                  <IconSparkles size={13} className="text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
-                  <div className="min-w-0">
-                    <div className="font-semibold">
-                      Восстановить всё (текст + статус + время)
+                {/* Подтверждение перезаписи отредактированного ответа */}
+                {pendingToneConfirm && (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200 animate-in fade-in duration-150">
+                    <div className="font-medium text-[11px] mb-1.5">
+                      Текст комментария был изменён. Перезаписать в стиле «{getToneLabel(pendingToneConfirm)}»?
                     </div>
-                    <div className="text-[11px] text-purple-700/80 dark:text-purple-300/80 leading-tight">
-                      Синхронизирует статус ({recommendedStatusName}) и трудозатраты ({recommendedExpenses}м)
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const tone = pendingToneConfirm;
+                          setPendingToneConfirm(null);
+                          await onSelectTone?.(tone, true);
+                        }}
+                        className="rounded bg-amber-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-amber-500 transition-colors"
+                      >
+                        Да, заменить
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPendingToneConfirm(null)}
+                        className="rounded border border-neutral-300 bg-white px-2 py-1 text-[11px] text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 transition-colors"
+                      >
+                        Отмена
+                      </button>
                     </div>
                   </div>
-                </button>
+                )}
 
-                {/* Действие 3: Добавить в конец */}
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setIsAiMenuOpen(false);
-                    onAppendAiDraft?.();
-                  }}
-                  className="flex w-full items-start gap-2 rounded-lg p-2 text-left text-xs transition-colors hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 cursor-pointer"
-                >
-                  <IconChevronDown size={13} className="text-neutral-400 shrink-0 mt-0.5" />
-                  <div className="min-w-0">
-                    <div className="font-semibold text-neutral-900 dark:text-neutral-100">
-                      Добавить в конец текста
-                    </div>
-                    <div className="text-[11px] text-neutral-400 leading-tight">
-                      Допишет ответ нейросети после вашего текста с новой строки
-                    </div>
+                {/* Разделитель */}
+                <div className="border-t border-neutral-100 dark:border-neutral-800 pt-1">
+                  <div className="px-1 pb-1 text-[10px] font-bold uppercase tracking-wider text-neutral-400">
+                    Действия с черновиком
                   </div>
-                </button>
+
+                  {/* Действие 1: Восстановить оригинальный ответ */}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setIsAiMenuOpen(false);
+                      onRestoreAiDraft?.(false);
+                    }}
+                    className="flex w-full items-start gap-2 rounded-lg p-1.5 text-left text-xs transition-colors hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 cursor-pointer"
+                  >
+                    <IconRefresh size={13} className="text-blue-500 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <div className="font-semibold text-neutral-900 dark:text-neutral-100 text-[11.5px]">
+                        Восстановить исходный ответ
+                      </div>
+                      <div className="text-[10.5px] text-neutral-400 leading-tight">
+                        Заменит текст на исходный каноничный ответ
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* Действие 2: Восстановить всё (текст + статус + время) */}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setIsAiMenuOpen(false);
+                      onRestoreAiDraft?.(true);
+                    }}
+                    className="flex w-full items-start gap-2 rounded-lg p-1.5 text-left text-xs transition-colors hover:bg-purple-50 dark:hover:bg-purple-950/50 text-purple-900 dark:text-purple-200 cursor-pointer"
+                  >
+                    <IconSparkles size={13} className="text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <div className="font-semibold text-[11.5px]">
+                        Восстановить всё (текст + статус + время)
+                      </div>
+                      <div className="text-[10.5px] text-purple-700/80 dark:text-purple-300/80 leading-tight">
+                        Синхронизирует статус ({recommendedStatusName}) и трудозатраты ({recommendedExpenses}м)
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* Действие 3: Добавить в конец */}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setIsAiMenuOpen(false);
+                      onAppendAiDraft?.();
+                    }}
+                    className="flex w-full items-start gap-2 rounded-lg p-1.5 text-left text-xs transition-colors hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 cursor-pointer"
+                  >
+                    <IconChevronDown size={13} className="text-neutral-400 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <div className="font-semibold text-neutral-900 dark:text-neutral-100 text-[11.5px]">
+                        Добавить в конец текста
+                      </div>
+                      <div className="text-[10.5px] text-neutral-400 leading-tight">
+                        Допишет ответ после вашего текста с новой строки
+                      </div>
+                    </div>
+                  </button>
+                </div>
+
+                {/* Источник и объяснимость (ResponseProvenance) */}
+                {responseProvenance && (
+                  <div className="mt-1 pt-1.5 border-t border-neutral-100 dark:border-neutral-800 px-1 pb-0.5 text-[10px] text-neutral-500 dark:text-neutral-400 space-y-1">
+                    <div className="flex items-center justify-between font-semibold">
+                      <span className="text-neutral-700 dark:text-neutral-300">Источник генерации:</span>
+                      {responseProvenance.fallback_used ? (
+                        <span className="text-amber-600 dark:text-amber-400 font-bold">
+                          ⚡ Fallback ({responseProvenance.actual_backend})
+                        </span>
+                      ) : responseProvenance.actual_backend === 'template' ? (
+                        <span className="text-blue-600 dark:text-blue-400 font-medium">
+                          🏛️ Регламент (шаблон)
+                        </span>
+                      ) : (
+                        <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                          🤖 {responseProvenance.actual_backend}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between font-mono text-[9.5px]">
+                      <span>Модель:</span>
+                      <span className="text-neutral-700 dark:text-neutral-300">
+                        {responseProvenance.model_alias || responseProvenance.actual_backend}
+                      </span>
+                    </div>
+                    {(responseProvenance.rag_matches_count ?? 0) > 0 && (
+                      <div className="flex items-center justify-between font-mono text-[9.5px]">
+                        <span>Прецеденты RAG:</span>
+                        <span className="text-purple-600 dark:text-purple-400 font-semibold">
+                          {responseProvenance.rag_matches_count} источников
+                        </span>
+                      </div>
+                    )}
+                    {responseProvenance.fallback_reason_code && (
+                      <div className="flex items-center justify-between text-[9.5px] text-amber-700 dark:text-amber-400">
+                        <span>Причина fallback:</span>
+                        <span>{responseProvenance.fallback_reason_code}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
+
+          {/* Компактный бейдж источника/RAG рядом с кнопкой AI */}
+          {responseProvenance && (
+            <div className="inline-flex items-center gap-1">
+              {responseProvenance.fallback_used ? (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10.5px] font-medium bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800"
+                  title={`Резервный бэкенд: ${responseProvenance.actual_backend} (запрошен ${responseProvenance.requested_backend || 'cloud'}, причина: ${responseProvenance.fallback_reason_code || 'error'})`}
+                >
+                  <span>⚡ Fallback</span>
+                </span>
+              ) : responseProvenance.actual_backend === 'template' ? (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10.5px] font-medium bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800"
+                  title="Ответ сформирован по каноническому регламенту без обращения к LLM"
+                >
+                  <span>🏛️ Регламент</span>
+                </span>
+              ) : (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10.5px] font-medium bg-neutral-100 text-neutral-600 border border-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:border-neutral-700"
+                  title={`Модель генерации: ${responseProvenance.model_alias || responseProvenance.actual_backend}`}
+                >
+                  <span>🤖 {responseProvenance.model_alias || responseProvenance.actual_backend}</span>
+                </span>
+              )}
+
+              {(responseProvenance.rag_matches_count ?? 0) > 0 && (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10.5px] font-mono bg-purple-50 text-purple-700 border border-purple-200 dark:bg-purple-950/60 dark:text-purple-300 dark:border-purple-800"
+                  title={`Использовано ${responseProvenance.rag_matches_count} прецедентов RAG`}
+                >
+                  <span>RAG:{responseProvenance.rag_matches_count}</span>
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Списание времени (минуты) */}

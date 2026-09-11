@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import Field
 
-from shared.domain import DecisionResponse
+from shared.domain import DecisionResponse, ResponseProvenance
 from shared.domain.models import StrictModel
 
 
@@ -104,6 +104,7 @@ def guarded_response(
     allowed_evidence_refs: list[str],
     facts_summary: dict[str, Any],
     verified_execution: bool = False,
+    provenance: ResponseProvenance | None = None,
 ) -> DecisionResponse:
     if generated is not None:
         violations = validate_response(
@@ -114,11 +115,14 @@ def guarded_response(
             verified_execution=verified_execution,
         )
         if not violations:
+            if provenance is not None and not provenance.fallback_used:
+                provenance.source = "llm"
             return DecisionResponse(
                 text=generated.text.strip(),
                 mode="llm",
                 state="valid",
                 used_evidence_refs=generated.used_evidence_refs,
+                provenance=provenance,
             )
 
     template_violations = validate_response(
@@ -129,6 +133,13 @@ def guarded_response(
         verified_execution=verified_execution,
     )
     if not template_violations:
+        if provenance is not None:
+            if generated is not None:
+                provenance.source = "fallback_template"
+                provenance.fallback_used = True
+                provenance.fallback_reason_code = "response_guard_rejected"
+            elif provenance.source == "unknown":
+                provenance.source = "template"
         return DecisionResponse(
             text=template_text.strip(),
             mode="fallback" if generated is not None else "template",
@@ -144,10 +155,12 @@ def guarded_response(
                 if generated is not None
                 else []
             ),
+            provenance=provenance,
         )
     return DecisionResponse(
         text="",
         mode="none",
         state="invalid",
         violations=template_violations,
+        provenance=provenance,
     )
