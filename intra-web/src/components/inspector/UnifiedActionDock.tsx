@@ -63,6 +63,7 @@ export interface UnifiedActionDockProps {
   responseProvenance?: ResponseProvenance | null;
   isGeneratingVariant?: boolean;
   onSelectTone?: (tone: ResponseTone, force?: boolean) => Promise<boolean>;
+  onRejectRecommendation?: (reasonCode: string, comment?: string) => Promise<void>;
 }
 
 export default function UnifiedActionDock({
@@ -107,12 +108,16 @@ export default function UnifiedActionDock({
   responseProvenance = null,
   isGeneratingVariant = false,
   onSelectTone,
+  onRejectRecommendation,
 }: UnifiedActionDockProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
   const [isAiMenuOpen, setIsAiMenuOpen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [pendingToneConfirm, setPendingToneConfirm] = useState<ResponseTone | null>(null);
+  const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState('wrong_scenario');
+  const [rejectComment, setRejectComment] = useState('');
   const dropdownRef = useRef<HTMLDivElement>(null);
   const templateMenuRef = useRef<HTMLDivElement>(null);
   const aiMenuRef = useRef<HTMLDivElement>(null);
@@ -718,7 +723,21 @@ export default function UnifiedActionDock({
           </span>
         </div>
 
-        <div className="flex items-center gap-1" ref={dropdownRef}>
+        <div className="flex items-center gap-1.5" ref={dropdownRef}>
+          {/* Кнопка явного отклонения рекомендации нейросети */}
+          {onRejectRecommendation && (
+            <button
+              type="button"
+              onClick={() => setIsRejectModalOpen(true)}
+              disabled={submitting}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3 text-xs font-semibold text-rose-700 hover:bg-rose-100 hover:border-rose-300 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-400 dark:hover:bg-rose-950/50 transition-colors disabled:opacity-50"
+              title="Отклонить рекомендацию нейросети и зафиксировать причину"
+            >
+              <IconClose size={13} />
+              <span>Отклонить</span>
+            </button>
+          )}
+
           {/* Главная кнопка действия */}
           <button
             type="button"
@@ -831,6 +850,96 @@ export default function UnifiedActionDock({
           </div>
         </div>
       </div>
+
+      {/* Модальное окно отклонения рекомендации нейросети */}
+      {isRejectModalOpen && onRejectRecommendation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-md rounded-2xl border border-neutral-200 bg-white p-5 shadow-2xl dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="flex items-center justify-between pb-3 border-b border-neutral-100 dark:border-neutral-800">
+              <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                Отклонить рекомендацию нейросети
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsRejectModalOpen(false)}
+                className="rounded p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
+              >
+                <IconClose size={16} />
+              </button>
+            </div>
+
+            <div className="py-4 space-y-3">
+              <p className="text-xs text-neutral-600 dark:text-neutral-300">
+                Укажите причину отклонения для фиксации в журнале качества и дообучения RAG/сценариев:
+              </p>
+
+              <div className="space-y-1.5">
+                {[
+                  { id: 'wrong_scenario', label: 'Неверно определен сценарий проблемы' },
+                  { id: 'wrong_status', label: 'Неверный целевой статус заявки' },
+                  { id: 'inaccurate_facts', label: 'Неточные или отсутствующие факты' },
+                  { id: 'unsafe_action', label: 'Небезопасное действие или риск' },
+                  { id: 'poor_comment', label: 'Неподходящий текст ответа' },
+                  { id: 'other', label: 'Другая причина' },
+                ].map((r) => (
+                  <label
+                    key={r.id}
+                    className={`flex items-center gap-2.5 rounded-lg border p-2.5 text-xs font-medium cursor-pointer transition-colors ${
+                      rejectReason === r.id
+                        ? 'border-blue-500 bg-blue-50/50 text-blue-900 dark:border-blue-600 dark:bg-blue-950/40 dark:text-blue-200'
+                        : 'border-neutral-200 bg-neutral-50/50 text-neutral-700 hover:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-800/40 dark:text-neutral-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="rejectReason"
+                      value={r.id}
+                      checked={rejectReason === r.id}
+                      onChange={(e) => setRejectReason(e.target.value)}
+                      className="text-blue-600 focus:ring-blue-500"
+                    />
+                    <span>{r.label}</span>
+                  </label>
+                ))}
+              </div>
+
+              <div className="pt-2">
+                <label className="block text-[11px] font-medium text-neutral-500 dark:text-neutral-400 mb-1">
+                  Дополнительный комментарий (опционально):
+                </label>
+                <textarea
+                  rows={2}
+                  value={rejectComment}
+                  onChange={(e) => setRejectComment(e.target.value)}
+                  placeholder="Что именно требует корректировки..."
+                  className="w-full rounded-lg border border-neutral-200 bg-white p-2 text-xs text-neutral-900 outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-neutral-100 dark:border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setIsRejectModalOpen(false)}
+                className="rounded-lg px-3 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={async () => {
+                  await onRejectRecommendation(rejectReason, rejectComment.trim() || undefined);
+                  setIsRejectModalOpen(false);
+                }}
+                className="rounded-lg bg-rose-600 px-4 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-rose-500 focus-visible:ring-2 focus-visible:ring-rose-500 disabled:opacity-50"
+              >
+                {submitting ? 'Сохранение...' : 'Отклонить рекомендацию'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

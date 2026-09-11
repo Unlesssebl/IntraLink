@@ -335,6 +335,121 @@ def serialize_decision(
     return payload
 
 
+VALID_FEEDBACK_REASONS = {
+    "wrong_scenario",
+    "wrong_status",
+    "edited_comment",
+    "device_not_found",
+    "ungrounded_rag",
+    "other",
+}
+
+VALID_FEEDBACK_VERDICTS = {
+    "accepted",
+    "modified",
+    "rejected",
+    "commented",
+}
+
+VALID_FEEDBACK_SOURCES = {
+    "recommendation_apply",
+    "explicit_feedback",
+    "manual_apply",
+    "legacy",
+}
+
+VALID_REASON_SOURCES = {
+    "operator",
+    "inferred",
+    "none",
+    "legacy",
+}
+
+LEGACY_FEEDBACK_VERDICTS = {
+    "correct",
+    "partial",
+    "partially_correct",
+    "incorrect",
+    "insufficient_data",
+}
+
+LEGACY_FEEDBACK_REASONS = {
+    "wrong_rule",
+    "wrong_comment",
+    "wrong_status",
+    "not_applicable",
+    "other",
+}
+
+
+def levenshtein_distance(s1: str, s2: str, max_len: int = 10000) -> int:
+    s1 = s1[:max_len]
+    s2 = s2[:max_len]
+    if s1 == s2:
+        return 0
+    if not s1:
+        return len(s2)
+    if not s2:
+        return len(s1)
+    if len(s1) < len(s2):
+        s1, s2 = s2, s1
+    previous_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1] + [0] * len(s2)
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row[j + 1] = min(insertions, deletions, substitutions)
+        previous_row = current_row
+    return previous_row[-1]
+
+
+def normalize_comment_text(text: str | None) -> str | None:
+    if text is None:
+        return None
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def calculate_comment_diff(
+    proposed: str | None, applied: str | None, *, max_len: int = 10000
+) -> dict[str, Any]:
+    if proposed is None:
+        return {
+            "comparable": False,
+            "algorithm_version": 1,
+            "identical": False,
+            "ratio": None,
+            "proposed_length": None,
+            "applied_length": len(applied) if applied is not None else None,
+            "levenshtein_distance": None,
+        }
+    norm_proposed = normalize_comment_text(proposed) or ""
+    norm_applied = normalize_comment_text(applied) or ""
+    if norm_proposed == norm_applied:
+        return {
+            "comparable": True,
+            "algorithm_version": 1,
+            "identical": True,
+            "ratio": 0.0,
+            "proposed_length": len(norm_proposed),
+            "applied_length": len(norm_applied),
+            "levenshtein_distance": 0,
+        }
+    dist = levenshtein_distance(norm_proposed, norm_applied, max_len=max_len)
+    max_l = max(len(norm_proposed), len(norm_applied), 1)
+    ratio = round(dist / max_l, 4)
+    return {
+        "comparable": True,
+        "algorithm_version": 1,
+        "identical": False,
+        "ratio": ratio,
+        "proposed_length": len(norm_proposed),
+        "applied_length": len(norm_applied),
+        "levenshtein_distance": dist,
+    }
+
+
 class DecisionJournalService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -382,16 +497,30 @@ class DecisionJournalService:
         )
         used_history, omitted_history = _history_context(history)
         attachments = task.get("Attachments") or task.get("attachments") or []
-        record_id = uuid.UUID(envelope.decision_id)
+        if isinstance(envelope, dict):
+            raw_id = envelope.get("decision_id")
+            dec_ver = int(envelope.get("decision_version", 1))
+            an_state = envelope.get("analysis_state", "finalized")
+            outcome_val = envelope.get("outcome") or {}
+            outcome_kind = outcome_val.get("action_type") or outcome_val.get("kind") or "standard"
+            envelope_dump = envelope
+        else:
+            raw_id = envelope.decision_id
+            dec_ver = envelope.decision_version
+            an_state = envelope.analysis_state
+            outcome_kind = envelope.outcome.kind
+            envelope_dump = envelope.model_dump(mode="json")
+
+        record_id = uuid.UUID(str(raw_id)) if raw_id else uuid.uuid4()
         record = DecisionRecord(
             id=record_id,
             task_id=task_id,
             ticket_run_id=ticket_run_id,
             previous_decision_id=previous.id if previous else None,
-            version=envelope.decision_version,
+            version=dec_ver,
             analysis_kind="triage",
-            status=("failed" if envelope.analysis_state == "system_error" else "finalized"),
-            outcome=envelope.outcome.kind,
+            status=("failed" if an_state == "system_error" else "finalized"),
+            outcome=outcome_kind,
             context_fingerprint=(
                 hashlib.sha256(f"{fingerprint}:forced:{record_id}".encode()).hexdigest()
                 if force
@@ -418,20 +547,35 @@ class DecisionJournalService:
                     ],
                 }
             ),
-            envelope_json=sanitize_payload(envelope.model_dump(mode="json")),
+            envelope_json=sanitize_payload(envelope_dump),
             created_by=actor,
             finalized_at=dt.datetime.now(dt.timezone.utc),
         )
         self.db.add(record)
         await self.db.flush()
-        for sequence, item in enumerate(steps or [], start=1):
+        resolved_steps = (
+            steps
+            if steps is not None
+            else (
+                envelope_dump.get("steps")
+                if isinstance(envelope_dump, dict)
+                else getattr(envelope, "steps", None)
+            )
+        ) or []
+        for sequence, item in enumerate(resolved_steps, start=1):
+            comp = (
+                item.get("component")
+                or item.get("step_name")
+                or item.get("phase")
+                or "pipeline"
+            )
             self.db.add(
                 DecisionStep(
                     decision_id=record.id,
                     sequence=sequence,
-                    component=str(item.get("component") or "pipeline"),
-                    status=str(item.get("status") or "succeeded"),
-                    input_json=sanitize_payload(item.get("input") or {}),
+                    component=str(comp)[:24],
+                    status=str(item.get("status") or "succeeded")[:24],
+                    input_json=sanitize_payload(item.get("input") or item.get("details") or {}),
                     output_json=sanitize_payload(item.get("output") or {}),
                     metadata_json=sanitize_payload(item.get("metadata") or {}),
                     error_code=item.get("error_code"),
@@ -717,6 +861,7 @@ class DecisionJournalService:
         history: list[dict[str, Any]] | None,
         error_code: str,
         actor: str,
+        steps: list[dict[str, Any]] | None = None,
     ) -> DecisionRecord:
         history = history or []
         previous = await self.db.scalar(
@@ -760,6 +905,21 @@ class DecisionJournalService:
             finalized_at=now,
         )
         self.db.add(record)
+        await self.db.flush()
+        for sequence, item in enumerate(steps or [], start=1):
+            self.db.add(
+                DecisionStep(
+                    decision_id=record.id,
+                    sequence=sequence,
+                    component=str(item.get("component") or "pipeline"),
+                    status=str(item.get("status") or "failed"),
+                    input_json=sanitize_payload(item.get("input") or {}),
+                    output_json=sanitize_payload(item.get("output") or {}),
+                    metadata_json=sanitize_payload(item.get("metadata") or {}),
+                    error_code=item.get("error_code") or error_code,
+                    duration_ms=item.get("duration_ms"),
+                )
+            )
         await self.db.commit()
         await self.db.refresh(record)
         return record
@@ -966,22 +1126,137 @@ class DecisionJournalService:
         *,
         decision_id: uuid.UUID,
         verdict: str,
-        reason_code: str | None,
-        comment: str | None,
-        final_action: dict[str, Any],
-        actor: str,
+        reason_code: str | None = None,
+        comment: str | None = None,
+        final_action: dict[str, Any] | None = None,
+        actor: str = "operator",
+        commit: bool = True,
+        attempt_id: uuid.UUID | None = None,
+        event_id: uuid.UUID | str | None = None,
+        source: str = "legacy",
+        decision_version: int | None = None,
+        task_id: int | None = None,
+        response_variant_id: uuid.UUID | str | None = None,
+        request_hash: str | None = None,
+        operator_reason_code: str | None = None,
+        reason_source: str | None = None,
     ) -> DecisionFeedback:
-        if await self.db.get(DecisionRecord, decision_id) is None:
+        decision = await self.db.get(DecisionRecord, decision_id)
+        if decision is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "decision_not_found")
+
+        allowed_verdicts = (
+            VALID_FEEDBACK_VERDICTS | LEGACY_FEEDBACK_VERDICTS
+            if source == "legacy"
+            else VALID_FEEDBACK_VERDICTS
+        )
+        if verdict not in allowed_verdicts:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"invalid_verdict: {verdict}",
+            )
+
+        resolved_task_id = task_id or decision.task_id
+        resolved_version = decision_version if decision_version is not None else decision.version
+
+        # Приведение к UUID для корректных запросов и вставок
+        decision_uuid = uuid.UUID(str(decision_id)) if decision_id else decision.id
+        event_uuid = uuid.UUID(str(event_id)) if event_id else None
+        attempt_uuid = uuid.UUID(str(attempt_id)) if attempt_id else None
+        variant_uuid = uuid.UUID(str(response_variant_id)) if response_variant_id else None
+
+        # Дедупликация по event_id для explicit feedback
+        if event_uuid is not None:
+            existing_by_event = await self.db.scalar(
+                select(DecisionFeedback).where(
+                    DecisionFeedback.event_id == event_uuid
+                )
+            )
+            if existing_by_event is not None:
+                same_decision = existing_by_event.decision_id == decision_uuid
+                same_verdict = existing_by_event.verdict == verdict
+                same_operator_reason = (
+                    existing_by_event.operator_reason_code == operator_reason_code
+                )
+                if same_decision and same_verdict and same_operator_reason:
+                    return existing_by_event
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "feedback_event_id_conflict",
+                )
+
+        # Дедупликация по attempt_id для apply feedback
+        if attempt_uuid is not None:
+            existing_by_attempt = await self.db.scalar(
+                select(DecisionFeedback).where(
+                    DecisionFeedback.attempt_id == attempt_uuid
+                )
+            )
+            if existing_by_attempt is not None:
+                same_decision = existing_by_attempt.decision_id == decision_uuid
+                same_verdict = existing_by_attempt.verdict == verdict
+                if same_decision and same_verdict:
+                    return existing_by_attempt
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "feedback_attempt_conflict",
+                )
+
+        # Валидация словаря причин
+        allowed_reasons = (
+            VALID_FEEDBACK_REASONS | LEGACY_FEEDBACK_REASONS
+            if source == "legacy"
+            else VALID_FEEDBACK_REASONS
+        )
+        if operator_reason_code and operator_reason_code not in allowed_reasons:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"invalid_operator_reason_code: {operator_reason_code}",
+            )
+        if reason_code and reason_code not in allowed_reasons:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"invalid_reason_code: {reason_code}",
+            )
+
+        resolved_reason_code = reason_code
+        resolved_reason_source = reason_source or ("legacy" if source == "legacy" else None)
+        resolved_operator_reason = operator_reason_code
+
+        if verdict == "accepted":
+            resolved_reason_code = None
+            resolved_reason_source = "none"
+        elif operator_reason_code:
+            resolved_reason_code = operator_reason_code
+            resolved_reason_source = "operator"
+        elif verdict in {"rejected", "commented"}:
+            if not resolved_reason_code:
+                resolved_reason_code = "other"
+            resolved_reason_source = resolved_reason_source or "inferred"
+        elif verdict == "modified":
+            resolved_reason_source = resolved_reason_source or "inferred"
+
         feedback = DecisionFeedback(
-            decision_id=decision_id,
+            decision_id=decision_uuid,
+            attempt_id=attempt_uuid,
+            event_id=event_uuid,
+            source=source,
+            decision_version=resolved_version,
+            task_id=resolved_task_id,
+            response_variant_id=variant_uuid,
+            request_hash=request_hash,
             verdict=verdict,
-            reason_code=reason_code,
+            reason_code=resolved_reason_code,
+            reason_source=resolved_reason_source,
+            operator_reason_code=resolved_operator_reason,
             comment=sanitize_payload(comment),
-            final_action_json=sanitize_payload(final_action),
+            final_action_json=sanitize_payload(final_action or {}),
             actor=actor,
         )
         self.db.add(feedback)
-        await self.db.commit()
-        await self.db.refresh(feedback)
+        if commit:
+            await self.db.commit()
+            await self.db.refresh(feedback)
+        else:
+            await self.db.flush()
         return feedback

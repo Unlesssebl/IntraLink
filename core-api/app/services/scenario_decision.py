@@ -43,6 +43,7 @@ from app.services.scenario_pipeline import (
     ResponseComposer,
     ScenarioRouter,
 )
+from app.services.decision_trace import DecisionExecutionTrace
 from app.services.scenarios import ScenarioContext, get_scenario_registry
 
 
@@ -214,7 +215,21 @@ class ScenarioDecisionService:
         observations: list[FactObservation] | None = None,
         pinned_scenario_key: str | None = None,
         pinned_scenario_version: int | None = None,
+        trace: DecisionExecutionTrace | None = None,
+        rag_metadata: dict[str, Any] | None = None,
     ) -> DecisionEnvelope:
+        facts_span = (
+            trace.start_span(
+                "facts",
+                input_data={
+                    "fact_revision": fact_revision,
+                    "provided_observations": observations is not None,
+                    "task_id": task.get("Id") or task.get("id"),
+                },
+            )
+            if trace
+            else None
+        )
         if observations is None:
             observations = await self.fact_planner.collect(
                 task, comments=comments, diagnostics=diagnostics
@@ -263,6 +278,66 @@ class ScenarioDecisionService:
             value = facts.valid_value(key)
             if value not in (None, ""):
                 scenario_task[target] = value
+
+        if facts_span:
+            facts_span.finish(
+                status="succeeded",
+                output_data={
+                    "valid_facts_count": sum(
+                        1 for f in facts.facts.values() if f.state is FactState.VALID
+                    ),
+                    "missing_facts_count": sum(
+                        1 for f in facts.facts.values() if f.state is FactState.MISSING
+                    ),
+                    "invalid_facts_count": sum(
+                        1
+                        for f in facts.facts.values()
+                        if f.state
+                        in {
+                            FactState.INVALID,
+                            FactState.AMBIGUOUS,
+                            FactState.CONFLICTING,
+                            FactState.STALE,
+                        }
+                    ),
+                    "total_observations": len(observations),
+                },
+                metadata={
+                    "fact_revision": fact_revision,
+                    "sources": sorted(list({o.source for o in observations})),
+                },
+            )
+
+        # 2. RAG step
+        if trace:
+            rag_origin = (rag_metadata or {}).get(
+                "origin", "provided" if rag_metadata is None else "live"
+            )
+            rag_duration = (rag_metadata or {}).get("duration_ms")
+            rag_status = (rag_metadata or {}).get("status", "succeeded")
+            rag_err = (rag_metadata or {}).get("error_code")
+            trace.record_step(
+                component="rag",
+                status=rag_status,
+                input_data={"query": (rag_metadata or {}).get("query")},
+                output_data={
+                    "matches_count": len(kb_matches or []),
+                    "top_score": (
+                        kb_matches[0].get("similarity") if kb_matches else None
+                    ),
+                    "precedents": [
+                        m.get("task_id") or m.get("id")
+                        for m in (kb_matches or [])[:5]
+                    ],
+                },
+                metadata={
+                    "origin": rag_origin,
+                    "service_id": task.get("ServiceId") or task.get("service_id"),
+                },
+                error_code=rag_err,
+                duration_ms=rag_duration,
+            )
+
         context = ScenarioContext(
             task=scenario_task,
             facts=facts,
@@ -270,12 +345,38 @@ class ScenarioDecisionService:
             kb_matches=kb_matches or [],
             comments=comments or [],
         )
+
+        # 3. Routing step
+        routing_span = (
+            trace.start_span(
+                "routing",
+                input_data={
+                    "pinned_key": pinned_scenario_key,
+                    "pinned_version": pinned_scenario_version,
+                },
+            )
+            if trace
+            else None
+        )
         route_res = self.router.route_result(
             context,
             pinned_key=pinned_scenario_key,
             pinned_version=pinned_scenario_version,
         )
         scenario = route_res.scenario
+        if routing_span:
+            routing_span.finish(
+                status="succeeded",
+                output_data={
+                    "selected_scenario": scenario.definition.key,
+                    "scenario_version": scenario.definition.version,
+                    "score": route_res.score,
+                    "runner_up_score": route_res.runner_up_score,
+                    "is_ambiguous": route_res.is_ambiguous,
+                    "reasons": route_res.reasons,
+                },
+            )
+
         requirements = scenario.requirements(context)
         missing = [
             requirement.key
@@ -350,23 +451,64 @@ class ScenarioDecisionService:
         )
         candidate.evidence_refs = outcome_evidence_refs(candidate)
 
+        # 4. Policy step
+        policy_span = (
+            trace.start_span(
+                "policy",
+                input_data={
+                    "outcome_kind": getattr(outcome, "kind", None),
+                    "outcome_key": getattr(outcome, "outcome_key", None),
+                },
+            )
+            if trace
+            else None
+        )
         policy: dict[str, Any] = {}
         outcome_key = getattr(outcome, "outcome_key", None)
         kind = getattr(outcome, "kind", None)
+        policy_err = None
         if outcome_key and kind in {"clarification", "action", "resolution"}:
             try:
                 policy = await self.policy_resolver.resolve(outcome)
             except ResolutionUnavailable as exc:
                 policy = {"resolution_error": str(exc), "requires_approval": False}
+                policy_err = "resolution_policy_unavailable"
+        if policy_span:
+            policy_span.finish(
+                status="fallback" if policy.get("resolution_error") else "succeeded",
+                output_data={
+                    "status_id": policy.get("status_id") or policy.get("target_status_id"),
+                    "requires_approval": policy.get("requires_approval", False),
+                    "has_error": bool(policy.get("resolution_error")),
+                },
+                error_code=policy_err,
+            )
+
         facts_summary = redacted_fact_summary(facts)
         policy_comment = str(policy.get("comment") or "").strip()
 
+        # 5. Plan step
+        plan_span = (
+            trace.start_span("plan", input_data={"scenario_key": scenario.definition.key})
+            if trace
+            else None
+        )
         plan = PlanBuilder.build(
             scenario_key=scenario.definition.key,
             scenario_version=scenario.definition.version,
             facts=facts,
             diagnostics=diagnostics,
         )
+        if plan_span:
+            plan_span.finish(
+                status="succeeded",
+                output_data={
+                    "phase": plan.phase if plan else None,
+                    "next_action": plan.next_action_description if plan else None,
+                    "public_steps_count": len(plan.public_steps) if plan else 0,
+                    "internal_steps_count": len(plan.internal_steps) if plan else 0,
+                },
+            )
 
         response_ctx = ResponseContextBuilder.build_context(
             decision_id=decision_id or str(uuid.uuid4()),
@@ -381,6 +523,19 @@ class ScenarioDecisionService:
             kb_matches=kb_matches,
         )
 
+        # 6. AI step
+        ai_span = (
+            trace.start_span(
+                "ai",
+                input_data={
+                    "ai_enabled": self.ai_enabled,
+                    "risk_level": scenario.definition.risk_level,
+                    "has_policy_comment": bool(policy_comment),
+                },
+            )
+            if trace
+            else None
+        )
         generated = None
         provenance = None
         if self.ai_enabled and scenario.definition.risk_level <= 1 and policy_comment:
@@ -397,6 +552,59 @@ class ScenarioDecisionService:
                 rag_used_count=0,
             )
 
+        if ai_span:
+            if provenance and provenance.source != "template":
+                ai_status = "fallback" if provenance.fallback_used else "succeeded"
+                ai_span.finish(
+                    status=ai_status,
+                    output_data={
+                        "source": provenance.source,
+                        "backend": provenance.actual_backend,
+                        "circuit": provenance.circuit,
+                        "rag_used_count": provenance.rag_used_count,
+                        "attempts": provenance.attempts,
+                    },
+                    metadata={
+                        "requested_backend": provenance.requested_backend,
+                        "fallback_reason_code": provenance.fallback_reason_code,
+                        "rag_refs": provenance.rag_refs,
+                    },
+                    error_code=(
+                        provenance.fallback_reason_code
+                        if provenance.fallback_used
+                        else None
+                    ),
+                    duration_ms=(
+                        float(provenance.duration_ms)
+                        if provenance.duration_ms is not None
+                        else None
+                    ),
+                )
+            elif not self.ai_enabled or scenario.definition.risk_level > 1 or not policy_comment:
+                skip_reason = (
+                    "ai_disabled"
+                    if not self.ai_enabled
+                    else "high_risk_scenario"
+                    if scenario.definition.risk_level > 1
+                    else "no_policy_comment"
+                )
+                ai_span.finish(
+                    status="skipped",
+                    metadata={"skip_reason": skip_reason},
+                    duration_ms=None,
+                )
+            else:
+                ai_span.finish(
+                    status="succeeded",
+                    output_data={"source": "template", "tone": "default"},
+                )
+
+        # 7. Guard step
+        guard_span = (
+            trace.start_span("guard", input_data={"generated_present": generated is not None})
+            if trace
+            else None
+        )
         response = guarded_response(
             generated=generated,
             template_text=policy_comment,
@@ -404,6 +612,17 @@ class ScenarioDecisionService:
             facts_summary=facts_summary,
             provenance=provenance,
         )
+        if guard_span:
+            guard_status = "fallback" if response.state == "fallback" else "succeeded"
+            guard_span.finish(
+                status=guard_status,
+                output_data={
+                    "state": response.state,
+                    "violations_count": len(response.violations),
+                    "replaced_by_template": response.state == "fallback" and generated is not None,
+                },
+                error_code=response.violations[0].code if response.violations else None,
+            )
 
         internal_summary = build_internal_summary(
             scenario_key=scenario.definition.key,
@@ -414,7 +633,13 @@ class ScenarioDecisionService:
             task=task,
         )
 
-        return await self.compiler.compile(
+        # 8. Compiler step
+        compiler_span = (
+            trace.start_span("compiler", input_data={"scenario_key": scenario.definition.key})
+            if trace
+            else None
+        )
+        compiled_envelope = await self.compiler.compile(
             scenario_key=scenario.definition.key,
             scenario_version=scenario.definition.version,
             scenario_risk=scenario.definition.risk_level,
@@ -430,3 +655,16 @@ class ScenarioDecisionService:
             decision_version=decision_version,
             service_id=task.get("ServiceId") or task.get("service_id"),
         )
+        if compiler_span:
+            gates = compiled_envelope.gates
+            compiler_span.finish(
+                status="succeeded",
+                output_data={
+                    "analysis_state": compiled_envelope.analysis_state,
+                    "can_send_response": gates.can_send_response,
+                    "can_execute_action": gates.can_execute_action,
+                    "blocked_reasons": gates.blocked_reasons,
+                },
+            )
+
+        return compiled_envelope

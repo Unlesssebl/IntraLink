@@ -63,17 +63,11 @@ import type {
 
 
   OutageIncident,
-
-
-
   DecisionEnvelope,
-
-
-
   DecisionResponseVariant,
-
-
-
+  ExplicitFeedbackPayload,
+  ReconcileAttemptResult,
+  QualityAnalyticsSummary,
 } from './types';
 
 
@@ -2374,91 +2368,35 @@ export async function applyTask(taskId: number, payload: SingleApplyPayload): Pr
 
 
 
-  const command = await apiFetch<any>('/api/v2/commands', {
+    const clientRequestId = payload.request_id || safeRandomUUID();
 
-
-
-    method: 'POST',
-
-
-
-    headers: { 'Idempotency-Key': safeRandomUUID() },
-
-
-
-    body: JSON.stringify({
-
-
-
-      action: 'apply_triage',
-
-
-
-      target: { task_id: taskId },
-
-
-
-      parameters: {
-
-
-
-        task_ids: [taskId],
-
-
-
-        status_id: payload.status_id,
-
-
-
-        comment: payload.comment || '',
-
-
-
-        expenses: payload.minutes ?? 10,
-
-
-
-        executor_ids: payload.executor_ids,
-
-
-
-        is_private: payload.is_private || false,
-
-
-
-        verified_execution_job_id: payload.verified_execution_job_id,
-
-
-
-        response_variant_id: payload.response_variant_id,
-
-
-
-      },
-
-
-
-      source: 'web',
-
-
-
-      ticket_run_id: ticketRunId,
-
-
-
-      decision_id: payload.decision_id,
-
-
-
-      decision_version: payload.decision_version,
-
-
-
-    }),
-
-
-
-  });
+    const command = await apiFetch<any>('/api/v2/commands', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': clientRequestId },
+      body: JSON.stringify({
+        action: 'apply_triage',
+        target: { task_id: taskId },
+        request_id: clientRequestId,
+        parameters: {
+          task_ids: [taskId],
+          status_id: payload.status_id,
+          comment: payload.comment || '',
+          expenses: payload.minutes ?? 10,
+          executor_ids: payload.executor_ids,
+          is_private: payload.is_private || false,
+          verified_execution_job_id: payload.verified_execution_job_id,
+          response_variant_id: payload.response_variant_id,
+          request_id: clientRequestId,
+          feedback_reason_code: payload.feedback_reason_code,
+          feedback_comment: payload.feedback_comment,
+          dry_run: payload.dry_run,
+        },
+        source: 'web',
+        ticket_run_id: ticketRunId,
+        decision_id: payload.decision_id,
+        decision_version: payload.decision_version,
+      }),
+    });
 
 
 
@@ -3507,13 +3445,12 @@ export async function smartBulkApplyTasks(
 
 
         decision_id: item.decision_id,
-
-
-
         decision_version: item.decision_version,
-
-
-
+        response_variant_id: item.response_variant_id,
+        request_id: item.request_id || safeRandomUUID(),
+        feedback_reason_code: item.feedback_reason_code,
+        feedback_comment: item.feedback_comment,
+        dry_run: item.dry_run,
       });
 
 
@@ -3777,5 +3714,29 @@ export async function cancelBatch(batchId: string): Promise<CancelBatchResponse>
   return apiFetch<CancelBatchResponse>(`/api/v2/triage/analyze-batch/${encodeURIComponent(batchId)}/cancel`, {
     method: 'POST',
   });
+}
+
+export async function sendDecisionFeedback(
+  taskId: number,
+  payload: ExplicitFeedbackPayload
+): Promise<any> {
+  return apiFetch<any>(`/api/v2/triage/tasks/${taskId}/decision-feedback`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function reconcileApplicationAttempt(
+  attemptId: string,
+  expectedVersion?: number
+): Promise<ReconcileAttemptResult> {
+  return apiFetch<ReconcileAttemptResult>(`/api/v2/triage/application-attempts/${attemptId}/reconcile`, {
+    method: 'POST',
+    body: JSON.stringify({ expected_version: expectedVersion }),
+  });
+}
+
+export async function fetchQualityAnalytics(days: number = 30): Promise<QualityAnalyticsSummary> {
+  return apiFetch<QualityAnalyticsSummary>(`/api/v2/triage/analytics/quality?days=${days}`);
 }
 

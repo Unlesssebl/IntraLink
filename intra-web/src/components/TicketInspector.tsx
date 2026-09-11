@@ -508,6 +508,7 @@ export default function TicketInspector({ ticket, onClose, onUpdateTicket, onToa
             responseProvenance={decisionState.responseProvenance}
             isGeneratingVariant={decisionState.isGeneratingVariant}
             onSelectTone={decisionState.handleSelectTone}
+            onRejectRecommendation={decisionState.handleRejectRecommendation}
           />
         </div>
       </div>

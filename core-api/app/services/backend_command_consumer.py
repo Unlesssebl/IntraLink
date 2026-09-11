@@ -47,9 +47,24 @@ async def _execute(action: str, values: dict, db) -> dict:
             is_private=bool(values.get("is_private", False)),
             response_variant_id=values.get("response_variant_id"),
         )
-        if not results or any(not item.get("update_ok", False) for item in results):
-            raise RuntimeError("One or more triage updates failed")
-        return {"results": results}
+        if not results:
+            return {"results": [], "outcome": "failed", "error": "No tasks processed"}
+
+        all_succeeded = all(
+            item.get("status") == "success"
+            or (item.get("update_ok") and item.get("expenses_ok"))
+            for item in results
+        )
+        all_failed = all(not item.get("update_ok", False) for item in results)
+
+        if all_succeeded:
+            outcome = "succeeded"
+        elif all_failed:
+            outcome = "failed"
+        else:
+            outcome = "needs_review"
+
+        return {"results": results, "outcome": outcome}
     raise RuntimeError(f"Unsupported backend action: {action}")
 
 
@@ -82,8 +97,12 @@ async def _process_message(redis, message_id: str, data: dict) -> bool:
         values.update(claim.command.params_json or {})
         try:
             result = await _execute(claim.command.action, values, db)
-            outcome = "succeeded"
-            error = None
+            outcome = (
+                result.get("outcome", "succeeded")
+                if isinstance(result, dict)
+                else "succeeded"
+            )
+            error = result.get("error") if isinstance(result, dict) else None
         except Exception as exc:
             await db.rollback()
             logger.exception("Backend command %s failed", command_id)

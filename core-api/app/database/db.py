@@ -1,4 +1,5 @@
 import datetime
+from typing import Any
 import uuid
 from collections.abc import AsyncGenerator
 
@@ -34,7 +35,7 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
-CURRENT_SCHEMA_REVISION = "20260910_0014"
+CURRENT_SCHEMA_REVISION = "20260912_0015"
 
 
 
@@ -647,13 +648,36 @@ class DecisionFeedback(Base):
     """Operator review tied to the exact version of a decision."""
 
     __tablename__ = "decision_feedback"
+    __table_args__ = (
+        CheckConstraint(
+            "(source = 'legacy') OR "
+            "(source = 'explicit_feedback' AND event_id IS NOT NULL) OR "
+            "(source IN ('recommendation_apply', 'manual_apply') AND attempt_id IS NOT NULL)",
+            name="ck_decision_feedback_source_identity",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     decision_id: Mapped[uuid.UUID] = mapped_column(
         UUID_TYPE, ForeignKey("decision_records.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    attempt_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_application_attempts.id", ondelete="CASCADE"), nullable=True, unique=True
+    )
+    event_id: Mapped[uuid.UUID | None] = mapped_column(UUID_TYPE, nullable=True, unique=True)
+    source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="legacy", server_default="legacy", index=True
+    )
+    decision_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    task_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    response_variant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_response_variants.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     verdict: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    operator_reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reason_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     final_action_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     actor: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
@@ -690,18 +714,101 @@ class DecisionResponseVariant(Base):
     )
 
 
+class DecisionApplicationRequest(Base):
+    """Authoritative idempotent request for applying decisions to tasks."""
+
+    __tablename__ = "decision_application_requests"
+
+    request_id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        if "id" in kwargs and "request_id" not in kwargs:
+            kwargs["request_id"] = kwargs.pop("id")
+        super().__init__(**kwargs)
+
+    @property
+    def id(self) -> uuid.UUID:
+        return self.request_id
+
+    @id.setter
+    def id(self, value: uuid.UUID) -> None:
+        self.request_id = value
+
+
+class DecisionApplicationAttempt(Base):
+    """Execution attempt of a decision application for a single task within a request."""
+
+    __tablename__ = "decision_application_attempts"
+    __table_args__ = (
+        UniqueConstraint("request_id", "task_id", name="uq_decision_application_attempts_request_task"),
+        Index("ix_decision_application_attempts_state_lease", "state", "lease_expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
+    request_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE,
+        ForeignKey("decision_application_requests.request_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    decision_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    response_variant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_response_variants.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    actor: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default="pending", index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    proposed_action_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    requested_action_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    suboperations_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
 class DecisionApplication(Base):
-    """Exactly-once projection of a verified Command v2 application."""
+    """Exactly-once projection of a verified Command v2 or Triage application."""
 
     __tablename__ = "decision_applications"
+    __table_args__ = (
+        CheckConstraint(
+            "(command_id IS NOT NULL AND attempt_id IS NULL AND application_type = 'command_execution') OR "
+            "(command_id IS NULL AND attempt_id IS NOT NULL AND application_type = 'triage_apply')",
+            name="ck_decision_applications_source_xor",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID_TYPE, primary_key=True, default=uuid.uuid4)
     decision_id: Mapped[uuid.UUID] = mapped_column(
         UUID_TYPE, ForeignKey("decision_records.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    command_id: Mapped[uuid.UUID] = mapped_column(
-        UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, unique=True
+    command_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("commands.id", ondelete="CASCADE"), nullable=True, unique=True
     )
+    attempt_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID_TYPE, ForeignKey("decision_application_attempts.id", ondelete="CASCADE"), nullable=True, unique=True
+    )
+    application_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="command_execution", server_default="command_execution", index=True
+    )
+    task_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     proposed_action_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     applied_action_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)

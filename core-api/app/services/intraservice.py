@@ -29,6 +29,147 @@ class CircuitBreaker:
     для защиты от перегрузки и зависания при недоступности корпоративного API IntraService.
     """
 
+
+class MutationOutcome(str, enum.Enum):
+    CONFIRMED = "confirmed"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+    NOT_SENT = "not_sent"
+
+
+class MutationResult:
+    def __init__(
+        self,
+        *,
+        outcome: MutationOutcome,
+        status_code: int | None = None,
+        data: Any = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        fallback_applied: bool = False,
+        suboperations: dict[str, Any] | None = None,
+    ):
+        self.outcome = outcome
+        self.status_code = status_code
+        self.data = data
+        self.error_code = error_code
+        self.error_message = error_message
+        self.fallback_applied = fallback_applied
+        self.suboperations = suboperations or {}
+
+    @property
+    def is_confirmed(self) -> bool:
+        return self.outcome == MutationOutcome.CONFIRMED
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "outcome": self.outcome.value,
+            "status_code": self.status_code,
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+            "fallback_applied": self.fallback_applied,
+            "suboperations": self.suboperations,
+        }
+
+
+async def _execute_mutation_request(
+    endpoint: str,
+    method: str = "PUT",
+    auth_b64: str | None = None,
+    auth_header: str | None = None,
+    params: dict[str, Any] | None = None,
+    json_data: dict[str, Any] | None = None,
+) -> MutationResult:
+    """
+    Выполняет изменяющий запрос к IntraService (PUT/POST/DELETE) строго без скрытых повторов.
+    Различает CONFIRMED (2xx), FAILED (4xx), UNKNOWN (5xx, таймаут, обрыв) и NOT_SENT (CircuitBreaker).
+    """
+    if not circuit_breaker.can_execute():
+        status_info = circuit_breaker.get_status()
+        logger.warning(
+            "Circuit Breaker [OPEN]: запрос %s к %s отклонен без отправки (осталось охлаждения: %.1f с)",
+            method,
+            endpoint,
+            status_info["remaining_cooldown_seconds"],
+        )
+        return MutationResult(
+            outcome=MutationOutcome.NOT_SENT,
+            error_code="circuit_breaker_open",
+            error_message="Circuit breaker is open",
+        )
+
+    url = f"{settings.INTRASERVICE_URL.rstrip('/')}/{endpoint.lstrip('/')}"
+    headers = {"Content-Type": "application/json"}
+    if auth_b64:
+        decrypted_auth = decrypt_token(auth_b64)
+        headers["Authorization"] = f"Basic {decrypted_auth}"
+    elif auth_header:
+        headers["Authorization"] = auth_header
+
+    global _session  # noqa: PLW0603
+    if _session is None or _session.closed:
+        await init_session()
+    assert _session is not None
+
+    try:
+        async with _session.request(
+            method=method,
+            url=url,
+            headers=headers,
+            params=params,
+            json=json_data,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as response:
+            if response.status in (HTTPStatus.OK, HTTPStatus.CREATED):
+                circuit_breaker.record_success()
+                try:
+                    data = await response.json()
+                except Exception:
+                    data = {}
+                return MutationResult(
+                    outcome=MutationOutcome.CONFIRMED,
+                    status_code=response.status,
+                    data=data,
+                )
+            elif response.status == HTTPStatus.NO_CONTENT:
+                circuit_breaker.record_success()
+                return MutationResult(
+                    outcome=MutationOutcome.CONFIRMED,
+                    status_code=response.status,
+                    data={},
+                )
+            elif response.status >= 500:
+                text = await response.text()
+                circuit_breaker.record_failure(f"HTTP {response.status}: {text[:100]}")
+                return MutationResult(
+                    outcome=MutationOutcome.UNKNOWN,
+                    status_code=response.status,
+                    error_code="server_error_5xx",
+                    error_message=text[:500],
+                )
+            else:
+                text = await response.text()
+                return MutationResult(
+                    outcome=MutationOutcome.FAILED,
+                    status_code=response.status,
+                    error_code=f"http_{response.status}",
+                    error_message=text[:500],
+                )
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        circuit_breaker.record_failure(e)
+        return MutationResult(
+            outcome=MutationOutcome.UNKNOWN,
+            error_code="network_timeout_or_disconnect",
+            error_message=str(e),
+        )
+    except Exception as e:
+        circuit_breaker.record_failure(e)
+        return MutationResult(
+            outcome=MutationOutcome.UNKNOWN,
+            error_code="unexpected_exception",
+            error_message=str(e),
+        )
+
     def __init__(
         self,
         failure_threshold: int = 5,
@@ -523,20 +664,43 @@ async def update_task_status(auth_b64: str, task_id: int, status_id: int) -> boo
     return res is not None
 
 
-async def add_task_expenses(auth_b64: str, task_id: int, minutes: int, user_id: int | None = None) -> bool:
+async def add_task_expenses_structured(
+    auth_b64: str, task_id: int, minutes: int, user_id: int | None = None
+) -> MutationResult:
     """
-    Добавляет трудозатраты к задаче в IntraService.
+    Добавляет трудозатраты к задаче в IntraService со структурированным результатом без скрытых повторов.
     """
     payload: dict[str, Any] = {"TaskId": task_id, "Minutes": minutes}
     if user_id is not None:
         payload["UserId"] = user_id
-    res = await _make_request(
+    result = await _execute_mutation_request(
         endpoint="taskexpenses",
         method="POST",
         auth_b64=auth_b64,
         json_data=payload,
     )
-    return res is not None
+    if result.is_confirmed:
+        result.suboperations = {"expenses": {"outcome": "confirmed", "minutes": minutes}}
+    else:
+        result.suboperations = {
+            "expenses": {
+                "outcome": result.outcome.value,
+                "minutes": minutes,
+                "error_code": result.error_code,
+                "error_message": result.error_message,
+            }
+        }
+    return result
+
+
+async def add_task_expenses(
+    auth_b64: str, task_id: int, minutes: int, user_id: int | None = None
+) -> bool:
+    """
+    Совместимая обертка для добавления трудозатрат (True при confirmed).
+    """
+    res = await add_task_expenses_structured(auth_b64, task_id, minutes, user_id)
+    return res.is_confirmed
 
 
 async def get_statuses(auth_b64: str) -> list[dict[str, Any]] | None:
@@ -599,18 +763,17 @@ async def update_task_custom_fields(
     return res is not None
 
 
-async def update_task_full(
+async def update_task_full_structured(
     auth_b64: str,
     task_id: int,
     status_id: int | None = None,
     comment: str | None = None,
     executor_ids: str | None = None,
     is_private: bool = False,
-) -> bool:
+) -> MutationResult:
     """
-    Атомарно обновляет задачу (статус, комментарий, исполнители) в одном PUT запросе.
-    Если передача исполнителей блокируется правами роли (400), безопасно выполняет
-    обновление статуса и комментария без ExecutorIds.
+    Атомарно обновляет задачу (статус, комментарий, исполнители) в одном PUT запросе без скрытых повторов.
+    Fallback без ExecutorIds разрешен ТОЛЬКО при доказанном отказе назначения исполнителя (400 с ошибкой роли).
     """
     payload: dict[str, Any] = {"Id": task_id}
     if status_id is not None:
@@ -620,36 +783,99 @@ async def update_task_full(
         payload["IsPrivateComment"] = is_private
     if executor_ids:
         payload["ExecutorIds"] = str(executor_ids)
-    res = await _make_request(
+
+    result = await _execute_mutation_request(
         endpoint=f"task/{task_id}",
         method="PUT",
         auth_b64=auth_b64,
         json_data=payload,
     )
-    if res is not None:
-        return True
 
-    # Если запрос с ExecutorIds отклонен (например, ограничение роли IntraService),
-    # пробуем применить статус и комментарий без ExecutorIds, чтобы не потерять решение инженера
-    if executor_ids and (status_id is not None or comment is not None):
-        fallback_payload: dict[str, Any] = {"Id": task_id}
-        if status_id is not None:
-            fallback_payload["StatusId"] = status_id
-        if comment:
-            fallback_payload["Comment"] = comment
-            fallback_payload["IsPrivateComment"] = is_private
-        fallback_res = await _make_request(
-            endpoint=f"task/{task_id}",
-            method="PUT",
-            auth_b64=auth_b64,
-            json_data=fallback_payload,
-        )
-        if fallback_res is not None:
-            logger.warning(
-                "Задача #%d обновлена без назначения исполнителя (ограничение прав IntraService)",
-                task_id,
+    if result.is_confirmed:
+        result.suboperations = {
+            "status": {
+                "outcome": "confirmed" if status_id is not None else "not_requested",
+                "status_id": status_id,
+            },
+            "comment": {"outcome": "confirmed" if comment else "not_requested"},
+            "executors": {
+                "outcome": "confirmed" if executor_ids else "not_requested",
+                "executor_ids": executor_ids,
+            },
+        }
+        return result
+
+    # Fallback без ExecutorIds разрешен только для подтвержденного отказа назначения исполнителя
+    if (
+        result.outcome == MutationOutcome.FAILED
+        and result.status_code == 400
+        and executor_ids
+        and (status_id is not None or comment is not None)
+    ):
+        err_lower = (result.error_message or "").lower()
+        if "executor" in err_lower or "исполнител" in err_lower:
+            fallback_payload: dict[str, Any] = {"Id": task_id}
+            if status_id is not None:
+                fallback_payload["StatusId"] = status_id
+            if comment:
+                fallback_payload["Comment"] = comment
+                fallback_payload["IsPrivateComment"] = is_private
+            fallback_res = await _execute_mutation_request(
+                endpoint=f"task/{task_id}",
+                method="PUT",
+                auth_b64=auth_b64,
+                json_data=fallback_payload,
             )
-            return True
+            if fallback_res.is_confirmed:
+                logger.warning(
+                    "Задача #%d обновлена без назначения исполнителя (подтвержденный отказ прав IntraService)",
+                    task_id,
+                )
+                fallback_res.fallback_applied = True
+                fallback_res.suboperations = {
+                    "status": {
+                        "outcome": "confirmed" if status_id is not None else "not_requested",
+                        "status_id": status_id,
+                    },
+                    "comment": {"outcome": "confirmed" if comment else "not_requested"},
+                    "executors": {
+                        "outcome": "failed",
+                        "fallback_applied": True,
+                        "error_message": result.error_message,
+                    },
+                }
+                return fallback_res
+            return fallback_res
 
-    return False
+    result.suboperations = {
+        "status": {"outcome": result.outcome.value, "error_code": result.error_code},
+        "comment": {"outcome": result.outcome.value, "error_code": result.error_code},
+        "executors": {
+            "outcome": result.outcome.value if executor_ids else "not_requested",
+            "error_code": result.error_code,
+        },
+    }
+    return result
+
+
+async def update_task_full(
+    auth_b64: str,
+    task_id: int,
+    status_id: int | None = None,
+    comment: str | None = None,
+    executor_ids: str | None = None,
+    is_private: bool = False,
+) -> bool:
+    """
+    Совместимая обертка для полного обновления задачи (True при confirmed).
+    """
+    res = await update_task_full_structured(
+        auth_b64=auth_b64,
+        task_id=task_id,
+        status_id=status_id,
+        comment=comment,
+        executor_ids=executor_ids,
+        is_private=is_private,
+    )
+    return res.is_confirmed
 

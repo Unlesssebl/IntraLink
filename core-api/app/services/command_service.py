@@ -923,9 +923,21 @@ class CommandService:
                 state = outcome if outcome in {"failed", "needs_review"} else (
                     "applied_unmodified" if unchanged else "applied_modified"
                 )
+                target_task_id = (
+                    decision.task_id
+                    if decision
+                    else (
+                        (command.target_json or {}).get("task_id")
+                        if isinstance(command.target_json, dict)
+                        else None
+                    )
+                )
                 self.db.add(DecisionApplication(
                     decision_id=command.decision_id,
                     command_id=command.id,
+                    attempt_id=None,
+                    application_type="command_execution",
+                    task_id=target_task_id,
                     state=state,
                     proposed_action_json=proposed,
                     applied_action_json=applied,

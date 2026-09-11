@@ -67,7 +67,8 @@ async def initialize_test_database():
     from app.database.db import (
         ActionPolicyRecord, ApprovalChallenge, AsyncSessionLocal, AuthSession, AutopilotScenario,
         AutopilotSetting, AutopilotSettingEvent, CommandOutbox, CommandRecord,
-        CommandSecretArtifact, DecisionFeedback, DecisionStep, DecisionRecord, DecisionResponseVariant, Principal, PrincipalRole, SecurityEvent,
+        CommandSecretArtifact, DecisionApplication, DecisionApplicationAttempt, DecisionApplicationRequest,
+        DecisionFeedback, DecisionStep, DecisionRecord, DecisionResponseVariant, Principal, PrincipalRole, SecurityEvent,
         ResolutionPolicy, ResponseTemplate,
         ServiceCredential, SystemSetting, TelegramLink, TelegramLinkCode, TicketRun,
         TicketFactObservation, TicketRunEvent, get_db,
@@ -75,7 +76,8 @@ async def initialize_test_database():
     app.dependency_overrides.pop(get_db, None)
     async with AsyncSessionLocal() as db:
         for model in (
-            DecisionResponseVariant, DecisionFeedback, DecisionStep, CommandSecretArtifact, CommandOutbox,
+            DecisionApplication, DecisionFeedback, DecisionApplicationAttempt, DecisionApplicationRequest,
+            DecisionResponseVariant, DecisionStep, CommandSecretArtifact, CommandOutbox,
             ResolutionPolicy, ResponseTemplate, CommandRecord, DecisionRecord,
             TicketFactObservation, TicketRunEvent, TicketRun, AutopilotScenario,
             AutopilotSettingEvent, AutopilotSetting,

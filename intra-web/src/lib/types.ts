@@ -578,6 +578,10 @@ export interface SingleApplyPayload {
   decision_id?: string;
   decision_version?: number;
   response_variant_id?: string | null;
+  request_id?: string;
+  feedback_reason_code?: string | null;
+  feedback_comment?: string | null;
+  dry_run?: boolean;
 }
 
 export interface BulkApplyItemPayload {
@@ -605,6 +609,64 @@ export interface SmartBulkApplyItemPayload {
     target_host?: string;
     identity?: string;
     params?: Record<string, any>;
+  };
+  request_id?: string;
+  feedback_reason_code?: string | null;
+  feedback_comment?: string | null;
+  response_variant_id?: string | null;
+  dry_run?: boolean;
+}
+
+export interface ExplicitFeedbackPayload {
+  decision_id: string;
+  decision_version: number;
+  response_variant_id?: string | null;
+  event_id: string;
+  verdict: 'rejected' | 'accepted' | 'edited' | 'overridden';
+  reason_code?: string | null;
+  comment?: string | null;
+}
+
+export interface ReconcileAttemptResult {
+  attempt_id: string;
+  request_id: string;
+  task_id: number;
+  task_version?: number;
+  status_id?: number;
+  reconciled: boolean;
+  outcome: 'confirmed' | 'failed' | 'unknown' | 'not_sent';
+  explanation?: string;
+}
+
+export interface QualityAnalyticsSummary {
+  window_days: number;
+  since_date: string;
+  sample_size: number;
+  acceptance_rate: number;
+  rejection_rate: number;
+  status_override_rate: number;
+  comment_edit_rate: number;
+  manual_override_rate: number;
+  median_comment_levenshtein: number;
+  top_rejected_scenarios: Array<{
+    scenario_id: string;
+    total_applications: number;
+    rejected_count: number;
+    rejection_rate: number;
+  }>;
+  top_divergent_scenarios: Array<{
+    scenario_id: string;
+    total_applications: number;
+    edited_comments: number;
+    overridden_statuses: number;
+    divergence_rate: number;
+  }>;
+  feedback_reason_distribution: Record<string, number>;
+  reconciliation_summary: {
+    total_unknown_attempts: number;
+    reconciled_confirmed: number;
+    reconciled_failed: number;
+    still_unknown: number;
   };
 }
 

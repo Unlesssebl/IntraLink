@@ -15,6 +15,8 @@ import {
   reanalyzeTask,
   confirmExecutionJob,
   createResponseVariant,
+  sendDecisionFeedback,
+  safeRandomUUID,
 } from '../../lib/tasks';
 import { submitDecisionFeedback, overrideTaskFacts } from '../../lib/decisionsApi';
 import {
@@ -121,6 +123,7 @@ export interface UseUnifiedDecisionReturn {
     verdict: 'correct' | 'partial' | 'incorrect' | 'insufficient_data',
     reasonCode?: string
   ) => Promise<void>;
+  handleRejectRecommendation: (reasonCode: string, comment?: string) => Promise<void>;
   insertSnippet: (snippet: string) => void;
 }
 
@@ -271,6 +274,7 @@ export function useUnifiedDecision({
   const [currentVariantId, setCurrentVariantId] = useState<string | null>(null);
   const [isGeneratingVariant, setIsGeneratingVariant] = useState<boolean>(false);
   const variantCacheRef = useRef<Map<ResponseTone, DecisionResponseVariant>>(new Map());
+  const currentRequestIdRef = useRef<string | null>(null);
 
   const [ticketRun, setTicketRun] = useState<TicketRun | null>(null);
   const [runEvents, setRunEvents] = useState<TicketRunEvent[]>([]);
@@ -366,7 +370,10 @@ export function useUnifiedDecision({
         return;
       }
 
-      await applyTask(rawId, {
+      const requestId = currentRequestIdRef.current || safeRandomUUID();
+      currentRequestIdRef.current = requestId;
+
+      const res = await applyTask(rawId, {
         status_id: targetStatusId,
         comment: replyText,
         minutes: expenses,
@@ -375,7 +382,18 @@ export function useUnifiedDecision({
         decision_version: decision?.version,
         ticket_run_id: ticketRun?.id,
         response_variant_id: currentVariantId || undefined,
+        request_id: requestId,
       });
+
+      // При успешном исходе сбрасываем сохраненный request_id
+      currentRequestIdRef.current = null;
+
+      if (res?.outcome === 'unknown') {
+        onToast({
+          type: 'warning',
+          message: 'Статус операции неизвестен (таймаут сети). Рекомендуется проверка заявки.',
+        });
+      }
 
       // Очищаем локальные буферы черновиков
       sessionStorage.removeItem(getDraftKey(rawId, 'reply'));
@@ -728,6 +746,44 @@ export function useUnifiedDecision({
     [details?.decision?.id, onToast]
   );
 
+  const handleRejectRecommendation = useCallback(
+    async (reasonCode: string, comment?: string) => {
+      const decision = details?.decision;
+      if (!rawId || !decision?.id) {
+        onToast({
+          type: 'warning',
+          message: 'Решение ещё не сформировано на сервере',
+        });
+        return;
+      }
+      setSubmitting(true);
+      try {
+        await sendDecisionFeedback(rawId, {
+          decision_id: decision.id,
+          decision_version: decision.version || 1,
+          response_variant_id: currentVariantId || null,
+          event_id: safeRandomUUID(),
+          verdict: 'rejected',
+          reason_code: reasonCode,
+          comment: comment || null,
+        });
+        setFeedbackSubmitted(true);
+        onToast({
+          type: 'info',
+          message: 'Рекомендация отклонена. Причина зафиксирована для аудита качества.',
+        });
+      } catch (err: any) {
+        onToast({
+          type: 'error',
+          message: `Не удалось отклонить рекомендацию: ${err.message || err}`,
+        });
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [rawId, details?.decision, currentVariantId, onToast]
+  );
+
   // Резолюция параметров действия и валидации
   const decision = safeDetails?.decision;
   const envelope = safeDetails?.decision_envelope;
@@ -1046,6 +1102,7 @@ export function useUnifiedDecision({
     handleTogglePauseRun,
     handleSwitchRunMode,
     handleSubmitFeedback,
+    handleRejectRecommendation,
     insertSnippet,
   };
 }

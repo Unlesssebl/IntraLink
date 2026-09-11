@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import datetime as dt
 import json
 import logging
 import time
@@ -53,6 +54,8 @@ from app.services.decision_journal import (
 )
 from app.services.scenario_decision import ScenarioDecisionService
 from app.services.response_variant_service import ResponseVariantService
+from app.services.decision_trace import DecisionExecutionTrace
+from app.services.decision_application_service import DecisionApplicationService
 
 from app.services.host_telemetry import (  # noqa: F401
     get_task_telemetry,
@@ -74,6 +77,13 @@ get_skipped_task_ids = TriageSessionManager.get_skipped_task_ids
 # ---------------------------------------------------------------------------
 # Pydantic Модели запросов / ответов
 # ---------------------------------------------------------------------------
+
+
+class TaskDecisionBinding(BaseModel):
+    task_id: int
+    decision_id: uuid.UUID
+    decision_version: int
+    response_variant_id: uuid.UUID | None = None
 
 
 class ApplyTriageRequest(BaseModel):
@@ -109,6 +119,35 @@ class ApplyTriageRequest(BaseModel):
     response_variant_id: str | None = Field(
         None, description="ID примененного варианта ответа"
     )
+    request_id: uuid.UUID | None = Field(
+        None, description="Глобально уникальный ID запроса на применение (идемпотентность)"
+    )
+    feedback_reason_code: str | None = Field(
+        None, description="Явный код причины от оператора"
+    )
+    feedback_comment: str | None = Field(
+        None, max_length=2000, description="Замечание оператора к решению"
+    )
+    decision_bindings: list[TaskDecisionBinding] | None = Field(
+        None, description="Пакетные привязки решений по каждой заявке"
+    )
+
+
+class DecisionExplicitFeedbackRequest(BaseModel):
+    decision_id: uuid.UUID = Field(..., description="ID зафиксированного решения")
+    decision_version: int = Field(..., ge=1, description="Серверно проверенная версия решения")
+    response_variant_id: uuid.UUID | None = Field(
+        None, description="ID выбранного варианта ответа (если применимо)"
+    )
+    event_id: uuid.UUID = Field(..., description="Клиентский UUID события для дедупликации")
+    verdict: Literal["rejected", "commented"] = Field(
+        ..., description="Вердикт явного фидбека: rejected или commented"
+    )
+    reason_code: str | None = Field(
+        None,
+        description="Код причины из словаря",
+    )
+    comment: str | None = Field(None, max_length=2000, description="Замечание оператора")
 
 
 class CreateResponseVariantRequest(BaseModel):
@@ -206,9 +245,13 @@ async def attach_durable_decision(
     actor: str,
     analysis_fence: int,
     force: bool = False,
+    trace: DecisionExecutionTrace | None = None,
+    rag_metadata: dict[str, Any] | None = None,
 ) -> DecisionRecord:
     journal = DecisionJournalService(db)
     decision_id, decision_version = await journal.next_identity(task_id)
+    if trace is None:
+        trace = DecisionExecutionTrace()
     envelope = await ScenarioDecisionService(db).analyze(
         task=card.get("task") or {},
         comments=card.get("history") or [],
@@ -216,12 +259,15 @@ async def attach_durable_decision(
         kb_matches=card.get("kb_matches") or [],
         decision_id=str(decision_id),
         decision_version=decision_version,
+        trace=trace,
+        rag_metadata=rag_metadata,
     )
     record = await journal.record_envelope(
         task_id=task_id,
         task=card.get("task") or {},
         history=card.get("history") or [],
         envelope=envelope,
+        steps=trace.to_steps(),
         analysis_fence=analysis_fence,
         actor=actor,
         force=force,
@@ -356,6 +402,7 @@ async def run_explicit_analysis(
 ) -> dict[str, Any]:
     redis, lock_key, owner, fence = await acquire_analysis_lease(task_id)
     snapshot: dict[str, Any] | None = None
+    trace = DecisionExecutionTrace()
     try:
         snapshot = await TriageService.get_task_card_snapshot(service_auth_b64, task_id)
         if snapshot is None:
@@ -394,6 +441,8 @@ async def run_explicit_analysis(
         ]
         rag_query = " ".join(p for p in query_parts if p).strip()
         kb_matches: list[dict[str, Any]] = []
+        rag_metadata = {"query": rag_query, "origin": "live"}
+        rag_start = time.monotonic()
         if rag_query:
             try:
                 kb_matches = await asyncio.wait_for(
@@ -405,11 +454,20 @@ async def run_explicit_analysis(
                     ),
                     timeout=2.5,
                 )
+                rag_metadata["duration_ms"] = round((time.monotonic() - rag_start) * 1000.0, 2)
+                rag_metadata["status"] = "succeeded"
             except Exception as e:
+                rag_metadata["duration_ms"] = round((time.monotonic() - rag_start) * 1000.0, 2)
+                rag_metadata["status"] = "failed"
+                rag_metadata["error_code"] = "rag_timeout" if isinstance(e, asyncio.TimeoutError) else "rag_error"
                 logger.warning(
                     "RAG retrieval timed out or failed for task %s: %s", task_id, e
                 )
                 kb_matches = []
+        else:
+            rag_metadata["status"] = "succeeded"
+            rag_metadata["duration_ms"] = 0.0
+
         card["kb_matches"] = kb_matches
 
         source_fingerprint = ticket_snapshot_fingerprint(
@@ -431,18 +489,22 @@ async def run_explicit_analysis(
             actor=actor,
             analysis_fence=fence,
             force=force,
+            trace=trace,
+            rag_metadata=rag_metadata,
         )
         return card
     except HTTPException as exc:
         if exc.detail not in {"ticket_not_found", "analysis_lease_lost"} and snapshot:
             try:
                 if await redis.get(lock_key) == owner:
+                    trace.mark_remaining_skipped(reason=str(exc.detail))
                     await DecisionJournalService(db).record_triage_failure(
                         task_id=task_id,
                         task=snapshot["task"],
                         history=snapshot["history"],
                         error_code=str(exc.detail),
                         actor=actor,
+                        steps=trace.to_steps(),
                     )
             except Exception:
                 logger.exception(
@@ -453,12 +515,14 @@ async def run_explicit_analysis(
         if snapshot:
             try:
                 if await redis.get(lock_key) == owner:
+                    trace.mark_remaining_skipped(reason="analysis_failed")
                     await DecisionJournalService(db).record_triage_failure(
                         task_id=task_id,
                         task=snapshot["task"],
                         history=snapshot["history"],
                         error_code="analysis_failed",
                         actor=actor,
+                        steps=trace.to_steps(),
                     )
             except Exception:
                 logger.exception(
@@ -1139,75 +1203,34 @@ async def apply_triage_action(
             )
 
     op_user_id = extract_operator_user_id(authorization, admin_session)
-    decision_by_task: dict[int, DecisionRecord] = {}
-    if not payload.dry_run:
-        journal = DecisionJournalService(db)
-        if payload.decision_id is not None:
-            if len(payload.task_ids) != 1 or payload.decision_version is None:
-                raise HTTPException(
-                    status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    "decision_version_required_for_single_task",
-                )
-            try:
-                parsed_decision_id = uuid.UUID(payload.decision_id)
-            except ValueError as exc:
-                raise HTTPException(
-                    status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_decision_id"
-                ) from exc
-            decision_by_task[payload.task_ids[0]] = await journal.require_current(
-                decision_id=parsed_decision_id,
-                task_id=payload.task_ids[0],
-                version=payload.decision_version,
-            )
-            current_task = await intraservice.get_single_task(
-                service_auth_b64, payload.task_ids[0]
-            )
-            current_history_payload = await intraservice.get_task_lifetime(
-                service_auth_b64, payload.task_ids[0]
-            )
-            current_history = (
-                current_history_payload.get("TaskLifetimes", [])
-                if isinstance(current_history_payload, dict)
-                else (current_history_payload or [])
-            )
-            expected_fingerprint = decision_by_task[
-                payload.task_ids[0]
-            ].context_json.get("ticket_fingerprint")
-            if not current_task or expected_fingerprint != ticket_snapshot_fingerprint(
-                current_task, current_history
-            ):
-                raise HTTPException(status.HTTP_409_CONFLICT, "decision_stale")
-        else:
-            for task_id in payload.task_ids:
-                decision_by_task[task_id] = await journal.record_operational(
-                    task_id=task_id,
-                    ticket_run_id=None,
-                    action="apply_triage",
-                    target={"task_id": task_id},
-                    parameters={
-                        "status_id": payload.status_id,
-                        "comment": payload.comment,
-                        "expenses": payload.expenses,
-                        "executor_ids": payload.executor_ids,
-                    },
-                    actor=str(op_user_id or "operator"),
-                )
-            await db.commit()
-    results = await TriageService.apply_triage_resolution(
-        service_auth_b64=service_auth_b64,
-        db=db,
+    actor = principal_subject(authorization=authorization, admin_session=admin_session)
+
+    app_service = DecisionApplicationService(db)
+    res = await app_service.execute_apply(
+        request_id=payload.request_id,
         task_ids=payload.task_ids,
         status_id=payload.status_id,
         comment=payload.comment,
         expenses=payload.expenses,
         executor_ids=payload.executor_ids,
-        dry_run=payload.dry_run,
-        operator_user_id=op_user_id,
-        verified_execution_job_id=payload.verified_execution_job_id,
         is_private=payload.is_private,
+        dry_run=payload.dry_run,
+        confirmed_by_human=payload.confirmed_by_human,
+        verified_execution_job_id=payload.verified_execution_job_id,
+        actor=actor,
+        operator_user_id=op_user_id,
+        service_auth_b64=service_auth_b64,
+        decision_id=payload.decision_id,
+        decision_version=payload.decision_version,
+        response_variant_id=payload.response_variant_id,
+        decision_bindings=[b.model_dump() for b in payload.decision_bindings]
+        if payload.decision_bindings
+        else None,
+        feedback_reason_code=payload.feedback_reason_code,
+        feedback_comment=payload.feedback_comment,
     )
 
-    # Если ни одна задача не была успешно обновлена в IntraService, возвращаем ошибку клиенту
+    results = res.get("results") or []
     if (
         not payload.dry_run
         and results
@@ -1222,53 +1245,11 @@ async def apply_triage_action(
             detail=first_err,
         )
 
-    if not payload.dry_run:
-        redis = get_redis_client()
-        for result in results:
-            if result.get("update_ok"):
-                decision = decision_by_task.get(int(result["task_id"]))
-                if decision is not None:
-                    proposal = decision.proposal_json or {}
-                    proposed_parameters = proposal.get("parameters") or proposal
-                    proposed_comment = proposed_parameters.get("comment")
-                    proposed_status = proposed_parameters.get("status_id")
-                    verdict = (
-                        "accepted"
-                        if proposed_comment == payload.comment
-                        and proposed_status == payload.status_id
-                        else "modified"
-                    )
-                    await DecisionJournalService(db).add_feedback(
-                        decision_id=decision.id,
-                        verdict=verdict,
-                        reason_code=None,
-                        comment=None,
-                        final_action={
-                            "status_id": payload.status_id,
-                            "comment": payload.comment,
-                            "expenses": payload.expenses,
-                        },
-                        actor=str(op_user_id or "operator"),
-                    )
-
-        # Публикуем событие применения триажа в шину событий SSE
-        if results and any(r.get("update_ok", False) for r in results):
-            try:
-                event_payload = {
-                    "event": "triage_applied",
-                    "task_ids": payload.task_ids,
-                    "status_id": payload.status_id,
-                    "operator_user_id": op_user_id,
-                    "timestamp": time.time(),
-                }
-                await redis.publish(
-                    "events:all", json.dumps(event_payload, ensure_ascii=False)
-                )
-            except Exception as ex:
-                logger.debug(
-                    "Не удалось опубликовать событие triage_applied в Redis: %s", ex
-                )
-    return {"results": results}
+    return {
+        "results": results,
+        "request_id": res.get("request_id"),
+        "simulated": res.get("simulated", False),
+    }
 
 
 @router.get("/duplicates", status_code=status.HTTP_200_OK)
@@ -1496,3 +1477,209 @@ async def get_feedback_review_endpoint(
             for feedback, decision in entries
         ],
     }
+
+
+@router.post("/tasks/{task_id}/decision-feedback", status_code=status.HTTP_200_OK)
+async def submit_explicit_feedback(
+    task_id: int,
+    payload: DecisionExplicitFeedbackRequest,
+    actor: str = Depends(principal_subject),
+    _permission=Depends(require_permission("triage:mutate")),
+    _origin: None = Depends(verify_trusted_origin),
+    db: AsyncSession = Depends(get_db),
+):
+    decision = await db.get(DecisionRecord, payload.decision_id)
+    if decision is None or decision.task_id != task_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "decision_not_found_for_task")
+
+    if decision.version != payload.decision_version:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "decision_version_mismatch",
+        )
+
+    if payload.response_variant_id is not None:
+        from app.database.db import DecisionResponseVariant
+        variant = await db.scalar(
+            select(DecisionResponseVariant).where(
+                DecisionResponseVariant.id == payload.response_variant_id,
+                DecisionResponseVariant.decision_id == payload.decision_id,
+            )
+        )
+        if variant is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "response_variant_not_found_for_decision",
+            )
+
+    journal = DecisionJournalService(db)
+    feedback = await journal.add_feedback(
+        decision_id=payload.decision_id,
+        verdict=payload.verdict,
+        operator_reason_code=payload.reason_code,
+        comment=payload.comment,
+        actor=actor,
+        source="explicit_feedback",
+        attempt_id=None,
+        event_id=payload.event_id,
+        decision_version=payload.decision_version,
+        task_id=task_id,
+        response_variant_id=payload.response_variant_id,
+        commit=True,
+    )
+    return {
+        "id": str(feedback.id),
+        "decision_id": str(feedback.decision_id),
+        "decision_version": feedback.decision_version,
+        "task_id": feedback.task_id,
+        "verdict": feedback.verdict,
+        "reason_code": feedback.reason_code,
+        "reason_source": feedback.reason_source,
+        "operator_reason_code": feedback.operator_reason_code,
+        "comment": feedback.comment,
+        "source": feedback.source,
+        "created_at": feedback.created_at.isoformat() if feedback.created_at else None,
+    }
+
+
+class ReconcileAttemptRequest(BaseModel):
+    expected_version: int | None = Field(
+        None, description="Ожидаемая версия попытки для защиты от гонок"
+    )
+
+
+@router.get("/application-requests/{request_id}", status_code=status.HTTP_200_OK)
+async def get_application_request_details(
+    request_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _permission=Depends(require_permission("triage:read")),
+):
+    from app.database.db import DecisionApplicationRequest, DecisionApplicationAttempt
+
+    req = await db.get(DecisionApplicationRequest, request_id)
+    if req is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "request_not_found")
+
+    attempts = list(
+        (
+            await db.scalars(
+                select(DecisionApplicationAttempt).where(
+                    DecisionApplicationAttempt.request_id == req.id
+                )
+            )
+        ).all()
+    )
+
+    return {
+        "request_id": str(req.id),
+        "actor": req.actor,
+        "request_hash": req.request_hash,
+        "total_tasks": req.total_tasks,
+        "created_at": req.created_at.isoformat() if req.created_at else None,
+        "attempts": [
+            {
+                "id": str(att.id),
+                "task_id": att.task_id,
+                "decision_id": str(att.decision_id) if att.decision_id else None,
+                "actor": att.actor,
+                "source": att.source,
+                "state": att.state,
+                "attempt_number": att.attempt_number,
+                "version": att.version,
+                "suboperations": att.suboperations_json,
+                "requested_action": att.requested_action_json,
+                "proposed_action": att.proposed_action_json,
+                "created_at": att.created_at.isoformat() if att.created_at else None,
+                "completed_at": att.completed_at.isoformat() if att.completed_at else None,
+            }
+            for att in attempts
+        ],
+    }
+
+
+@router.get("/application-attempts", status_code=status.HTTP_200_OK)
+async def list_application_attempts(
+    state: str | None = Query(None, description="Фильтр состояния: pending, running, succeeded, partial_failure, failed, unknown"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    _permission=Depends(require_permission("triage:read")),
+):
+    from app.database.db import DecisionApplicationAttempt
+    stmt = select(DecisionApplicationAttempt)
+    if state:
+        stmt = stmt.where(DecisionApplicationAttempt.state == state)
+    stmt = stmt.order_by(desc(DecisionApplicationAttempt.created_at)).offset(offset).limit(limit)
+    attempts = list((await db.scalars(stmt)).all())
+
+    return {
+        "items": [
+            {
+                "id": str(att.id),
+                "request_id": str(att.request_id),
+                "task_id": att.task_id,
+                "decision_id": str(att.decision_id) if att.decision_id else None,
+                "actor": att.actor,
+                "source": att.source,
+                "state": att.state,
+                "attempt_number": att.attempt_number,
+                "version": att.version,
+                "suboperations": att.suboperations_json,
+                "created_at": att.created_at.isoformat() if att.created_at else None,
+                "completed_at": att.completed_at.isoformat() if att.completed_at else None,
+            }
+            for att in attempts
+        ],
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.post("/application-attempts/{attempt_id}/reconcile", status_code=status.HTTP_200_OK)
+async def reconcile_application_attempt(
+    attempt_id: uuid.UUID,
+    payload: ReconcileAttemptRequest = ReconcileAttemptRequest(),
+    actor: str = Depends(principal_subject),
+    service_auth_b64: str = Depends(get_service_auth_b64),
+    _permission=Depends(require_permission("triage:mutate")),
+    _origin: None = Depends(verify_trusted_origin),
+    db: AsyncSession = Depends(get_db),
+):
+    app_service = DecisionApplicationService(db)
+    return await app_service.reconcile_attempt(
+        attempt_id=attempt_id,
+        expected_version=payload.expected_version,
+        actor=actor,
+        service_auth_b64=service_auth_b64,
+    )
+
+
+@router.get("/analytics/quality", status_code=status.HTTP_200_OK)
+async def get_decision_quality_analytics(
+    days: int = Query(30, ge=1, le=365, description="Окно аналитики в днях"),
+    start_date: dt.datetime | None = Query(None, description="Начало интервала включительно (UTC ISO datetime)"),
+    end_date: dt.datetime | None = Query(None, description="Конец интервала исключительно (UTC ISO datetime)"),
+    scenario_key: str | None = Query(None, description="Фильтр сценария"),
+    scenario_version: int | None = Query(None, description="Фильтр версии сценария"),
+    analysis_revision: str | None = Query(None, description="Фильтр ревизии анализа"),
+    _permission=Depends(require_permission("triage:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.decision_analytics import DecisionFeedbackAnalyticsService
+
+    if not end_date:
+        end_date = dt.datetime.now(dt.timezone.utc)
+    if not start_date:
+        start_date = end_date - dt.timedelta(days=days)
+
+    analytics_service = DecisionFeedbackAnalyticsService(db)
+    return await analytics_service.get_quality_metrics(
+        start_date=start_date,
+        end_date=end_date,
+        scenario_key=scenario_key,
+        scenario_version=scenario_version,
+        analysis_revision=analysis_revision,
+    )
+
+
+
