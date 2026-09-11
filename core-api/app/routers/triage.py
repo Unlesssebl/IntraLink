@@ -1160,6 +1160,7 @@ async def apply_triage_action(
     db: AsyncSession = Depends(get_db),
     authorization: str | None = Header(None, alias="Authorization"),
     admin_session: str | None = Cookie(None),
+    actor: str = Depends(principal_subject),
 ):
     """Атомарное применение решения к группе заявок (с защитой Dead Man's Switch)."""
     if not payload.task_ids:
@@ -1203,7 +1204,6 @@ async def apply_triage_action(
             )
 
     op_user_id = extract_operator_user_id(authorization, admin_session)
-    actor = principal_subject(authorization=authorization, admin_session=admin_session)
 
     app_service = DecisionApplicationService(db)
     res = await app_service.execute_apply(

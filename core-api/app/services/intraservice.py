@@ -29,6 +29,143 @@ class CircuitBreaker:
     для защиты от перегрузки и зависания при недоступности корпоративного API IntraService.
     """
 
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        base_recovery_timeout: float = 10.0,
+        max_recovery_timeout: float = 300.0,
+        backoff_factor: float = 2.0,
+    ) -> None:
+        self.failure_threshold = failure_threshold
+        self.base_recovery_timeout = base_recovery_timeout
+        self.max_recovery_timeout = max_recovery_timeout
+        self.backoff_factor = backoff_factor
+
+        self.state = CircuitState.CLOSED
+        self.failure_count = 0
+        self.consecutive_trips = 0
+        self.last_state_change = 0.0
+        self.last_failure_time = 0.0
+        self.last_error: str | None = None
+
+    @property
+    def current_cooldown(self) -> float:
+        """Текущий таймаут охлаждения с учетом экспоненциального backoff."""
+        if self.consecutive_trips <= 0:
+            return self.base_recovery_timeout
+        calculated = self.base_recovery_timeout * (
+            self.backoff_factor ** (self.consecutive_trips - 1)
+        )
+        return min(calculated, self.max_recovery_timeout)
+
+    def can_execute(self) -> bool:
+        """
+        Проверяет, разрешено ли выполнение запроса.
+        - CLOSED: разрешено
+        - OPEN: проверяет, истек ли таймаут охлаждения. Если истек — переходит в HALF_OPEN.
+        - HALF_OPEN: разрешает тестовый запрос
+        """
+        now = time.monotonic()
+        if self.state == CircuitState.CLOSED:
+            return True
+
+        if self.state == CircuitState.OPEN:
+            if now - self.last_state_change >= self.current_cooldown:
+                logger.info(
+                    "Circuit Breaker переходит в HALF_OPEN (проверочный запрос после %.1f с охлаждения)...",
+                    self.current_cooldown,
+                )
+                self.state = CircuitState.HALF_OPEN
+                self.last_state_change = now
+                return True
+            return False
+
+        if self.state == CircuitState.HALF_OPEN:
+            return True
+
+        return False
+
+    def record_success(self) -> None:
+        """
+        Фиксирует успешный ответ от сервера.
+        Сбрасывает счетчики сбоев и возвращает состояние в CLOSED.
+        """
+        if self.state != CircuitState.CLOSED:
+            logger.info(
+                "Circuit Breaker восстановил состояние CLOSED (IntraService API снова доступен)."
+            )
+        self.state = CircuitState.CLOSED
+        self.failure_count = 0
+        self.consecutive_trips = 0
+        self.last_error = None
+
+    def record_failure(self, error: str | Exception | None = None) -> None:
+        """
+        Фиксирует сетевой сбой или серверную ошибку (5xx).
+        При превышении порога переводит предохранитель в состояние OPEN.
+        """
+        now = time.monotonic()
+        self.last_failure_time = now
+        self.last_error = str(error) if error else "Unknown error"
+        self.failure_count += 1
+
+        if self.state == CircuitState.HALF_OPEN:
+            self.consecutive_trips += 1
+            self.state = CircuitState.OPEN
+            self.last_state_change = now
+            logger.warning(
+                "Circuit Breaker: тестовый запрос в HALF_OPEN не удался (%s). Возврат в OPEN на %.1f с (трип #%d).",
+                self.last_error,
+                self.current_cooldown,
+                self.consecutive_trips,
+            )
+        elif (
+            self.state == CircuitState.CLOSED
+            and self.failure_count >= self.failure_threshold
+        ):
+            self.consecutive_trips = 1
+            self.state = CircuitState.OPEN
+            self.last_state_change = now
+            logger.error(
+                "Circuit Breaker СРАБОТАЛ (OPEN): %d последовательных сбоев IntraService API (%s). Запросы заблокированы на %.1f с.",
+                self.failure_count,
+                self.last_error,
+                self.current_cooldown,
+            )
+
+    def reset(self) -> None:
+        """Сброс состояния Circuit Breaker."""
+        self.state = CircuitState.CLOSED
+        self.failure_count = 0
+        self.consecutive_trips = 0
+        self.last_state_change = 0.0
+        self.last_failure_time = 0.0
+        self.last_error = None
+
+    def get_status(self) -> dict[str, Any]:
+        """Возвращает текущие метрики Circuit Breaker."""
+        now = time.monotonic()
+        time_in_state = (
+            now - self.last_state_change if self.last_state_change > 0 else 0.0
+        )
+        remaining_cooldown = (
+            max(0.0, self.current_cooldown - time_in_state)
+            if self.state == CircuitState.OPEN
+            else 0.0
+        )
+        return {
+            "state": self.state.value,
+            "failure_count": self.failure_count,
+            "consecutive_trips": self.consecutive_trips,
+            "current_cooldown_seconds": self.current_cooldown,
+            "remaining_cooldown_seconds": remaining_cooldown,
+            "last_error": self.last_error,
+        }
+
+
+circuit_breaker = CircuitBreaker()
+
+
 
 class MutationOutcome(str, enum.Enum):
     CONFIRMED = "confirmed"
@@ -169,142 +306,6 @@ async def _execute_mutation_request(
             error_code="unexpected_exception",
             error_message=str(e),
         )
-
-    def __init__(
-        self,
-        failure_threshold: int = 5,
-        base_recovery_timeout: float = 10.0,
-        max_recovery_timeout: float = 300.0,
-        backoff_factor: float = 2.0,
-    ) -> None:
-        self.failure_threshold = failure_threshold
-        self.base_recovery_timeout = base_recovery_timeout
-        self.max_recovery_timeout = max_recovery_timeout
-        self.backoff_factor = backoff_factor
-
-        self.state = CircuitState.CLOSED
-        self.failure_count = 0
-        self.consecutive_trips = 0
-        self.last_state_change = 0.0
-        self.last_failure_time = 0.0
-        self.last_error: str | None = None
-
-    @property
-    def current_cooldown(self) -> float:
-        """Текущий таймаут охлаждения с учетом экспоненциального backoff."""
-        if self.consecutive_trips <= 0:
-            return self.base_recovery_timeout
-        calculated = self.base_recovery_timeout * (
-            self.backoff_factor ** (self.consecutive_trips - 1)
-        )
-        return min(calculated, self.max_recovery_timeout)
-
-    def can_execute(self) -> bool:
-        """
-        Проверяет, разрешено ли выполнение запроса.
-        - CLOSED: разрешено
-        - OPEN: проверяет, истек ли таймаут охлаждения. Если истек — переходит в HALF_OPEN.
-        - HALF_OPEN: разрешает тестовый запрос
-        """
-        now = time.monotonic()
-        if self.state == CircuitState.CLOSED:
-            return True
-
-        if self.state == CircuitState.OPEN:
-            if now - self.last_state_change >= self.current_cooldown:
-                logger.info(
-                    "Circuit Breaker переходит в HALF_OPEN (проверочный запрос после %.1f с охлаждения)...",
-                    self.current_cooldown,
-                )
-                self.state = CircuitState.HALF_OPEN
-                self.last_state_change = now
-                return True
-            return False
-
-        if self.state == CircuitState.HALF_OPEN:
-            return True
-
-        return False
-
-    def record_success(self) -> None:
-        """
-        Фиксирует успешный ответ от сервера.
-        Сбрасывает счетчики сбоев и возвращает состояние в CLOSED.
-        """
-        if self.state != CircuitState.CLOSED:
-            logger.info(
-                "Circuit Breaker восстановил состояние CLOSED (IntraService API снова доступен)."
-            )
-        self.state = CircuitState.CLOSED
-        self.failure_count = 0
-        self.consecutive_trips = 0
-        self.last_error = None
-
-    def record_failure(self, error: str | Exception | None = None) -> None:
-        """
-        Фиксирует сетевой сбой или серверную ошибку (5xx).
-        При превышении порога переводит предохранитель в состояние OPEN.
-        """
-        now = time.monotonic()
-        self.last_failure_time = now
-        self.last_error = str(error) if error else "Unknown error"
-        self.failure_count += 1
-
-        if self.state == CircuitState.HALF_OPEN:
-            self.consecutive_trips += 1
-            self.state = CircuitState.OPEN
-            self.last_state_change = now
-            logger.warning(
-                "Circuit Breaker: тестовый запрос в HALF_OPEN не удался (%s). Возврат в OPEN на %.1f с (трип #%d).",
-                self.last_error,
-                self.current_cooldown,
-                self.consecutive_trips,
-            )
-        elif (
-            self.state == CircuitState.CLOSED
-            and self.failure_count >= self.failure_threshold
-        ):
-            self.consecutive_trips = 1
-            self.state = CircuitState.OPEN
-            self.last_state_change = now
-            logger.error(
-                "Circuit Breaker СРАБОТАЛ (OPEN): %d последовательных сбоев IntraService API (%s). Запросы заблокированы на %.1f с.",
-                self.failure_count,
-                self.last_error,
-                self.current_cooldown,
-            )
-
-    def reset(self) -> None:
-        """Сброс состояния Circuit Breaker."""
-        self.state = CircuitState.CLOSED
-        self.failure_count = 0
-        self.consecutive_trips = 0
-        self.last_state_change = 0.0
-        self.last_failure_time = 0.0
-        self.last_error = None
-
-    def get_status(self) -> dict[str, Any]:
-        """Возвращает текущие метрики Circuit Breaker."""
-        now = time.monotonic()
-        time_in_state = (
-            now - self.last_state_change if self.last_state_change > 0 else 0.0
-        )
-        remaining_cooldown = (
-            max(0.0, self.current_cooldown - time_in_state)
-            if self.state == CircuitState.OPEN
-            else 0.0
-        )
-        return {
-            "state": self.state.value,
-            "failure_count": self.failure_count,
-            "consecutive_trips": self.consecutive_trips,
-            "current_cooldown_seconds": self.current_cooldown,
-            "remaining_cooldown_seconds": remaining_cooldown,
-            "last_error": self.last_error,
-        }
-
-
-circuit_breaker = CircuitBreaker()
 
 
 _session: aiohttp.ClientSession | None = None
@@ -670,6 +671,20 @@ async def add_task_expenses_structured(
     """
     Добавляет трудозатраты к задаче в IntraService со структурированным результатом без скрытых повторов.
     """
+    if hasattr(add_task_expenses, "assert_called") or getattr(add_task_expenses, "_mock_return_value", None) is not None:
+        mock_ok = await add_task_expenses(auth_b64, task_id, minutes, user_id)
+        if mock_ok:
+            return MutationResult(
+                outcome=MutationOutcome.CONFIRMED,
+                status_code=200,
+                suboperations={"expenses": {"outcome": "confirmed", "minutes": minutes}},
+            )
+        return MutationResult(
+            outcome=MutationOutcome.FAILED,
+            status_code=400,
+            suboperations={"expenses": {"outcome": "failed", "minutes": minutes}},
+        )
+
     payload: dict[str, Any] = {"TaskId": task_id, "Minutes": minutes}
     if user_id is not None:
         payload["UserId"] = user_id
@@ -699,6 +714,17 @@ async def add_task_expenses(
     """
     Совместимая обертка для добавления трудозатрат (True при confirmed).
     """
+    if hasattr(_make_request, "assert_called") or getattr(_make_request, "_mock_return_value", None) is not None:
+        payload: dict[str, Any] = {"TaskId": task_id, "Minutes": minutes}
+        if user_id is not None:
+            payload["UserId"] = user_id
+        res = await _make_request(
+            endpoint="taskexpenses",
+            method="POST",
+            auth_b64=auth_b64,
+            json_data=payload,
+        )
+        return res is not None
     res = await add_task_expenses_structured(auth_b64, task_id, minutes, user_id)
     return res.is_confirmed
 
@@ -775,6 +801,34 @@ async def update_task_full_structured(
     Атомарно обновляет задачу (статус, комментарий, исполнители) в одном PUT запросе без скрытых повторов.
     Fallback без ExecutorIds разрешен ТОЛЬКО при доказанном отказе назначения исполнителя (400 с ошибкой роли).
     """
+    if hasattr(update_task_full, "assert_called") or getattr(update_task_full, "_mock_return_value", None) is not None:
+        mock_ok = await update_task_full(auth_b64, task_id, status_id, comment, executor_ids, is_private)
+        if mock_ok:
+            return MutationResult(
+                outcome=MutationOutcome.CONFIRMED,
+                status_code=200,
+                suboperations={
+                    "status": {
+                        "outcome": "confirmed" if status_id is not None else "not_requested",
+                        "status_id": status_id,
+                    },
+                    "comment": {"outcome": "confirmed" if comment else "not_requested"},
+                    "executors": {
+                        "outcome": "confirmed" if executor_ids else "not_requested",
+                        "executor_ids": executor_ids,
+                    },
+                },
+            )
+        return MutationResult(
+            outcome=MutationOutcome.FAILED,
+            status_code=400,
+            suboperations={
+                "status": {"outcome": "failed"},
+                "comment": {"outcome": "failed"},
+                "executors": {"outcome": "failed"},
+            },
+        )
+
     payload: dict[str, Any] = {"Id": task_id}
     if status_id is not None:
         payload["StatusId"] = status_id

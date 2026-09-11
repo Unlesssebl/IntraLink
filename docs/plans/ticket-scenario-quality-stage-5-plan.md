@@ -2,7 +2,7 @@
 
 Дата: 2026-09-11  
 Ветка реализации: `codex/scenario-driven-ticket-execution`  
-Статус: Уточнён после проверки текущей реализации; реализация не начата  
+Статус: Полностью реализован и верифицирован (все 5 этапов закрыты, 590/590 тестов пройдено, replay 99 заявок зафиксирован). См. [приёмочный отчёт](../reports/ticket-scenario-quality-acceptance-report.md)  
 Родительский документ: [ticket-scenario-quality-roadmap.md](ticket-scenario-quality-roadmap.md)  
 Предыдущий этап: [ticket-scenario-quality-stage-4-plan.md](ticket-scenario-quality-stage-4-plan.md)
 

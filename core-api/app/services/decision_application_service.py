@@ -369,6 +369,7 @@ class DecisionApplicationService:
                 if is_recommendation
                 else "manual_apply",
                 state="pending",
+                version=1,
                 requested_action_json=sanitize_payload(requested_action),
                 proposed_action_json=sanitize_payload(proposed_action),
                 suboperations_json={},
@@ -465,7 +466,7 @@ class DecisionApplicationService:
         attempt.state = "running"
         attempt.claim_token = claim_token
         attempt.lease_expires_at = now + lease_duration
-        attempt.version += 1
+        attempt.version = (attempt.version or 0) + 1
         await self.db.commit()
 
         # 1. Проверка условий финализации для статуса 29
@@ -711,7 +712,7 @@ class DecisionApplicationService:
         attempt.lease_expires_at = None
         attempt.suboperations_json = sanitize_payload(suboperations)
         attempt.completed_at = now
-        attempt.version += 1
+        attempt.version = (attempt.version or 0) + 1
 
         # Определение статуса проекции DecisionApplication
         is_manual = attempt.source == "manual_apply"
@@ -1021,7 +1022,7 @@ class DecisionApplicationService:
         if reconciled_state != "unknown":
             attempt.state = reconciled_state
             attempt.completed_at = now
-            attempt.version += 1
+            attempt.version = (attempt.version or 0) + 1
             subops = attempt.suboperations_json or {}
             subops["reconciliation"] = {
                 "reconciled_at": now.isoformat(),
