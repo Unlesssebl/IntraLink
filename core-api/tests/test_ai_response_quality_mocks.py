@@ -293,6 +293,7 @@ async def test_quality_red_circuit_credentials_isolation():
 async def test_quality_vague_request_clarification():
     """Проверяет корректность формирования запроса уточнения для неинформативных заявок."""
     from app.services.ai_synthesis import synthesize_clarification_comment
+    from app.services.ai.schemas import RoutedInferenceResponse, DataCircuit
 
     task = {
         "Id": 141008,
@@ -301,11 +302,25 @@ async def test_quality_vague_request_clarification():
         "ServiceId": 71,
     }
 
-    clarification = await synthesize_clarification_comment(task)
-    assert_no_emojis(clarification)
-    assert "Здравствуйте!" in clarification
-    # Должен запросить уточнение симптомов
-    assert any(w in clarification.lower() for w in ["уточните", "подскажите", "сообщите", "опишите"])
+    # 1. Проверка успешной генерации с моком AI Hub
+    with patch("app.services.ai_synthesis.ai_hub.dispatch_routed_inference", new_callable=AsyncMock) as mock_ai:
+        mock_ai.return_value = RoutedInferenceResponse(
+            text="Здравствуйте! Уточните, пожалуйста, код ошибки и ваш кабинет для диагностики.",
+            circuit=DataCircuit.YELLOW,
+            model="intralink-chat",
+            actual_backend="litellm",
+        )
+        clarification = await synthesize_clarification_comment(task)
+        assert_no_emojis(clarification)
+        assert "Здравствуйте!" in clarification
+        assert any(w in clarification.lower() for w in ["уточните", "подскажите", "сообщите", "опишите"])
+
+    # 2. Проверка детерминированного fallback при сбое инференса AI
+    with patch("app.services.ai_synthesis.ai_hub.dispatch_routed_inference", side_effect=RuntimeError("LLM unavailable")):
+        fallback_clarification = await synthesize_clarification_comment(task)
+        assert_no_emojis(fallback_clarification)
+        assert "Здравствуйте!" in fallback_clarification
+        assert any(w in fallback_clarification.lower() for w in ["уточните", "подскажите", "сообщите", "опишите"])
 
 
 # ==============================================================================

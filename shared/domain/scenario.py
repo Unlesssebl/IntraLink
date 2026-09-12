@@ -264,6 +264,10 @@ class DecisionRoutingInfo(StrictModel):
     runner_up_score: float = 0.0
     reasons: list[str] = Field(default_factory=list)
     is_ambiguous: bool = False
+    semantic_candidate_key: str | None = None
+    semantic_score: float | None = None
+    semantic_mode: str | None = None
+    semantic_divergence: bool = False
 
 
 class CandidateOutcome(StrictModel):
@@ -315,7 +319,7 @@ class ResponseProvenance(StrictModel):
 class DecisionResponse(StrictModel):
     schema_version: Literal[1] = 1
     text: str = Field(default="", max_length=900)
-    mode: Literal["template", "llm", "fallback", "none"] = "none"
+    mode: Literal["template", "llm", "fallback", "none", "emergency_draft"] = "none"
     state: Literal["valid", "fallback", "invalid"] = "invalid"
     violations: list[str] = Field(default_factory=list)
     used_evidence_refs: list[str] = Field(default_factory=list)

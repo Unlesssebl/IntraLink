@@ -168,10 +168,49 @@ class AIHub:
         except Exception:
             return False
 
+    async def check_litellm_model_registered(
+        self, timeout_sec: float = 2.0
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Проверяет регистрацию сконфигурированного alias модели в LiteLLM Proxy.
+        Не выполняет дорогой инференс, только опрос эндпоинта /v1/models с Bearer-авторизацией.
+        """
+        url = f"{self.litellm_url}/models"
+        headers = {}
+        if settings.LITELLM_API_KEY:
+            headers["Authorization"] = f"Bearer {settings.LITELLM_API_KEY}"
+        try:
+            session = await self._get_session()
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout_sec)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    models = [m.get("id") for m in data.get("data", [])]
+                    target = settings.GEMINI_MODEL
+                    if target in models:
+                        return True, None
+                    return False, f"model_not_found:{target} (available: {', '.join(models)})"
+                return False, f"http_status_{resp.status}"
+        except Exception as exc:
+            return False, str(exc)
+
     async def get_health(self) -> AIHealthResponse:
         """Возвращает статус здоровья всех подключенных AI-бэкендов и GPU телеметрию."""
         ollama_ok = await self.is_ollama_available()
         litellm_ok = await self.is_litellm_available()
+
+        model_reg_ok = None
+        litellm_err = None
+        litellm_degraded = False
+
+        if litellm_ok:
+            model_reg_ok, litellm_err = await self.check_litellm_model_registered()
+            if not model_reg_ok:
+                litellm_degraded = True
+        else:
+            litellm_degraded = True
+            litellm_err = "litellm_proxy_unreachable"
 
         gpu_detected = False
         gpu_name = None
@@ -187,6 +226,10 @@ class AIHub:
             ollama_model=self.ollama_model,
             litellm_available=litellm_ok,
             litellm_url=self.litellm_url,
+            litellm_model=settings.GEMINI_MODEL,
+            litellm_model_registered=model_reg_ok,
+            litellm_degraded=litellm_degraded,
+            litellm_error=litellm_err,
             gpu_detected=gpu_detected,
             gpu_name=gpu_name,
             gpu_backend=gpu_backend,

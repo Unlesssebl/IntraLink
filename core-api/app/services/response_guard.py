@@ -97,6 +97,11 @@ def validate_response(
     return list(dict.fromkeys(violations))
 
 
+EMERGENCY_DRAFT_TEXT = (
+    "Здравствуйте! Для подготовки ответа на ваше обращение требуется дополнительная проверка."
+)
+
+
 def guarded_response(
     *,
     generated: GeneratedResponse | None,
@@ -157,10 +162,19 @@ def guarded_response(
             ),
             provenance=provenance,
         )
+
+    if provenance is not None:
+        provenance.source = "fallback_template"
+        provenance.fallback_used = True
+        if not provenance.fallback_reason_code:
+            provenance.fallback_reason_code = (
+                template_violations[0] if template_violations else "resolution_policy_unavailable"
+            )
+
     return DecisionResponse(
-        text="",
-        mode="none",
+        text=EMERGENCY_DRAFT_TEXT,
+        mode="emergency_draft",
         state="invalid",
-        violations=template_violations,
+        violations=template_violations or ["response_empty"],
         provenance=provenance,
     )

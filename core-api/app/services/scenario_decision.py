@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import logging
 from typing import Any
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
 
 from shared.domain import (
     CandidateOutcome,
@@ -45,6 +48,9 @@ from app.services.scenario_pipeline import (
 )
 from app.services.decision_trace import DecisionExecutionTrace
 from app.services.scenarios import ScenarioContext, get_scenario_registry
+from app.services.scenarios.intent_matcher import ScenarioIntentMatcher
+
+logger = logging.getLogger("core_api.scenario_decision")
 
 
 def build_internal_summary(
@@ -358,10 +364,18 @@ class ScenarioDecisionService:
             if trace
             else None
         )
+
+        semantic_candidate = None
+        try:
+            semantic_candidate = await ScenarioIntentMatcher.match(context)
+        except Exception as sem_exc:
+            logger.warning("Сбой семантического подбора сценария: %s", sem_exc)
+
         route_res = self.router.route_result(
             context,
             pinned_key=pinned_scenario_key,
             pinned_version=pinned_scenario_version,
+            semantic_candidate=semantic_candidate,
         )
         scenario = route_res.scenario
         if routing_span:
@@ -374,6 +388,17 @@ class ScenarioDecisionService:
                     "runner_up_score": route_res.runner_up_score,
                     "is_ambiguous": route_res.is_ambiguous,
                     "reasons": route_res.reasons,
+                    "semantic_candidate_key": (
+                        route_res.semantic_candidate.scenario_key
+                        if route_res.semantic_candidate
+                        else None
+                    ),
+                    "semantic_score": (
+                        route_res.semantic_candidate.score
+                        if route_res.semantic_candidate
+                        else None
+                    ),
+                    "semantic_divergence": route_res.semantic_divergence,
                 },
             )
 
@@ -447,6 +472,18 @@ class ScenarioDecisionService:
                 runner_up_score=route_res.runner_up_score,
                 reasons=route_res.reasons,
                 is_ambiguous=route_res.is_ambiguous,
+                semantic_candidate_key=(
+                    route_res.semantic_candidate.scenario_key
+                    if route_res.semantic_candidate
+                    else None
+                ),
+                semantic_score=(
+                    route_res.semantic_candidate.score
+                    if route_res.semantic_candidate
+                    else None
+                ),
+                semantic_mode=getattr(settings, "SCENARIO_SEMANTIC_ROUTING_MODE", "shadow"),
+                semantic_divergence=route_res.semantic_divergence,
             ),
         )
         candidate.evidence_refs = outcome_evidence_refs(candidate)
@@ -471,8 +508,15 @@ class ScenarioDecisionService:
             try:
                 policy = await self.policy_resolver.resolve(outcome)
             except ResolutionUnavailable as exc:
-                policy = {"resolution_error": str(exc), "requires_approval": False}
-                policy_err = "resolution_policy_unavailable"
+                err_str = str(exc)
+                policy_err = (
+                    err_str.split(":")[0] if ":" in err_str else "resolution_policy_unavailable"
+                )
+                policy = {
+                    "resolution_error": err_str,
+                    "resolution_error_code": policy_err,
+                    "requires_approval": False,
+                }
         if policy_span:
             policy_span.finish(
                 status="fallback" if policy.get("resolution_error") else "succeeded",
@@ -538,16 +582,32 @@ class ScenarioDecisionService:
         )
         generated = None
         provenance = None
-        if self.ai_enabled and scenario.definition.risk_level <= 1 and policy_comment:
+        has_policy_error = bool(policy.get("resolution_error"))
+
+        if (
+            self.ai_enabled
+            and scenario.definition.risk_level <= 1
+            and policy_comment
+            and not has_policy_error
+        ):
             generated, provenance = await self._generate_low_risk_response(
                 response_context=response_ctx,
                 service_id=task.get("ServiceId") or task.get("service_id"),
             )
-        elif policy_comment:
+        elif policy_comment and not has_policy_error:
             provenance = ResponseProvenance(
                 source="template",
                 tone="default",
                 fallback_used=False,
+                rag_candidate_count=len(kb_matches or []),
+                rag_used_count=0,
+            )
+        else:
+            provenance = ResponseProvenance(
+                source="fallback_template",
+                tone="default",
+                fallback_used=True,
+                fallback_reason_code=policy_err or "resolution_policy_unavailable",
                 rag_candidate_count=len(kb_matches or []),
                 rag_used_count=0,
             )

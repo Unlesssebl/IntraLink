@@ -25,6 +25,8 @@ class RouteResult:
     reasons: list[str] = field(default_factory=list)
     is_ambiguous: bool = False
     transition_proposed: dict[str, Any] | None = None
+    semantic_candidate: Any | None = None
+    semantic_divergence: bool = False
 
 
 class ScenarioRegistry:
@@ -54,7 +56,24 @@ class ScenarioRegistry:
             return None
         return self._scenarios[max(versions, key=lambda item: item[1])]
 
-    def route_result(self, context: ScenarioContext) -> RouteResult:
+    def route_result(
+        self,
+        context: ScenarioContext,
+        pinned_key: str | None = None,
+        pinned_version: int | None = None,
+        semantic_candidate: Any | None = None,
+    ) -> RouteResult:
+        # Проверка закрепленного сценария
+        if pinned_key:
+            pinned_scenario = self.get(pinned_key, pinned_version)
+            if pinned_scenario is not None:
+                return RouteResult(
+                    scenario=pinned_scenario,
+                    score=1.0,
+                    reasons=[f"pinned_scenario:{pinned_key}:v{pinned_scenario.definition.version}"],
+                    semantic_candidate=semantic_candidate,
+                )
+
         matches = [
             (scenario.match(context), position, scenario)
             for position, key in enumerate(self._order)
@@ -81,6 +100,10 @@ class ScenarioRegistry:
             runner_up_score = runner_up[0].score if runner_up is not None else 0.0
             reasons = [top_match.reason] if top_match.reason else []
 
+            sem_divergence = bool(
+                semantic_candidate and semantic_candidate.scenario_key != top_scenario.definition.key
+            )
+
             if runner_up is not None and (top_match.score - runner_up_score) < MIN_SCENARIO_MARGIN:
                 return RouteResult(
                     scenario=top_scenario,
@@ -88,6 +111,8 @@ class ScenarioRegistry:
                     runner_up_score=runner_up_score,
                     reasons=reasons + [f"ambiguous_with:{runner_up[0].scenario_key}"],
                     is_ambiguous=True,
+                    semantic_candidate=semantic_candidate,
+                    semantic_divergence=sem_divergence,
                 )
             return RouteResult(
                 scenario=top_scenario,
@@ -95,7 +120,32 @@ class ScenarioRegistry:
                 runner_up_score=runner_up_score,
                 reasons=reasons,
                 is_ambiguous=False,
+                semantic_candidate=semantic_candidate,
+                semantic_divergence=sem_divergence,
             )
+
+        # Pass 1: Семантический кандидат при отсутствии уверенного доменного маршрута
+        from app.config import settings
+
+        mode = (getattr(settings, "SCENARIO_SEMANTIC_ROUTING_MODE", "shadow") or "shadow").lower()
+        task_id = context.task.get("Id") or context.task.get("id") or 0
+        canary_active = mode == "canary" and self.canary_selected(
+            int(task_id), getattr(settings, "SCENARIO_SEMANTIC_CANARY_PERCENT", 0)
+        )
+
+        if (mode == "on" or canary_active) and semantic_candidate and not semantic_candidate.is_ambiguous:
+            if semantic_candidate.score >= getattr(settings, "SCENARIO_SEMANTIC_MIN_SCORE", 0.82):
+                sem_scenario = self.get(semantic_candidate.scenario_key)
+                if sem_scenario is not None:
+                    return RouteResult(
+                        scenario=sem_scenario,
+                        score=semantic_candidate.score,
+                        runner_up_score=semantic_candidate.runner_up_score,
+                        reasons=semantic_candidate.reasons + ["semantic_pass1_selected"],
+                        is_ambiguous=False,
+                        semantic_candidate=semantic_candidate,
+                        semantic_divergence=True,
+                    )
 
         rag_match = next(
             (item for item in ranked if item[0].scenario_key == "rag_consultation"),
@@ -107,6 +157,8 @@ class ScenarioRegistry:
                 score=rag_match[0].score,
                 reasons=[rag_match[0].reason] if rag_match[0].reason else [],
                 is_ambiguous=False,
+                semantic_candidate=semantic_candidate,
+                semantic_divergence=bool(semantic_candidate and semantic_candidate.scenario_key != "rag_consultation"),
             )
 
         fallback = next(
@@ -120,6 +172,8 @@ class ScenarioRegistry:
             score=fallback[0].score,
             reasons=[fallback[0].reason] if fallback[0].reason else [],
             is_ambiguous=False,
+            semantic_candidate=semantic_candidate,
+            semantic_divergence=bool(semantic_candidate and semantic_candidate.scenario_key != "consultation"),
         )
 
     def route(self, context: ScenarioContext) -> Scenario:

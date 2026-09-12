@@ -215,6 +215,10 @@ class AIHealthResponse(BaseModel):
     ollama_model: str
     litellm_available: bool
     litellm_url: str
+    litellm_model: Optional[str] = None
+    litellm_model_registered: Optional[bool] = None
+    litellm_degraded: bool = False
+    litellm_error: Optional[str] = None
     gpu_detected: bool = False
     gpu_name: Optional[str] = None
     gpu_backend: Optional[str] = None

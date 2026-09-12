@@ -234,17 +234,36 @@ class DecisionCompiler:
             if missing_or_invalid
             else "sufficient"
         )
-        is_manual = isinstance(selected.outcome, (ManualReviewRequired, NoMatch))
-        can_send = response_artifact.state in {"valid", "fallback"} and not is_manual
+        has_policy_error = bool(
+            resolved_policy.get("resolution_error") or resolved_policy.get("error")
+        )
+        policy_error_code = (
+            resolved_policy.get("resolution_error_code")
+            or ("resolution_policy_unavailable" if has_policy_error else None)
+        )
+        is_manual = (
+            isinstance(selected.outcome, (ManualReviewRequired, NoMatch))
+            or has_policy_error
+            or response_artifact.state == "invalid"
+        )
+        can_send = (
+            response_artifact.state in {"valid", "fallback"}
+            and not is_manual
+            and not has_policy_error
+        )
         can_execute = (
             isinstance(selected.outcome, ActionProposed)
             and facts_state == "sufficient"
             and response_artifact.state in {"valid", "fallback"}
+            and not is_manual
+            and not has_policy_error
         )
         blocked_reasons: list[str] = []
+        if has_policy_error:
+            blocked_reasons.append(policy_error_code or "resolution_policy_unavailable")
         if response_artifact.state == "invalid":
             blocked_reasons.append("response_invalid")
-        if is_manual:
+        if isinstance(selected.outcome, (ManualReviewRequired, NoMatch)):
             blocked_reasons.append("manual_review")
         if isinstance(selected.outcome, ClarificationRequired):
             blocked_reasons.extend(

@@ -30,12 +30,15 @@ class ScenarioRouter:
         *,
         pinned_key: str | None = None,
         pinned_version: int | None = None,
+        semantic_candidate: Any | None = None,
     ) -> RouteResult:
         if pinned_key:
             scenario = self.registry.get(pinned_key, pinned_version)
             if scenario is None:
                 raise ValueError("pinned_scenario_version_unavailable")
-            natural_res = self.registry.route_result(context)
+            natural_res = self.registry.route_result(
+                context, semantic_candidate=semantic_candidate
+            )
             transition_proposed = None
             if (
                 natural_res.scenario.definition.key != pinned_key
@@ -56,8 +59,11 @@ class ScenarioRouter:
                 reasons=["pinned_version"],
                 is_ambiguous=False,
                 transition_proposed=transition_proposed,
+                semantic_candidate=semantic_candidate,
             )
-        return self.registry.route_result(context)
+        return self.registry.route_result(
+            context, semantic_candidate=semantic_candidate
+        )
 
     def route(
         self,

@@ -184,6 +184,21 @@ class Settings(BaseSettings):
         description="Имя локальной Cross-Encoder модели для реранкинга кандидатов RAG (multilingual)",
     )
 
+    # Параметры гибридной семантической маршрутизации сценариев (Pass 1)
+    SCENARIO_SEMANTIC_ROUTING_MODE: str = Field(
+        "shadow",
+        description="Режим семантической маршрутизации сценариев: off, shadow, canary, on",
+    )
+    SCENARIO_SEMANTIC_CANARY_PERCENT: int = Field(
+        0, ge=0, le=100, description="Процент задач для канареечного семантического подбора"
+    )
+    SCENARIO_SEMANTIC_MIN_SCORE: float = Field(
+        0.82, ge=0.0, le=1.0, description="Минимальный порог сходства для семантического кандидата"
+    )
+    SCENARIO_SEMANTIC_MIN_MARGIN: float = Field(
+        0.08, ge=0.0, le=1.0, description="Минимальный отрыв top-1 от top-2 для исключения неоднозначности"
+    )
+
     AUTO_REPLY_SERVICE_IDS: list[int] = Field(
         default=[], description="ID разделов IntraService для автоматических AI-ответов"
     )
