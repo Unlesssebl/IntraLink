@@ -95,3 +95,97 @@ async def test_success_requires_read_after_write_and_keeps_password_process_loca
     assert result.payload["verified"] is True
     assert "password" not in str(result.model_dump()).lower()
     assert context.state["temporary_password"] == "Secret-123"
+
+
+@pytest.mark.asyncio
+async def test_disabled_existing_user_stops_in_preflight():
+    executor = AsyncMock()
+    executor.preflight_user_creation_async.return_value = {
+        "success": True,
+        "dc": "dc1",
+        "company_ou": "OU=Интра",
+        "department_ou": "OU=ИТ,OU=Интра",
+        "required_group": "HLP_Интра",
+    }
+    executor.search_user_profiles_async.return_value = [
+        ADUserProfile(found=True, sam_account_name="ivanov.i.i", enabled=False)
+    ]
+    result = await CreateUserHandler(executor).run_pipeline(
+        HandlerContext(command_id="4"), _params()
+    )
+    assert result.success is False
+    assert result.failure_code == "user_already_exists"
+    assert result.payload["evidence"]["enabled"] is False
+    executor.create_user_account_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_user_stops_in_preflight():
+    executor = AsyncMock()
+    executor.preflight_user_creation_async.return_value = {
+        "success": True,
+        "dc": "dc1",
+        "company_ou": "OU=Интра",
+        "department_ou": "OU=ИТ,OU=Интра",
+        "required_group": "HLP_Интра",
+    }
+    executor.search_user_profiles_async.return_value = [
+        ADUserProfile(found=True, sam_account_name="ivanov.i.1", enabled=True),
+        ADUserProfile(found=True, sam_account_name="ivanov.i.2", enabled=False),
+    ]
+    result = await CreateUserHandler(executor).run_pipeline(
+        HandlerContext(command_id="5"), _params()
+    )
+    assert result.success is False
+    assert result.failure_code == "user_ambiguous"
+    assert len(result.payload["evidence"]["matched_accounts"]) == 2
+    executor.create_user_account_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ad_preflight_unavailable_stops_pipeline():
+    executor = AsyncMock()
+    executor.preflight_user_creation_async.return_value = {
+        "success": True,
+        "dc": "dc1",
+        "company_ou": "OU=Интра",
+        "department_ou": "OU=ИТ,OU=Интра",
+        "required_group": "HLP_Интра",
+    }
+    executor.search_user_profiles_async.return_value = [
+        ADUserProfile(found=False, error="RPC server is unavailable")
+    ]
+    result = await CreateUserHandler(executor).run_pipeline(
+        HandlerContext(command_id="6"), _params()
+    )
+    assert result.success is False
+    assert result.failure_code == "ad_preflight_unavailable"
+    executor.create_user_account_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_login_collision_stops_in_preflight():
+    executor = AsyncMock()
+    executor.preflight_user_creation_async.return_value = {
+        "success": True,
+        "dc": "dc1",
+        "company_ou": "OU=Интра",
+        "department_ou": "OU=ИТ,OU=Интра",
+        "required_group": "HLP_Интра",
+    }
+
+    # identity search finds nothing, but login check finds collision
+    async def mock_search(term, company):
+        if "ivanov" in term.lower():
+            return [ADUserProfile(found=True, sam_account_name="ivanov.i.i")]
+        return [ADUserProfile(found=False, error="не найден")]
+
+    executor.search_user_profiles_async.side_effect = mock_search
+    result = await CreateUserHandler(executor).run_pipeline(
+        HandlerContext(command_id="7"), _params()
+    )
+    assert result.success is False
+    assert result.failure_code == "login_collision"
+    assert result.payload["evidence"]["sam_account_name"] == "ivanov.i.i"
+    executor.create_user_account_async.assert_not_awaited()
+

@@ -10,6 +10,7 @@ from shared.normalizer import normalize_pc_name, normalize_printer_address
 
 
 Normalizer = Callable[[Any], Any]
+Validator = Callable[[Any], tuple[bool, str | None]]
 
 
 def _clean_text(value: Any) -> str:
@@ -37,10 +38,37 @@ def _identity(value: Any) -> Any:
     return value
 
 
+def _validate_pc(value: Any) -> tuple[bool, str | None]:
+    if value in (None, ""):
+        return False, "empty_pc_name"
+    from shared.normalizer import parse_pc_name
+    res = parse_pc_name(str(value))
+    if not res.is_valid:
+        return False, res.error or "invalid_pc_name"
+    return True, None
+
+
+def _validate_printer_address(value: Any) -> tuple[bool, str | None]:
+    if value in (None, ""):
+        return False, "empty_printer_address"
+    from shared.normalizer import parse_printer_address
+    res = parse_printer_address(str(value))
+    if not res.is_valid:
+        return False, res.error or "invalid_printer_address"
+    return True, None
+
+
+def _validate_printer_targets(value: Any) -> tuple[bool, str | None]:
+    if not isinstance(value, (list, tuple)) or not value:
+        return False, "empty_printer_targets"
+    return True, None
+
+
 @dataclass(frozen=True, slots=True)
 class FactSpec:
     key: str
     normalizer: Normalizer = _clean_text
+    validator: Validator | None = None
     sensitivity: FactSensitivity = FactSensitivity.INTERNAL
     ttl_seconds: int | None = None
     clarification_key: str | None = None
@@ -48,6 +76,11 @@ class FactSpec:
 
     def normalize(self, value: Any) -> Any:
         return self.normalizer(value)
+
+    def validate(self, value: Any) -> tuple[bool, str | None]:
+        if self.validator is None:
+            return True, None
+        return self.validator(value)
 
 
 class FactRegistry:
@@ -92,6 +125,7 @@ def _build_default_registry() -> FactRegistry:
         FactSpec(
             key="pc_name",
             normalizer=_normalize_pc,
+            validator=_validate_pc,
             sensitivity=FactSensitivity.INTERNAL,
             ttl_seconds=3600,
             clarification_key="clarify_pc_name",
@@ -101,6 +135,7 @@ def _build_default_registry() -> FactRegistry:
         FactSpec(
             key="printer_address",
             normalizer=_normalize_printer_addr,
+            validator=_validate_printer_address,
             sensitivity=FactSensitivity.INTERNAL,
             clarification_key="clarify_printer_address",
         )
@@ -123,7 +158,12 @@ def _build_default_registry() -> FactRegistry:
             )
         )
     registry.register(
-        FactSpec(key="printer_targets", normalizer=_identity, allow_llm=False)
+        FactSpec(
+            key="printer_targets",
+            normalizer=_identity,
+            validator=_validate_printer_targets,
+            allow_llm=False,
+        )
     )
     registry.register(
         FactSpec(

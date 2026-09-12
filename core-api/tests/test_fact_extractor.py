@@ -83,7 +83,7 @@ async def test_gemini_first_with_ollama_fallback():
     task = {
         "Id": 12345,
         "Name": "Настройка принтера",
-        "Description": "Не печатает МФУ в 204 кабинете",
+        "Description": "Не печатает МФУ в 204 кабинете, адрес 10.244.15.55",
         "_field_meta": {"raw": {}},
     }
     extracted = {

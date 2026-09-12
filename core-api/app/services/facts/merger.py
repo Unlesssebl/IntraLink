@@ -122,6 +122,34 @@ def merge_observations(
             )
             continue
 
+        # Check for valid applicant correction in comments
+        valid_comment_correction = next(
+            (
+                item
+                for item in reversed(live)
+                if item.source is FactSource.COMMENT
+                and item.state is FactState.VALID
+                and (
+                    item.metadata.get("is_correction")
+                    or any(
+                        kw in str(item.metadata.get("comment_text") or item.evidence_span or "").lower()
+                        for kw in ("ошиб", "исправ", "верн", "уточн", "правильн", "вместо", "не тот", "не та")
+                    )
+                )
+            ),
+            None,
+        )
+        if valid_comment_correction is not None:
+            resolved[key] = ResolvedFact(
+                key=key,
+                value=valid_comment_correction.value,
+                state=FactState.VALID,
+                selected_source=valid_comment_correction.source,
+                selected_source_ref=valid_comment_correction.source_ref,
+                observations=ordered,
+            )
+            continue
+
         explicit_invalid = next(
             (
                 item
@@ -131,6 +159,27 @@ def merge_observations(
             ),
             None,
         )
+
+        # Check if structured field was invalid, but applicant provided a valid comment
+        valid_comment = next(
+            (
+                item
+                for item in reversed(live)
+                if item.source is FactSource.COMMENT and item.state is FactState.VALID
+            ),
+            None,
+        )
+        if explicit_invalid is not None and valid_comment is not None:
+            resolved[key] = ResolvedFact(
+                key=key,
+                value=valid_comment.value,
+                state=FactState.VALID,
+                selected_source=valid_comment.source,
+                selected_source_ref=valid_comment.source_ref,
+                observations=ordered,
+            )
+            continue
+
         if explicit_invalid is not None:
             resolved[key] = ResolvedFact(
                 key=key,

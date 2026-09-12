@@ -170,22 +170,36 @@ def _observation(
     evidence_span: str | None = None,
     state: FactState | None = None,
     shadow: bool = False,
+    metadata: dict[str, Any] | None = None,
 ) -> FactObservation:
     spec = get_fact_registry().require(key)
     normalized = spec.normalize(value) if value not in (None, "") else value
-    if key == "pc_name" and state is None:
+    if state is not None:
+        effective_state = state
+    elif normalized in (None, "", [], {}):
+        effective_state = FactState.MISSING
+    elif spec.validator is not None:
+        val_ok, val_err = spec.validate(normalized)
+        if val_ok:
+            effective_state = FactState.VALID
+        elif val_err and "ambiguous" in val_err:
+            effective_state = FactState.AMBIGUOUS
+        else:
+            effective_state = FactState.INVALID
+    elif key == "pc_name":
         effective_state = (
             FactState.VALID
             if normalized and is_valid_pc_name(normalized)
-            else (FactState.MISSING if normalized in (None, "", [], {}) else FactState.INVALID)
+            else FactState.INVALID
         )
     else:
-        effective_state = state or (
-            FactState.VALID if normalized not in (None, "", [], {}) else FactState.MISSING
-        )
+        effective_state = FactState.VALID
     expires_at = None
     if spec.ttl_seconds:
         expires_at = (datetime.now(timezone.utc) + timedelta(seconds=spec.ttl_seconds)).isoformat()
+    meta = dict(metadata or {})
+    if shadow:
+        meta["shadow"] = True
     return FactObservation(
         key=key,
         value=normalized,
@@ -196,7 +210,7 @@ def _observation(
         sensitivity=spec.sensitivity,
         observed_at=datetime.now(timezone.utc).isoformat(),
         expires_at=expires_at,
-        metadata={"shadow": True} if shadow else {},
+        metadata=meta,
     )
 
 
@@ -532,6 +546,15 @@ async def collect_deterministic(
         if not text:
             continue
         comment_ref = _comment_source_ref(comment, text)
+        correction_keywords = (
+            "ошиб", "исправ", "верн", "уточн", "правильн", "вместо",
+            "не тот", "не та", "пересел", "заменил", "корректн",
+        )
+        is_corr = any(kw in text.lower() for kw in correction_keywords)
+        comment_meta = {
+            "is_correction": is_corr,
+            "comment_text": text[:200],
+        }
         comment_pcs = extract_pc_names_from_text(text)
         comment_valid = list(dict.fromkeys(pc for pc in comment_pcs if is_valid_pc_name(pc)))
         if len(comment_valid) == 1:
@@ -543,6 +566,7 @@ async def collect_deterministic(
                     source_ref=f"{comment_ref}:pc_name",
                     evidence_span=comment_valid[0],
                     state=FactState.VALID,
+                    metadata=comment_meta,
                 )
             )
         elif len(comment_valid) > 1:
@@ -554,6 +578,7 @@ async def collect_deterministic(
                     source_ref=f"{comment_ref}:pc_name",
                     evidence_span=", ".join(comment_valid),
                     state=FactState.AMBIGUOUS,
+                    metadata=comment_meta,
                 )
             )
         elif comment_pcs:
@@ -565,6 +590,7 @@ async def collect_deterministic(
                     source_ref=f"{comment_ref}:pc_name",
                     evidence_span=comment_pcs[0],
                     state=FactState.INVALID,
+                    metadata=comment_meta,
                 )
             )
         comment_addrs = extract_printer_addresses_from_text(text)
@@ -576,6 +602,7 @@ async def collect_deterministic(
                     source=FactSource.COMMENT,
                     source_ref=f"{comment_ref}:printer_address",
                     evidence_span=comment_addrs[0],
+                    metadata=comment_meta,
                 )
             )
         else:
@@ -588,6 +615,7 @@ async def collect_deterministic(
                         source=FactSource.COMMENT,
                         source_ref=f"{comment_ref}:ip",
                         evidence_span=comment_ip.group(0),
+                        metadata=comment_meta,
                     )
                 )
     return result

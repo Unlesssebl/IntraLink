@@ -122,3 +122,18 @@ def test_enrich_task_data():
     assert enriched["_field_meta"]["pc_name"] == "KZM0555"
     assert enriched["_has_attachments"] is True
     assert len(enriched["_attachments_list"]) == 1
+
+
+def test_parse_custom_fields_cdata_and_entities():
+    xml_data = """
+    <fields>
+        <field id="1089" name="PC"><![CDATA[ZTE1234]]></field>
+        <field id="1088">&lt;49-87&amp;12&gt;</field>
+        <field id="1087">Кабинет &quot;АБК-1&quot;</field>
+    </fields>
+    """
+    res = parse_custom_fields(xml_data)
+    assert res["pc_name"] == "ZTE1234"
+    assert res["phone"] == "<49-87&12>"
+    assert res["room"] == 'Кабинет "АБК-1"'
+

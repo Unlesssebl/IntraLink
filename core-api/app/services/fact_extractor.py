@@ -35,7 +35,35 @@ def _has_explicit_identity(task: dict[str, Any]) -> bool:
     )
 
 
-def _llm_evidence_is_valid(extracted: ExtractedTicketFacts) -> bool:
+def _is_grounded_in_text(span: str, text: str) -> bool:
+    """Verifies that evidence span actually exists in the source text (case-insensitive substring)."""
+    if not span or not span.strip():
+        return False
+    clean_span = " ".join(span.strip().split())
+    clean_text = " ".join(text.strip().split())
+    return clean_span.casefold() in clean_text.casefold()
+
+
+def validate_extracted_grounding(
+    extracted: ExtractedTicketFacts, full_text: str
+) -> tuple[bool, str | None]:
+    """Validates that extracted evidence items have non-empty spans that exist in source text."""
+    if not extracted.evidence:
+        return False, "missing_evidence"
+    for item in extracted.evidence:
+        if item.source != "llm":
+            return False, f"invalid_evidence_source:{item.source}"
+        if not item.span or not item.span.strip():
+            return False, f"empty_evidence_span_for_{item.field}"
+        if full_text and not _is_grounded_in_text(item.span, full_text):
+            return False, f"ungrounded_evidence_span:{item.field}"
+    return True, None
+
+
+def _llm_evidence_is_valid(extracted: ExtractedTicketFacts, full_text: str | None = None) -> bool:
+    if full_text is not None:
+        ok, _ = validate_extracted_grounding(extracted, full_text)
+        return ok
     if not extracted.evidence:
         return False
     return all(
@@ -219,6 +247,7 @@ async def enrich_task_with_extracted_facts(
             "Ты извлекаешь факты в заданную JSON Schema и воздерживаешься при неоднозначности."
         )
 
+        grounding_rejection_reason: str | None = None
         try:
             raw = await _call_llm_sensor(
                 prompt,
@@ -226,9 +255,15 @@ async def enrich_task_with_extracted_facts(
                 service_id=task.get("ServiceId") or task.get("service_id"),
             )
             if raw:
-                extracted = ExtractedTicketFacts.model_validate_json(raw)
-                extracted.comments_count_analyzed = comments_count
-                await _save_to_cache(cache_key, extracted)
+                parsed = ExtractedTicketFacts.model_validate_json(raw)
+                parsed.comments_count_analyzed = comments_count
+                is_grounded, ground_err = validate_extracted_grounding(parsed, full_text)
+                if is_grounded:
+                    extracted = parsed
+                    await _save_to_cache(cache_key, extracted)
+                else:
+                    logger.info("LLM facts rejected due to grounding failure: %s", ground_err)
+                    grounding_rejection_reason = ground_err
         except (ValueError, json.JSONDecodeError) as exc:
             logger.info("LLM fact parsing failed: %s", exc)
         except Exception as exc:
@@ -236,16 +271,23 @@ async def enrich_task_with_extracted_facts(
 
     if extracted is None:
         enriched = deepcopy(task)
-        if mode == "enabled":
+        if grounding_rejection_reason:
+            enriched["_llm_fact_extraction"] = {
+                "mode": mode,
+                "accepted": False,
+                "reason": grounding_rejection_reason,
+            }
+        elif mode == "enabled":
             enriched["_fact_extraction_manual_review"] = "llm_extraction_unavailable"
         return enriched
 
-    if not _llm_evidence_is_valid(extracted):
+    is_grounded, ground_err = validate_extracted_grounding(extracted, full_text)
+    if not is_grounded:
         enriched = deepcopy(task)
         enriched["_llm_fact_extraction"] = {
             "mode": mode,
             "accepted": False,
-            "reason": "missing_grounded_evidence",
+            "reason": ground_err or "missing_grounded_evidence",
         }
         return enriched
 

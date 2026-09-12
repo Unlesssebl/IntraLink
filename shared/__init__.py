@@ -3,6 +3,9 @@
 для helpdesk-cli, execution-worker и других компонентов IntraLink.
 """
 from shared.normalizer import (
+    NormalizationResult,
+    parse_pc_name,
+    parse_printer_address,
     normalize_pc_name,
     normalize_printer_address,
     is_valid_pc_name,
@@ -35,6 +38,9 @@ from shared.domain import (
 )
 
 __all__ = [
+    "NormalizationResult",
+    "parse_pc_name",
+    "parse_printer_address",
     "normalize_pc_name",
     "normalize_printer_address",
     "is_valid_pc_name",

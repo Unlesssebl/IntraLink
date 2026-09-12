@@ -39,7 +39,7 @@ exclude = ["**/__pyrefly_virtual__"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["core-api/tests"]
-pythonpath = ["core-api", "shared"]
+pythonpath = ["core-api", "shared", "execution-worker", "."]
 
 [dependency-groups]
 dev = [

@@ -478,6 +478,7 @@ class CommandService:
         operator: str,
         expected_plan_hash: str | None = None,
         expected_version: int | None = None,
+        expected_target: dict[str, Any] | None = None,
         approver_principal_id: uuid.UUID | None = None,
         approver_roles: frozenset[str] = frozenset(),
         approver_permissions: frozenset[str] | None = None,
@@ -511,6 +512,20 @@ class CommandService:
                     "reason": f"Expected plan hash {expected_plan_hash}, but current plan hash is {command.plan_hash}",
                 },
             )
+        if expected_target is not None:
+            cmd_target = getattr(command, "target_json", None) or getattr(command, "target", None) or {}
+            target_diffs = []
+            for k, v in expected_target.items():
+                if v is not None and str(cmd_target.get(k, "")).strip().lower() != str(v).strip().lower():
+                    target_diffs.append(f"{k}: expected '{v}', got '{cmd_target.get(k)}'")
+            if target_diffs:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    {
+                        "detail": "target_drift_detected",
+                        "reason": f"Command target has drifted: {'; '.join(target_diffs)}",
+                    },
+                )
 
         now = dt.datetime.now(dt.timezone.utc)
         plan_expires = command.plan_expires_at

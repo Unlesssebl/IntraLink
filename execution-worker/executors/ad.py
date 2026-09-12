@@ -129,9 +129,11 @@ class ADUserProfile:
     mail: Optional[str] = None
     manager: Optional[str] = None
     groups: list[str] = field(default_factory=list)
+    member_of_dns: list[str] = field(default_factory=list)
     last_logon: Optional[str] = None
     account_expiration_date: Optional[str] = None
     is_wlan_member: bool = False
+    dc: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -147,6 +149,9 @@ class ADUserStatus:
     department: Optional[str] = None
     mail: Optional[str] = None
     groups: list[str] = field(default_factory=list)
+    member_of_dns: list[str] = field(default_factory=list)
+    lookup_state: str = "found"
+    dc: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -158,6 +163,8 @@ class ADExecutionResult:
     display_name: Optional[str] = None
     message: str = ""
     target_group: str = TARGET_WLAN_GROUP
+    target_group_dn: Optional[str] = None
+    dc: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -279,7 +286,9 @@ class ActiveDirectoryExecutor:
         $result = @()
         foreach ($u in $userList) {{
             $grps = @()
+            $memberOfDns = @()
             if ($u.MemberOf) {{
+                $memberOfDns = @($u.MemberOf | ForEach-Object {{ [string]$_ }})
                 $grps = @($u.MemberOf | ForEach-Object {{ ($_ -split ',')[0] -replace '^CN=', '' }})
             }}
             $isWlan = ($u.MemberOf -like "*{self.target_wlan_group}*")
@@ -304,6 +313,7 @@ class ActiveDirectoryExecutor:
                 account_expiration_date = [string]$u.AccountExpirationDate
                 is_wlan_member = [bool]$isWlan
                 groups = [string[]]$grps
+                member_of_dns = [string[]]$memberOfDns
             }}
             $result += $item
         }}
@@ -331,6 +341,12 @@ class ActiveDirectoryExecutor:
 
         profiles = []
         for raw in items:
+            raw_dns = raw.get("member_of_dns") or []
+            if isinstance(raw_dns, str):
+                raw_dns = [raw_dns]
+            raw_grps = raw.get("groups") or []
+            if isinstance(raw_grps, str):
+                raw_grps = [raw_grps]
             profiles.append(
                 ADUserProfile(
                     found=raw.get("found", True),
@@ -348,10 +364,12 @@ class ActiveDirectoryExecutor:
                     room=raw.get("room") or None,
                     mail=raw.get("mail") or None,
                     manager=raw.get("manager") or None,
-                    groups=raw.get("groups") or [],
+                    groups=raw_grps,
+                    member_of_dns=raw_dns,
                     last_logon=raw.get("last_logon") or None,
                     account_expiration_date=raw.get("account_expiration_date") or None,
                     is_wlan_member=raw.get("is_wlan_member", False),
+                    dc=raw.get("dc"),
                     error=raw.get("error"),
                 )
             )
@@ -383,8 +401,167 @@ class ActiveDirectoryExecutor:
             department=p.department,
             mail=p.mail,
             groups=p.groups,
+            member_of_dns=p.member_of_dns,
+            dc=p.dc,
             error=p.error,
         )
+
+    def get_user_by_login(self, login: str, server: Optional[str] = None) -> ADUserStatus:
+        """
+        Точный поиск существующего пользователя строго по sAMAccountName с типизированным состоянием:
+        found, not_found, ambiguous, unavailable. Никакого неявного выбора первого активного.
+        """
+        clean_login = login.strip()
+        if not clean_login:
+            return ADUserStatus(found=False, lookup_state="not_found", error="EmptyLogin")
+
+        safe_login = clean_login.replace('"', '`"').replace("$", "`$").replace("'", "''")
+        safe_server = (server or "").strip().replace('"', '`"').replace("$", "`$").replace("'", "''")
+        dc_expr = f"'{safe_server}'" if safe_server else "(Get-ADDomainController -Discover -ErrorAction Stop).HostName"
+
+        script = f"""
+        Import-Module ActiveDirectory -ErrorAction Stop
+        try {{
+            $dc = {dc_expr}
+            $users = Get-ADUser -Server $dc -Filter "SamAccountName -eq '{safe_login}'" -Properties UserPrincipalName, DistinguishedName, Title, Department, Company, telephoneNumber, physicalDeliveryOfficeName, Manager, LockedOut, PasswordExpired, AccountExpirationDate, LastLogonDate, MemberOf, Enabled, Mail -ErrorAction Stop
+            if (-not $users) {{
+                Write-Output (ConvertTo-Json @{{
+                    lookup_state = "not_found"
+                    found = $false
+                    dc = [string]$dc
+                    error = "UserNotFound"
+                }})
+                exit 0
+            }}
+            $userList = @($users)
+            if ($userList.Count -gt 1) {{
+                Write-Output (ConvertTo-Json @{{
+                    lookup_state = "ambiguous"
+                    found = $false
+                    dc = [string]$dc
+                    error = "MultipleUsersFound"
+                    count = $userList.Count
+                }})
+                exit 0
+            }}
+            $u = $userList[0]
+            $grps = @()
+            $memberOfDns = @()
+            if ($u.MemberOf) {{
+                $memberOfDns = @($u.MemberOf | ForEach-Object {{ [string]$_ }})
+                $grps = @($u.MemberOf | ForEach-Object {{ ($_ -split ',')[0] -replace '^CN=', '' }})
+            }}
+            $isWlan = ($memberOfDns | Where-Object {{ $_ -match '(?i)CN={self.target_wlan_group},' }})
+            Write-Output (ConvertTo-Json @{{
+                lookup_state = "found"
+                found = $true
+                dc = [string]$dc
+                sam_account_name = [string]$u.SamAccountName
+                display_name = [string]$u.Name
+                user_principal_name = [string]$u.UserPrincipalName
+                distinguished_name = [string]$u.DistinguishedName
+                enabled = [bool]$u.Enabled
+                locked_out = [bool]$u.LockedOut
+                password_expired = [bool]$u.PasswordExpired
+                department = [string]$u.Department
+                mail = [string]$u.Mail
+                groups = [string[]]$grps
+                member_of_dns = [string[]]$memberOfDns
+                is_wlan_member = [bool]$isWlan
+            }})
+        }} catch {{
+            Write-Output (ConvertTo-Json @{{
+                lookup_state = "unavailable"
+                found = $false
+                error = $_.Exception.Message
+            }})
+        }}
+        """
+
+        data = self._run_ps_command(script)
+        if "error" in data and "lookup_state" not in data:
+            return ADUserStatus(
+                found=False,
+                lookup_state="unavailable",
+                error=data.get("error", "ExecutionFailed"),
+            )
+
+        state = data.get("lookup_state") or ("found" if data.get("found") else "not_found")
+        if state != "found":
+            return ADUserStatus(
+                found=False,
+                lookup_state=state,
+                dc=data.get("dc"),
+                error=data.get("error", state),
+            )
+
+        member_of_dns = data.get("member_of_dns") or []
+        if isinstance(member_of_dns, str):
+            member_of_dns = [member_of_dns]
+        groups = data.get("groups") or []
+        if isinstance(groups, str):
+            groups = [groups]
+
+        return ADUserStatus(
+            found=True,
+            lookup_state="found",
+            sam_account_name=data.get("sam_account_name") or clean_login,
+            display_name=data.get("display_name"),
+            user_principal_name=data.get("user_principal_name"),
+            distinguished_name=data.get("distinguished_name"),
+            enabled=data.get("enabled", False),
+            is_wlan_member=data.get("is_wlan_member", False),
+            department=data.get("department"),
+            mail=data.get("mail"),
+            groups=groups,
+            member_of_dns=member_of_dns,
+            dc=data.get("dc"),
+            error=data.get("error"),
+        )
+
+    def get_group_info(self, group_name: str, server: Optional[str] = None) -> dict[str, Any]:
+        """Точное разрешение группы безопасности в sAMAccountName и DistinguishedName."""
+        clean_group = group_name.strip()
+        safe_group = clean_group.replace('"', '`"').replace("$", "`$").replace("'", "''")
+        safe_server = (server or "").strip().replace('"', '`"').replace("$", "`$").replace("'", "''")
+        dc_expr = f"'{safe_server}'" if safe_server else "(Get-ADDomainController -Discover -ErrorAction Stop).HostName"
+        script = f"""
+        Import-Module ActiveDirectory -ErrorAction Stop
+        try {{
+            $dc = {dc_expr}
+            $grps = Get-ADGroup -Server $dc -Filter "Name -eq '{safe_group}' -or SamAccountName -eq '{safe_group}'" -ErrorAction Stop
+            if (-not $grps) {{
+                Write-Output (ConvertTo-Json @{{ found = $false; dc = [string]$dc; error = "GroupNotFound" }})
+                exit 0
+            }}
+            $grpList = @($grps)
+            if ($grpList.Count -gt 1) {{
+                Write-Output (ConvertTo-Json @{{ found = $false; dc = [string]$dc; error = "MultipleGroupsFound"; count = $grpList.Count }})
+                exit 0
+            }}
+            $g = $grpList[0]
+            Write-Output (ConvertTo-Json @{{
+                found = $true
+                dc = [string]$dc
+                sam_account_name = [string]$g.SamAccountName
+                name = [string]$g.Name
+                distinguished_name = [string]$g.DistinguishedName
+            }})
+        }} catch {{
+            Write-Output (ConvertTo-Json @{{ found = $false; error = $_.Exception.Message }})
+        }}
+        """
+        data = self._run_ps_command(script)
+        if "error" in data and not data.get("found"):
+            return {"found": False, "error": data["error"]}
+        return {
+            "found": data.get("found", False),
+            "dc": data.get("dc"),
+            "sam_account_name": data.get("sam_account_name"),
+            "name": data.get("name"),
+            "distinguished_name": data.get("distinguished_name"),
+            "error": data.get("error"),
+        }
 
     def unlock_user_account(self, identity: str) -> tuple[bool, str, Optional[ADUserProfile]]:
         """
@@ -446,13 +623,15 @@ class ActiveDirectoryExecutor:
         logger.error("Ошибка при разблокировке учетной записи %s: %s", user.sam_account_name, err_msg)
         return False, f"Не удалось разблокировать '{user.sam_account_name}': {err_msg}", user
 
-    def add_user_to_group(self, identity: str, group_name: str) -> ADExecutionResult:
+    def add_user_to_group(
+        self, identity: str, group_name: str, server: Optional[str] = None
+    ) -> ADExecutionResult:
         """
-        Добавляет пользователя в произвольную доменную группу безопасности с pre-flight проверкой группы,
-        Single-DC Affinity и Read-after-Write верификацией.
+        Добавляет пользователя в доменную группу безопасности со строгой проверкой группы,
+        Single-DC Affinity, точным сопоставлением DN и Read-after-Write верификацией.
         """
         clean_group = group_name.strip()
-        status = self.get_user_status(identity)
+        status = self.get_user_by_login(identity, server=server)
         if not status.found:
             return ADExecutionResult(
                 success=False,
@@ -460,6 +639,7 @@ class ActiveDirectoryExecutor:
                 sam_account_name=identity,
                 message=f"Пользователь '{identity}' не найден в Active Directory",
                 target_group=clean_group,
+                dc=server or status.dc,
                 error=status.error or "UserNotFound",
             )
 
@@ -471,51 +651,79 @@ class ActiveDirectoryExecutor:
                 display_name=status.display_name,
                 message=f"Учетная запись '{status.sam_account_name}' ({status.display_name}) отключена в домене",
                 target_group=clean_group,
+                dc=server or status.dc,
                 error="AccountDisabled",
             )
 
-        safe_sam = (status.sam_account_name or "").replace('"', '`"').replace("$", "`$")
-        safe_group = clean_group.replace('"', '`"').replace("$", "`$")
+        safe_sam = (status.sam_account_name or "").replace('"', '`"').replace("$", "`$").replace("'", "''")
+        safe_group = clean_group.replace('"', '`"').replace("$", "`$").replace("'", "''")
+        safe_server = (server or status.dc or "").strip().replace('"', '`"').replace("$", "`$").replace("'", "''")
+        dc_expr = f"'{safe_server}'" if safe_server else "(Get-ADDomainController -Discover -ErrorAction Stop).HostName"
 
         script = f"""
         Import-Module ActiveDirectory -ErrorAction Stop
-        $dc = (Get-ADDomainController -Discover).HostName
-        
-        # 1. Pre-flight проверка существования группы
-        $grp = Get-ADGroup -Server $dc -Filter "Name -eq '{safe_group}' -or SamAccountName -eq '{safe_group}'" -ErrorAction SilentlyContinue
-        if (-not $grp) {{
-            Write-Output (ConvertTo-Json @{{
-                success = $false
-                error = "Группа '$([string]'{clean_group}')' не найдена в Active Directory"
-            }})
-            exit 0
-        }}
-
-        $targetGroupExactName = $grp.SamAccountName
-
-        # 2. Проверка текущего членства
-        $u = Get-ADUser -Server $dc -Identity "{safe_sam}" -Properties MemberOf -ErrorAction Stop
-        if ($u.MemberOf -like "*$targetGroupExactName*") {{
-            Write-Output (ConvertTo-Json @{{
-                success = $true
-                already_member = $true
-                target_group = $targetGroupExactName
-            }})
-            exit 0
-        }}
-
-        # 3. Добавление в группу
         try {{
+            $dc = {dc_expr}
+            
+            # 1. Pre-flight проверка существования группы
+            $grps = Get-ADGroup -Server $dc -Filter "Name -eq '{safe_group}' -or SamAccountName -eq '{safe_group}'" -ErrorAction Stop
+            if (-not $grps) {{
+                Write-Output (ConvertTo-Json @{{
+                    success = $false
+                    dc = [string]$dc
+                    error = "Группа '$([string]'{clean_group}')' не найдена в Active Directory"
+                }})
+                exit 0
+            }}
+            $grpList = @($grps)
+            if ($grpList.Count -gt 1) {{
+                Write-Output (ConvertTo-Json @{{
+                    success = $false
+                    dc = [string]$dc
+                    error = "Найдено несколько групп с именем '$([string]'{clean_group}')' в Active Directory"
+                }})
+                exit 0
+            }}
+
+            $grp = $grpList[0]
+            $targetGroupExactName = $grp.SamAccountName
+            $targetGroupDN = $grp.DistinguishedName
+
+            # 2. Проверка текущего членства (строгое сопоставление по точному DN)
+            $u = Get-ADUser -Server $dc -Identity "{safe_sam}" -Properties MemberOf -ErrorAction Stop
+            $currentDns = @()
+            if ($u.MemberOf) {{
+                $currentDns = @($u.MemberOf | ForEach-Object {{ [string]$_ }})
+            }}
+            $alreadyMember = ($currentDns -contains $targetGroupDN)
+            if ($alreadyMember) {{
+                Write-Output (ConvertTo-Json @{{
+                    success = $true
+                    already_member = $true
+                    target_group = $targetGroupExactName
+                    target_group_dn = $targetGroupDN
+                    dc = [string]$dc
+                }})
+                exit 0
+            }}
+
+            # 3. Добавление в группу
             Add-ADGroupMember -Server $dc -Identity $targetGroupExactName -Members "{safe_sam}" -ErrorAction Stop
             
-            # Read-after-Write верификация на том же контроллере домена
+            # Read-after-Write верификация на том же контроллере домена (точное совпадение по DN)
             $verify = Get-ADUser -Server $dc -Identity "{safe_sam}" -Properties MemberOf -ErrorAction Stop
-            $ok = ($verify.MemberOf -like "*$targetGroupExactName*")
+            $verifyDns = @()
+            if ($verify.MemberOf) {{
+                $verifyDns = @($verify.MemberOf | ForEach-Object {{ [string]$_ }})
+            }}
+            $ok = ($verifyDns -contains $targetGroupDN)
             
             Write-Output (ConvertTo-Json @{{
                 success = [bool]$ok
                 already_member = $false
                 target_group = $targetGroupExactName
+                target_group_dn = $targetGroupDN
+                dc = [string]$dc
                 message = if ($ok) {{ "Добавлен и верифицирован" }} else {{ "Не найден в группе после добавления" }}
             }})
         }} catch {{
@@ -541,7 +749,9 @@ class ActiveDirectoryExecutor:
                 sam_account_name=status.sam_account_name or identity,
                 display_name=status.display_name,
                 message=msg,
-                target_group=clean_group,
+                target_group=data.get("target_group") or clean_group,
+                target_group_dn=data.get("target_group_dn"),
+                dc=data.get("dc") or server or status.dc,
             )
 
         err_msg = data.get("error") or data.get("message") or "Сбой добавления в группу"
@@ -558,14 +768,17 @@ class ActiveDirectoryExecutor:
             display_name=status.display_name,
             message=f"Ошибка добавления в группу {clean_group}: {err_msg}",
             target_group=clean_group,
+            dc=data.get("dc") or server or status.dc,
             error=err_msg,
         )
 
-    def grant_wlan_access(self, identity: str) -> ADExecutionResult:
+    def grant_wlan_access(
+        self, identity: str, server: Optional[str] = None
+    ) -> ADExecutionResult:
         """
-        Добавляет пользователя в целевую группу WLAN-WORKNET.
+        Добавляет пользователя в целевую группу WLAN-WORKNET с Single-DC Affinity.
         """
-        return self.add_user_to_group(identity, self.target_wlan_group)
+        return self.add_user_to_group(identity, self.target_wlan_group, server=server)
 
     @staticmethod
     def extract_identity_from_task(task: dict[str, Any]) -> str:
@@ -926,6 +1139,18 @@ class ActiveDirectoryExecutor:
         """Асинхронная проверка статуса пользователя в AD."""
         return await asyncio.to_thread(self.get_user_status, identity, company)
 
+    async def get_user_by_login_async(
+        self, login: str, server: Optional[str] = None
+    ) -> ADUserStatus:
+        """Асинхронный точный поиск пользователя по sAMAccountName."""
+        return await asyncio.to_thread(self.get_user_by_login, login, server)
+
+    async def get_group_info_async(
+        self, group_name: str, server: Optional[str] = None
+    ) -> dict[str, Any]:
+        """Асинхронное получение точных атрибутов группы AD."""
+        return await asyncio.to_thread(self.get_group_info, group_name, server)
+
     async def unlock_user_account_async(
         self, identity: str
     ) -> tuple[bool, str, Optional[ADUserProfile]]:
@@ -933,14 +1158,16 @@ class ActiveDirectoryExecutor:
         return await asyncio.to_thread(self.unlock_user_account, identity)
 
     async def add_user_to_group_async(
-        self, identity: str, group_name: str
+        self, identity: str, group_name: str, server: Optional[str] = None
     ) -> ADExecutionResult:
         """Асинхронное добавление пользователя в группу AD."""
-        return await asyncio.to_thread(self.add_user_to_group, identity, group_name)
+        return await asyncio.to_thread(self.add_user_to_group, identity, group_name, server)
 
-    async def grant_wlan_access_async(self, identity: str) -> ADExecutionResult:
+    async def grant_wlan_access_async(
+        self, identity: str, server: Optional[str] = None
+    ) -> ADExecutionResult:
         """Асинхронная выдача доступа Wi-Fi (WLAN-WORKNET) в AD."""
-        return await asyncio.to_thread(self.grant_wlan_access, identity)
+        return await asyncio.to_thread(self.grant_wlan_access, identity, server)
 
     async def create_user_account_async(
         self,

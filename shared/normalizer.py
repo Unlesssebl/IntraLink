@@ -7,11 +7,24 @@
 а для филиалов: ZTP, KZP, KMP, TLP, NTP, TTP, TMP, GKP.
 """
 
+from dataclasses import dataclass, field
+import ipaddress
 import logging
 import re
 from typing import Any
 
 logger = logging.getLogger("helpdesk_agent.normalizer")
+
+
+@dataclass(frozen=True)
+class NormalizationResult:
+    """Результат строгой нормализации сетевого идентификатора с трассировкой валидности."""
+
+    value: str | None
+    raw: str
+    is_valid: bool
+    error: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
 
 # 1. Таблица омоглифов
 _HOMOGLYPHS_CYR = "ОСАЕРХМТКВУ"
@@ -196,36 +209,201 @@ def _strip_punct(s: str) -> str:
     return s
 
 
-def normalize_pc_name(raw: str | None) -> str | None:
-    if not raw:
-        return None
-    cleaned = _strip_punct(raw)
-    if not cleaned or cleaned.lower() in ("нет номера", "пк", "комп", "компьютер", "ноутбук", "wifi", "unknown", "—"):
-        return None
+def parse_pc_name(raw: str | None) -> NormalizationResult:
+    """
+    Строгий парсинг и валидация имени рабочего места (ПК).
+    Возвращает NormalizationResult с признаком валидности и причиной ошибки.
+    """
+    if not raw or not raw.strip():
+        return NormalizationResult(value=None, raw=raw or "", is_valid=False, error="empty_input")
+
+    cleaned = _strip_punct(raw.strip())
+    if not cleaned or cleaned.lower() in (
+        "нет номера", "пк", "комп", "компьютер", "ноутбук", "wifi", "unknown", "—", "нет", "null", "none"
+    ):
+        return NormalizationResult(value=None, raw=raw, is_valid=False, error="placeholder_value")
+
+    # Срезаем FQDN доменный суффикс (например, .corporate.loc, .tempo.ru), если передан полный хостнейм
+    if "." in cleaned:
+        cleaned_host = re.sub(r"\.[a-zA-Z0-9.\-]+$", "", cleaned)
+        if cleaned_host:
+            cleaned = cleaned_host
+
     prefix, number = _split_prefix_and_number(cleaned)
     if not number and not prefix:
-        return None
+        return NormalizationResult(value=None, raw=raw, is_valid=False, error="invalid_format")
+
     if not number:
         norm_p = _transliterate_prefix(cleaned)
-        if norm_p in KNOWN_PRINTER_PREFIXES:
-            return None
+        if norm_p.upper() in KNOWN_PRINTER_PREFIXES:
+            return NormalizationResult(
+                value=None, raw=raw, is_valid=False, error="printer_prefix_not_pc"
+            )
         fixed_p = _try_fix_prefix(norm_p, KNOWN_PC_PREFIXES)
         if fixed_p and fixed_p.upper() in KNOWN_PC_PREFIXES:
-            return fixed_p.upper()
+            return NormalizationResult(
+                value=fixed_p.upper(),
+                raw=raw,
+                is_valid=True,
+                details={"prefix": fixed_p.upper(), "number": ""},
+            )
         if norm_p.upper() in KNOWN_PC_PREFIXES:
-            return norm_p.upper()
-        return None
+            return NormalizationResult(
+                value=norm_p.upper(),
+                raw=raw,
+                is_valid=True,
+                details={"prefix": norm_p.upper(), "number": ""},
+            )
+        return NormalizationResult(
+            value=None, raw=raw, is_valid=False, error="unknown_pc_prefix"
+        )
+
     if not prefix:
-        return None
+        return NormalizationResult(
+            value=None,
+            raw=raw,
+            is_valid=False,
+            error="digits_only_requires_company_context",
+            details={"digits": number},
+        )
+
     translit_prefix = _transliterate_prefix(prefix)
     if translit_prefix.upper() in KNOWN_PRINTER_PREFIXES:
-        return None
+        return NormalizationResult(
+            value=None, raw=raw, is_valid=False, error="printer_prefix_not_pc"
+        )
+
     fixed_prefix = _try_fix_prefix(translit_prefix, KNOWN_PC_PREFIXES) or translit_prefix
     if fixed_prefix.upper() in KNOWN_PRINTER_PREFIXES:
-        return None
-    if fixed_prefix.upper() not in KNOWN_PC_PREFIXES and translit_prefix.upper() not in KNOWN_PC_PREFIXES:
-        return None
-    return f"{fixed_prefix.upper()}{number}"
+        return NormalizationResult(
+            value=None, raw=raw, is_valid=False, error="printer_prefix_not_pc"
+        )
+
+    if (
+        fixed_prefix.upper() not in KNOWN_PC_PREFIXES
+        and translit_prefix.upper() not in KNOWN_PC_PREFIXES
+    ):
+        return NormalizationResult(
+            value=None, raw=raw, is_valid=False, error="unknown_pc_prefix"
+        )
+
+    canonical_prefix = (
+        fixed_prefix.upper()
+        if fixed_prefix.upper() in KNOWN_PC_PREFIXES
+        else translit_prefix.upper()
+    )
+    val = f"{canonical_prefix}{number}"
+    return NormalizationResult(
+        value=val,
+        raw=raw,
+        is_valid=True,
+        details={"prefix": canonical_prefix, "number": number},
+    )
+
+
+def normalize_pc_name(raw: str | None) -> str | None:
+    res = parse_pc_name(raw)
+    return res.value if res.is_valid else None
+
+
+def parse_printer_address(raw: str | None) -> NormalizationResult:
+    """
+    Строгий парсинг и валидация сетевого адреса (IPv4 или DNS-хостнейма) принтера/МФУ.
+    """
+    if not raw or not raw.strip():
+        return NormalizationResult(value=None, raw=raw or "", is_valid=False, error="empty_input")
+
+    cleaned = _strip_punct(raw.strip())
+    if not cleaned:
+        return NormalizationResult(value=None, raw=raw, is_valid=False, error="empty_input")
+
+    # 1. Проверка на IPv4-адрес
+    ip_pattern = re.fullmatch(r"\d{1,3}[.,\s]+\d{1,3}[.,\s]+\d{1,3}[.,\s]+\d{1,3}", cleaned)
+    if ip_pattern:
+        candidate_ip = re.sub(r"[.,\s]+", ".", cleaned)
+        try:
+            ip_obj = ipaddress.IPv4Address(candidate_ip)
+            if ip_obj.is_loopback or ip_obj.is_multicast or ip_obj.is_unspecified:
+                return NormalizationResult(
+                    value=None,
+                    raw=raw,
+                    is_valid=False,
+                    error="unsupported_ip_scope",
+                    details={"ip": str(ip_obj)},
+                )
+            return NormalizationResult(
+                value=str(ip_obj),
+                raw=raw,
+                is_valid=True,
+                details={"type": "ipv4", "is_private": ip_obj.is_private},
+            )
+        except ValueError as err:
+            return NormalizationResult(
+                value=None,
+                raw=raw,
+                is_valid=False,
+                error=f"invalid_ipv4: {candidate_ip}",
+                details={"reason": str(err)},
+            )
+
+    # 2. Хостнейм или имя очереди
+    prefix, number = _split_prefix_and_number(cleaned)
+    if not number:
+        clean_lower = cleaned.lower()
+        if re.fullmatch(r"[a-z0-9][a-z0-9\-_.]*", clean_lower):
+            return NormalizationResult(
+                value=clean_lower,
+                raw=raw,
+                is_valid=True,
+                details={"type": "hostname"},
+            )
+        return NormalizationResult(
+            value=None,
+            raw=raw,
+            is_valid=False,
+            error="invalid_hostname_format",
+        )
+
+    if prefix:
+        translit_prefix = _transliterate_prefix(prefix)
+        # Если префикс заканчивается не на P, проверяем соответствие PC кодам с добавлением P (напр. KZM -> KZMP, SCS -> SCSP)
+        if not translit_prefix.endswith("P") and (
+            translit_prefix in MAIN_PC_PREFIXES or translit_prefix in BRANCH_PC_PREFIXES
+        ):
+            translit_prefix = f"{translit_prefix}P"
+
+        fixed_prefix = (
+            _try_fix_prefix(translit_prefix, KNOWN_PRINTER_PREFIXES) or translit_prefix
+        )
+        normalized = f"{fixed_prefix.lower()}{number}"
+        if re.fullmatch(r"[a-z0-9][a-z0-9\-_.]*", normalized):
+            return NormalizationResult(
+                value=normalized,
+                raw=raw,
+                is_valid=True,
+                details={"type": "hostname", "prefix": fixed_prefix, "number": number},
+            )
+        return NormalizationResult(
+            value=None,
+            raw=raw,
+            is_valid=False,
+            error="invalid_hostname_characters",
+        )
+
+    clean_lower = cleaned.lower()
+    if re.fullmatch(r"[a-z0-9][a-z0-9\-_.]*", clean_lower):
+        return NormalizationResult(
+            value=clean_lower,
+            raw=raw,
+            is_valid=True,
+            details={"type": "hostname"},
+        )
+    return NormalizationResult(
+        value=None,
+        raw=raw,
+        is_valid=False,
+        error="invalid_address_format",
+    )
 
 
 def normalize_printer_address(raw: str | None) -> str | None:
@@ -234,31 +412,8 @@ def normalize_printer_address(raw: str | None) -> str | None:
     1. IP-адреса: исправляет опечатки с запятыми и пробелами (10,244 1.20 -> 10.244.1.20).
     2. DNS-имена: транслитерирует кириллицу и нормализует префикс с добавлением "P" (KZMP, ITTP, TNMP, SCSP...).
     """
-    if not raw:
-        return None
-    cleaned = _strip_punct(raw)
-    if not cleaned:
-        return None
-
-    # IP адрес
-    ip_match = re.fullmatch(r"\d{1,3}[.,\s]+\d{1,3}[.,\s]+\d{1,3}[.,\s]+\d{1,3}", cleaned)
-    if ip_match:
-        return re.sub(r"[.,\s]+", ".", cleaned)
-
-    prefix, number = _split_prefix_and_number(cleaned)
-    if not number:
-        return cleaned.lower()
-
-    if prefix:
-        translit_prefix = _transliterate_prefix(prefix)
-        # Если префикс заканчивается не на P, проверяем соответствие PC кодам с добавлением P (напр. KZM -> KZMP, SCS -> SCSP)
-        if not translit_prefix.endswith("P") and (translit_prefix in MAIN_PC_PREFIXES or translit_prefix in BRANCH_PC_PREFIXES):
-            translit_prefix = f"{translit_prefix}P"
-
-        fixed_prefix = _try_fix_prefix(translit_prefix, KNOWN_PRINTER_PREFIXES) or translit_prefix
-        return f"{fixed_prefix.lower()}{number}"
-
-    return cleaned.lower()
+    res = parse_printer_address(raw)
+    return res.value if res.is_valid else None
 
 
 def is_valid_pc_name(name: str | None) -> bool:

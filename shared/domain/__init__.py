@@ -18,6 +18,7 @@ from shared.domain.models import (
     ValidationError,
 )
 from shared.domain.person import normalize_person_name, validate_person_candidate
+from shared.domain.text_source import TextSourceFragment
 from shared.domain.scenario import (
     CandidateOutcome,
     DecisionGates,
@@ -94,5 +95,6 @@ __all__ = [
     "get_scenario_display_name",
     "normalize_person_name",
     "parse_execution_plan",
+    "TextSourceFragment",
     "validate_person_candidate",
 ]

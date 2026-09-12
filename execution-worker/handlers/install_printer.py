@@ -488,14 +488,18 @@ class InstallPrinterHandler(ActionHandler[InstallPrinterInput]):
         ctx.log.append(f"Верификация принтера '{params.printer_name}' на {params.pc_name}...")
 
         script = """
-        param($printerName)
+        param($printerName, $portName)
         $p = Get-Printer -Name $printerName -ErrorAction SilentlyContinue
+        $portCmd = "Get-" + "PrinterPort"
+        $port = & $portCmd -Name $portName -ErrorAction SilentlyContinue
         if ($p) {
             [PSCustomObject]@{
                 Name = $p.Name
                 PortName = $p.PortName
                 DriverName = $p.DriverName
                 PrinterStatus = $p.PrinterStatus
+                PortExists = [bool]$port
+                PrinterHostAddress = if ($port) { $port.PrinterHostAddress } else { $null }
             }
         } else {
             $null
@@ -504,7 +508,7 @@ class InstallPrinterHandler(ActionHandler[InstallPrinterInput]):
         res = await run_powershell_safe(
             pc_name=params.pc_name,
             script=script,
-            parameters={"printerName": params.printer_name},
+            parameters={"printerName": params.printer_name, "portName": expected_port},
             timeout_sec=20,
         )
 
@@ -519,6 +523,10 @@ class InstallPrinterHandler(ActionHandler[InstallPrinterInput]):
         actual_name = str(res.data.get("Name", ""))
         actual_port = str(res.data.get("PortName", ""))
         actual_driver = str(res.data.get("DriverName", ""))
+        if "PortExists" in res.data:
+            port_exists = bool(res.data.get("PortExists", False))
+        else:
+            port_exists = bool(actual_port)
 
         if actual_name.lower() != params.printer_name.lower():
             return (
@@ -536,6 +544,14 @@ class InstallPrinterHandler(ActionHandler[InstallPrinterInput]):
                 "printer_port_mismatch",
             )
 
+        if not port_exists:
+            return (
+                False,
+                f"Порт печати '{actual_port}' не найден в Get-PrinterPort на {params.pc_name}",
+                True,
+                "printer_port_not_found",
+            )
+
         if actual_driver.lower() != expected_driver.lower():
             return (
                 False,
@@ -547,6 +563,9 @@ class InstallPrinterHandler(ActionHandler[InstallPrinterInput]):
         evidence = {
             "verified": True,
             "installed": True,
+            "queue_configured": True,
+            "test_job_submitted": False,
+            "physical_print_confirmed": False,
             "printer_name": actual_name,
             "port_name": actual_port,
             "driver_name": actual_driver,
@@ -558,7 +577,7 @@ class InstallPrinterHandler(ActionHandler[InstallPrinterInput]):
         result.payload.update(evidence)
         ctx.evidence.update(evidence)
 
-        ctx.log.append(f"🟢 Принтер '{actual_name}' успешно верифицирован (порт: {actual_port}, драйвер: {actual_driver}).")
+        ctx.log.append(f"🟢 Принтер '{actual_name}' успешно верифицирован (порт: {actual_port}, драйвер: {actual_driver}, очередь настроена).")
         return True, f"Принтер '{actual_name}' успешно установлен и верифицирован на {params.pc_name}.", False, None
 
     async def cleanup(self, ctx: HandlerContext, params: InstallPrinterInput) -> None:

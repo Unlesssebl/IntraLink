@@ -5,6 +5,7 @@
 import logging
 import re
 from typing import Any
+import xml.etree.ElementTree as ET
 
 from app.utils.normalizer import (
     is_valid_pc_name,
@@ -80,7 +81,33 @@ def parse_custom_fields(data_xml: str | None) -> dict[str, Any]:
 
     raw_fields = {}
     friendly_fields = {}
-    matches = re.findall(r'<field id="(\d+)">([^<]*)</field>', data_xml)
+    matches: list[tuple[str, str]] = []
+    try:
+        content = data_xml.strip()
+        # Оборачиваем во вспомогательный корень, если нет верхнеуровневого тега
+        if not content.startswith("<fields>") and not content.startswith("<?xml") and not content.startswith("<root>"):
+            wrapped = f"<root>{content}</root>"
+        else:
+            wrapped = content
+        root = ET.fromstring(wrapped)
+        for el in root.iter():
+            if el.tag.lower() == "field":
+                fid = el.attrib.get("id") or el.attrib.get("Id")
+                if fid:
+                    text_val = "".join(el.itertext())
+                    matches.append((str(fid), text_val))
+    except Exception as exc:
+        logger.debug("ElementTree failed to parse custom fields XML (%s), falling back to regex", exc)
+        for m in re.finditer(
+            r'<field\s+[^>]*id="(\d+)"[^>]*>(?:<!\[CDATA\[(.*?)\]\]>|([^<]*))</field>',
+            data_xml,
+            re.DOTALL | re.IGNORECASE,
+        ):
+            fid = m.group(1)
+            val = m.group(2) if m.group(2) is not None else (m.group(3) or "")
+            matches.append((fid, val))
+        if not matches:
+            matches = re.findall(r'<field id="(\d+)">([^<]*)</field>', data_xml)
 
     pc_name = ""
     inventory_number = ""

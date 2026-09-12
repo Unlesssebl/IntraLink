@@ -117,13 +117,50 @@ def _printer_install_match(context: ScenarioContext) -> tuple[bool, float, str]:
         "очередь зависла",
         "не подключа",
         "не видит",
+        "картридж",
+        "зажевал",
+        "грязно",
     )
+    negation_phrases = (
+        "не нужно устанавливать",
+        "не надо устанавливать",
+        "не устанавливать",
+        "не нужно подключать",
+        "не надо подключать",
+        "не подключать",
+        "отмена установки",
+        "без установки",
+        "не требуется установка",
+    )
+    completed_phrases = (
+        "уже установлен",
+        "уже подключен",
+        "уже настроен",
+        "установили",
+        "подключили",
+        "установил",
+        "подключил",
+        "был установлен",
+        "ранее установлен",
+    )
+
+    if any(neg in text for neg in negation_phrases):
+        return False, 0.0, "intent_negated"
+
+    is_reinstall = "переустанов" in text
+
+    if not is_reinstall and any(comp in text for comp in completed_phrases):
+        return False, 0.0, "intent_completed"
+
     has_device = any(token in text for token in device_tokens) or bool(
         context.facts.valid_value("printer_name")
     )
     matched_intents = [token for token in install_tokens if token in text]
     matched_failures = [token for token in failure_tokens if token in text]
-    is_reinstall = "переустанов" in text
+
+    if matched_failures and not is_reinstall:
+        return False, 0.0, f"intent_symptom:{','.join(matched_failures)}"
+
     matched = has_device and bool(matched_intents) and (not matched_failures or is_reinstall)
     reason = ",".join([*matched_intents, *matched_failures])
     return matched, 0.94 if matched else 0.0, reason
