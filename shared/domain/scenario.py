@@ -202,6 +202,14 @@ class ExecutionPlan(StrictModel):
     next_action_description: str = ""
     steps: list[PlanStep] = Field(default_factory=list)
 
+    @property
+    def public_steps(self) -> list[PlanStep]:
+        return [s for s in self.steps if getattr(s, "executor", None) not in ("windows", "engineer")]
+
+    @property
+    def internal_steps(self) -> list[PlanStep]:
+        return [s for s in self.steps if getattr(s, "executor", None) in ("windows", "engineer")]
+
 
 class LegacyExecutionPlan(StrictModel):
     schema_version: Literal[1] = 1
@@ -209,6 +217,14 @@ class LegacyExecutionPlan(StrictModel):
     scenario_version: int = Field(ge=1)
     fact_revision: int = Field(ge=0)
     steps: list[LegacyPlanStep] = Field(default_factory=list)
+
+    @property
+    def public_steps(self) -> list[LegacyPlanStep]:
+        return list(self.steps)
+
+    @property
+    def internal_steps(self) -> list[LegacyPlanStep]:
+        return []
 
 
 def parse_execution_plan(

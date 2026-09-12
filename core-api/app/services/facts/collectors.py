@@ -14,6 +14,7 @@ from shared.normalizer import (
     extract_printer_addresses_from_text,
     is_valid_pc_name,
     is_valid_printer_name,
+    normalize_pc_name,
     normalize_printer_address,
 )
 

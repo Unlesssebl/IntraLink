@@ -621,7 +621,7 @@ class ScenarioDecisionService:
                     "violations_count": len(response.violations),
                     "replaced_by_template": response.state == "fallback" and generated is not None,
                 },
-                error_code=response.violations[0].code if response.violations else None,
+                error_code=response.violations[0] if response.violations else None,
             )
 
         internal_summary = build_internal_summary(

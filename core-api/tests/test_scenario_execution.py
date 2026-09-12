@@ -10,14 +10,20 @@ from shared.domain import (
     CandidateOutcome,
     CreateUserParameters,
     Evidence,
+    ExecutionPlan,
     FactBag,
     FactObservation,
     FactSource,
     FactState,
+    PlanStep,
+    StepKind,
+    StepStatus,
 )
 
+from app.config import settings
 from app.database.db import AsyncSessionLocal, ResolutionPolicy, ResponseTemplate
 from app.services.decision_compiler import DecisionCompiler
+from app.services.decision_trace import DecisionExecutionTrace
 from app.services.facts import collect_structured, merge_observations
 from app.services.facts.collectors import collect_deterministic
 from app.services.scenario_decision import ScenarioDecisionService
@@ -283,6 +289,7 @@ async def test_regression_140479_scenario_requires_clarification_and_no_action()
     assert not isinstance(envelope.outcome, ActionProposed)
 
 
+
 @pytest.mark.asyncio
 async def test_high_risk_compiler_never_calls_llm_adjudicator():
     called = False
@@ -315,3 +322,73 @@ async def test_high_risk_compiler_never_calls_llm_adjudicator():
 
     assert envelope.outcome.kind == "action"
     assert called is False
+
+
+@pytest.mark.asyncio
+async def test_collect_structured_with_pc_custom_field_normalizes():
+    task = {
+        "Id": 140970,
+        "ServiceId": 2,
+        "Name": "Настройка принтера",
+        "Description": "Подключить принтер",
+        "_field_meta": {
+            "raw": {
+                str(settings.PRINTER_PC_CUSTOM_FIELD_ID): "ntemw-0771",
+            }
+        },
+    }
+    observations = await collect_structured(task)
+    obs_map = {o.key: o for o in observations}
+    assert "pc_name" in obs_map
+    assert obs_map["pc_name"].value == "NTEMW0771"
+    assert obs_map["pc_name"].state == FactState.VALID
+
+
+@pytest.mark.asyncio
+async def test_scenario_decision_analyze_with_trace():
+    task = {
+        "Id": 140970,
+        "ServiceId": 53,
+        "Name": "Создание учетной записи",
+        "Description": "Новый сотрудник",
+        "_field_meta": {
+            "raw": {
+                "1057": "Петров",
+                "1058": "Петр",
+                "1065": "Инженер",
+                "1064": "ИТ",
+                "1074": "Интра",
+            }
+        },
+    }
+    observations = await collect_structured(task)
+    trace = DecisionExecutionTrace()
+    async with AsyncSessionLocal() as db:
+        service = ScenarioDecisionService(db)
+        envelope = await service.analyze(task=task, observations=observations, trace=trace)
+
+    assert envelope is not None
+    assert envelope.scenario_key == "create_user"
+    steps = trace.to_steps()
+    plan_steps = [s for s in steps if s.get("component") == "plan"]
+    assert len(plan_steps) == 1
+    assert plan_steps[0]["status"] == "succeeded"
+    plan_output = plan_steps[0]["output"]
+    assert "public_steps_count" in plan_output
+    assert "internal_steps_count" in plan_output
+
+
+def test_execution_plan_properties():
+    plan = ExecutionPlan(
+        scenario_key="test",
+        scenario_version=1,
+        steps=[
+            PlanStep(id="s1", kind=StepKind.ACTION, title="Step 1", executor="backend"),
+            PlanStep(id="s2", kind=StepKind.MANUAL, title="Step 2", executor="engineer"),
+            PlanStep(id="s3", kind=StepKind.ACTION, title="Step 3", executor="windows"),
+        ],
+    )
+    assert len(plan.public_steps) == 1
+    assert plan.public_steps[0].id == "s1"
+    assert len(plan.internal_steps) == 2
+    assert [s.id for s in plan.internal_steps] == ["s2", "s3"]
