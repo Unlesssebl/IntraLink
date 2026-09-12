@@ -5,11 +5,23 @@ from typing import Any
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, Response, status, Cookie
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+import json
+from sqlalchemy import select, delete, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.db import SystemSetting, get_db
+from app.database.db import (
+    SystemSetting,
+    get_db,
+    DecisionRecord,
+    DecisionResponseVariant,
+    DecisionApplicationRequest,
+    TicketFactObservation,
+    TicketRun,
+    TicketRunEvent,
+    CURRENT_SCHEMA_REVISION,
+)
+from app.services.worker import get_redis_client
 from app.routers.deps import require_permission
 from app.services.active_directory import (
     ConnectionTestResult,
@@ -555,3 +567,158 @@ async def test_vault_winrm_endpoint(
         port=body.port,
         timeout_sec=body.timeout_sec,
     )
+
+
+# ==========================================
+# Жизненный цикл анализа заявок и сброс кэша
+# ==========================================
+
+
+class TriageAnalysisStatsDTO(BaseModel):
+    total_decisions: int = 0
+    total_variants: int = 0
+    cached_ai_responses: int = 0
+    active_locks: int = 0
+    analysis_revision: str
+
+
+class ResetAnalysisRequestDTO(BaseModel):
+    purge_decisions: bool = Field(True, description="Удалить все сохраненные решения и варианты ответов из PostgreSQL")
+    purge_ai_cache: bool = Field(True, description="Очистить L2-кэш сгенерированных ответов AI в Redis (cache:ai:*)")
+    purge_locks: bool = Field(True, description="Сбросить распределенные блокировки и счетчики анализа в Redis")
+
+
+class ResetAnalysisResponseDTO(BaseModel):
+    status: str
+    deleted_decisions: int
+    deleted_ai_cache_keys: int
+    deleted_locks: int
+    message: str
+
+
+@router.get("/triage/analysis-stats", response_model=TriageAnalysisStatsDTO)
+async def get_triage_analysis_stats_endpoint(
+    _: dict = Depends(require_admin_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Возвращает статистику решений и кэша генераций AI для управления жизненным циклом.
+    """
+    total_decisions = (await db.scalar(select(func.count(DecisionRecord.id)))) or 0
+    total_variants = (await db.scalar(select(func.count(DecisionResponseVariant.id)))) or 0
+    cached_ai_keys = 0
+    active_locks = 0
+    try:
+        redis = get_redis_client()
+        ai_keys = await redis.keys("cache:ai:*")
+        cached_ai_keys = len(ai_keys)
+        fence_keys = await redis.keys("fence:triage-analysis:*")
+        lock_keys = await redis.keys("lock:triage-analysis:*")
+        active_locks = len(set(fence_keys + lock_keys))
+    except Exception as exc:
+        logger.warning("Не удалось получить метрики Redis для анализа: %s", exc)
+
+    return TriageAnalysisStatsDTO(
+        total_decisions=total_decisions,
+        total_variants=total_variants,
+        cached_ai_responses=cached_ai_keys,
+        active_locks=active_locks,
+        analysis_revision=CURRENT_SCHEMA_REVISION,
+    )
+
+
+@router.post("/triage/reset-analysis", response_model=ResetAnalysisResponseDTO)
+async def reset_triage_analysis_endpoint(
+    body: ResetAnalysisRequestDTO | None = None,
+    user: dict = Depends(require_admin_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Полный или выборочный сброс анализа заявок:
+    1. Удаление всех DecisionRecord, вариантов ответов и привязок из PostgreSQL.
+    2. Очистка кэша сгенерированных ответов нейросетей в Redis (cache:ai:*).
+    3. Сброс распределенных блокировок анализа.
+    4. Уведомление подключенных клиентов через Redis Pub/Sub.
+    """
+    req = body or ResetAnalysisRequestDTO()
+    deleted_decisions = 0
+    deleted_ai_keys = 0
+    deleted_locks = 0
+
+    if req.purge_decisions:
+        try:
+            # Снимаем внешние ключи с commands (RESTRICT защита)
+            await db.execute(
+                text("UPDATE commands SET decision_id = NULL WHERE decision_id IS NOT NULL")
+            )
+            # Удаляем решения (каскадно удаляет steps, variants, feedback, attempts, applications)
+            res = await db.execute(delete(DecisionRecord))
+            deleted_decisions = res.rowcount or 0
+
+            await db.execute(delete(DecisionApplicationRequest))
+            await db.execute(delete(TicketFactObservation))
+            await db.execute(delete(TicketRunEvent))
+            await db.execute(delete(TicketRun))
+            await db.commit()
+            logger.info(
+                "Администратор %s выполнил сброс DecisionRecord. Удалено записей: %d",
+                user.get("sub", "unknown"),
+                deleted_decisions,
+            )
+        except Exception as exc:
+            await db.rollback()
+            logger.error("Ошибка при удалении решений из БД: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Не удалось удалить решения из БД: {exc}",
+            )
+
+    try:
+        redis = get_redis_client()
+        if req.purge_ai_cache:
+            ai_keys = await redis.keys("cache:ai:*")
+            if ai_keys:
+                deleted_ai_keys = await redis.delete(*ai_keys)
+            logger.info("Сброшен кэш ответов AI в Redis. Удалено ключей: %d", deleted_ai_keys)
+
+        if req.purge_locks:
+            fence_keys = await redis.keys("fence:triage-analysis:*")
+            lock_keys = await redis.keys("lock:triage-analysis:*")
+            all_locks = list(set(fence_keys + lock_keys))
+            if all_locks:
+                deleted_locks = await redis.delete(*all_locks)
+            logger.info("Сброшены блокировки анализа в Redis. Удалено ключей: %d", deleted_locks)
+
+        # Публикуем событие обновления очереди для всех клиентов
+        try:
+            await redis.publish(
+                "channel:task_updates",
+                json.dumps({
+                    "action": "triage_reset",
+                    "actor": user.get("sub", "admin"),
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }),
+            )
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.warning("Ошибка при очистке Redis: %s", exc)
+
+    msg_parts = []
+    if req.purge_decisions:
+        msg_parts.append(f"удалено решений в БД: {deleted_decisions}")
+    if req.purge_ai_cache:
+        msg_parts.append(f"очищено ключей кэша AI: {deleted_ai_keys}")
+    if req.purge_locks:
+        msg_parts.append(f"сброшено блокировок: {deleted_locks}")
+
+    summary_text = "Сброс анализа завершен (" + ", ".join(msg_parts) + ")."
+
+    return ResetAnalysisResponseDTO(
+        status="success",
+        deleted_decisions=deleted_decisions,
+        deleted_ai_cache_keys=deleted_ai_keys,
+        deleted_locks=deleted_locks,
+        message=summary_text,
+    )
+

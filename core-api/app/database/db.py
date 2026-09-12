@@ -35,7 +35,7 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
-CURRENT_SCHEMA_REVISION = "20260912_0015"
+CURRENT_SCHEMA_REVISION = "20260912_0016"
 
 
 

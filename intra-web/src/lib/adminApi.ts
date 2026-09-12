@@ -638,3 +638,58 @@ export async function fetchNightlyAuditStatus(token: string): Promise<KBNightlyA
   }
   return await res.json();
 }
+
+export interface TriageAnalysisStats {
+  total_decisions: number;
+  total_variants: number;
+  cached_ai_responses: number;
+  active_locks: number;
+  analysis_revision: string;
+}
+
+export interface ResetAnalysisResult {
+  status: string;
+  deleted_decisions: number;
+  deleted_ai_cache_keys: number;
+  deleted_locks: number;
+  message: string;
+}
+
+export async function fetchTriageAnalysisStats(token: string): Promise<TriageAnalysisStats> {
+  const res = await fetch('/api/v1/admin/triage/analysis-stats', {
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    throw new Error('Не удалось загрузить статистику анализа заявок');
+  }
+  return await res.json();
+}
+
+export async function resetTriageAnalysis(
+  token: string,
+  options: { purge_decisions?: boolean; purge_ai_cache?: boolean; purge_locks?: boolean } = {}
+): Promise<ResetAnalysisResult> {
+  const res = await fetch('/api/v1/admin/triage/reset-analysis', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      purge_decisions: options.purge_decisions ?? true,
+      purge_ai_cache: options.purge_ai_cache ?? true,
+      purge_locks: options.purge_locks ?? true,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Ошибка сброса анализа' }));
+    throw new Error(err.detail || 'Не удалось выполнить сброс анализа');
+  }
+  return await res.json();
+}
+
