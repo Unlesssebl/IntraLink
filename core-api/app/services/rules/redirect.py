@@ -35,7 +35,7 @@ def classify_target_service(text: str, current_service_id: int | None = None) ->
     t = text.lower()
 
     # 1. Вопросы по DIRECTUM, B2B (05)
-    if any(w in t for w in ["directum", "директум", "договор 6/", "согласование договора", "карточка договора"]) or re.search(r"\bb2b\b|\bб2б\b", t):
+    if any(w in t for w in ["directum", "директум", "договор 6/", "согласование договора", "карточка договора", "тендерный лист", "тендерная заявка"]) or re.search(r"\bb2b\b|\bб2б\b", t):
         return "05", "вопросы документооборота Directum / площадок B2B"
     if "контрагент" in t and any(w in t for w in ["договор", "прикрепи", "данные", "карточк"]):
         return "05", "данные контрагентов и карточек в Directum"
@@ -121,7 +121,8 @@ def classify_target_service(text: str, current_service_id: int | None = None) ->
     # 5. Электронная цифровая подпись (09)
     if re.search(r"\bэцп\b", t) or any(w in t for w in [
         "криптопро", "cryptopro", "сертификат эцп", "банк-клиент", "сбербанк", "втб",
-        "сбис", "госуслуги", "рутокен", "rutoken", "электронная подпись", "контур"
+        "сбис", "госуслуги", "рутокен", "rutoken", "электронная подпись", "контур",
+        "диадок", "этран", "мчд"
     ]):
         return "09", "настройка или продление сертификатов ЭЦП"
 
