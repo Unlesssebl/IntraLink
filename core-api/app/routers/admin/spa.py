@@ -1,10 +1,11 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.config import settings
+from app.routers.deps import require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ HTML_PATH = Path(__file__).resolve().parent.parent.parent / "static" / "admin" /
 @router.get("/timeline", response_class=HTMLResponse)
 @router.get("/settings", response_class=HTMLResponse)
 @router.get("/queue", response_class=HTMLResponse)
+@router.get("/reports", response_class=HTMLResponse)
 async def get_admin_ui():
     """
     Отдает HTML-страницу админ-панели.

@@ -13,6 +13,7 @@ import Topbar from './components/Topbar';
 import QueuePage from './pages/QueuePage';
 
 import SettingsPage from './pages/SettingsPage';
+import ReportsPage from './pages/ReportsPage';
 
 import AdminPanelPage from './pages/AdminPanelPage';
 
@@ -46,57 +47,38 @@ function MainApp() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
 
   const [currentPage, setCurrentPage] = useState<Page>(() => {
-
-    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/settings')) {
-
-      return 'settings';
-
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/reports')) {
+      return 'reports';
     }
-
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/settings')) {
+      return 'settings';
+    }
     return 'queue';
-
   });
 
   const handleNavigate = useCallback((page: Page) => {
-
     if (page === 'timeline') {
-
       window.history.pushState({}, '', '/timeline');
-
       window.dispatchEvent(new PopStateEvent('popstate'));
-
       return;
-
     }
-
     setCurrentPage(page);
-
     setSelectedTicketId(null);
-
-    const targetPath = page === 'settings' ? '/settings' : '/';
-
+    const targetPath = page === 'settings' ? '/settings' : page === 'reports' ? '/reports' : '/';
     if (typeof window !== 'undefined' && window.location.pathname !== targetPath) {
-
       window.history.pushState({}, '', targetPath);
-
     }
-
   }, []);
 
   useEffect(() => {
-
     const onPop = () => {
-
-      if (window.location.pathname.startsWith('/settings')) {
-
+      if (window.location.pathname.startsWith('/reports')) {
+        setCurrentPage('reports');
+      } else if (window.location.pathname.startsWith('/settings')) {
         setCurrentPage('settings');
-
       } else {
-
         setCurrentPage('queue');
-
       }
-
     };
 
     window.addEventListener('popstate', onPop);
@@ -570,82 +552,53 @@ function MainApp() {
 
         <main className="flex-1 overflow-hidden relative">
 
-          {loadingTickets && (
-
+          {loadingTickets && currentPage === 'queue' && (
             <div className="absolute inset-0 bg-white/60 dark:bg-neutral-950/60 z-20 flex items-center justify-center backdrop-blur-2xs">
-
               <div className="flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-400 bg-white dark:bg-neutral-900 px-4 py-2 rounded-lg border border-neutral-200 dark:border-neutral-800 shadow-md">
-
                 <svg className="animate-spin h-4 w-4 text-blue-500" viewBox="0 0 24 24" fill="none">
-
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-
                 </svg>
-
                 <span>Обновление очереди...</span>
-
               </div>
-
             </div>
-
           )}
 
-          {queueError && (
-
+          {queueError && currentPage === 'queue' && (
             <div className="m-4 p-4 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 flex items-center justify-between">
-
               <div className="flex items-center gap-2.5 text-sm text-red-800 dark:text-red-200">
-
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0">
-
                   <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5"/>
-
                   <path d="M8 4.5v4.5M8 11.5v.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-
                 </svg>
-
                 <span>{queueError}</span>
-
               </div>
-
               <button
-
                 onClick={() => {
-
                   loadQueue();
-
                   loadActiveExecution();
-
                 }}
-
                 className="px-3 py-1 bg-red-800 dark:bg-red-200 text-white dark:text-red-950 rounded text-xs font-semibold hover:bg-red-700 transition-colors cursor-pointer"
-
               >
-
                 Повторить
-
               </button>
-
             </div>
-
           )}
 
           {currentPage === 'settings' ? (
-
             <SettingsPage
-
               theme={theme}
-
               onToggleTheme={() => setTheme(t => (t === 'dark' ? 'light' : 'dark'))}
-
               onToast={addToast}
-
             />
-
+          ) : currentPage === 'reports' ? (
+            <ReportsPage
+              onNavigateToQueue={(q) => {
+                if (q) setSearchQuery(q);
+                handleNavigate('queue');
+              }}
+            />
           ) : (
-
             <QueuePage
 
               tickets={tickets}

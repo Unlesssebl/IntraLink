@@ -35,6 +35,7 @@ from app.routers import (
     identity,
     kb_admin,
     outages,
+    reports,
     rules_admin,
     self_service,
     service_tasks,
@@ -199,6 +200,7 @@ app.include_router(kb_admin.router)
 app.include_router(skills_admin.router)
 app.include_router(self_service.router)
 app.include_router(outages.router)
+app.include_router(reports.router)
 
 # Статические файлы интерактивной презентации (при наличии)
 PRESENTATIONS_DIR = Path("/app/docs/presentations")

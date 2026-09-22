@@ -71,7 +71,11 @@ export default function Topbar({
           <span className="text-neutral-400 dark:text-neutral-500 font-semibold">IntraLink</span>
           <span className="text-neutral-300 dark:text-neutral-700">/</span>
 
-          {selectedService.name ? (
+          {currentPage === 'reports' ? (
+            <span className="text-neutral-900 dark:text-neutral-100 font-bold truncate">Отчёты</span>
+          ) : currentPage === 'settings' ? (
+            <span className="text-neutral-900 dark:text-neutral-100 font-bold truncate">Настройки</span>
+          ) : selectedService.name ? (
             <div className="flex items-center gap-1.5 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-900 dark:text-blue-200 px-2.5 py-1 rounded-md text-[13px] font-semibold">
               <span className="truncate max-w-[240px]">{selectedService.name}</span>
               <button
@@ -102,7 +106,7 @@ export default function Topbar({
       </div>
 
       {/* Center: Unified Single Search Bar (Marks #2) */}
-      <div className="flex-1 max-w-md mx-4 hidden sm:block">
+      <div className={`flex-1 max-w-md mx-4 ${currentPage === 'queue' ? 'hidden sm:block' : 'hidden'}`}>
         <div className="relative flex items-center w-full">
           <div className="absolute left-3 text-neutral-400 pointer-events-none">
             <svg width="15" height="15" viewBox="0 0 12 12" fill="none">
@@ -222,7 +226,7 @@ export default function Topbar({
           <span className="hidden sm:inline">Панель администратора</span>
         </a>
 
-        {onRefresh && (
+        {onRefresh && currentPage === 'queue' && (
           <button
             onClick={onRefresh}
             className="w-8 h-8 flex items-center justify-center rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer border border-neutral-200/80 dark:border-neutral-800"

@@ -53,6 +53,30 @@ FIELD_NAME_MAP = {
     # Форма D (Периферия, оргтехника и акты списания)
     "1111": "Оборудование / Инвентарный номер",
     "1176": "Имя ПК",
+    # Форма Directum (Тип заявки 4: Directum)
+    "1015": "Телефон",
+    "1016": "Имя ПК",
+    "1017": "Организация",
+    "1018": "Причина ошибки",
+    "1019": "Виновник ошибки",
+    "1020": "Этап ошибки",
+    "1181": "ID заявки в Directum",
+    "1519": "Email",
+    # Форма Заявка на пользователя DIRECTUM (Тип заявки 1018)
+    "1121": "Фамилия",
+    "1122": "Имя",
+    "1123": "Отчество",
+    "1128": "Подразделение",
+    "1129": "Должность",
+    "1130": "Телефон",
+    "1132": "Имя ПК",
+    "1133": "Табельный номер",
+    "1134": "Сотрудник со схожими правами",
+    "1135": "Выполняемые действия в Directum",
+    "1180": "Установка Directum на ПК",
+    "1488": "Логин (IT)",
+    "1489": "Пароль (IT)",
+    "1521": "Email",
     # Прочие формы
     "1509": "Доп. информация",
 }
@@ -99,7 +123,7 @@ def parse_custom_fields(data_xml: str | None) -> dict[str, Any]:
         friendly_fields[f_name] = v
 
         # 1. Точный маппинг по ID
-        if fid in ("1089", "1112", "1203", "1120", "1176", "1068"):
+        if fid in ("1089", "1112", "1203", "1120", "1176", "1068", "1016", "1132"):
             pcs = extract_pc_names_from_text(v)
             if pcs:
                 pc_name = ", ".join(pcs)
@@ -109,21 +133,21 @@ def parse_custom_fields(data_xml: str | None) -> dict[str, Any]:
                     pc_name = norm_pc
         elif fid in ("1111",):
             inventory_number = v
-        elif fid in ("1088", "1202", "1075", "1066"):
+        elif fid in ("1088", "1202", "1075", "1066", "1015", "1130"):
             phone = v
         elif fid in ("1087", "1079"):
             room = v
-        elif fid in ("1091", "1206", "1078", "1064"):
+        elif fid in ("1091", "1206", "1078", "1064", "1128"):
             department = v
         elif fid in ("1092",):
             user_name = v
-        elif fid in ("1494", "1523"):
+        elif fid in ("1494", "1523", "1519", "1521"):
             email = v
 
     if not user_name:
-        s = raw_fields.get("1057") or raw_fields.get("1069") or ""
-        n = raw_fields.get("1058") or raw_fields.get("1070") or ""
-        p = raw_fields.get("1059") or raw_fields.get("1071") or ""
+        s = raw_fields.get("1057") or raw_fields.get("1069") or raw_fields.get("1121") or ""
+        n = raw_fields.get("1058") or raw_fields.get("1070") or raw_fields.get("1122") or ""
+        p = raw_fields.get("1059") or raw_fields.get("1071") or raw_fields.get("1123") or ""
         if s and n:
             user_name = f"{s} {n}" + (f" {p}" if p else "")
 

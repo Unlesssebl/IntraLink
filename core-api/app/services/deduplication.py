@@ -67,6 +67,48 @@ def extract_task_hardware(task: dict[str, Any]) -> tuple[str, str]:
     return pc, inv
 
 
+def extract_task_target_person(task: dict[str, Any]) -> str:
+    """
+    Извлекает нормализованное ФИО целевого сотрудника из метаданных и распарсенных полей
+    (актуально для кадровых заявок, создания пользователей сети, Directum, выдачи ЭЦП).
+    """
+    meta = task.get("_field_meta") or {}
+    parsed = task.get("_parsed_fields") or {}
+    user_name = meta.get("user_name") or ""
+    if not user_name:
+        fam = (parsed.get("Фамилия") or "").strip()
+        imya = (parsed.get("Имя") or "").strip()
+        otch = (parsed.get("Отчество") or "").strip()
+        if fam:
+            user_name = f"{fam} {imya} {otch}".strip()
+    return normalize_text_for_comparison(user_name)
+
+
+def extract_task_comparison_text(task: dict[str, Any]) -> str:
+    """
+    Формирует полный текст задачи для сравнения.
+    Включает название, описание и ключевые кастомные поля (целевой сотрудник, должность и т.д.),
+    чтобы одинаковые шаблонные названия заявок для разных лиц не имели 100% сходства.
+    """
+    name = task.get("Name") or ""
+    desc = task.get("Description") or ""
+    meta = task.get("_field_meta") or {}
+    parsed = task.get("_parsed_fields") or {}
+
+    extra_parts = []
+    user_name = meta.get("user_name") or ""
+    if user_name:
+        extra_parts.append(user_name)
+    else:
+        for k in ("Фамилия", "Имя", "Отчество", "Должность", "Подразделение"):
+            val = parsed.get(k)
+            if val:
+                extra_parts.append(str(val))
+
+    parts = [name, desc] + extra_parts
+    return " ".join(p for p in parts if p).strip()
+
+
 class DuplicateDetector:
     """
     Интеллектуальный анализатор и детектор заявок-дубликатов в очереди IntraService.
@@ -114,7 +156,7 @@ class DuplicateDetector:
             m_creator = (master.get("Creator") or "").strip().lower()
             m_name = master.get("Name") or ""
             m_desc = master.get("Description") or ""
-            m_text = f"{m_name} {m_desc}".strip()
+            m_text = extract_task_comparison_text(master)
             m_pc, m_inv = extract_task_hardware(master)
             m_srv_id = master.get("ServiceId")
             m_created = parse_task_datetime(master.get("Created"))
@@ -129,7 +171,7 @@ class DuplicateDetector:
                 c_creator = (candidate.get("Creator") or "").strip().lower()
                 c_name = candidate.get("Name") or ""
                 c_desc = candidate.get("Description") or ""
-                c_text = f"{c_name} {c_desc}".strip()
+                c_text = extract_task_comparison_text(candidate)
                 c_pc, c_inv = extract_task_hardware(candidate)
                 c_srv_id = candidate.get("ServiceId")
                 c_created = parse_task_datetime(candidate.get("Created"))
@@ -146,6 +188,14 @@ class DuplicateDetector:
                 # VETO 2: Разные инвентарные номера
                 # Если указаны разные инвентарные номера — это РАЗНЫЕ единицы оборудования!
                 if m_inv and c_inv and m_inv != c_inv:
+                    continue
+
+                # VETO 2.1: Разные целевые сотрудники (создание пользователей сети / кадровые заявки)
+                # Если заявитель подает несколько заявок на разных сотрудников (напр. отдел кадров/руководитель),
+                # они ни в коем случае не являются дубликатами.
+                m_target_user = extract_task_target_person(master)
+                c_target_user = extract_task_target_person(candidate)
+                if m_target_user and c_target_user and m_target_user != c_target_user:
                     continue
 
                 # Вычисляем временную разницу

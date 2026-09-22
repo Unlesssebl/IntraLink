@@ -187,3 +187,62 @@ def test_collective_duplicate_same_pc():
     assert len(dups) == 1
     assert dups[0]["master_task_id"] == 601
     assert dups[0]["duplicate_task_id"] == 602
+
+
+def test_user_creation_different_persons_not_duplicate():
+    """Заявки на создание пользователей для разных сотрудников не должны быть дубликатами."""
+    task_141312 = {
+        "Id": 141312,
+        "Name": "Заявка на создание пользователя сети",
+        "Description": None,
+        "Creator": "Молдаванцева Алия",
+        "CreatorId": 6876,
+        "Created": "2026-09-16T14:25:10",
+        "_field_meta": {"user_name": "Павлова Надежда Дмитриевна"},
+        "_parsed_fields": {"Фамилия": "Павлова", "Имя": "Надежда", "Должность": "кладовщик"},
+    }
+    task_141313 = {
+        "Id": 141313,
+        "Name": "Заявка на создание пользователя сети",
+        "Description": None,
+        "Creator": "Молдаванцева Алия",
+        "CreatorId": 6876,
+        "Created": "2026-09-16T14:28:57",
+        "_field_meta": {"user_name": "Рашитова Рамзия Сабитовна"},
+        "_parsed_fields": {"Фамилия": "Рашитова", "Имя": "Рамзия", "Должность": "кладовщик"},
+    }
+
+    detector = DuplicateDetector()
+    dups = detector.find_duplicates([task_141312, task_141313])
+    assert len(dups) == 0, "Заявки на разных целевых сотрудников ни в коем случае не являются дубликатами!"
+
+
+def test_user_creation_same_person_is_duplicate():
+    """Повторная отправка заявки на одного и того же сотрудника является дубликатом."""
+    task_1 = {
+        "Id": 701,
+        "Name": "Заявка на создание пользователя сети",
+        "Description": None,
+        "Creator": "Молдаванцева Алия",
+        "CreatorId": 6876,
+        "Created": "2026-09-16T14:25:10",
+        "_field_meta": {"user_name": "Павлова Надежда Дмитриевна"},
+        "_parsed_fields": {"Фамилия": "Павлова", "Имя": "Надежда", "Должность": "кладовщик"},
+    }
+    task_2 = {
+        "Id": 702,
+        "Name": "Заявка на создание пользователя сети",
+        "Description": None,
+        "Creator": "Молдаванцева Алия",
+        "CreatorId": 6876,
+        "Created": "2026-09-16T14:27:10",
+        "_field_meta": {"user_name": "Павлова Надежда Дмитриевна"},
+        "_parsed_fields": {"Фамилия": "Павлова", "Имя": "Надежда", "Должность": "кладовщик"},
+    }
+
+    detector = DuplicateDetector()
+    dups = detector.find_duplicates([task_1, task_2])
+    assert len(dups) == 1
+    assert dups[0]["master_task_id"] == 701
+    assert dups[0]["duplicate_task_id"] == 702
+

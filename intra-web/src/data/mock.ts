@@ -1,7 +1,7 @@
 export type Status = 'new' | 'in_progress' | 'waiting' | 'resolved';
 export type Priority = 'critical' | 'high' | 'medium' | 'low';
 export type Category = 'network' | 'hardware' | 'software' | 'access' | 'email';
-export type Page = 'queue' | 'settings' | 'timeline';
+export type Page = 'queue' | 'settings' | 'timeline' | 'reports';
 
 
 export interface TimelineEvent {

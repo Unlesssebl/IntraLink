@@ -108,7 +108,7 @@ export default function Sidebar({
               onNavigate('queue');
               onSelectService({ rootId: null, serviceId: null, name: null });
             }}
-            className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${selectedService.rootId === null && selectedService.serviceId === null
+            className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${currentPage === 'queue' && selectedService.rootId === null && selectedService.serviceId === null
                 ? 'bg-blue-600 text-white font-semibold'
                 : 'bg-black/5 dark:bg-white/5 text-neutral-800 dark:text-neutral-200 hover:bg-black/10 dark:hover:bg-white/10'
               }`}
@@ -124,6 +124,19 @@ export default function Sidebar({
                 {openCount > 99 ? '99+' : openCount}
               </span>
             )}
+          </button>
+
+          <button
+            onClick={() => onNavigate('reports')}
+            className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${currentPage === 'reports'
+                ? 'bg-blue-600 text-white font-semibold'
+                : 'bg-black/5 dark:bg-white/5 text-neutral-800 dark:text-neutral-200 hover:bg-black/10 dark:hover:bg-white/10'
+              }`}
+            title="Отчёты"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2.5 13.5h11M4 11V7.5M8 11V3M12 11V5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
           </button>
 
           <div className="w-6 h-px bg-black/10 dark:bg-white/10 my-1" />
@@ -225,7 +238,7 @@ export default function Sidebar({
               onNavigate('queue');
               onSelectService({ rootId: null, serviceId: null, name: null });
             }}
-            className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-[13px] transition-colors text-left cursor-pointer ${selectedService.rootId === null && selectedService.serviceId === null
+            className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-[13px] transition-colors text-left cursor-pointer ${currentPage === 'queue' && selectedService.rootId === null && selectedService.serviceId === null
                 ? 'bg-black/10 dark:bg-white/10 text-neutral-900 dark:text-neutral-100 font-bold'
                 : 'text-neutral-700 dark:text-neutral-300 hover:bg-black/5 dark:hover:bg-white/5 hover:text-neutral-900 dark:hover:text-neutral-100'
               }`}
@@ -243,6 +256,19 @@ export default function Sidebar({
                 {openCount}
               </span>
             )}
+          </button>
+
+          <button
+            onClick={() => onNavigate('reports')}
+            className={`mt-1 w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[13px] transition-colors text-left cursor-pointer ${currentPage === 'reports'
+                ? 'bg-black/10 dark:bg-white/10 text-neutral-900 dark:text-neutral-100 font-bold'
+                : 'text-neutral-700 dark:text-neutral-300 hover:bg-black/5 dark:hover:bg-white/5 hover:text-neutral-900 dark:hover:text-neutral-100'
+              }`}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" className="shrink-0 text-neutral-600 dark:text-neutral-400" aria-hidden="true">
+              <path d="M2.5 13.5h11M4 11V7.5M8 11V3M12 11V5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            <span>Отчёты</span>
           </button>
 
         </div>
