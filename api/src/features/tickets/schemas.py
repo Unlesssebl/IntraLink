@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TicketApplicantDTO(BaseModel):
@@ -14,25 +14,35 @@ class TicketApplicantDTO(BaseModel):
 
 class TicketSummaryDTO(BaseModel):
     id: int
-    name: str
+    name: str = ""
     service_id: Optional[int] = None
     service_name: Optional[str] = None
-    status_id: int
-    status_name: str
+    status_id: int = 0
+    status_name: str = ""
     priority_name: Optional[str] = None
     created: Optional[str] = None
     applicant_name: Optional[str] = None
     pc_name: Optional[str] = None
 
+    @field_validator("name", "status_name", mode="before")
+    @classmethod
+    def coerce_summary_str(cls, v: Any) -> str:
+        return "" if v is None else str(v)
+
+    @field_validator("status_id", mode="before")
+    @classmethod
+    def coerce_summary_int(cls, v: Any) -> int:
+        return 0 if v is None else int(v)
+
 
 class TicketDetailDTO(BaseModel):
     id: int
-    name: str
-    description: str
+    name: str = ""
+    description: str = ""
     service_id: Optional[int] = None
     service_name: Optional[str] = None
-    status_id: int
-    status_name: str
+    status_id: int = 0
+    status_name: str = ""
     priority_name: Optional[str] = None
     created: Optional[str] = None
     creator_name: Optional[str] = None
@@ -41,6 +51,16 @@ class TicketDetailDTO(BaseModel):
     entities: Dict[str, Any] = Field(default_factory=dict)
     custom_fields: Dict[str, str] = Field(default_factory=dict)
     attachments: List[Dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("name", "description", "status_name", mode="before")
+    @classmethod
+    def coerce_detail_str(cls, v: Any) -> str:
+        return "" if v is None else str(v)
+
+    @field_validator("status_id", mode="before")
+    @classmethod
+    def coerce_detail_int(cls, v: Any) -> int:
+        return 0 if v is None else int(v)
 
 
 class UpdateTicketRequest(BaseModel):

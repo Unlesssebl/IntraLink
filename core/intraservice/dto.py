@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ExtractedEntitiesDTO(BaseModel):
@@ -19,6 +19,11 @@ class ExtractedEntitiesDTO(BaseModel):
     email: str = ""
     inventory_number: str = ""
 
+    @field_validator("pc_name", "phone", "room", "department", "user_name", "email", "inventory_number", mode="before")
+    @classmethod
+    def coerce_entities_to_str(cls, v: Any) -> str:
+        return "" if v is None else str(v)
+
 
 class AttachmentDTO(BaseModel):
     """File attachment metadata in IntraService."""
@@ -28,6 +33,16 @@ class AttachmentDTO(BaseModel):
     id: int = Field(alias="Id")
     name: str = Field(alias="Name", default="")
     size: int = Field(alias="Size", default=0)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def coerce_name(cls, v: Any) -> str:
+        return "" if v is None else str(v)
+
+    @field_validator("size", mode="before")
+    @classmethod
+    def coerce_size(cls, v: Any) -> int:
+        return 0 if v is None else int(v)
 
 
 class TaskCommentDTO(BaseModel):
@@ -40,6 +55,11 @@ class TaskCommentDTO(BaseModel):
     created_at: Optional[datetime] = Field(default=None, alias="Created")
     author_name: str = Field(alias="AuthorName", default="")
     is_private: bool = Field(alias="IsPrivate", default=False)
+
+    @field_validator("text", "author_name", mode="before")
+    @classmethod
+    def coerce_comment_str(cls, v: Any) -> str:
+        return "" if v is None else str(v)
 
 
 class TaskDTO(BaseModel):
@@ -58,6 +78,16 @@ class TaskDTO(BaseModel):
     priority_name: Optional[str] = Field(default=None, alias="PriorityName")
     task_type_id: Optional[int] = Field(default=None, alias="TaskTypeId")
     created: Optional[str] = Field(default=None, alias="Created")
+
+    @field_validator("name", "description", "status_name", mode="before")
+    @classmethod
+    def coerce_to_str(cls, v: Any) -> str:
+        return "" if v is None else str(v)
+
+    @field_validator("status_id", mode="before")
+    @classmethod
+    def coerce_to_int(cls, v: Any) -> int:
+        return 0 if v is None else int(v)
     creator_id: Optional[int] = Field(default=None, alias="CreatorId")
     creator_name: Optional[str] = Field(default=None, alias="CreatorName")
     applicant_id: Optional[int] = Field(default=None, alias="ApplicantId")
