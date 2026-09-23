@@ -1,15 +1,34 @@
 """Authentication, tokens, and authorization helpers."""
 
+import base64
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from api.src.core.config import settings
 
 security_bearer = HTTPBearer(auto_error=False)
+
+
+async def get_intraservice_auth(
+    authorization: Optional[str] = Header(None),
+    x_intraservice_auth: Optional[str] = Header(None, alias="X-IntraService-Auth"),
+    auth_b64: Optional[str] = Query(None),
+) -> Optional[str]:
+    """Resolves IntraService Basic Auth credentials from headers, query, or fallback."""
+    if auth_b64:
+        return auth_b64
+    if x_intraservice_auth:
+        return x_intraservice_auth
+    if authorization and authorization.lower().startswith("basic "):
+        return authorization[6:].strip()
+    if settings.INTRASERVICE_LOGIN and settings.INTRASERVICE_PASSWORD:
+        cred = f"{settings.INTRASERVICE_LOGIN}:{settings.INTRASERVICE_PASSWORD}"
+        return base64.b64encode(cred.encode()).decode()
+    return None
 
 
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:

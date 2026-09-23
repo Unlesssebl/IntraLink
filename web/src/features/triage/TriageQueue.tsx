@@ -112,8 +112,12 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
       </div>
 
       {error && (
-        <div className="p-3 bg-red-950/40 border border-red-800/60 rounded-lg text-xs text-red-300">
-          {error}
+        <div className="p-3 bg-red-950/40 border border-red-800/60 rounded-lg text-xs text-red-300 flex items-center justify-between">
+          <span>
+            {error.includes("401") || error.includes("Authentication")
+              ? "Требуется авторизация в IntraService. Пожалуйста, выполните вход через кнопку в верхней панели."
+              : error}
+          </span>
         </div>
       )}
 

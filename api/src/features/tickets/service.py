@@ -26,7 +26,7 @@ class TicketService:
     def __init__(self, client: Optional[IntraServiceClient] = None) -> None:
         self.client = client or IntraServiceClient(
             base_url=settings.INTRASERVICE_URL,
-            verify_ssl=not settings.DEBUG,
+            verify_ssl=settings.SSL_VERIFY,
         )
 
     async def list_tickets(

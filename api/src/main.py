@@ -5,9 +5,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from api.src.core.config import settings
 from api.src.core.db import check_db_health, dispose_db
@@ -19,6 +20,8 @@ from api.src.features.reports.router import router as reports_router
 # Vertical feature slices
 from api.src.features.tickets.router import router as tickets_router
 from api.src.features.triage.router import router as triage_router
+from core.intraservice.client import IntraServiceClient
+from core.intraservice.exceptions import IntraServiceError
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -58,6 +61,7 @@ app.add_middleware(
 
 
 @app.get("/health", tags=["System"])
+@app.get("/api/v2/health", tags=["System"])
 async def health_check() -> dict:
     """Liveness probe: verifies the API process is alive."""
     return {
@@ -70,6 +74,7 @@ async def health_check() -> dict:
 
 
 @app.get("/ready", tags=["System"])
+@app.get("/api/v2/ready", tags=["System"])
 async def readiness_check() -> JSONResponse:
     """Readiness probe: verifies backing infrastructure (PostgreSQL & Redis)."""
     db_ok = await check_db_health()
@@ -84,6 +89,42 @@ async def readiness_check() -> JSONResponse:
 
     status_code = status.HTTP_200_OK if (db_ok and redis_ok) else status.HTTP_503_SERVICE_UNAVAILABLE
     return JSONResponse(status_code=status_code, content=payload)
+
+
+@app.exception_handler(IntraServiceError)
+async def intraservice_error_handler(_request: Request, exc: IntraServiceError) -> JSONResponse:
+    """Handles external IntraService communication errors cleanly."""
+    logger.error(f"IntraService communication error: {exc}")
+    return JSONResponse(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        content={"detail": str(exc)},
+    )
+
+
+class LoginRequest(BaseModel):
+    login: str
+    password: str
+
+
+@app.post("/api/v2/auth/login", tags=["Authentication"])
+async def login(payload: LoginRequest) -> dict:
+    """Authenticates against IntraService API and returns Basic Auth token."""
+    client = IntraServiceClient(
+        base_url=settings.INTRASERVICE_URL,
+        verify_ssl=settings.SSL_VERIFY,
+    )
+    auth_b64, user_id = await client.verify_credentials(payload.login.strip(), payload.password.strip())
+    if not auth_b64:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный логин или пароль в IntraService",
+        )
+    return {
+        "status": "ok",
+        "auth_b64": auth_b64,
+        "user_id": user_id,
+        "login": payload.login.strip(),
+    }
 
 
 # Mount Vertical Feature Slices (/api/v2/...)

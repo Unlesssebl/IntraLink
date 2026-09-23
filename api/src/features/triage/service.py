@@ -36,7 +36,7 @@ class TriageService:
         self.ai_client = ai_client or get_ai_client()
         self.client = intraservice_client or IntraServiceClient(
             base_url=settings.INTRASERVICE_URL,
-            verify_ssl=not settings.DEBUG,
+            verify_ssl=settings.SSL_VERIFY,
         )
         self.pipeline = TriagePipeline(self.ai_client)
 

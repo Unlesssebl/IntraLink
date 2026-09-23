@@ -10,10 +10,33 @@ export class ApiError extends Error {
   }
 }
 
+export function getStoredAuth(): string | null {
+  return localStorage.getItem("intralink_auth_b64");
+}
+
+export function getStoredUserLogin(): string | null {
+  return localStorage.getItem("intralink_user_login");
+}
+
+export function setStoredAuth(token: string, login?: string): void {
+  localStorage.setItem("intralink_auth_b64", token);
+  if (login) localStorage.setItem("intralink_user_login", login);
+}
+
+export function clearStoredAuth(): void {
+  localStorage.removeItem("intralink_auth_b64");
+  localStorage.removeItem("intralink_user_login");
+}
+
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers || {});
   if (!headers.has("Content-Type") && !(options.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
+  }
+
+  const auth = getStoredAuth();
+  if (auth && !headers.has("Authorization")) {
+    headers.set("Authorization", `Basic ${auth}`);
   }
 
   const response = await fetch(`${BASE_URL}${endpoint}`, {
@@ -214,4 +237,12 @@ export const reportsApi = {
     request<{ year: number; month: number; format: string; download_url: string; row_count: number }>(
       `/reports/export?year=${year}&month=${month}&format=${format}`
     ),
+};
+
+export const authApi = {
+  login: (login: string, password: string) =>
+    request<{ status: string; auth_b64: string; user_id: number; login: string }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ login, password }),
+    }),
 };

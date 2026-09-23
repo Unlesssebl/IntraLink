@@ -5,15 +5,24 @@ import {
   BarChart3,
   Search,
   Activity,
-  CheckCircle2,
   Terminal,
-  ShieldCheck,
+  LogIn,
+  LogOut,
+  User,
+  KeyRound,
 } from "lucide-react";
-import { Badge } from "@/shared/ui";
+import { Badge, Button, Input, Modal } from "@/shared/ui";
 import { TriageQueue } from "@/features/triage/TriageQueue";
 import { TicketInspector } from "@/features/tickets/TicketInspector";
 import { KBSearch } from "@/features/knowledge-base/KBSearch";
 import { LoadReport } from "@/features/reports/LoadReport";
+import {
+  authApi,
+  getStoredAuth,
+  getStoredUserLogin,
+  setStoredAuth,
+  clearStoredAuth,
+} from "@/shared/api";
 
 type Tab = "triage" | "kb" | "reports";
 
@@ -22,6 +31,15 @@ export default function App() {
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null);
   const [backendStatus, setBackendStatus] = useState<"online" | "checking" | "offline">("checking");
   const [searchTicketQuery, setSearchTicketQuery] = useState("");
+
+  // Auth state
+  const [currentUser, setCurrentUser] = useState<string | null>(getStoredUserLogin());
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [loginInput, setLoginInput] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [queueRefreshKey, setQueueRefreshKey] = useState(0);
 
   const checkHealth = async () => {
     try {
@@ -32,7 +50,6 @@ export default function App() {
         setBackendStatus("offline");
       }
     } catch {
-      // In local dev without running api container, consider checking
       setBackendStatus("offline");
     }
   };
@@ -51,6 +68,35 @@ export default function App() {
       setSelectedTicketId(id);
       setSearchTicketQuery("");
     }
+  };
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loginInput.trim() || !passwordInput.trim()) {
+      setAuthError("Введите логин и пароль");
+      return;
+    }
+
+    try {
+      setLoggingIn(true);
+      setAuthError(null);
+      const res = await authApi.login(loginInput.trim(), passwordInput.trim());
+      setStoredAuth(res.auth_b64, res.login);
+      setCurrentUser(res.login);
+      setAuthModalOpen(false);
+      setPasswordInput("");
+      setQueueRefreshKey((prev) => prev + 1);
+    } catch (err: any) {
+      setAuthError(err?.message || "Ошибка авторизации");
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
+  const handleLogout = () => {
+    clearStoredAuth();
+    setCurrentUser(null);
+    setQueueRefreshKey((prev) => prev + 1);
   };
 
   return (
@@ -127,14 +173,37 @@ export default function App() {
             </Badge>
           </div>
 
-          <div className="flex items-center gap-2 pt-1 border-t border-[#1a1f2b] text-[11px] text-slate-400">
-            <div className="w-5 h-5 rounded-full bg-[#1e2433] flex items-center justify-center font-bold text-[10px] text-slate-300">
-              Б
+          <div className="flex items-center justify-between pt-1 border-t border-[#1a1f2b] text-[11px]">
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 rounded-full bg-[#1e2433] flex items-center justify-center font-bold text-[10px] text-slate-300">
+                {currentUser ? currentUser[0].toUpperCase() : "?"}
+              </div>
+              <div className="truncate">
+                <div className="font-medium text-slate-300 leading-tight">
+                  {currentUser || "Не авторизован"}
+                </div>
+                <div className="text-[10px] text-slate-500 leading-tight">
+                  {currentUser ? "Инженер IntraService" : "Гостевой режим"}
+                </div>
+              </div>
             </div>
-            <div className="truncate">
-              <div className="font-medium text-slate-300 leading-tight">Беликов Ален</div>
-              <div className="text-[10px] text-slate-500 leading-tight">Инженер Helpdesk</div>
-            </div>
+            {currentUser ? (
+              <button
+                onClick={handleLogout}
+                title="Выйти"
+                className="text-slate-400 hover:text-slate-200 p-1 rounded hover:bg-[#1e2433]"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setAuthModalOpen(true)}
+              >
+                Войти
+              </Button>
+            )}
           </div>
         </div>
       </aside>
@@ -153,23 +222,37 @@ export default function App() {
             </span>
           </div>
 
-          {/* Quick jump to Ticket ID */}
-          <form onSubmit={handleQuickSearch} className="relative w-64">
-            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <input
-              type="text"
-              value={searchTicketQuery}
-              onChange={(e) => setSearchTicketQuery(e.target.value)}
-              placeholder="Открыть заявку по #ID..."
-              className="w-full bg-[#131722] border border-[#232938] rounded-md pl-8 pr-3 py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-            />
-          </form>
+          <div className="flex items-center gap-3">
+            {/* Quick jump to Ticket ID */}
+            <form onSubmit={handleQuickSearch} className="relative w-60">
+              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={searchTicketQuery}
+                onChange={(e) => setSearchTicketQuery(e.target.value)}
+                placeholder="Открыть заявку по #ID..."
+                className="w-full bg-[#131722] border border-[#232938] rounded-md pl-8 pr-3 py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+              />
+            </form>
+
+            {!currentUser && (
+              <Button
+                size="sm"
+                variant="primary"
+                icon={<LogIn className="w-3.5 h-3.5" />}
+                onClick={() => setAuthModalOpen(true)}
+              >
+                Войти в IntraService
+              </Button>
+            )}
+          </div>
         </header>
 
         {/* Viewport */}
         <main className="flex-1 overflow-y-auto p-6">
           {activeTab === "triage" && (
             <TriageQueue
+              key={queueRefreshKey}
               onSelectTicket={(id) => setSelectedTicketId(id)}
               selectedTicketId={selectedTicketId}
             />
@@ -186,11 +269,61 @@ export default function App() {
         <TicketInspector
           ticketId={selectedTicketId}
           onClose={() => setSelectedTicketId(null)}
-          onTicketUpdated={() => {
-            // Can trigger refetch if needed
-          }}
+          onTicketUpdated={() => setQueueRefreshKey((prev) => prev + 1)}
         />
       )}
+
+      {/* Login Modal */}
+      <Modal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        title="Авторизация в IntraService"
+        description="Введите логин и пароль вашей учетной записи Helpdesk"
+        maxWidth="sm"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setAuthModalOpen(false)}
+            >
+              Отмена
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              loading={loggingIn}
+              onClick={handleLoginSubmit}
+            >
+              Войти
+            </Button>
+          </>
+        }
+      >
+        <form onSubmit={handleLoginSubmit} className="space-y-3">
+          <Input
+            label="Логин IntraService"
+            placeholder="например: belikov.a"
+            value={loginInput}
+            onChange={(e) => setLoginInput(e.target.value)}
+            icon={<User className="w-3.5 h-3.5" />}
+            autoFocus
+          />
+          <Input
+            label="Пароль"
+            type="password"
+            placeholder="••••••••"
+            value={passwordInput}
+            onChange={(e) => setPasswordInput(e.target.value)}
+            icon={<KeyRound className="w-3.5 h-3.5" />}
+          />
+          {authError && (
+            <div className="p-2.5 bg-red-950/40 border border-red-800/60 rounded text-[11px] text-red-300">
+              {authError}
+            </div>
+          )}
+        </form>
+      </Modal>
     </div>
   );
 }

@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     INTRASERVICE_TZ: str = "Europe/Moscow"
     INTRASERVICE_LOGIN: str = ""
     INTRASERVICE_PASSWORD: str = ""
+    SSL_VERIFY: bool = False
 
     # Security & CORS
     CORS_ORIGINS: Union[List[str], str] = ["http://localhost:3000", "http://localhost:5173"]

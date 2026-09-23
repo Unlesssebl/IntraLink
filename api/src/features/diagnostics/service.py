@@ -27,7 +27,7 @@ class DiagnosticsService:
     def __init__(self, intraservice_client: Optional[IntraServiceClient] = None) -> None:
         self.intraservice_client = intraservice_client or IntraServiceClient(
             base_url=settings.INTRASERVICE_URL,
-            verify_ssl=not settings.DEBUG,
+            verify_ssl=settings.SSL_VERIFY,
         )
 
     async def diagnose_host(

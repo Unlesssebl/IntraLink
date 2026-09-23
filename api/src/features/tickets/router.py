@@ -1,11 +1,12 @@
 """Tickets feature router."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.src.core.db import get_db_session
+from api.src.core.security import get_intraservice_auth
 from core.intraservice.exceptions import IntraServiceNotFoundError
 
 from .schemas import (
@@ -31,20 +32,22 @@ async def list_tickets(
     filter_id: int = Query(default=984, description="IntraService filter ID (e.g. 984 for 1st line queue)"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=500),
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
     service: TicketService = Depends(get_ticket_service),
 ) -> List[TicketSummaryDTO]:
     """Retrieve ticket list matching specified filter ID."""
-    return await service.list_tickets(filter_id=filter_id, page=page, page_size=page_size)
+    return await service.list_tickets(filter_id=filter_id, page=page, page_size=page_size, auth_b64=auth_b64)
 
 
 @router.get("/{ticket_id}", response_model=TicketDetailDTO)
 async def get_ticket(
     ticket_id: int,
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
     service: TicketService = Depends(get_ticket_service),
 ) -> TicketDetailDTO:
     """Retrieve full details of a single ticket."""
     try:
-        return await service.get_ticket(ticket_id=ticket_id)
+        return await service.get_ticket(ticket_id=ticket_id, auth_b64=auth_b64)
     except IntraServiceNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
