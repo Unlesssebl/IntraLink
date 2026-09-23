@@ -59,7 +59,7 @@ class TicketService:
         ]
 
     async def get_ticket(self, ticket_id: int, auth_b64: Optional[str] = None) -> TicketDetailDTO:
-        task: TaskDTO = await self.client.get_task(ticket_id=ticket_id, auth_b64=auth_b64)
+        task: TaskDTO = await self.client.get_task(task_id=ticket_id, auth_b64=auth_b64)
         return TicketDetailDTO(
             id=task.id,
             name=task.name,
@@ -79,7 +79,7 @@ class TicketService:
         )
 
     async def get_ticket_lifetime(self, ticket_id: int, auth_b64: Optional[str] = None) -> List[Dict[str, Any]]:
-        events: List[TaskLifetimeEventDTO] = await self.client.get_task_lifetime(ticket_id=ticket_id, auth_b64=auth_b64)
+        events: List[TaskLifetimeEventDTO] = await self.client.get_task_lifetime(task_id=ticket_id, auth_b64=auth_b64)
         return [e.model_dump() for e in events]
 
     async def update_ticket(

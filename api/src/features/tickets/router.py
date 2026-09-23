@@ -119,10 +119,11 @@ async def execute_ticket_action(
 async def download_attachment(
     ticket_id: int,
     file_id: int,
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
     service: TicketService = Depends(get_ticket_service),
 ) -> Response:
     """Download binary content of an attachment."""
-    content = await service.client.download_attachment(file_id=file_id)
+    content = await service.client.download_attachment(file_id=file_id, auth_b64=auth_b64)
     if not content:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
