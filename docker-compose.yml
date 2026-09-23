@@ -1,0 +1,4 @@
+# IntraLink v2 Root Compose Entrypoint
+# Delegates all service declarations to deploy/docker-compose.yml
+include:
+  - deploy/docker-compose.yml
