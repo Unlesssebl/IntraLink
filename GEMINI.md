@@ -22,14 +22,11 @@
   * Кэш каталога услуг: ключ `worker:service_catalog` (TTL 24 часа).
   * Кэш аналитических отчётов нагрузки: ключи `reports:load:month:{year}_{month}` (TTL 30 дней для закрытых месяцев, 5 минут для текущего). Динамический API: `/api/v2/reports/load` и `/api/v2/reports/export`.
 
-* **Core API:**
-  * Контейнер: `intralink_core_api` (порт 8000).
-  * Код `/app` запечен в Docker-образ без bind-mount рабочей директории хоста.
-  * Для быстрой проверки изменений кода «на лету» без пересборки:
-    ```powershell
-    docker cp ./core-api/app/<path> intralink_core_api:/app/app/<path>
-    ```
-  * `pytest` отсутствует в рантайме прод-образа контейнера — для тестов запускать проверки через pipe со скриптом в `python`.
+* **Core API (Legacy v1 vs Architecture v2):**
+  * В ветке `feat/v2-vertical-slice-architecture` проект переходит на модульный монорепозиторий v2 согласно `docs/architecture/v2-architecture-blueprint.md` (ADR 0004).
+  * Директория `core-api/` является устаревшим кодом (Legacy v1) и используется только как донор логики для нового бэкенда `api/`.
+  * Новый бэкенд разворачивается в `api/` с вертикальными срезами (`api/src/features/*`).
+  * Для доменной специфики IntraService (раздел 2) и Helpdesk (раздел 4) правила остаются неизменными.
 
 ---
 
