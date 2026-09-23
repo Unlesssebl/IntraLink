@@ -39,7 +39,7 @@ async def export_load_report(
     csv_content = await service.export_csv(year=year, month=month, redis_client=redis)
     filename = f"report_load_{year}_{month:02d}.csv"
     return Response(
-        content=csv_content,
-        media_type="text/csv",
+        content=csv_content.encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

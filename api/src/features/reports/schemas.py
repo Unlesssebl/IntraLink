@@ -19,7 +19,11 @@ class MonthlyLoadReportDTO(BaseModel):
     month: int
     is_closed_month: bool
     total_tickets: int
-    engineers: List[EngineerLoadMetricDTO]
+    closed_tickets: int = 0
+    avg_resolution_hours: float = 0.0
+    engineer_load: dict[str, int] = {}
+    service_load: dict[str, int] = {}
+    engineers: List[EngineerLoadMetricDTO] = []
     cached: bool = False
 
 

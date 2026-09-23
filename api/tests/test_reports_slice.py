@@ -34,6 +34,10 @@ async def test_get_load_report_endpoint():
             assert data["is_closed_month"] is True
             assert len(data["engineers"]) >= 2
             assert data["total_tickets"] > 0
+            assert data["closed_tickets"] > 0
+            assert "Беликов Ален" in data["engineer_load"]
+            assert "03. Принтеры и оргтехника" in data["service_load"]
+            assert data["avg_resolution_hours"] > 0
 
 
 @pytest.mark.asyncio

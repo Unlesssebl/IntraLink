@@ -11,7 +11,7 @@ import {
   User,
   KeyRound,
 } from "lucide-react";
-import { Badge, Button, Input, Modal } from "@/shared/ui";
+import { Badge, Button, ErrorBoundary, Input, Modal } from "@/shared/ui";
 import { TriageQueue } from "@/features/triage/TriageQueue";
 import { TicketInspector } from "@/features/tickets/TicketInspector";
 import { KBSearch } from "@/features/knowledge-base/KBSearch";
@@ -278,13 +278,17 @@ export default function App() {
 
         {activeTab === "kb" && (
           <main className="flex-1 overflow-y-auto p-6">
-            <KBSearch />
+            <ErrorBoundary fallbackTitle="Ошибка в модуле Базы знаний">
+              <KBSearch />
+            </ErrorBoundary>
           </main>
         )}
 
         {activeTab === "reports" && (
           <main className="flex-1 overflow-y-auto p-6">
-            <LoadReport />
+            <ErrorBoundary fallbackTitle="Ошибка в модуле Аналитики и отчетов">
+              <LoadReport />
+            </ErrorBoundary>
           </main>
         )}
       </div>

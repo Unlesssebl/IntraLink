@@ -30,11 +30,11 @@ export const LoadReport: React.FC = () => {
     fetchReport();
   }, [year, month]);
 
-  const handleExport = async () => {
+  const handleExport = () => {
     try {
       setExporting(true);
-      const res = await reportsApi.exportLoad(year, month, "csv");
-      window.open(res.download_url, "_blank");
+      const url = reportsApi.getExportUrl(year, month);
+      window.open(url, "_blank");
     } catch (err: any) {
       alert(`Ошибка экспорта: ${err?.message}`);
     } finally {
@@ -46,6 +46,20 @@ export const LoadReport: React.FC = () => {
     "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
     "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
   ];
+
+  const engineerEntries =
+    data?.engineer_load && Object.keys(data.engineer_load).length > 0
+      ? Object.entries(data.engineer_load)
+      : (data?.engineers || []).map((e) => [e.user_name, e.total_closed] as [string, number]);
+
+  const serviceEntries = Object.entries(data?.service_load || {});
+  const totalTickets =
+    data?.total_tickets ??
+    (data?.engineers || []).reduce((acc, e) => acc + e.total_assigned, 0);
+  const closedTickets =
+    data?.closed_tickets ??
+    (data?.engineers || []).reduce((acc, e) => acc + e.total_closed, 0);
+  const avgResolutionHours = data?.avg_resolution_hours ?? 0;
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto">
@@ -123,7 +137,7 @@ export const LoadReport: React.FC = () => {
                   Всего поступило
                 </span>
                 <div className="text-xl font-bold font-mono text-slate-100 mt-1">
-                  {data.total_tickets}
+                  {totalTickets}
                 </div>
               </div>
               <Layers className="w-6 h-6 text-indigo-400/80" />
@@ -137,7 +151,7 @@ export const LoadReport: React.FC = () => {
                   Успешно решено
                 </span>
                 <div className="text-xl font-bold font-mono text-emerald-400 mt-1">
-                  {data.closed_tickets}
+                  {closedTickets}
                 </div>
               </div>
               <Users className="w-6 h-6 text-emerald-400/80" />
@@ -151,7 +165,7 @@ export const LoadReport: React.FC = () => {
                   Среднее время решения
                 </span>
                 <div className="text-xl font-bold font-mono text-amber-400 mt-1">
-                  {data.avg_resolution_hours} ч
+                  {avgResolutionHours} ч
                 </div>
               </div>
               <Clock className="w-6 h-6 text-amber-400/80" />
@@ -173,28 +187,34 @@ export const LoadReport: React.FC = () => {
             }
           >
             <div className="space-y-2">
-              {Object.entries(data.engineer_load).map(([name, count]) => {
-                const percent =
-                  data.closed_tickets > 0
-                    ? Math.round((count / data.closed_tickets) * 100)
-                    : 0;
-                return (
-                  <div key={name} className="space-y-1 text-xs">
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-300 font-medium">{name}</span>
-                      <span className="font-mono text-slate-400">
-                        {count} ({percent}%)
-                      </span>
+              {engineerEntries.length === 0 ? (
+                <div className="text-xs text-slate-500 py-3 text-center">
+                  Нет данных по инженерам
+                </div>
+              ) : (
+                engineerEntries.map(([name, count]) => {
+                  const percent =
+                    closedTickets > 0
+                      ? Math.round((count / closedTickets) * 100)
+                      : 0;
+                  return (
+                    <div key={name} className="space-y-1 text-xs">
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-300 font-medium">{name}</span>
+                        <span className="font-mono text-slate-400">
+                          {count} ({percent}%)
+                        </span>
+                      </div>
+                      <div className="h-1.5 w-full bg-[#1e2330] rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-indigo-500 rounded-full"
+                          style={{ width: `${percent}%` }}
+                        />
+                      </div>
                     </div>
-                    <div className="h-1.5 w-full bg-[#1e2330] rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-indigo-500 rounded-full"
-                        style={{ width: `${percent}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           </Card>
 
@@ -208,31 +228,74 @@ export const LoadReport: React.FC = () => {
             }
           >
             <div className="space-y-2">
-              {Object.entries(data.service_load).map(([service, count]) => {
-                const percent =
-                  data.total_tickets > 0
-                    ? Math.round((count / data.total_tickets) * 100)
-                    : 0;
-                return (
-                  <div key={service} className="space-y-1 text-xs">
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-300 truncate pr-2">{service}</span>
-                      <span className="font-mono text-slate-400 shrink-0">
-                        {count} ({percent}%)
-                      </span>
+              {serviceEntries.length === 0 ? (
+                <div className="text-xs text-slate-500 py-3 text-center">
+                  Нет данных по категориям
+                </div>
+              ) : (
+                serviceEntries.map(([service, count]) => {
+                  const percent =
+                    totalTickets > 0
+                      ? Math.round((count / totalTickets) * 100)
+                      : 0;
+                  return (
+                    <div key={service} className="space-y-1 text-xs">
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-300 truncate pr-2">{service}</span>
+                        <span className="font-mono text-slate-400 shrink-0">
+                          {count} ({percent}%)
+                        </span>
+                      </div>
+                      <div className="h-1.5 w-full bg-[#1e2330] rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-500 rounded-full"
+                          style={{ width: `${percent}%` }}
+                        />
+                      </div>
                     </div>
-                    <div className="h-1.5 w-full bg-[#1e2330] rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-emerald-500 rounded-full"
-                        style={{ width: `${percent}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           </Card>
         </div>
+      )}
+
+      {/* Detailed Engineer Table if engineers metrics available */}
+      {data?.engineers && data.engineers.length > 0 && (
+        <Card
+          title={
+            <div className="flex items-center gap-2">
+              <Users className="w-4 h-4 text-indigo-400" />
+              <span>Показатели производительности инженеров</span>
+            </div>
+          }
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left">
+              <thead>
+                <tr className="border-b border-[#252b3b] text-slate-400">
+                  <th className="pb-2 font-medium">Инженер</th>
+                  <th className="pb-2 font-medium text-right">Назначено</th>
+                  <th className="pb-2 font-medium text-right">Закрыто</th>
+                  <th className="pb-2 font-medium text-right">Ср. время (ч)</th>
+                  <th className="pb-2 font-medium text-right">Возвраты</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#1e2330]">
+                {data.engineers.map((e) => (
+                  <tr key={e.user_id} className="hover:bg-[#181d28]/50">
+                    <td className="py-2 text-slate-200 font-medium">{e.user_name}</td>
+                    <td className="py-2 text-right font-mono text-slate-400">{e.total_assigned}</td>
+                    <td className="py-2 text-right font-mono text-emerald-400">{e.total_closed}</td>
+                    <td className="py-2 text-right font-mono text-amber-400">{e.avg_resolution_hours}</td>
+                    <td className="py-2 text-right font-mono text-rose-400">{e.reopened_count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
       )}
     </div>
   );

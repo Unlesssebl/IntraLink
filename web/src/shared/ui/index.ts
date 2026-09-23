@@ -6,3 +6,4 @@ export * from "./Card";
 export * from "./KbdBadge";
 export * from "./StatusDot";
 export * from "./Lightbox";
+export * from "./ErrorBoundary";

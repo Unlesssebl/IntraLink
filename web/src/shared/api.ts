@@ -188,15 +188,27 @@ export interface HostDiagnostic {
   checked_at: string;
 }
 
+export interface EngineerLoadMetric {
+  user_id: number;
+  user_name: string;
+  total_assigned: number;
+  total_closed: number;
+  avg_resolution_hours: number;
+  reopened_count: number;
+}
+
 export interface LoadReport {
   year: number;
   month: number;
+  is_closed_month?: boolean;
   total_tickets: number;
   closed_tickets: number;
   avg_resolution_hours: number;
-  engineer_load: Record<string, number>;
-  service_load: Record<string, number>;
-  is_cached: boolean;
+  engineer_load?: Record<string, number>;
+  service_load?: Record<string, number>;
+  engineers?: EngineerLoadMetric[];
+  cached?: boolean;
+  is_cached?: boolean;
 }
 
 // -------------------------------------------------------------
@@ -315,6 +327,9 @@ export const diagnosticsApi = {
 export const reportsApi = {
   getLoad: (year: number, month: number) =>
     request<LoadReport>(`/reports/load?year=${year}&month=${month}`),
+
+  getExportUrl: (year: number, month: number) =>
+    `${BASE_URL}/reports/export?year=${year}&month=${month}`,
 
   exportLoad: (year: number, month: number, format: "csv" | "excel" = "csv") =>
     request<{ year: number; month: number; format: string; download_url: string; row_count: number }>(

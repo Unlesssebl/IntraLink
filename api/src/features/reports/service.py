@@ -51,6 +51,20 @@ class ReportsService:
                 if cached:
                     data = json.loads(cached)
                     data["cached"] = True
+                    if not data.get("engineer_load") and data.get("engineers"):
+                        data["engineer_load"] = {e["user_name"]: e["total_closed"] for e in data["engineers"]}
+                    if not data.get("closed_tickets") and data.get("engineers"):
+                        data["closed_tickets"] = sum(e["total_closed"] for e in data["engineers"])
+                    if not data.get("service_load"):
+                        data["service_load"] = {
+                            "03. Принтеры и оргтехника": 85,
+                            "02. Настройка ПО и рабочих мест": 72,
+                            "01. Учетные записи и доступ": 60,
+                            "09. ЭЦП и банк-клиенты": 45,
+                            "04. Сеть и интернет": 40,
+                            "05. Directum и B2B": 30,
+                            "06. Вопросы по 1С": 23,
+                        }
                     return MonthlyLoadReportDTO.model_validate(data)
             except Exception as exc:
                 logger.debug(f"Redis report cache read error: {exc}")
@@ -76,11 +90,37 @@ class ReportsService:
             ),
         ]
 
+        total_tickets = sum(e.total_assigned for e in mock_engineers)
+        closed_tickets = sum(e.total_closed for e in mock_engineers)
+        avg_res = (
+            round(
+                sum(e.avg_resolution_hours * e.total_closed for e in mock_engineers)
+                / closed_tickets,
+                1,
+            )
+            if closed_tickets > 0
+            else 0.0
+        )
+        engineer_load = {e.user_name: e.total_closed for e in mock_engineers}
+        service_load = {
+            "03. Принтеры и оргтехника": 85,
+            "02. Настройка ПО и рабочих мест": 72,
+            "01. Учетные записи и доступ": 60,
+            "09. ЭЦП и банк-клиенты": 45,
+            "04. Сеть и интернет": 40,
+            "05. Directum и B2B": 30,
+            "06. Вопросы по 1С": 23,
+        }
+
         report = MonthlyLoadReportDTO(
             year=year,
             month=month,
             is_closed_month=is_closed,
-            total_tickets=sum(e.total_assigned for e in mock_engineers),
+            total_tickets=total_tickets,
+            closed_tickets=closed_tickets,
+            avg_resolution_hours=avg_res,
+            engineer_load=engineer_load,
+            service_load=service_load,
             engineers=mock_engineers,
             cached=False,
         )
