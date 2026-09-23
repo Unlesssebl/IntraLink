@@ -28,10 +28,19 @@ SENSITIVE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 
-SECRET_TEXT_PATTERNS = [
-    re.compile(r"(?i)\b(password|пароль|secret|токен|token|api_key|auth_b64)\s*[:=]\s*([^\s,;]+)"),
-    re.compile(r"(?i)\bBearer\s+([a-zA-Z0-9_\-\.]{15,})\b"),
-    re.compile(r"(?i)\bBasic\s+([a-zA-Z0-9+/=]{15,})\b"),
+SECRET_TEXT_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (
+        re.compile(r"(?i)\b([a-zA-Z0-9_]*(?:password|passwd|пароль|secret|токен|token|api_key|auth_b64))\s*[:=]\s*(['\"]?)([^\s,;'\"\n]+)\2"),
+        r"\1: ***REDACTED***",
+    ),
+    (
+        re.compile(r"(?i)\bBearer\s+[a-zA-Z0-9_\-\.]{15,}\b"),
+        "Bearer ***REDACTED***",
+    ),
+    (
+        re.compile(r"(?i)\bBasic\s+[a-zA-Z0-9+/=]{15,}\b"),
+        "Basic ***REDACTED***",
+    ),
 ]
 
 SCENARIO_TITLES: dict[str, str] = {
@@ -116,8 +125,8 @@ def sanitize_value(value: Any, *, depth: int = 0, max_depth: int = 8) -> Any:
 
     if isinstance(value, str):
         text = value
-        for pattern in SECRET_TEXT_PATTERNS:
-            text = pattern.sub(lambda m: f"{m.group(1)}: {REDACTED_MARKER}" if m.lastindex == 2 else REDACTED_MARKER, text)
+        for pattern, replacement in SECRET_TEXT_PATTERNS:
+            text = pattern.sub(replacement, text)
         if len(text) > 1500:
             return text[:1500] + "… [строка усечена]"
         return text
