@@ -185,6 +185,55 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
     }
   };
 
+  const handleToggleCommentsEnabled = async () => {
+    if (!autopilot || savingAutopilot) return;
+    setSavingAutopilot(true);
+    try {
+      const nextEnabled = !(autopilot.internal_comments_enabled ?? true);
+      const updated = await updateAutopilotSetting(
+        autopilot.enabled,
+        autopilot.version,
+        nextEnabled ? 'Служебные комментарии автопилота включены' : 'Служебные комментарии автопилота отключены',
+        nextEnabled,
+        autopilot.internal_comments_depth ?? 'applied',
+      );
+      setAutopilot(updated);
+      onToast({
+        type: nextEnabled ? 'success' : 'info',
+        message: nextEnabled ? 'Служебные комментарии включены' : 'Служебные комментарии отключены',
+      });
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Не удалось изменить настройку комментариев: ${err.message || err}` });
+      await loadAll();
+    } finally {
+      setSavingAutopilot(false);
+    }
+  };
+
+  const handleChangeCommentsDepth = async (depth: 'applied' | 'technical') => {
+    if (!autopilot || savingAutopilot) return;
+    setSavingAutopilot(true);
+    try {
+      const updated = await updateAutopilotSetting(
+        autopilot.enabled,
+        autopilot.version,
+        `Глубина отчёта изменена на ${depth}`,
+        autopilot.internal_comments_enabled ?? true,
+        depth,
+      );
+      setAutopilot(updated);
+      onToast({
+        type: 'success',
+        message: `Глубина отчётов автопилота: ${depth === 'applied' ? 'Прикладной' : 'Технический (JSON)'}`,
+      });
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Не удалось изменить глубину отчётов: ${err.message || err}` });
+      await loadAll();
+    } finally {
+      setSavingAutopilot(false);
+    }
+  };
+
   const handleAddScenario = async () => {
     if (!autopilot || !scenarioServiceId.trim()) return;
     setSavingScenario(true);
@@ -228,6 +277,58 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
         expected_version: version,
       });
       await loadAll();
+    } catch (err: any) {
+      onToast({ type: 'error', message: `Не удалось изменить сценарий: ${err.message || err}` });
+    } finally {
+      setSavingScenario(false);
+    }
+  };
+
+  const handleToggleScenarioComments = async (
+    serviceId: number,
+    scenarioKeyVal: AutopilotScenarioKey,
+    enabled: boolean,
+    version: number,
+    config: Record<string, unknown>,
+    rolloutMode: 'legacy' | 'shadow' | 'canary' | 'active',
+    modeVal: 'inherit' | 'applied' | 'technical' | 'disabled',
+    canaryPercent?: number,
+  ) => {
+    setSavingScenario(true);
+    const newConfig = { ...config };
+    if (modeVal === 'inherit') {
+      delete newConfig.internal_comments_enabled;
+      delete newConfig.internal_comments_depth;
+    } else if (modeVal === 'disabled') {
+      newConfig.internal_comments_enabled = false;
+      delete newConfig.internal_comments_depth;
+    } else if (modeVal === 'applied') {
+      newConfig.internal_comments_enabled = true;
+      newConfig.internal_comments_depth = 'applied';
+    } else if (modeVal === 'technical') {
+      newConfig.internal_comments_enabled = true;
+      newConfig.internal_comments_depth = 'technical';
+    }
+
+    try {
+      await saveAutopilotScenario({
+        service_id: serviceId,
+        scenario_key: scenarioKeyVal,
+        enabled,
+        rollout_mode: rolloutMode,
+        canary_percent: canaryPercent,
+        config: newConfig,
+        expected_version: version,
+      });
+      await loadAll();
+      onToast({
+        type: 'success',
+        message: `Режим комментариев сценария обновлён: ${
+          modeVal === 'inherit' ? 'По умолчанию (глобально)' :
+          modeVal === 'disabled' ? 'Отключено' :
+          modeVal === 'applied' ? 'Прикладной' : 'Технический'
+        }`,
+      });
     } catch (err: any) {
       onToast({ type: 'error', message: `Не удалось изменить сценарий: ${err.message || err}` });
     } finally {
@@ -345,6 +446,68 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
               {savingAutopilot ? 'Сохранение…' : autopilot?.enabled ? 'Выключить' : 'Включить'}
             </button>
           </div>
+
+          {/* Internal Comments Global Configuration */}
+          <div className="rounded-lg border border-neutral-200/80 bg-neutral-50/60 p-3 dark:border-neutral-800 dark:bg-neutral-900/50 space-y-2.5">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="text-xs font-medium text-neutral-900 dark:text-neutral-100 flex items-center gap-1.5">
+                  <span>Служебные скрытые комментарии</span>
+                  <span className="rounded bg-neutral-200/70 px-1.5 py-0.5 text-[10px] font-mono text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">IsPrivateComment</span>
+                </div>
+                <div className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-0.5">
+                  Отчёты для инженеров 1-й линии о старте, паузе/ошибке и завершении тикета с DLP-маскировкой паролей.
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={!canManageAutopilot || !autopilot || savingAutopilot}
+                onClick={handleToggleCommentsEnabled}
+                className={`rounded px-2.5 py-1 text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-50 ${
+                  (autopilot?.internal_comments_enabled ?? true)
+                    ? 'bg-emerald-600 text-white hover:bg-emerald-500'
+                    : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300'
+                }`}
+              >
+                {(autopilot?.internal_comments_enabled ?? true) ? 'Включены' : 'Выключены'}
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between border-t border-neutral-200/60 pt-2 dark:border-neutral-800/80">
+              <div className="text-[11px] text-neutral-600 dark:text-neutral-400">
+                Глубина отчёта по умолчанию:
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={!canManageAutopilot || !autopilot || savingAutopilot || !(autopilot?.internal_comments_enabled ?? true)}
+                  onClick={() => handleChangeCommentsDepth('applied')}
+                  className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer disabled:opacity-40 ${
+                    (autopilot?.internal_comments_depth ?? 'applied') === 'applied'
+                      ? 'bg-blue-600 text-white font-semibold'
+                      : 'bg-white text-neutral-700 hover:bg-neutral-100 border border-neutral-200 dark:bg-neutral-950 dark:border-neutral-700 dark:text-neutral-300'
+                  }`}
+                  title="Краткий статус в 1-2 предложениях для инженеров"
+                >
+                  Прикладной (1-2 предл.)
+                </button>
+                <button
+                  type="button"
+                  disabled={!canManageAutopilot || !autopilot || savingAutopilot || !(autopilot?.internal_comments_enabled ?? true)}
+                  onClick={() => handleChangeCommentsDepth('technical')}
+                  className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer disabled:opacity-40 ${
+                    autopilot?.internal_comments_depth === 'technical'
+                      ? 'bg-blue-600 text-white font-semibold'
+                      : 'bg-white text-neutral-700 hover:bg-neutral-100 border border-neutral-200 dark:bg-neutral-950 dark:border-neutral-700 dark:text-neutral-300'
+                  }`}
+                  title="Структурированный JSON Trace для администраторов"
+                >
+                  Технический (JSON Trace)
+                </button>
+              </div>
+            </div>
+          </div>
+
           <div className="space-y-2 border-t border-neutral-100 pt-3 dark:border-neutral-800">
             <div className="flex items-center justify-between">
               <div>
@@ -437,6 +600,36 @@ export default function SettingsPage({ theme, onToggleTheme, onToast }: Props) {
                       <span>%</span>
                     </div>
                   )}
+                  {/* Scenario comments override selector */}
+                  <select
+                    value={
+                      item.config?.internal_comments_enabled === false
+                        ? 'disabled'
+                        : item.config?.internal_comments_depth === 'technical'
+                        ? 'technical'
+                        : item.config?.internal_comments_depth === 'applied'
+                        ? 'applied'
+                        : 'inherit'
+                    }
+                    disabled={!canManageAutopilot || savingScenario}
+                    title="Служебные скрытые комментарии для данного сценария"
+                    onChange={event => handleToggleScenarioComments(
+                      item.service_id,
+                      item.scenario_key,
+                      item.enabled,
+                      item.version,
+                      item.config,
+                      item.rollout_mode,
+                      event.target.value as 'inherit' | 'applied' | 'technical' | 'disabled',
+                      item.canary_percent ?? 10,
+                    )}
+                    className="rounded border border-neutral-200 bg-white px-2 py-1 text-[11px] font-medium dark:border-neutral-700 dark:bg-neutral-950"
+                  >
+                    <option value="inherit">Отчёт: авто</option>
+                    <option value="applied">Отчёт: прикладной</option>
+                    <option value="technical">Отчёт: trace</option>
+                    <option value="disabled">Отчёт: выкл</option>
+                  </select>
 
                   <button
                     type="button"

@@ -67,6 +67,8 @@ export interface AutopilotScenario {
   enabled: boolean;
   rollout_mode: 'legacy' | 'shadow' | 'canary' | 'active';
   canary_percent?: number;
+  internal_comments_enabled?: boolean;
+  internal_comments_depth?: 'applied' | 'technical';
   version: number;
   config: Record<string, unknown>;
   updated_by: string;
@@ -76,6 +78,8 @@ export interface AutopilotScenario {
 export interface AutopilotSetting {
   enabled: boolean;
   rollout_mode: 'legacy' | 'shadow' | 'canary' | 'active';
+  internal_comments_enabled?: boolean;
+  internal_comments_depth?: 'applied' | 'technical';
   version: number;
   updated_by: string;
   updated_at: string | null;
@@ -179,10 +183,18 @@ export const updateAutopilotSetting = (
   enabled: boolean,
   expectedVersion: number,
   reason: string,
+  internalCommentsEnabled?: boolean,
+  internalCommentsDepth?: 'applied' | 'technical',
 ) =>
   apiFetch<AutopilotSetting>('/api/v2/autopilot', {
     method: 'PUT',
-    body: JSON.stringify({ enabled, expected_version: expectedVersion, reason }),
+    body: JSON.stringify({
+      enabled,
+      expected_version: expectedVersion,
+      reason,
+      internal_comments_enabled: internalCommentsEnabled,
+      internal_comments_depth: internalCommentsDepth,
+    }),
   });
 
 export const saveAutopilotScenario = (payload: {
