@@ -34,7 +34,7 @@ AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
 
-CURRENT_SCHEMA_REVISION = "20260910_0013"
+CURRENT_SCHEMA_REVISION = "20260923_0014"
 
 
 
@@ -327,10 +327,22 @@ class AutopilotSetting(Base):
     """Database-backed global gate for all automatic ticket cycles."""
 
     __tablename__ = "autopilot_settings"
+    __table_args__ = (
+        CheckConstraint(
+            "internal_comments_depth IN ('applied', 'technical')",
+            name="ck_autopilot_settings_comments_depth",
+        ),
+    )
 
     key: Mapped[str] = mapped_column(String(32), primary_key=True)
     enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+    internal_comments_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    internal_comments_depth: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="applied", server_default="applied"
     )
     version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"

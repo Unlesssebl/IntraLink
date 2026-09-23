@@ -4,7 +4,7 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -38,6 +38,8 @@ class AutopilotSettingRequest(BaseModel):
     enabled: bool
     expected_version: int = Field(ge=1)
     reason: str = Field(min_length=3, max_length=500)
+    internal_comments_enabled: bool | None = None
+    internal_comments_depth: Literal["applied", "technical"] | None = None
 
 
 class AutopilotRollbackRequest(BaseModel):
@@ -75,6 +77,20 @@ class AutopilotScenarioRequest(BaseModel):
     canary_percent: int | None = Field(default=None, ge=1, le=100)
     expected_version: int | None = Field(None, ge=1)
 
+    @field_validator("config")
+    @classmethod
+    def validate_scenario_config(cls, v: dict) -> dict:
+        if not isinstance(v, dict):
+            raise ValueError("config must be a dictionary")
+        if "internal_comments_enabled" in v and not isinstance(v["internal_comments_enabled"], bool):
+            raise ValueError("internal_comments_enabled must be a boolean")
+        if "internal_comments_depth" in v:
+            depth = str(v["internal_comments_depth"]).strip().lower()
+            if depth not in {"applied", "technical"}:
+                raise ValueError("internal_comments_depth must be 'applied' or 'technical'")
+            v["internal_comments_depth"] = depth
+        return v
+
 
 def serialize_scenario(item: AutopilotScenario) -> dict:
     config = item.config_json or {}
@@ -85,6 +101,8 @@ def serialize_scenario(item: AutopilotScenario) -> dict:
         "enabled": item.enabled,
         "rollout_mode": item.rollout_mode,
         "canary_percent": int(config.get("canary_percent", 10)),
+        "internal_comments_enabled": config.get("internal_comments_enabled"),
+        "internal_comments_depth": config.get("internal_comments_depth"),
         "version": item.version,
         "config": config,
         "updated_by": item.updated_by,
@@ -317,6 +335,8 @@ async def get_autopilot_setting(
     await db.commit()
     return {
         "enabled": setting.enabled,
+        "internal_comments_enabled": getattr(setting, "internal_comments_enabled", True),
+        "internal_comments_depth": getattr(setting, "internal_comments_depth", "applied"),
         "version": setting.version,
         "updated_by": setting.updated_by,
         "updated_at": setting.updated_at.isoformat() if setting.updated_at else None,
@@ -343,11 +363,15 @@ async def update_autopilot_setting(
             actor=context.subject,
             reason=payload.reason,
             expected_version=payload.expected_version,
+            internal_comments_enabled=payload.internal_comments_enabled,
+            internal_comments_depth=payload.internal_comments_depth,
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     return {
         "enabled": setting.enabled,
+        "internal_comments_enabled": getattr(setting, "internal_comments_enabled", True),
+        "internal_comments_depth": getattr(setting, "internal_comments_depth", "applied"),
         "version": setting.version,
         "updated_by": setting.updated_by,
         "updated_at": setting.updated_at.isoformat() if setting.updated_at else None,

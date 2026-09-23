@@ -114,6 +114,8 @@ class TicketRunService:
             setting = AutopilotSetting(
                 key=AUTOPILOT_SETTING_KEY,
                 enabled=False,
+                internal_comments_enabled=True,
+                internal_comments_depth="applied",
                 version=1,
                 updated_by="system:default",
             )
@@ -137,6 +139,8 @@ class TicketRunService:
         actor: str,
         reason: str | None = None,
         expected_version: int | None = None,
+        internal_comments_enabled: bool | None = None,
+        internal_comments_depth: str | None = None,
     ) -> AutopilotSetting:
         setting = await self.db.scalar(
             select(AutopilotSetting)
@@ -148,6 +152,13 @@ class TicketRunService:
         assert setting is not None
         if expected_version is not None and setting.version != expected_version:
             raise ValueError("autopilot_setting_version_conflict")
+
+        clean_depth: str | None = None
+        if internal_comments_depth is not None:
+            clean_depth = str(internal_comments_depth).strip().lower()
+            if clean_depth not in {"applied", "technical"}:
+                raise ValueError("invalid_internal_comments_depth")
+
         if enabled:
             readiness = await self.template_readiness()
             if not readiness["ready"]:
@@ -165,24 +176,41 @@ class TicketRunService:
             )
             if not enabled_scenarios:
                 raise ValueError("autopilot_scenarios_not_configured")
-        if setting.enabled == enabled:
+
+        enabled_changed = setting.enabled != enabled
+        comments_enabled_changed = (
+            internal_comments_enabled is not None
+            and getattr(setting, "internal_comments_enabled", True) != internal_comments_enabled
+        )
+        comments_depth_changed = (
+            clean_depth is not None
+            and getattr(setting, "internal_comments_depth", "applied") != clean_depth
+        )
+
+        if not (enabled_changed or comments_enabled_changed or comments_depth_changed):
             await self.db.commit()
             await self.db.refresh(setting)
             return setting
 
-        setting.enabled = enabled
+        if enabled_changed:
+            setting.enabled = enabled
+        if comments_enabled_changed:
+            setting.internal_comments_enabled = internal_comments_enabled
+        if comments_depth_changed:
+            setting.internal_comments_depth = clean_depth
+
         setting.version += 1
         setting.updated_by = actor
         self.db.add(
             AutopilotSettingEvent(
                 setting_key=setting.key,
-                enabled=enabled,
+                enabled=setting.enabled,
                 version=setting.version,
                 actor=actor,
                 reason=(reason or "").strip() or None,
             )
         )
-        if not enabled:
+        if enabled_changed and not enabled:
             runs = list(
                 (
                     await self.db.scalars(
@@ -263,6 +291,13 @@ class TicketRunService:
             raise ValueError("unsupported_scenario_key")
         if rollout_mode not in {"legacy", "shadow", "canary", "active"}:
             raise ValueError("unsupported_rollout_mode")
+        if "internal_comments_enabled" in config and not isinstance(config["internal_comments_enabled"], bool):
+            raise ValueError("invalid_internal_comments_enabled")
+        if "internal_comments_depth" in config:
+            depth = str(config["internal_comments_depth"]).strip().lower()
+            if depth not in {"applied", "technical"}:
+                raise ValueError("invalid_internal_comments_depth")
+            config["internal_comments_depth"] = depth
         record = await self.db.scalar(
             select(AutopilotScenario)
             .where(
