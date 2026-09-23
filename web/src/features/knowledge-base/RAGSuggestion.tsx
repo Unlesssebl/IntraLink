@@ -49,12 +49,12 @@ export const RAGSuggestion: React.FC<RAGSuggestionProps> = ({
   if (loading || !match) return null;
 
   return (
-    <div className="p-3 bg-[#13192b] border border-indigo-500/30 rounded-lg text-xs space-y-2 animate-in fade-in duration-200">
+    <div className="p-3 bg-[#121316] border border-neutral-700/80 rounded text-xs space-y-2 animate-in fade-in duration-200">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5 font-semibold text-indigo-300">
-          <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+        <div className="flex items-center gap-1.5 font-medium text-neutral-200">
+          <Sparkles className="w-3.5 h-3.5 text-neutral-300" />
           <span>Аналогичное решение из базы знаний</span>
-          <Badge variant="accent">
+          <Badge variant="neutral">
             #{match.task_id} ({Math.round(match.similarity * 100)}%)
           </Badge>
         </div>
@@ -63,7 +63,7 @@ export const RAGSuggestion: React.FC<RAGSuggestionProps> = ({
           <Button
             size="sm"
             variant="ghost"
-            icon={<ArrowDownToLine className="w-3.5 h-3.5 text-indigo-300" />}
+            icon={<ArrowDownToLine className="w-3.5 h-3.5 text-neutral-300" />}
             onClick={() => onApplySolution(match.solution)}
             title="Вставить в комментарий"
           >
@@ -71,15 +71,15 @@ export const RAGSuggestion: React.FC<RAGSuggestionProps> = ({
           </Button>
           <button
             onClick={() => setExpanded(!expanded)}
-            className="text-slate-400 hover:text-slate-200 p-1 rounded"
+            className="text-neutral-400 hover:text-neutral-200 p-1 rounded hover:bg-neutral-800/60"
           >
             {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>
         </div>
       </div>
 
-      <div className={`text-[11px] text-slate-300 ${expanded ? "" : "line-clamp-2"}`}>
-        <strong className="text-slate-400">Решение: </strong>
+      <div className={`text-[11px] text-neutral-300 leading-relaxed ${expanded ? "" : "line-clamp-2"}`}>
+        <strong className="text-neutral-400">Решение: </strong>
         {match.solution}
       </div>
     </div>

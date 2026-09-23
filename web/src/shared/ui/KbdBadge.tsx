@@ -18,7 +18,7 @@ export const KbdBadge: React.FC<KbdBadgeProps> = ({
 
   return (
     <kbd
-      className={`inline-flex items-center justify-center font-mono font-semibold rounded bg-[#181d29] text-slate-300 border border-[#2b3345] shadow-xs select-none ${sizeClasses} ${className}`}
+      className={`inline-flex items-center justify-center font-mono font-semibold rounded bg-neutral-900 text-neutral-300 border border-neutral-750 shadow-xs select-none ${sizeClasses} ${className}`}
       {...props}
     >
       {content}

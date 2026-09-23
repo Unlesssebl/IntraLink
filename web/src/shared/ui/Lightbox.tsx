@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { X, ZoomIn, ZoomOut, Download, ExternalLink } from "lucide-react";
+import { X, ZoomIn, ZoomOut, ExternalLink } from "lucide-react";
 
 export interface LightboxProps {
   src: string | null;
@@ -47,19 +47,19 @@ export const Lightbox: React.FC<LightboxProps> = ({
       {/* Top action bar */}
       <div
         onClick={(e) => e.stopPropagation()}
-        className="absolute top-4 right-4 flex items-center gap-2 bg-[#131722]/90 border border-[#2b3345] px-3 py-1.5 rounded-lg shadow-xl"
+        className="absolute top-4 right-4 flex items-center gap-2 bg-[#121316]/95 border border-neutral-800 px-3 py-1.5 rounded-lg shadow-xl"
       >
-        <span className="text-xs text-slate-300 font-medium mr-2 max-w-xs truncate">{alt}</span>
+        <span className="text-xs text-neutral-300 font-medium mr-2 max-w-xs truncate">{alt}</span>
         <button
           onClick={zoomIn}
-          className="p-1.5 text-slate-300 hover:text-white hover:bg-[#1f2638] rounded transition-colors"
+          className="p-1.5 text-neutral-300 hover:text-white hover:bg-neutral-800/60 rounded transition-colors"
           title="Увеличить"
         >
           <ZoomIn className="w-4 h-4" />
         </button>
         <button
           onClick={zoomOut}
-          className="p-1.5 text-slate-300 hover:text-white hover:bg-[#1f2638] rounded transition-colors"
+          className="p-1.5 text-neutral-300 hover:text-white hover:bg-neutral-800/60 rounded transition-colors"
           title="Уменьшить"
         >
           <ZoomOut className="w-4 h-4" />
@@ -69,14 +69,14 @@ export const Lightbox: React.FC<LightboxProps> = ({
           target="_blank"
           rel="noreferrer"
           download
-          className="p-1.5 text-slate-300 hover:text-white hover:bg-[#1f2638] rounded transition-colors"
+          className="p-1.5 text-neutral-300 hover:text-white hover:bg-neutral-800/60 rounded transition-colors"
           title="Открыть в новой вкладке / Скачать"
         >
           <ExternalLink className="w-4 h-4" />
         </a>
         <button
           onClick={onClose}
-          className="p-1.5 text-slate-300 hover:text-rose-400 hover:bg-[#1f2638] rounded transition-colors ml-1"
+          className="p-1.5 text-neutral-300 hover:text-rose-400 hover:bg-neutral-800/60 rounded transition-colors ml-1"
           title="Закрыть (Esc)"
         >
           <X className="w-4 h-4" />

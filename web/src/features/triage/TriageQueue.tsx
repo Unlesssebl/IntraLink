@@ -5,8 +5,6 @@ import {
   Search,
   CheckCheck,
   AlertTriangle,
-  SlidersHorizontal,
-  Sparkles,
 } from "lucide-react";
 import { Button, Badge, KbdBadge } from "@/shared/ui";
 import { TicketRow } from "./TicketRow";
@@ -143,20 +141,20 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-[#0c0f16] border-r border-[#1e2330]">
+    <div className="flex flex-col h-full overflow-hidden bg-[#0c0d0e] border-r border-neutral-800/80">
       {/* Top Header */}
-      <div className="p-3 border-b border-[#1e2330] space-y-2.5 shrink-0 bg-[#0e111a]">
+      <div className="p-3 border-b border-neutral-800/80 space-y-2.5 shrink-0 bg-[#0e1013]">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Inbox className="w-4 h-4 text-indigo-400" />
-            <span className="text-xs font-semibold text-slate-100">
+            <Inbox className="w-4 h-4 text-neutral-400" />
+            <span className="text-xs font-semibold text-neutral-100">
               Очередь 1-й линии
             </span>
-            <Badge variant="accent">{filteredTickets.length}</Badge>
+            <Badge variant="neutral">{filteredTickets.length}</Badge>
           </div>
 
           <div className="flex items-center gap-1.5">
-            <span className="hidden sm:inline-flex items-center gap-1 text-[10px] text-slate-500 mr-1 font-mono">
+            <span className="hidden sm:inline-flex items-center gap-1 text-[10px] text-neutral-500 mr-1 font-mono">
               <KbdBadge shortcut="J" /> <KbdBadge shortcut="K" />
             </span>
             <Button
@@ -172,13 +170,13 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
 
         {/* Live Search input */}
         <div className="relative">
-          <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <Search className="w-3.5 h-3.5 text-neutral-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Фильтр по номеру, теме, заявителю..."
-            className="w-full bg-[#131722] border border-[#232a3b] rounded-md pl-8 pr-3 py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="w-full bg-[#121316] border border-neutral-800 rounded pl-8 pr-3 py-1.5 text-xs text-neutral-100 placeholder:text-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-400 focus:border-neutral-500"
           />
         </div>
 
@@ -188,8 +186,8 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
             onClick={() => setActiveFilter("all")}
             className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap ${
               activeFilter === "all"
-                ? "bg-indigo-600/20 text-indigo-300 font-semibold border border-indigo-500/40"
-                : "text-slate-400 hover:text-slate-200 hover:bg-[#181d2a]"
+                ? "bg-neutral-800 text-neutral-100 font-medium border border-neutral-700 shadow-xs"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
             }`}
           >
             Все ({tickets.length})
@@ -198,8 +196,8 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
             onClick={() => setActiveFilter("new")}
             className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap ${
               activeFilter === "new"
-                ? "bg-indigo-600/20 text-indigo-300 font-semibold border border-indigo-500/40"
-                : "text-slate-400 hover:text-slate-200 hover:bg-[#181d2a]"
+                ? "bg-neutral-800 text-neutral-100 font-medium border border-neutral-700 shadow-xs"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
             }`}
           >
             Новые
@@ -208,8 +206,8 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
             onClick={() => setActiveFilter("in_progress")}
             className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap ${
               activeFilter === "in_progress"
-                ? "bg-indigo-600/20 text-indigo-300 font-semibold border border-indigo-500/40"
-                : "text-slate-400 hover:text-slate-200 hover:bg-[#181d2a]"
+                ? "bg-neutral-800 text-neutral-100 font-medium border border-neutral-700 shadow-xs"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
             }`}
           >
             В работе
@@ -218,8 +216,8 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
             onClick={() => setActiveFilter("directum")}
             className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap ${
               activeFilter === "directum"
-                ? "bg-indigo-600/20 text-indigo-300 font-semibold border border-indigo-500/40"
-                : "text-slate-400 hover:text-slate-200 hover:bg-[#181d2a]"
+                ? "bg-neutral-800 text-neutral-100 font-medium border border-neutral-700 shadow-xs"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
             }`}
           >
             Directum
@@ -228,8 +226,8 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
             onClick={() => setActiveFilter("1c")}
             className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap ${
               activeFilter === "1c"
-                ? "bg-indigo-600/20 text-indigo-300 font-semibold border border-indigo-500/40"
-                : "text-slate-400 hover:text-slate-200 hover:bg-[#181d2a]"
+                ? "bg-neutral-800 text-neutral-100 font-medium border border-neutral-700 shadow-xs"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
             }`}
           >
             1С
@@ -239,8 +237,8 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
 
       {/* Error state */}
       {error && (
-        <div className="p-3 m-3 bg-red-950/40 border border-red-800/60 rounded-lg text-xs text-red-300 flex items-start gap-2">
-          <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+        <div className="p-3 m-3 bg-rose-950/40 border border-rose-800/60 rounded text-xs text-rose-300 flex items-start gap-2">
+          <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
           <span>{error}</span>
         </div>
       )}
@@ -261,11 +259,11 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
 
         {!loading && filteredTickets.length === 0 && (
           <div className="text-center py-12 px-4 space-y-2">
-            <CheckCheck className="w-7 h-7 text-emerald-400 mx-auto" />
-            <h4 className="text-xs font-semibold text-slate-200">
+            <CheckCheck className="w-7 h-7 text-emerald-500 mx-auto" />
+            <h4 className="text-xs font-semibold text-neutral-200">
               {searchQuery ? "Ничего не найдено" : "Очередь 1-й линии пуста"}
             </h4>
-            <p className="text-[11px] text-slate-500">
+            <p className="text-[11px] text-neutral-500">
               {searchQuery
                 ? "Попробуйте изменить запрос поиска"
                 : "Все поступившие заявки обработаны. Отличная работа!"}

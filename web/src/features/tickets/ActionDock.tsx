@@ -7,9 +7,8 @@ import {
   Send,
   Lock,
   Globe,
-  Sparkles,
 } from "lucide-react";
-import { Button, Modal, Textarea, Input, KbdBadge, Badge } from "@/shared/ui";
+import { Button, Modal, Textarea, Input, KbdBadge } from "@/shared/ui";
 import { ticketsApi, ServiceItem } from "@/shared/api";
 
 export interface ActionDockProps {
@@ -169,7 +168,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
   const isAlreadyInWork = statusId === 2;
 
   return (
-    <div className="border-t border-[#1e2330] bg-[#0d1017] p-3 space-y-2.5 shrink-0">
+    <div className="border-t border-neutral-800/80 bg-[#0c0d0e] p-3 space-y-2.5 shrink-0">
       {/* Quick Comment Input */}
       <form onSubmit={handleSendComment} className="space-y-2">
         <div className="relative">
@@ -183,30 +182,30 @@ export const ActionDock: React.FC<ActionDockProps> = ({
             }}
             placeholder={
               isPrivate
-                ? "🔒 Внутренняя заметка инженера (Ctrl+Enter для отправки)..."
-                : "💬 Ответ заявителю (Ctrl+Enter для отправки)..."
+                ? "Внутренняя заметка инженера (Ctrl+Enter для отправки)..."
+                : "Ответ заявителю (Ctrl+Enter для отправки)..."
             }
             rows={2}
-            className={`w-full text-xs rounded-md border p-2.5 placeholder:text-slate-500 focus:outline-none focus:ring-1 resize-none ${
+            className={`w-full text-xs rounded border p-2.5 placeholder:text-neutral-500 focus:outline-none focus:ring-1 resize-none ${
               isPrivate
                 ? "bg-amber-950/20 border-amber-800/50 text-amber-200 focus:ring-amber-500"
-                : "bg-[#131724] border-[#22293a] text-slate-200 focus:ring-indigo-500"
+                : "bg-[#121316] border-neutral-800 text-neutral-100 focus:ring-neutral-400 focus:border-neutral-500"
             }`}
           />
         </div>
 
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 bg-[#141824] border border-[#222838] p-0.5 rounded-md text-[11px]">
+          <div className="flex items-center gap-1 bg-[#121316] border border-neutral-800 p-0.5 rounded text-[11px]">
             <button
               type="button"
               onClick={() => setIsPrivate(false)}
               className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors ${
                 !isPrivate
-                  ? "bg-indigo-600 text-white font-medium"
-                  : "text-slate-400 hover:text-slate-200"
+                  ? "bg-neutral-800 text-neutral-100 font-medium border border-neutral-700 shadow-xs"
+                  : "text-neutral-400 hover:text-neutral-200"
               }`}
             >
-              <Globe className="w-3 h-3" />
+              <Globe className="w-3 h-3 text-neutral-400" />
               <span>Заявителю</span>
             </button>
             <button
@@ -214,11 +213,11 @@ export const ActionDock: React.FC<ActionDockProps> = ({
               onClick={() => setIsPrivate(true)}
               className={`flex items-center gap-1 px-2 py-0.5 rounded transition-colors ${
                 isPrivate
-                  ? "bg-amber-600 text-white font-medium"
-                  : "text-slate-400 hover:text-slate-200"
+                  ? "bg-amber-950/40 text-amber-300 font-medium border border-amber-800/60 shadow-xs"
+                  : "text-neutral-400 hover:text-neutral-200"
               }`}
             >
-              <Lock className="w-3 h-3" />
+              <Lock className="w-3 h-3 text-neutral-400" />
               <span>Служебная заметка</span>
             </button>
           </div>
@@ -237,16 +236,16 @@ export const ActionDock: React.FC<ActionDockProps> = ({
       </form>
 
       {/* Operator Action Dock Buttons */}
-      <div className="grid grid-cols-4 gap-2 pt-1 border-t border-[#1a1f2b]">
+      <div className="grid grid-cols-4 gap-2 pt-1 border-t border-neutral-800/80">
         {/* Alt + 1: В работу */}
         <button
           type="button"
           onClick={onTake}
           disabled={isBusy || isAlreadyInWork}
-          className={`flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md border text-xs font-medium transition-all ${
+          className={`flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-medium transition-all ${
             isAlreadyInWork
-              ? "bg-[#141924] border-emerald-900/40 text-emerald-400/70 opacity-80 cursor-default"
-              : "bg-[#151a26] border-[#252c3e] hover:border-emerald-500/50 hover:bg-[#182030] text-slate-200 active:scale-95"
+              ? "bg-[#121316] border-emerald-900/40 text-emerald-400/70 opacity-80 cursor-default"
+              : "bg-[#121316] border-neutral-800 hover:border-neutral-700 hover:bg-neutral-800/60 text-neutral-200 active:scale-95"
           }`}
           title="Взять заявку в работу (Alt+1)"
         >
@@ -260,10 +259,10 @@ export const ActionDock: React.FC<ActionDockProps> = ({
           type="button"
           onClick={() => setResolveModalOpen(true)}
           disabled={isBusy}
-          className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md border border-[#252c3e] bg-[#151a26] hover:border-teal-500/50 hover:bg-[#182030] text-slate-200 text-xs font-medium transition-all active:scale-95"
+          className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded border border-neutral-800 bg-[#121316] hover:border-neutral-700 hover:bg-neutral-800/60 text-neutral-200 text-xs font-medium transition-all active:scale-95"
           title="Закрыть с решением (Alt+2)"
         >
-          <CheckCheck className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+          <CheckCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
           <span className="truncate">Решено</span>
           <KbdBadge shortcut="Alt+2" />
         </button>
@@ -273,10 +272,10 @@ export const ActionDock: React.FC<ActionDockProps> = ({
           type="button"
           onClick={() => setDupModalOpen(true)}
           disabled={isBusy}
-          className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md border border-[#252c3e] bg-[#151a26] hover:border-rose-500/50 hover:bg-[#182030] text-slate-200 text-xs font-medium transition-all active:scale-95"
+          className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded border border-neutral-800 bg-[#121316] hover:border-neutral-700 hover:bg-neutral-800/60 text-neutral-200 text-xs font-medium transition-all active:scale-95"
           title="Отменить как дубликат (Alt+3)"
         >
-          <Copy className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+          <Copy className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           <span className="truncate">Дубликат</span>
           <KbdBadge shortcut="Alt+3" />
         </button>
@@ -286,10 +285,10 @@ export const ActionDock: React.FC<ActionDockProps> = ({
           type="button"
           onClick={() => setRedirModalOpen(true)}
           disabled={isBusy}
-          className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md border border-[#252c3e] bg-[#151a26] hover:border-indigo-500/50 hover:bg-[#182030] text-slate-200 text-xs font-medium transition-all active:scale-95"
+          className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded border border-neutral-800 bg-[#121316] hover:border-neutral-700 hover:bg-neutral-800/60 text-neutral-200 text-xs font-medium transition-all active:scale-95"
           title="Перенаправить в другой сервис (Alt+4)"
         >
-          <ArrowRightLeft className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+          <ArrowRightLeft className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
           <span className="truncate">Перенаправить</span>
           <KbdBadge shortcut="Alt+4" />
         </button>
@@ -324,7 +323,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
       >
         <div className="space-y-3">
           <div className="space-y-1.5">
-            <span className="text-xs font-medium text-slate-300">Быстрые шаблоны:</span>
+            <span className="text-xs font-medium text-neutral-300">Быстрые шаблоны:</span>
             <div className="flex flex-wrap gap-1.5">
               {RESOLVE_TEMPLATES.map((tmpl, idx) => (
                 <button
@@ -333,8 +332,8 @@ export const ActionDock: React.FC<ActionDockProps> = ({
                   onClick={() => setResolveComment(tmpl)}
                   className={`text-[11px] text-left px-2 py-1 rounded border transition-colors ${
                     resolveComment === tmpl
-                      ? "bg-teal-950/40 border-teal-600/60 text-teal-200 font-medium"
-                      : "bg-[#141824] border-[#22293a] text-slate-400 hover:text-slate-200 hover:bg-[#181d2c]"
+                      ? "bg-neutral-100 border-neutral-200 text-neutral-950 font-medium"
+                      : "bg-[#121316] border-neutral-800 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
                   }`}
                 >
                   {tmpl.slice(0, 38)}...
@@ -420,11 +419,11 @@ export const ActionDock: React.FC<ActionDockProps> = ({
       >
         <div className="space-y-3">
           <div className="space-y-1">
-            <label className="text-xs font-medium text-slate-300">Целевой сервис:</label>
+            <label className="text-xs font-medium text-neutral-300">Целевой сервис:</label>
             <select
               value={selectedServiceId}
               onChange={(e) => setSelectedServiceId(Number(e.target.value))}
-              className="w-full bg-[#131724] border border-[#22293a] rounded-md px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className="w-full bg-[#121316] border border-neutral-800 rounded px-3 py-1.5 text-xs text-neutral-100 focus:outline-none focus:ring-1 focus:ring-neutral-400 focus:border-neutral-500"
             >
               <option value="">-- Выберите сервис --</option>
               {services.map((s) => (

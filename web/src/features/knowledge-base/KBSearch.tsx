@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Search, Sparkles, BookOpen, Copy, Check, ArrowRight } from "lucide-react";
+import { Search, Sparkles, BookOpen, Copy, Check } from "lucide-react";
 import { Button, Input, Card, Badge } from "@/shared/ui";
 import { kbApi, KBSearchResultItem, KBAskResponse } from "@/shared/api";
 
@@ -47,37 +47,37 @@ export const KBSearch: React.FC = () => {
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-base font-semibold text-slate-100 flex items-center gap-2">
-              <BookOpen className="w-4 h-4 text-indigo-400" />
+            <h2 className="text-base font-semibold text-neutral-100 flex items-center gap-2">
+              <BookOpen className="w-4 h-4 text-neutral-400" />
               База знаний решений (RAG)
             </h2>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <p className="text-xs text-neutral-400 mt-0.5">
               Семантический поиск по 10,000+ закрытым заявкам Helpdesk через BGE-M3 и pgvector
             </p>
           </div>
 
           {/* Mode Switcher */}
-          <div className="flex items-center bg-[#151922] p-0.5 rounded-lg border border-[#242938]">
+          <div className="flex items-center bg-[#121316] p-0.5 rounded border border-neutral-800">
             <button
               onClick={() => setMode("ask")}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5 ${
+              className={`px-3 py-1 text-xs font-medium rounded transition-colors flex items-center gap-1.5 ${
                 mode === "ask"
-                  ? "bg-indigo-600 text-white shadow-xs"
-                  : "text-slate-400 hover:text-slate-200"
+                  ? "bg-neutral-800 text-neutral-100 font-medium border border-neutral-700 shadow-xs"
+                  : "text-neutral-400 hover:text-neutral-200"
               }`}
             >
-              <Sparkles className="w-3.5 h-3.5" />
+              <Sparkles className="w-3.5 h-3.5 text-neutral-400" />
               AI Синтез
             </button>
             <button
               onClick={() => setMode("search")}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5 ${
+              className={`px-3 py-1 text-xs font-medium rounded transition-colors flex items-center gap-1.5 ${
                 mode === "search"
-                  ? "bg-[#252b3b] text-white"
-                  : "text-slate-400 hover:text-slate-200"
+                  ? "bg-neutral-800 text-neutral-100 font-medium border border-neutral-700 shadow-xs"
+                  : "text-neutral-400 hover:text-neutral-200"
               }`}
             >
-              <Search className="w-3.5 h-3.5" />
+              <Search className="w-3.5 h-3.5 text-neutral-400" />
               Похожие заявки
             </button>
           </div>
@@ -103,7 +103,7 @@ export const KBSearch: React.FC = () => {
       </div>
 
       {error && (
-        <div className="p-3 bg-red-950/40 border border-red-800/60 rounded-lg text-xs text-red-300">
+        <div className="p-3 bg-rose-950/40 border border-rose-800/60 rounded text-xs text-rose-300">
           {error}
         </div>
       )}
@@ -111,10 +111,10 @@ export const KBSearch: React.FC = () => {
       {/* RAG Synthesized Answer */}
       {askResult && (
         <Card
-          className="border-indigo-900/50 bg-[#121622]/80"
+          className="border-neutral-700/80 bg-[#121316]"
           title={
-            <div className="flex items-center gap-2 text-indigo-300">
-              <Sparkles className="w-4 h-4" />
+            <div className="flex items-center gap-2 text-neutral-200 font-medium">
+              <Sparkles className="w-4 h-4 text-neutral-300" />
               <span>Рекомендованное решение (LiteLLM RAG)</span>
             </div>
           }
@@ -139,30 +139,30 @@ export const KBSearch: React.FC = () => {
           }
         >
           <div className="space-y-4">
-            <div className="text-xs leading-relaxed text-slate-200 whitespace-pre-wrap font-sans">
+            <div className="text-xs leading-relaxed text-neutral-200 whitespace-pre-wrap font-sans">
               {askResult.answer}
             </div>
 
             {askResult.sources?.length > 0 && (
-              <div className="border-t border-[#23293a] pt-3">
-                <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-2">
+              <div className="border-t border-neutral-800/80 pt-3">
+                <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider block mb-2">
                   Использованные исторические заявки:
                 </span>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                   {askResult.sources.map((src) => (
                     <div
                       key={src.task_id}
-                      className="p-2 bg-[#171c26] border border-[#252c3c] rounded text-[11px] space-y-1"
+                      className="p-2.5 bg-[#101114] border border-neutral-800/80 rounded text-[11px] space-y-1"
                     >
                       <div className="flex items-center justify-between">
-                        <span className="font-mono font-medium text-indigo-400">
+                        <span className="font-mono font-medium text-neutral-200">
                           #{src.task_id}
                         </span>
                         <Badge variant="neutral">
                           {Math.round(src.similarity * 100)}% совпадение
                         </Badge>
                       </div>
-                      <p className="text-slate-300 line-clamp-2">{src.problem}</p>
+                      <p className="text-neutral-400 line-clamp-2">{src.problem}</p>
                     </div>
                   ))}
                 </div>
@@ -175,7 +175,7 @@ export const KBSearch: React.FC = () => {
       {/* Semantic Search Results List */}
       {searchResults.length > 0 && (
         <div className="space-y-3">
-          <div className="text-xs text-slate-400 font-medium">
+          <div className="text-xs text-neutral-400 font-medium">
             Найдено аналогичных решений: {searchResults.length}
           </div>
           {searchResults.map((item) => (
@@ -183,15 +183,15 @@ export const KBSearch: React.FC = () => {
               key={item.task_id}
               title={
                 <div className="flex items-center gap-2">
-                  <span className="font-mono text-indigo-400 font-semibold">
+                  <span className="font-mono text-neutral-300 font-medium">
                     #{item.task_id}
                   </span>
-                  <span className="text-slate-200 truncate">{item.problem}</span>
+                  <span className="text-neutral-200 truncate">{item.problem}</span>
                 </div>
               }
               action={
                 <div className="flex items-center gap-2">
-                  <Badge variant="accent">
+                  <Badge variant="neutral">
                     {Math.round(item.similarity * 100)}% сходство
                   </Badge>
                   <Button
@@ -210,14 +210,14 @@ export const KBSearch: React.FC = () => {
             >
               <div className="space-y-2">
                 {item.service_name && (
-                  <div className="text-[11px] text-slate-400">
+                  <div className="text-[11px] text-neutral-400">
                     Сервис:{" "}
-                    <span className="text-slate-300 font-medium">
+                    <span className="text-neutral-300 font-medium">
                       {item.service_name}
                     </span>
                   </div>
                 )}
-                <div className="p-2.5 bg-[#0e1117] border border-[#202533] rounded font-mono text-[11px] text-slate-300 whitespace-pre-wrap">
+                <div className="p-2.5 bg-[#0a0b0d] border border-neutral-800 rounded font-mono text-[11px] text-neutral-300 whitespace-pre-wrap">
                   {item.solution}
                 </div>
               </div>
@@ -227,7 +227,7 @@ export const KBSearch: React.FC = () => {
       )}
 
       {!loading && !askResult && searchResults.length === 0 && query && (
-        <div className="text-center py-10 text-xs text-slate-500">
+        <div className="text-center py-10 text-xs text-neutral-500">
           По запросу ничего не найдено в базе знаний. Попробуйте уточнить формулировку.
         </div>
       )}
