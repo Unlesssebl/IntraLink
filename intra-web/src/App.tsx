@@ -548,6 +548,8 @@ function MainApp() {
 
           onSelectActiveTask={handleSelectActiveTask}
 
+          onNavigate={handleNavigate}
+
         />
 
         <main className="flex-1 overflow-hidden relative">

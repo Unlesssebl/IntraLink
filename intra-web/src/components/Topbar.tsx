@@ -16,6 +16,7 @@ interface Props {
   isLiveConnected?: boolean;
   activeExecution?: ActiveExecutionStatus | null;
   onSelectActiveTask?: (taskId: number) => void;
+  onNavigate?: (page: Page) => void;
 }
 
 export default function Topbar({
@@ -32,6 +33,7 @@ export default function Topbar({
   isLiveConnected = false,
   activeExecution,
   onSelectActiveTask,
+  onNavigate,
 }: Props) {
   const getSidebarTitle = () => {
     if (sidebarMode === 'full') return 'Компактный вид (01..16)';
@@ -213,6 +215,24 @@ export default function Topbar({
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isLiveConnected ? 'bg-emerald-500 animate-pulse' : 'bg-neutral-400'}`} />
           <span className="hidden sm:inline text-[11px] font-medium">{isLiveConnected ? 'Live' : 'Connecting'}</span>
         </div>
+
+        {onNavigate && (
+          <button
+            onClick={() => onNavigate('settings')}
+            className={`h-8 px-2.5 flex items-center gap-1.5 rounded-lg text-xs font-medium transition-colors border cursor-pointer ${
+              currentPage === 'settings'
+                ? 'bg-blue-600 text-white font-semibold border-blue-600'
+                : 'text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-neutral-100 dark:hover:bg-neutral-800 border-neutral-200/80 dark:border-neutral-800'
+            }`}
+            title="Настройки автопилота и системы"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+            <span className="hidden sm:inline">Настройки</span>
+          </button>
+        )}
 
         <a
           href="/admin"
