@@ -30,7 +30,11 @@ Matcher = Callable[[ScenarioContext], tuple[bool, float, str]]
 
 
 def _text(context: ScenarioContext) -> str:
-    parts = [str(context.task.get("Name") or ""), str(context.task.get("Description") or "")]
+    parts = [
+        str(context.task.get("Name") or ""),
+        str(context.task.get("Description") or ""),
+        str(context.task.get("ServiceName") or ""),
+    ]
     author_login = str(
         context.task.get("CreatorLogin") or context.task.get("Creator") or ""
     ).strip().lower()
@@ -74,6 +78,21 @@ def _contains(*keywords: str) -> Matcher:
 
 def _create_user_match(context: ScenarioContext) -> tuple[bool, float, str]:
     text = _text(context)
+    if any(
+        ex in text
+        for ex in (
+            "сброс парол",
+            "сбросить парол",
+            "забыл парол",
+            "забыла парол",
+            "заблокирован",
+            "wlan",
+            "wi-fi",
+            "wifi",
+        )
+    ):
+        return False, 0.0, ""
+
     phrases = (
         "создать учет",
         "создать учёт",
@@ -81,11 +100,29 @@ def _create_user_match(context: ScenarioContext) -> tuple[bool, float, str]:
         "создание учёт",
         "завести учет",
         "завести учёт",
+        "завести пользователя",
         "создать пользователя",
+        "создание пользователя",
+        "новый пользователь",
+        "создание нового пользователя",
+        "создание уз",
+        "создать уз",
         "новый сотрудник",
+        "создание учетной записи",
+        "создать учетную запись",
+        "заявка на создание пользователя",
+        "заявка на создание учетной записи",
     )
     found = [phrase for phrase in phrases if phrase in text]
-    return bool(found), 0.92 if found else 0.0, ",".join(found)
+    service_id = context.task.get("ServiceId")
+    service_parent_id = context.task.get("ServiceParentId")
+    is_user_service = (
+        service_id in (42, 53, 54, 55, 124, 104, 186)
+        or (service_parent_id == 42 and service_id != 63)
+    )
+    if is_user_service and not found:
+        found.append(f"service_id:{service_id}")
+    return bool(found), 0.94 if found else 0.0, ",".join(found)
 
 
 def _printer_install_match(context: ScenarioContext) -> tuple[bool, float, str]:

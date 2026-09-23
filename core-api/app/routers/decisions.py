@@ -257,6 +257,8 @@ async def override_task_facts(
         fact_revision=run.fact_revision + 1,
         decision_version=next_decision_version,
         observations=[*all_observations, *fresh_observations],
+        pinned_scenario_key=run.scenario_key,
+        pinned_scenario_version=run.scenario_version,
     )
 
     run.fact_revision += 1

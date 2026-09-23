@@ -196,12 +196,24 @@ async def attach_durable_decision(
 ) -> DecisionRecord:
     journal = DecisionJournalService(db)
     decision_id, decision_version = await journal.next_identity(task_id)
+
+    run = await db.scalar(
+        select(TicketRun).where(
+            TicketRun.task_id == task_id,
+            TicketRun.completed_at.is_(None),
+        )
+    )
+    pinned_key = run.scenario_key if run and run.scenario_key else None
+    pinned_version = run.scenario_version if run and run.scenario_version else None
+
     envelope = await ScenarioDecisionService(db).analyze(
         task=card.get("task") or {},
         comments=card.get("history") or [],
         diagnostics=card.get("telemetry"),
         decision_id=str(decision_id),
         decision_version=decision_version,
+        pinned_scenario_key=pinned_key,
+        pinned_scenario_version=pinned_version,
     )
     record = await journal.record_envelope(
         task_id=task_id,
