@@ -198,6 +198,7 @@ ai_client = AsyncOpenAI(
 
 | Модуль старого проекта | Статус | Куда переносится в v2 | Обоснование |
 | :--- | :---: | :--- | :--- |
+| `core/database/` | 🟢 **CLEAN INIT** | `core/database/` | **Полный сброс БД с нуля.** 36 устаревших таблиц ликвидируются. Создается чистый `0001_initial.py` только для активных сущностей. |
 | `intraservice.py`, `service_catalog.py` | 🟢 **KEEP** | `core/intraservice/` | Фундаментальный API-клиент к Helpdesk. Очистить от дублирования `/api`. |
 | `rag.py`, `knowledge_base/` | 🟢 **KEEP** | `api/src/features/knowledge_base/` | Поиск по `task_knowledge_base` (pgvector). Удалить устаревшие эвристики. |
 | `active_directory.py`, `host_telemetry.py` | 🟢 **KEEP** | `api/src/features/diagnostics/` | Сетевые проверки (Ping, SMB:445, WinRM:5985, LDAP). |
