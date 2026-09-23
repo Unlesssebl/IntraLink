@@ -39,6 +39,16 @@ async def list_tickets(
     return await service.list_tickets(filter_id=filter_id, page=page, page_size=page_size, auth_b64=auth_b64)
 
 
+@router.get("/services/catalog", response_model=List[Dict[str, Any]])
+async def get_services_catalog(
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
+    service: TicketService = Depends(get_ticket_service),
+) -> List[Dict[str, Any]]:
+    """Retrieve service catalog for routing and redirects."""
+    services = await service.client.get_services(auth_b64=auth_b64)
+    return [s.model_dump() for s in services]
+
+
 @router.get("/{ticket_id}", response_model=TicketDetailDTO)
 async def get_ticket(
     ticket_id: int,
@@ -58,20 +68,22 @@ async def get_ticket(
 @router.get("/{ticket_id}/lifetime", response_model=List[Dict[str, Any]])
 async def get_ticket_lifetime(
     ticket_id: int,
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
     service: TicketService = Depends(get_ticket_service),
 ) -> List[Dict[str, Any]]:
     """Retrieve change history and comments of a ticket."""
-    return await service.get_ticket_lifetime(ticket_id=ticket_id)
+    return await service.get_ticket_lifetime(ticket_id=ticket_id, auth_b64=auth_b64)
 
 
 @router.patch("/{ticket_id}")
 async def update_ticket(
     ticket_id: int,
     req: UpdateTicketRequest,
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
     service: TicketService = Depends(get_ticket_service),
 ) -> dict:
     """Update ticket status, comment, or assignees."""
-    success = await service.update_ticket(ticket_id=ticket_id, req=req)
+    success = await service.update_ticket(ticket_id=ticket_id, req=req, auth_b64=auth_b64)
     return {"ticket_id": ticket_id, "updated": success}
 
 
@@ -79,10 +91,11 @@ async def update_ticket(
 async def add_comment(
     ticket_id: int,
     req: AddCommentRequest,
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
     service: TicketService = Depends(get_ticket_service),
 ) -> dict:
     """Post a comment to a ticket."""
-    success = await service.add_comment(ticket_id=ticket_id, req=req)
+    success = await service.add_comment(ticket_id=ticket_id, req=req, auth_b64=auth_b64)
     return {"ticket_id": ticket_id, "comment_added": success}
 
 

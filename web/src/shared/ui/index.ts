@@ -3,3 +3,6 @@ export * from "./Badge";
 export * from "./Modal";
 export * from "./Input";
 export * from "./Card";
+export * from "./KbdBadge";
+export * from "./StatusDot";
+export * from "./Lightbox";
