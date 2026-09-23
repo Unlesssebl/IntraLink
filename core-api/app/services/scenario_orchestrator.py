@@ -39,6 +39,11 @@ from app.services.facts import (
 )
 from app.services.plan_builder import PlanBuilder
 from app.services.scenario_decision import ScenarioDecisionService
+from app.services.autopilot_reporter import (
+    AutopilotReporter,
+    is_internal_comments_allowed,
+    resolve_internal_comments_config,
+)
 from app.services.resolution_service import ResolutionUnavailable, resolve_outcome
 from app.services.scenarios import get_scenario_registry
 from app.services.ticket_runs import TicketRunService, TicketRunState
@@ -244,6 +249,147 @@ class TicketRunOrchestrator:
             pass
         return None
 
+    async def _send_internal_comment(
+        self,
+        run: TicketRun,
+        *,
+        trigger: str,
+        task: dict[str, Any],
+        service_auth_b64: str | None = None,
+        event_key: str | None = None,
+        target_host: dict[str, Any] | str | None = None,
+        confidence: float | None = None,
+        facts: dict[str, Any] | None = None,
+        reason: str | None = None,
+        missing_facts: list[str] | dict[str, Any] | None = None,
+        error_detail: str | dict[str, Any] | None = None,
+        outcome: str | None = None,
+        proof: dict[str, Any] | None = None,
+        duration_seconds: float | None = None,
+        actor: str = "autopilot",
+    ) -> bool:
+        if run.mode != "autopilot":
+            return False
+
+        effective_key = event_key or (
+            f"internal_comment:on_start:{run.id}"
+            if trigger == "on_start"
+            else f"internal_comment:on_pause:{run.id}:{run.pause_reason or run.error_code or 'paused'}:{run.version}"
+            if trigger == "on_pause_or_error"
+            else f"internal_comment:on_complete:{run.id}"
+        )
+
+        if await self._event_exists(run.id, effective_key):
+            return False
+
+        global_setting = await self.runs.get_global_setting()
+        service_id = int(task.get("ServiceId") or 0)
+        scenario = await self.runs.get_enabled_scenario(service_id)
+
+        rollout_mode = scenario.rollout_mode if scenario else "active"
+        canary_percent = int((scenario.config_json or {}).get("canary_percent", 10)) if scenario else 10
+
+        if not is_internal_comments_allowed(
+            rollout_mode=rollout_mode,
+            task_id=run.task_id,
+            canary_percent=canary_percent,
+        ):
+            return False
+
+        enabled, depth = resolve_internal_comments_config(global_setting, scenario)
+        if not enabled:
+            return False
+
+        scenario_key = run.scenario_key or (scenario.scenario_key if scenario else "autopilot")
+        scenario_version = run.scenario_version or (scenario.version if scenario else 1)
+
+        if trigger == "on_start":
+            if not target_host:
+                from app.services.ticket_run_runner import TicketRunRunner
+                pc, ip = TicketRunRunner.extract_printer_parameters(task)
+                if pc or ip:
+                    target_host = {"name": pc, "ip": ip} if pc and ip else (pc or ip)
+            comment_text = AutopilotReporter.format_start_comment(
+                run_id=run.id,
+                task_id=run.task_id,
+                scenario_key=scenario_key,
+                scenario_version=scenario_version,
+                depth=depth,
+                target_host=target_host,
+                confidence=confidence,
+                facts=facts,
+            )
+        elif trigger == "on_pause_or_error":
+            comment_text = AutopilotReporter.format_pause_comment(
+                run_id=run.id,
+                task_id=run.task_id,
+                scenario_key=scenario_key,
+                scenario_version=scenario_version,
+                depth=depth,
+                reason=reason or run.pause_reason or run.error_message,
+                missing_facts=missing_facts,
+                error_detail=error_detail or run.error_message,
+                facts=facts,
+            )
+        elif trigger == "on_complete":
+            if duration_seconds is None and run.created_at:
+                end_time = run.completed_at or dt.datetime.now(dt.timezone.utc)
+                start_time = run.created_at if run.created_at.tzinfo else run.created_at.replace(tzinfo=dt.timezone.utc)
+                duration_seconds = max(0.0, (end_time - start_time).total_seconds())
+
+            comment_text = AutopilotReporter.format_complete_comment(
+                run_id=run.id,
+                task_id=run.task_id,
+                scenario_key=scenario_key,
+                scenario_version=scenario_version,
+                depth=depth,
+                outcome=outcome or run.outcome,
+                proof=proof or run.execution_proof_json,
+                duration_seconds=duration_seconds,
+            )
+        else:
+            return False
+
+        auth = await self._resolve_service_auth(service_auth_b64)
+        if not auth:
+            logger.warning(
+                "Пропуск отправки служебного комментария для заявки %s: учетные данные сервиса недоступны",
+                run.task_id,
+            )
+            return False
+
+        delivered = False
+        try:
+            from app.services.intraservice import add_task_comment
+            delivered = await add_task_comment(
+                auth_b64=auth,
+                task_id=run.task_id,
+                comment=comment_text,
+                is_private=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Сбой отправки скрытого служебного комментария для заявки %s: %s",
+                run.task_id,
+                exc,
+            )
+
+        await self.runs._append_run_event(
+            run,
+            event_type="internal_comment_sent",
+            event_key=effective_key,
+            actor=actor,
+            details={
+                "trigger": trigger,
+                "depth": depth,
+                "delivered": delivered,
+                "length": len(comment_text),
+            },
+        )
+        await self.db.commit()
+        await self.db.refresh(run)
+        return delivered
+
     async def _reconcile_command(
         self,
         run: TicketRun,
@@ -278,6 +424,16 @@ class TicketRunOrchestrator:
                 run.error_code = run.pause_reason
             run.error_message = command.error_message
 
+            await self._send_internal_comment(
+                run,
+                trigger="on_pause_or_error",
+                task=task,
+                service_auth_b64=service_auth_b64,
+                reason=f"Команда {command.action} перешла в статус {command.status}",
+                error_detail=command.error_message,
+                actor=actor,
+            )
+
             auth = await self._resolve_service_auth(service_auth_b64)
             if auth:
                 try:
@@ -300,11 +456,28 @@ class TicketRunOrchestrator:
                 run.error_message = (
                     "Параметры или цель задачи изменились во время выполнения команды"
                 )
+                await self._send_internal_comment(
+                    run,
+                    trigger="on_pause_or_error",
+                    task=task,
+                    service_auth_b64=service_auth_b64,
+                    reason=run.pause_reason,
+                    error_detail=run.error_message,
+                    actor=actor,
+                )
             elif command.action == "create_user":
                 auth = await self._resolve_service_auth(service_auth_b64)
                 if not auth:
                     run.state = TicketRunState.PAUSED.value
                     run.pause_reason = "verified_result_delivery_requires_auth"
+                    await self._send_internal_comment(
+                        run,
+                        trigger="on_pause_or_error",
+                        task=task,
+                        service_auth_b64=service_auth_b64,
+                        reason=run.pause_reason,
+                        actor=actor,
+                    )
                 else:
                     try:
                         await CommandDeliveryService(self.db).deliver_create_user(
@@ -315,6 +488,15 @@ class TicketRunOrchestrator:
                         run.state = TicketRunState.COMPLETED.value
                         run.outcome = "completed"
                         run.completed_at = dt.datetime.now(dt.timezone.utc)
+                        await self._send_internal_comment(
+                            run,
+                            trigger="on_complete",
+                            task=task,
+                            service_auth_b64=service_auth_b64,
+                            outcome="Учетная запись пользователя успешно создана",
+                            proof={"command_id": str(command.id), "action": command.action},
+                            actor=actor,
+                        )
                     except Exception as exc:
                         logger.warning(
                             "Не удалось доставить результат create_user %s: %s",
@@ -324,6 +506,15 @@ class TicketRunOrchestrator:
                         run.state = TicketRunState.PAUSED.value
                         run.pause_reason = "delivery_failed"
                         run.error_message = str(exc)
+                        await self._send_internal_comment(
+                            run,
+                            trigger="on_pause_or_error",
+                            task=task,
+                            service_auth_b64=service_auth_b64,
+                            reason=run.pause_reason,
+                            error_detail=run.error_message,
+                            actor=actor,
+                        )
             elif run.current_step == "request_clarification":
                 run.state = TicketRunState.WAITING_ANSWER.value
                 run.waiting_reason = "clarification_requested"
@@ -332,6 +523,15 @@ class TicketRunOrchestrator:
                 run.state = TicketRunState.COMPLETED.value
                 run.outcome = "completed"
                 run.completed_at = dt.datetime.now(dt.timezone.utc)
+                await self._send_internal_comment(
+                    run,
+                    trigger="on_complete",
+                    task=task,
+                    service_auth_b64=service_auth_b64,
+                    outcome="Заявка успешно обработана и закрыта",
+                    proof={"command_id": str(command.id), "action": command.action},
+                    actor=actor,
+                )
             else:
                 try:
                     scenario = get_scenario_registry().get(
@@ -429,6 +629,15 @@ class TicketRunOrchestrator:
                     run.state = TicketRunState.PAUSED.value
                     run.pause_reason = "verified_action_requires_finalization"
                     run.error_message = str(exc)
+                    await self._send_internal_comment(
+                        run,
+                        trigger="on_pause_or_error",
+                        task=task,
+                        service_auth_b64=service_auth_b64,
+                        reason=run.pause_reason,
+                        error_detail=run.error_message,
+                        actor=actor,
+                    )
         else:
             return None
 
@@ -572,6 +781,16 @@ class TicketRunOrchestrator:
         if initial.completed_at is not None:
             return OrchestrationResult(initial, None, None)
 
+        # 0. Отправка скрытого служебного комментария on_start при первичном старте автопилота
+        if initial.mode == "autopilot":
+            await self._send_internal_comment(
+                initial,
+                trigger="on_start",
+                task=task,
+                service_auth_b64=service_auth_b64,
+                actor=actor,
+            )
+
         # 1. Сначала сверяем статус команды: команда могла измениться при неизменной заявке
         reconciled = await self._reconcile_command(
             initial,
@@ -686,11 +905,28 @@ class TicketRunOrchestrator:
             run.state = TicketRunState.PAUSED.value
             run.pause_reason = "manual_review"
             run.current_step = "manual_review"
+            await self._send_internal_comment(
+                run,
+                trigger="on_pause_or_error",
+                task=task,
+                service_auth_b64=service_auth_b64,
+                reason="Заявка требует ручной проверки оператором",
+                actor=actor,
+            )
         elif envelope.policy.get("resolution_error"):
             run.state = TicketRunState.SYSTEM_ERROR.value
             run.error_code = "resolution_unavailable"
             run.error_message = str(envelope.policy["resolution_error"])
             run.current_step = "resolve_policy"
+            await self._send_internal_comment(
+                run,
+                trigger="on_pause_or_error",
+                task=task,
+                service_auth_b64=service_auth_b64,
+                reason=run.error_code,
+                error_detail=run.error_message,
+                actor=actor,
+            )
             auth = await self._resolve_service_auth(service_auth_b64)
             if auth:
                 try:
@@ -711,6 +947,14 @@ class TicketRunOrchestrator:
             run.state = TicketRunState.PAUSED.value
             run.pause_reason = "no_executable_resolution"
             run.current_step = "manual_review"
+            await self._send_internal_comment(
+                run,
+                trigger="on_pause_or_error",
+                task=task,
+                service_auth_b64=service_auth_b64,
+                reason="Отсутствует исполнимое действие для сценария",
+                actor=actor,
+            )
         else:
             run.state = TicketRunState.RUNNING.value
             run.pause_reason = None
@@ -728,6 +972,16 @@ class TicketRunOrchestrator:
             )
             if isinstance(envelope.outcome, ClarificationRequired):
                 run.current_step = "request_clarification"
+                missing = getattr(envelope.outcome, "missing_facts", None)
+                await self._send_internal_comment(
+                    run,
+                    trigger="on_pause_or_error",
+                    task=task,
+                    service_auth_b64=service_auth_b64,
+                    reason="Запрошено уточнение данных у заявителя",
+                    missing_facts=missing,
+                    actor=actor,
+                )
             else:
                 run.current_step = f"execute:{action}"
             run.state = (

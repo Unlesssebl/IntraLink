@@ -55,6 +55,46 @@ def human_scenario_title(scenario_key: str | None) -> str:
     return SCENARIO_TITLES.get(key, key.replace("_", " ").capitalize())
 
 
+def resolve_internal_comments_config(
+    global_setting: Any,
+    scenario: Any | None = None,
+) -> tuple[bool, str]:
+    """Resolve comments enabled flag and depth cascading from scenario to global settings."""
+    scenario_cfg = (getattr(scenario, "config_json", None) or {}) if scenario else {}
+    enabled = scenario_cfg.get("internal_comments_enabled")
+    if enabled is None:
+        enabled = getattr(global_setting, "internal_comments_enabled", True)
+
+    depth = scenario_cfg.get("internal_comments_depth")
+    if depth is None:
+        depth = getattr(global_setting, "internal_comments_depth", "applied")
+
+    clean_depth = str(depth).strip().lower()
+    if clean_depth not in {"applied", "technical"}:
+        clean_depth = "applied"
+
+    return bool(enabled), clean_depth
+
+
+def is_internal_comments_allowed(
+    *,
+    rollout_mode: str | None,
+    task_id: int,
+    canary_percent: int = 10,
+) -> bool:
+    """Return True if internal comments are allowed under the given rollout mode."""
+    mode = (rollout_mode or "active").strip().lower()
+    if mode == "shadow":
+        return False
+    if mode == "canary":
+        try:
+            from app.services.scenarios import get_scenario_registry
+            return get_scenario_registry().canary_selected(task_id, canary_percent)
+        except Exception:
+            return False
+    return True
+
+
 def sanitize_value(value: Any, *, depth: int = 0, max_depth: int = 8) -> Any:
     """Recursively sanitize structures, masking sensitive keys and token patterns."""
     if depth > max_depth:
