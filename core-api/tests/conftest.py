@@ -19,8 +19,11 @@ from zoneinfo import ZoneInfo
 # Это гарантирует, что Settings() успешно проинициализируется без .env
 # ---------------------------------------------------------------------------
 os.environ.setdefault("INTRASERVICE_URL", "http://intraservice.test/api/")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
-os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
+os.environ.setdefault(
+    "DATABASE_URL",
+    os.environ.get("TEST_DATABASE_URL", "postgresql+asyncpg://postgres:postgres@127.0.0.1:5434/intraservice_test")
+)
+os.environ.setdefault("REDIS_URL", os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:6380/0"))
 os.environ.setdefault("ENCRYPTION_KEY", "")
 os.environ.setdefault("BOT_API_KEY", "test-api-key")
 os.environ.setdefault("INTRASERVICE_TZ", "Europe/Moscow")
@@ -86,6 +89,8 @@ async def initialize_test_database():
         ):
             await db.execute(delete(model))
         await db.commit()
+    from app.database.db import engine
+    await engine.dispose()
 
 
 @pytest_asyncio.fixture(autouse=True)
