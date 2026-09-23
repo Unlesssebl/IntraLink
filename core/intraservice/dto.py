@@ -100,7 +100,7 @@ class TaskDTO(BaseModel):
     custom_fields: Dict[str, str] = Field(default_factory=dict)
 
     # Attachments
-    attachments: List[AttachmentDTO] = Field(default_factory=list)
+    attachments: List[AttachmentDTO] = Field(default_factory=list, alias="Attachments")
 
 
 class TaskLifetimeEventDTO(BaseModel):
@@ -108,13 +108,29 @@ class TaskLifetimeEventDTO(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    id: int = Field(alias="Id")
-    task_id: int = Field(alias="TaskId")
+    id: Optional[int] = Field(default=None, alias="Id")
+    task_id: Optional[int] = Field(default=None, alias="TaskId")
     created: Optional[str] = Field(default=None, alias="Created")
     user_name: Optional[str] = Field(default=None, alias="UserName")
     comment: Optional[str] = Field(default=None, alias="Comment")
     old_status_name: Optional[str] = Field(default=None, alias="OldStatusName")
     new_status_name: Optional[str] = Field(default=None, alias="NewStatusName")
+    is_private: bool = Field(default=False, alias="IsPrivateComment")
+
+    @field_validator("created", "user_name", "comment", "old_status_name", "new_status_name", mode="before")
+    @classmethod
+    def coerce_lifetime_str(cls, v: Any) -> str:
+        return "" if v is None else str(v)
+
+    @field_validator("id", "task_id", mode="before")
+    @classmethod
+    def coerce_lifetime_int(cls, v: Any) -> Optional[int]:
+        if v is None:
+            return None
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return 0
 
 
 class ServiceDTO(BaseModel):

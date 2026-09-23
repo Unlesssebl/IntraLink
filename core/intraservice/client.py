@@ -274,7 +274,36 @@ class IntraServiceClient:
             auth_b64=auth_b64,
             params={"include": "customfields,status,service,comments,attachments,usertaskrights"},
         )
-        enriched = enrich_task_dict(raw)
+        task_data: Dict[str, Any] = {}
+        if isinstance(raw, dict):
+            if "Task" in raw and isinstance(raw["Task"], dict):
+                task_data = dict(raw["Task"])
+            elif "Tasks" in raw and isinstance(raw["Tasks"], list) and raw["Tasks"]:
+                task_data = dict(raw["Tasks"][0])
+            else:
+                task_data = dict(raw)
+
+            # Extract included attachments if top-level
+            if "Attachments" in raw and "Attachments" not in task_data:
+                task_data["Attachments"] = raw["Attachments"]
+            # Extract included status name if not in task_data
+            if "Statuses" in raw and isinstance(raw["Statuses"], list) and raw["Statuses"]:
+                if not task_data.get("StatusName") and isinstance(raw["Statuses"][0], dict):
+                    task_data["StatusName"] = raw["Statuses"][0].get("Name", "")
+            # Extract included service name if not in task_data
+            if "Services" in raw and isinstance(raw["Services"], list) and raw["Services"]:
+                if not task_data.get("ServiceName") and isinstance(raw["Services"][0], dict):
+                    task_data["ServiceName"] = raw["Services"][0].get("Name", "")
+            # Extract included priority name if not in task_data
+            if "Priorities" in raw and isinstance(raw["Priorities"], list) and raw["Priorities"]:
+                if not task_data.get("PriorityName") and isinstance(raw["Priorities"][0], dict):
+                    task_data["PriorityName"] = raw["Priorities"][0].get("Name", "")
+
+        # Invariant: Ensure Id is set
+        if not task_data.get("Id"):
+            task_data["Id"] = task_id
+
+        enriched = enrich_task_dict(task_data)
         return TaskDTO.model_validate(enriched)
 
     async def get_tasks_by_filter(
@@ -338,16 +367,47 @@ class IntraServiceClient:
         res = await self._request(
             method="GET",
             endpoint="tasklifetime",
-            params={"taskid": task_id},
+            params={"taskid": str(task_id), "include": "status"},
             auth_b64=auth_b64,
         )
         raw_events = []
-        if isinstance(res, dict) and "TaskLifetimes" in res:
-            raw_events = res["TaskLifetimes"]
+        status_map: Dict[int, str] = {}
+        if isinstance(res, dict):
+            if "Statuses" in res and isinstance(res["Statuses"], list):
+                for s in res["Statuses"]:
+                    if isinstance(s, dict) and "Id" in s and "Name" in s:
+                        status_map[int(s["Id"])] = str(s["Name"])
+
+            if "TaskLifetimes" in res and isinstance(res["TaskLifetimes"], list):
+                raw_events = res["TaskLifetimes"]
+            elif "Lifetimes" in res and isinstance(res["Lifetimes"], list):
+                raw_events = res["Lifetimes"]
         elif isinstance(res, list):
             raw_events = res
 
-        return [TaskLifetimeEventDTO.model_validate(e) for e in raw_events if isinstance(e, dict)]
+        events: List[TaskLifetimeEventDTO] = []
+        for idx, e in enumerate(raw_events):
+            if isinstance(e, dict):
+                e_copy = dict(e)
+                if not e_copy.get("Id"):
+                    e_copy["Id"] = idx + 1
+                if not e_copy.get("TaskId"):
+                    e_copy["TaskId"] = task_id
+                if not e_copy.get("Created") and e_copy.get("Date"):
+                    e_copy["Created"] = e_copy.get("Date")
+                if not e_copy.get("UserName") and e_copy.get("Editor"):
+                    e_copy["UserName"] = e_copy.get("Editor")
+                if not e_copy.get("NewStatusName") and e_copy.get("StatusId"):
+                    try:
+                        sid = int(e_copy["StatusId"])
+                        if sid in status_map:
+                            e_copy["NewStatusName"] = status_map[sid]
+                    except (ValueError, TypeError):
+                        pass
+
+                events.append(TaskLifetimeEventDTO.model_validate(e_copy))
+
+        return events
 
     async def get_services(self, auth_b64: Optional[str] = None) -> List[ServiceDTO]:
         """Fetch all services from catalog (GET only as per GEMINI.md)."""
