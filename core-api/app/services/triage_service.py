@@ -22,7 +22,7 @@ from app.services.typed_decision_adapter import materialize_typed_decision
 from app.services.decision_envelope import envelope_to_legacy
 from app.services.scenario_decision import ScenarioDecisionService
 from app.services.rules.credentials import CredentialsRule
-from app.services.rules.catalog import (
+from app.services.service_catalog import (
     ROOT_SERVICES,
     get_root_number_for_service_id,
 )

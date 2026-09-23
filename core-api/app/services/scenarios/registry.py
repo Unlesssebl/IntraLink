@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Any
 
 from app.services.scenarios.base import Scenario, ScenarioContext
-from app.services.scenarios.builtin import built_in_scenarios
+from app.services.scenarios.contracts import RouteResult
+from app.services.scenarios.definitions import load_builtin_scenarios
 
 SCENARIO_KEY_ALIASES: dict[str, str] = {
     "user_creation": "create_user",
@@ -15,23 +17,13 @@ MIN_SCENARIO_SCORE = 0.85
 MIN_SCENARIO_MARGIN = 0.10
 
 
-from dataclasses import dataclass, field
-
-@dataclass(slots=True)
-class RouteResult:
-    scenario: Scenario
-    score: float
-    runner_up_score: float = 0.0
-    reasons: list[str] = field(default_factory=list)
-    is_ambiguous: bool = False
-    transition_proposed: dict[str, Any] | None = None
-
-
 class ScenarioRegistry:
+    """Типобезопасный реестр зарегистрированных сценариев обработки заявок."""
+
     def __init__(self, scenarios: tuple[Scenario, ...] | None = None) -> None:
         self._scenarios: dict[tuple[str, int], Scenario] = {}
         self._order: list[tuple[str, int]] = []
-        for scenario in scenarios or built_in_scenarios():
+        for scenario in scenarios or load_builtin_scenarios():
             self.register(scenario)
 
     @staticmethod

@@ -268,7 +268,7 @@ class DataSanitizer:
         # конкретный текст не содержит распознаваемого regex-секрета.
         if metadata.service_id is not None:
             try:
-                from app.services.rules.catalog import get_root_number_for_service_id
+                from app.services.service_catalog import get_root_number_for_service_id
 
                 if get_root_number_for_service_id(metadata.service_id) == "08":
                     return RouteDecision(

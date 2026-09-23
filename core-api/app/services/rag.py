@@ -1381,7 +1381,7 @@ async def check_semantic_duplicate(
 
 def get_subservice_ids_for_root(root_key: str) -> list[int]:
     """Возвращает список всех ID услуг IntraService, относящихся к корневому разделу root_key."""
-    from app.services.rules.catalog import ROOT_SERVICES, SERVICE_ID_TO_ROOT
+    from app.services.service_catalog import ROOT_SERVICES, SERVICE_ID_TO_ROOT
     res = set()
     if root_key in ROOT_SERVICES:
         res.add(ROOT_SERVICES[root_key]["id"])
@@ -1393,7 +1393,7 @@ def get_subservice_ids_for_root(root_key: str) -> list[int]:
 
 def get_all_root_services() -> list[dict[str, Any]]:
     """Возвращает список корневых разделов каталога (01..16)."""
-    from app.services.rules.catalog import ROOT_SERVICES
+    from app.services.service_catalog import ROOT_SERVICES
     items = []
     for key, info in sorted(ROOT_SERVICES.items()):
         items.append({

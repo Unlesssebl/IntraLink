@@ -10,7 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from app.services.intraservice import _make_request
-from app.services.rules.catalog import ROOT_SERVICES, SERVICE_ID_TO_ROOT
+from app.services.service_catalog import ROOT_SERVICES, SERVICE_ID_TO_ROOT
 from app.services.worker import get_redis_client
 
 logger = logging.getLogger(__name__)

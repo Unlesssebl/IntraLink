@@ -36,7 +36,7 @@ from app.services.rag import (
     search_knowledge_base,
     sync_historical_closed_tasks,
 )
-from app.services.rules.catalog import ROOT_SERVICES
+from app.services.service_catalog import ROOT_SERVICES
 from app.services.safety import (
     DeadMansSwitchError,
     enforce_triage_apply_rate_limit,
