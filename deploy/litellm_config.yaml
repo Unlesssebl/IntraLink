@@ -1,0 +1,59 @@
+model_list:
+  # Быстрая модель для классификации, триажа и оперативных подсказок
+  - model_name: helpdesk-fast
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GEMINI_API_KEY
+      rpm: 15
+      max_tokens: 1024
+      temperature: 0.1
+
+  - model_name: helpdesk-fast
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GEMINI_API_KEY_2
+      rpm: 15
+      max_tokens: 1024
+      temperature: 0.1
+
+  # Рассуждающая модель для RAG-синтеза, сложных инцидентов и нестандартных решений
+  - model_name: helpdesk-reasoning
+    litellm_params:
+      model: deepseek/deepseek-reasoner
+      api_key: os.environ/DEEPSEEK_API_KEY
+      max_tokens: 2048
+      temperature: 0.2
+
+  # Локальный резерв через Ollama на хосте (RED-контур / изоляция)
+  - model_name: helpdesk-local
+    litellm_params:
+      model: ollama/qwen2.5:7b
+      api_base: http://host.docker.internal:11434
+      max_tokens: 512
+      temperature: 0.1
+
+  # Модель эмбеддингов для векторизации базы знаний (1024 измерения)
+  - model_name: bge-m3
+    litellm_params:
+      model: ollama/bge-m3
+      api_base: http://host.docker.internal:11434
+
+router_settings:
+  routing_strategy: least-busy
+  num_retries: 2
+  timeout: 30
+  allowed_fails: 1
+  cooldown_time: 60
+  fallbacks:
+    - helpdesk-reasoning: ["helpdesk-fast", "helpdesk-local"]
+    - helpdesk-fast: ["helpdesk-local"]
+
+litellm_settings:
+  cache: true
+  cache_type: redis
+  cache_host: redis
+  cache_port: 6379
+  cache_ttl: 86400  # Кэширование идентичных ответов на 24 часа
+
+general_settings:
+  master_key: os.environ/LITELLM_API_KEY

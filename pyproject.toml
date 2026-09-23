@@ -1,59 +1,40 @@
 [project]
 name = "intralink"
-version = "0.1.0"
-description = "IntraLink - Unified Helpdesk Gateway, AI Automation & Live Operations Dashboard for IntraService"
+version = "0.2.0"
+description = "IntraLink v2 - Vertical Slice Architecture & LiteLLM Gateway"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "alembic>=1.16.0",
-    "aiogram>=3.0.0",
-    "aiohttp>=3.13.5",
-    "apscheduler>=3.11.2",
-    "python-dotenv>=1.2.2",
-    "redis>=5.0.0",
-    "fastapi>=0.111.0",
-    "uvicorn[standard]>=0.30.0",
-    "pydantic>=2.7.0",
-    "pydantic-settings>=2.2.0",
-    "sqlalchemy>=2.0.30",
-    "asyncpg>=0.29.0",
-    "cryptography>=42.0.0",
-    "pywinrm>=0.4.3",
-    "smbprotocol>=1.12.0",
-    "impacket>=0.12.0",
-    "pgvector>=0.2.0",
-    "openai",
-    "orjson>=3.10.0",
-    "ldap3>=2.9.1",
-    "jinja2>=3.1.6",
-    "pyjwt>=2.13.0",
-    "argon2-cffi>=23.1.0",
+    "intralink-core",
+    "intralink-api",
+    "intralink-worker",
 ]
+
+[tool.uv.workspace]
+members = ["core", "api", "worker"]
+
+[tool.uv.sources]
+intralink-core = { workspace = true }
+intralink-api = { workspace = true }
+intralink-worker = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-asyncio>=1.4.0",
+    "hypothesis>=6.138.0",
+    "ruff>=0.9.0",
+    "httpx>=0.27.0",
+    "aiosqlite>=0.22.1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["core/tests", "api/tests", "worker/tests"]
+pythonpath = [".", "core", "api", "worker"]
 
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
-extraPaths = ["core-api", "telegram-bot", "execution-worker", "helpdesk-cli", "shared"]
-exclude = ["**/__pyrefly_virtual__"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["core-api/tests"]
-pythonpath = ["core-api", "shared"]
-
-[dependency-groups]
-dev = [
-    "aiosqlite>=0.22.1",
-    "pytest>=9.0.3",
-    "pytest-asyncio>=1.4.0",
-    "hypothesis>=6.138.0",
-]
-
-[tool.pyrefly]
-project-excludes = [
-    "**/__pyrefly_virtual__/**",
-]
-search_path = ["core-api", "telegram-bot", "execution-worker", "helpdesk-cli", "shared"]
-
-
-
+extraPaths = [".", "core", "api", "worker"]
+exclude = ["**/__pyrefly_virtual__", "node_modules", "intra-web", "web"]

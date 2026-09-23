@@ -1,0 +1,50 @@
+# IntraLink v2 Ruff Configuration & Architectural Guardrails
+
+target-version = "py313"
+line-length = 120
+
+exclude = [
+    ".venv",
+    ".git",
+    "__pycache__",
+    "node_modules",
+    "web",
+    "intra-web",
+    "core-api",
+    "execution-worker",
+    "tools",
+    "desktop-companion",
+    "helpdesk-cli",
+]
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "TID",  # flake8-tidy-imports (architectural boundary enforcement)
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # do not perform function calls in argument defaults (FastAPI Depends)
+]
+
+# Architectural Isolation Guardrail: Vertical slices MUST NOT import each other directly!
+[lint.flake8-tidy-imports.banned-api]
+"api.src.features.tickets".msg = "Срезы не должны импортировать друг друга! Выносите общий код в core/."
+"api.src.features.reports".msg = "Срезы не должны импортировать друг друга! Выносите общий код в core/."
+"api.src.features.triage".msg = "Срезы не должны импортировать друг друга! Выносите общий код в core/."
+"api.src.features.diagnostics".msg = "Срезы не должны импортировать друг друга! Выносите общий код в core/."
+"api.src.features.knowledge_base".msg = "Срезы не должны импортировать друг друга! Выносите общий код в core/."
+
+# Exceptions: main.py mounts routers into FastAPI, tests may test isolated slices
+[lint.per-file-ignores]
+"api/src/main.py" = ["TID251"]
+"api/tests/*" = ["TID251"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
