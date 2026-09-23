@@ -110,6 +110,18 @@ services:
       redis:
         condition: service_healthy
 
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    container_name: intralink_web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3000}:80"
+    depends_on:
+      api:
+        condition: service_started
+
 volumes:
   postgres_data:
   redis_data:
