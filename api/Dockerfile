@@ -9,6 +9,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.6.0 /uv /uvx /bin/
 COPY pyproject.toml uv.lock ./
 COPY core/ ./core/
 COPY api/ ./api/
+COPY worker/ ./worker/
 
 RUN uv sync --frozen --no-dev --package intralink-api
 

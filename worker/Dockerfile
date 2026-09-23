@@ -5,9 +5,10 @@ WORKDIR /workspace
 # Install uv for fast package installation
 COPY --from=ghcr.io/astral-sh/uv:0.6.0 /uv /uvx /bin/
 
-# Copy workspace specifications
+# Copy workspace specifications and packages
 COPY pyproject.toml uv.lock ./
 COPY core/ ./core/
+COPY api/ ./api/
 COPY worker/ ./worker/
 
 RUN uv sync --frozen --no-dev --package intralink-worker
