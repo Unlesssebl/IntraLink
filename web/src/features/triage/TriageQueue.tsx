@@ -5,12 +5,13 @@ import {
   Search,
   CheckCheck,
   AlertTriangle,
+  Sparkles,
 } from "lucide-react";
-import { Button, Badge, KbdBadge } from "@/shared/ui";
+import { Button, Badge, KbdBadge, useToast } from "@/shared/ui";
 import { TicketRow } from "./TicketRow";
 import { useTicketQueue } from "@/features/tickets/queries";
 import { isStatusInWork } from "@/shared/statuses";
-import { triageApi, TicketListItem, TriageResult } from "@/shared/api";
+import { triageApi, TriageAnalysisResponse } from "@/shared/api";
 
 export interface TriageQueueProps {
   onSelectTicket: (ticketId: number) => void;
@@ -23,6 +24,7 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
   onSelectTicket,
   selectedTicketId,
 }) => {
+  const toast = useToast();
   const {
     data: tickets = [],
     isLoading,
@@ -34,16 +36,10 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<FilterCategory>("all");
 
-  // AI Classification cache: ticketId -> TriageResult
-  const [triageResults, setTriageResults] = useState<Record<number, TriageResult>>({});
-  const [classifyingId, setClassifyingId] = useState<number | null>(null);
-
-  // Auto-select first ticket if none selected
-  useEffect(() => {
-    if (!selectedTicketId && tickets.length > 0) {
-      onSelectTicket(tickets[0].id);
-    }
-  }, [tickets, selectedTicketId, onSelectTicket]);
+  // AI Classification cache: ticketId -> TriageAnalysisResponse
+  const [triageResults, setTriageResults] = useState<Record<number, TriageAnalysisResponse>>({});
+  const [analyzingTicketId, setAnalyzingTicketId] = useState<number | null>(null);
+  const [batchAnalyzing, setBatchAnalyzing] = useState(false);
 
   // Filtered tickets memo
   const filteredTickets = useMemo(() => {
@@ -81,6 +77,16 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
     });
   }, [tickets, searchQuery, activeFilter]);
 
+  // Auto-shift focus when selected ticket completes or disappears
+  useEffect(() => {
+    if (filteredTickets.length > 0) {
+      const exists = filteredTickets.some((t) => t.id === selectedTicketId);
+      if (!exists) {
+        onSelectTicket(filteredTickets[0].id);
+      }
+    }
+  }, [filteredTickets, selectedTicketId, onSelectTicket]);
+
   // Keyboard navigation: J/K or Up/Down arrows to switch tickets
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -106,23 +112,34 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [filteredTickets, selectedTicketId, onSelectTicket]);
 
-  const handleClassify = async (e: React.MouseEvent, t: TicketListItem) => {
+  const handleAnalyzeSingle = async (e: React.MouseEvent, ticketId: number) => {
     e.stopPropagation();
     try {
-      setClassifyingId(t.id);
-      const res = await triageApi.classify({
-        task_id: t.id,
-        name: t.name,
-        description: t.name,
-        applicant_name: t.applicant_name || undefined,
-        pc_name: t.pc_name || undefined,
-        service_name: t.service_name || undefined,
-      });
-      setTriageResults((prev) => ({ ...prev, [t.id]: res }));
+      setAnalyzingTicketId(ticketId);
+      const res = await triageApi.analyze(ticketId);
+      setTriageResults((prev) => ({ ...prev, [ticketId]: res }));
+      toast.success(`Анализ тикета #${ticketId} выполнен`);
     } catch (err: any) {
-      alert(`Ошибка анализа AI: ${err?.message}`);
+      toast.error(`Ошибка анализа AI: ${err?.message || "Сбой запроса"}`);
     } finally {
-      setClassifyingId(null);
+      setAnalyzingTicketId(null);
+    }
+  };
+
+  const handleBatchAnalyze = async () => {
+    try {
+      setBatchAnalyzing(true);
+      const res = await triageApi.batchAnalyze(984, 25);
+      const map: Record<number, TriageAnalysisResponse> = {};
+      for (const item of res.decisions) {
+        map[item.ticket_id] = item;
+      }
+      setTriageResults((prev) => ({ ...prev, ...map }));
+      toast.success(`Проанализировано ${res.total_analyzed} заявок`);
+    } catch (err: any) {
+      toast.error(`Ошибка пакетного анализа: ${err?.message || "Сбой запроса"}`);
+    } finally {
+      setBatchAnalyzing(false);
     }
   };
 
@@ -143,6 +160,14 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
             <span className="hidden sm:inline-flex items-center gap-1 text-[10px] text-neutral-500 mr-1 font-mono">
               <KbdBadge shortcut="J" /> <KbdBadge shortcut="K" />
             </span>
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={batchAnalyzing}
+              icon={<Sparkles className="w-3.5 h-3.5 text-purple-400" />}
+              onClick={handleBatchAnalyze}
+              title="Пакетный AI-анализ очереди"
+            />
             <Button
               size="sm"
               variant="secondary"
@@ -238,8 +263,8 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
             isSelected={selectedTicketId === t.id}
             onSelect={onSelectTicket}
             aiResult={triageResults[t.id]}
-            onClassify={handleClassify}
-            isClassifying={classifyingId === t.id}
+            onAnalyze={handleAnalyzeSingle}
+            isAnalyzing={analyzingTicketId === t.id}
           />
         ))}
 

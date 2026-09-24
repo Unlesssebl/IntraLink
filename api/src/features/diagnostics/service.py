@@ -83,7 +83,7 @@ class DiagnosticsService:
         redis_client: Optional[aioredis.Redis] = None,
         auth_b64: Optional[str] = None,
     ) -> TicketDiagnosticDTO:
-        task = await self.intraservice_client.get_task(ticket_id=ticket_id, auth_b64=auth_b64)
+        task = await self.intraservice_client.get_task(task_id=ticket_id, auth_b64=auth_b64)
         pc_name = task.entities.pc_name if task.entities else None
 
         if not pc_name:

@@ -21,7 +21,11 @@ from api.src.features.reports.router import router as reports_router
 from api.src.features.tickets.router import router as tickets_router
 from api.src.features.triage.router import router as triage_router
 from core.intraservice.client import IntraServiceClient
-from core.intraservice.exceptions import IntraServiceError
+from core.intraservice.exceptions import (
+    IntraServiceAuthError,
+    IntraServiceError,
+    IntraServiceNotFoundError,
+)
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -34,6 +38,15 @@ logger = logging.getLogger("intralink-api")
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application startup and shutdown lifecycle manager."""
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION} [{settings.APP_ENV}]")
+    try:
+        from core.database.base import Base
+        import core.database.models  # noqa: F401
+        from api.src.core.db import engine
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database schema verified (Base.metadata.create_all)")
+    except Exception as exc:
+        logger.warning(f"Database schema auto-creation check: {exc}")
     yield
     logger.info("Shutting down IntraLink API resources...")
     await dispose_db()
@@ -95,6 +108,17 @@ async def readiness_check() -> JSONResponse:
 async def intraservice_error_handler(_request: Request, exc: IntraServiceError) -> JSONResponse:
     """Handles external IntraService communication errors cleanly."""
     logger.error(f"IntraService communication error: {exc}")
+    if isinstance(exc, IntraServiceAuthError):
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "IntraService authentication failed or token expired."},
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    if isinstance(exc, IntraServiceNotFoundError):
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc)},
+        )
     return JSONResponse(
         status_code=status.HTTP_502_BAD_GATEWAY,
         content={"detail": str(exc)},

@@ -1,10 +1,11 @@
 import React, { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Search, Sparkles, BookOpen, Copy, Check } from "lucide-react";
-import { Button, Input, Card, Badge } from "@/shared/ui";
+import { Button, Input, Card, Badge, useToast } from "@/shared/ui";
 import { kbApi, KBSearchResultItem, KBAskResponse } from "@/shared/api";
 
 export const KBSearch: React.FC = () => {
+  const toast = useToast();
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"search" | "ask">("ask");
   const [searchResults, setSearchResults] = useState<KBSearchResultItem[]>([]);
@@ -18,7 +19,7 @@ export const KBSearch: React.FC = () => {
         return { type: "ask" as const, askData: data, searchData: null };
       } else {
         const data = await kbApi.search(q, 6);
-        return { type: "search" as const, askData: null, searchData: data };
+        return { type: "search" as const, askData: null, searchData: data.items || [] };
       }
     },
     onSuccess: (res) => {
@@ -30,12 +31,19 @@ export const KBSearch: React.FC = () => {
         setAskResult(null);
       }
     },
+    onError: (err: any) => {
+      toast.error(`Ошибка запроса к базе знаний: ${err?.message || "Сбой соединения"}`);
+    },
   });
 
   const handleSearch = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!query.trim()) return;
-    searchMutation.mutate({ q: query.trim(), m: mode });
+    const clean = query.trim();
+    if (clean.length < 3) {
+      toast.warning("Введите не менее 3 символов для поиска по базе знаний");
+      return;
+    }
+    searchMutation.mutate({ q: clean, m: mode });
   };
 
   const loading = searchMutation.isPending;
@@ -46,8 +54,11 @@ export const KBSearch: React.FC = () => {
   const copyToClipboard = (text: string, id: number) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
+    toast.success("Решение скопировано в буфер обмена");
     setTimeout(() => setCopiedId(null), 2000);
   };
+
+  const sourcesList = askResult?.context_used || [];
 
   return (
     <div className="space-y-4 max-w-4xl mx-auto">
@@ -104,7 +115,7 @@ export const KBSearch: React.FC = () => {
             icon={<Search className="w-4 h-4" />}
             autoFocus
           />
-          <Button type="submit" variant="primary" loading={loading}>
+          <Button type="submit" variant="primary" loading={loading} disabled={query.trim().length < 3}>
             {mode === "ask" ? "Спросить AI" : "Найти"}
           </Button>
         </form>
@@ -122,8 +133,13 @@ export const KBSearch: React.FC = () => {
           className="border-neutral-700/80 bg-[#121316]"
           title={
             <div className="flex items-center gap-2 text-neutral-200 font-medium">
-              <Sparkles className="w-4 h-4 text-neutral-300" />
+              <Sparkles className="w-4 h-4 text-purple-400" />
               <span>Рекомендованное решение (LiteLLM RAG)</span>
+              {askResult.confidence && (
+                <Badge variant="neutral">
+                  Уверенность: {Math.round(askResult.confidence * 100)}%
+                </Badge>
+              )}
             </div>
           }
           action={
@@ -151,13 +167,13 @@ export const KBSearch: React.FC = () => {
               {askResult.answer}
             </div>
 
-            {askResult.sources?.length > 0 && (
+            {sourcesList.length > 0 && (
               <div className="border-t border-neutral-800/80 pt-3">
                 <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider block mb-2">
                   Использованные исторические заявки:
                 </span>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {askResult.sources.map((src) => (
+                  {sourcesList.map((src) => (
                     <div
                       key={src.task_id}
                       className="p-2.5 bg-[#101114] border border-neutral-800/80 rounded text-[11px] space-y-1"
@@ -170,7 +186,7 @@ export const KBSearch: React.FC = () => {
                           {Math.round(src.similarity * 100)}% совпадение
                         </Badge>
                       </div>
-                      <p className="text-neutral-400 line-clamp-2">{src.problem}</p>
+                      <p className="text-neutral-400 line-clamp-2">{src.problem || src.original_name}</p>
                     </div>
                   ))}
                 </div>
@@ -194,7 +210,7 @@ export const KBSearch: React.FC = () => {
                   <span className="font-mono text-neutral-300 font-medium">
                     #{item.task_id}
                   </span>
-                  <span className="text-neutral-200 truncate">{item.problem}</span>
+                  <span className="text-neutral-200 truncate">{item.problem || item.original_name}</span>
                 </div>
               }
               action={

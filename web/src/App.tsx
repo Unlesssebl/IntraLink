@@ -11,7 +11,7 @@ import {
   User,
   KeyRound,
 } from "lucide-react";
-import { Badge, Button, ErrorBoundary, Input, Modal } from "@/shared/ui";
+import { Badge, Button, ErrorBoundary, Input, Modal, useToast } from "@/shared/ui";
 import { TriageQueue } from "@/features/triage/TriageQueue";
 import { TicketInspector } from "@/features/tickets/TicketInspector";
 import { KBSearch } from "@/features/knowledge-base/KBSearch";
@@ -31,6 +31,7 @@ type Tab = "triage" | "kb" | "reports";
 
 export default function App() {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState<Tab>("triage");
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null);
   const [isInspectorFullscreen, setIsInspectorFullscreen] = useState(false);
@@ -65,6 +66,19 @@ export default function App() {
   const [loggingIn, setLoggingIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      setCurrentUser(null);
+      setAuthModalOpen(true);
+      toast.error("Сессия истекла или учетные данные недействительны. Авторизуйтесь заново.");
+    };
+
+    window.addEventListener("intralink:unauthorized", handleUnauthorized);
+    return () => {
+      window.removeEventListener("intralink:unauthorized", handleUnauthorized);
+    };
+  }, [toast]);
+
   const handleQuickSearch = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = searchTicketQuery.trim().replace("#", "");
@@ -91,6 +105,7 @@ export default function App() {
       setCurrentUser(res.login);
       setAuthModalOpen(false);
       setPasswordInput("");
+      toast.success(`Авторизован: ${res.login}`);
       queryClient.invalidateQueries({ queryKey: ticketKeys.all });
     } catch (err: any) {
       setAuthError(err?.message || "Ошибка авторизации");
@@ -102,6 +117,7 @@ export default function App() {
   const handleLogout = () => {
     clearStoredAuth();
     setCurrentUser(null);
+    toast.info("Вы вышли из системы");
     queryClient.invalidateQueries({ queryKey: ticketKeys.all });
   };
 
@@ -171,11 +187,21 @@ export default function App() {
               API v2:
             </span>
             <Badge
-              variant={backendStatus === "online" ? "success" : "neutral"}
+              variant={
+                backendStatus === "online"
+                  ? "success"
+                  : backendStatus === "checking"
+                  ? "neutral"
+                  : "danger"
+              }
               dot
               pulse={backendStatus === "checking"}
             >
-              {backendStatus === "online" ? "Online" : "Standby"}
+              {backendStatus === "online"
+                ? "Online"
+                : backendStatus === "checking"
+                ? "Проверка..."
+                : "Offline"}
             </Badge>
           </div>
 

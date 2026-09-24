@@ -56,7 +56,10 @@ async def test_triage_deterministic_rule_personal_eds_reject(eds_reject_task):
     app.dependency_overrides[get_db_session] = override_db
 
     transport = ASGITransport(app=app)
-    with patch("core.intraservice.client.IntraServiceClient.get_task", new_callable=AsyncMock) as mock_get:
+    with patch(
+        "core.intraservice.client.IntraServiceClient.get_task",
+        autospec=True,
+    ) as mock_get:
         mock_get.return_value = eds_reject_task
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/api/v2/triage/analyze/2001")
@@ -84,7 +87,10 @@ async def test_triage_deterministic_rule_directum_install(directum_install_task)
     app.dependency_overrides[get_db_session] = override_db
 
     transport = ASGITransport(app=app)
-    with patch("core.intraservice.client.IntraServiceClient.get_task", new_callable=AsyncMock) as mock_get:
+    with patch(
+        "core.intraservice.client.IntraServiceClient.get_task",
+        autospec=True,
+    ) as mock_get:
         mock_get.return_value = directum_install_task
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/api/v2/triage/analyze/2002")
@@ -94,3 +100,35 @@ async def test_triage_deterministic_rule_directum_install(directum_install_task)
             assert data["decision"]["target_service_id"] == 233
 
     app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_triage_batch_analyze(directum_install_task):
+    """Verify batch triage analyzes queue and calls client methods with exact task_id contract."""
+
+    async def override_db():
+        session = AsyncMock()
+        session.add = lambda x: None
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+        yield session
+
+    app.dependency_overrides[get_db_session] = override_db
+
+    transport = ASGITransport(app=app)
+    with (
+        patch("core.intraservice.client.IntraServiceClient.get_tasks_by_filter", autospec=True) as mock_filter,
+        patch("core.intraservice.client.IntraServiceClient.get_task", autospec=True) as mock_get_task,
+    ):
+        mock_filter.return_value = [directum_install_task]
+        mock_get_task.return_value = directum_install_task
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/v2/triage/batch-analyze", json={"filter_id": 984, "limit": 10})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["total_analyzed"] == 1
+            assert len(data["decisions"]) == 1
+            assert data["decisions"][0]["ticket_id"] == 2002
+
+    app.dependency_overrides.clear()
+

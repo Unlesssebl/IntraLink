@@ -13,12 +13,19 @@ from sqlalchemy.ext.asyncio import (
 DEFAULT_DB_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/intraservice"
 
 
-def get_engine(database_url: str | None = None, echo: bool = False) -> AsyncEngine:
+def get_engine(
+    database_url: str | None = None,
+    echo: bool = False,
+    pool_size: int = 10,
+    max_overflow: int = 20,
+) -> AsyncEngine:
     url = database_url or os.getenv("DATABASE_URL", DEFAULT_DB_URL)
     return create_async_engine(
         url,
         echo=echo,
         pool_pre_ping=True,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
     )
 
 

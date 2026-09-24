@@ -15,12 +15,12 @@ import {
   Building,
   Hash,
 } from "lucide-react";
-import { Badge, StatusDot, Lightbox, KbdBadge } from "@/shared/ui";
+import { Badge, StatusDot, Lightbox, KbdBadge, useToast } from "@/shared/ui";
 import { HostBadge } from "@/features/diagnostics/HostBadge";
 import { RAGSuggestion } from "@/features/knowledge-base/RAGSuggestion";
 import { getStatusMeta } from "@/shared/statuses";
 import { ActionDock } from "./ActionDock";
-import { TicketAttachment } from "@/shared/api";
+import { TicketAttachment, ticketsApi } from "@/shared/api";
 import {
   useTicketDetail,
   useTicketLifetime,
@@ -76,13 +76,15 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
   // Comment draft synced with RAG suggestions
   const [commentDraft, setCommentDraft] = useState("");
 
+  const toast = useToast();
+
   // Reusable unified action executor with error handling
   const executeAction = async (fn: () => Promise<any>, errorPrefix: string) => {
     if (!ticketId) return;
     try {
       await fn();
     } catch (err: any) {
-      alert(`${errorPrefix}: ${err?.message || "Произошла ошибка"}`);
+      toast.error(`${errorPrefix}: ${err?.message || "Произошла ошибка"}`);
     }
   };
 
@@ -120,7 +122,7 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
 
   const handleAttachmentClick = (att: TicketAttachment) => {
     if (!ticketId) return;
-    const url = `/api/v2/tickets/${ticketId}/attachments/${att.id || att.Id}`;
+    const url = ticketsApi.getAttachmentUrl(ticketId, att.id || att.Id);
     if (isImageAttachment(att.name || att.Name || "")) {
       setLightboxSrc(url);
       setLightboxAlt(att.name || att.Name || "Вложение заявки");
@@ -323,7 +325,9 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
               {/* RAG Knowledge Base Assistant */}
               <RAGSuggestion
                 query={ticket.name}
-                onApplySolution={(sol) => setCommentDraft(sol)}
+                onApplySolution={(sol) =>
+                  setCommentDraft((prev) => (prev ? `${prev}\n\n${sol}` : sol))
+                }
               />
 
               {/* Description Body */}
@@ -355,16 +359,17 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                     {ticket.attachments.map((att: TicketAttachment) => {
                       const isImg = isImageAttachment(att.name || att.Name || "");
+                      const attId = att.id || att.Id;
                       return (
                         <div
-                          key={att.id || att.Id}
+                          key={attId}
                           onClick={() => handleAttachmentClick(att)}
                           className="group p-2 bg-[#121316] border border-neutral-800/80 hover:border-neutral-600 rounded cursor-pointer transition-all flex items-center gap-2"
                         >
                           {isImg ? (
                             <div className="w-9 h-9 rounded bg-[#18191d] flex items-center justify-center shrink-0 overflow-hidden border border-neutral-800">
                               <img
-                                src={`/api/v2/tickets/${ticket.id}/attachments/${att.id || att.Id}`}
+                                src={ticketsApi.getAttachmentUrl(ticket.id, attId)}
                                 alt={att.name || att.Name}
                                 className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                                 onError={(e) => {

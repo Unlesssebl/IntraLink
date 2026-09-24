@@ -8,8 +8,12 @@ import {
   Lock,
   Globe,
 } from "lucide-react";
-import { Button, Modal, Textarea, Input, KbdBadge } from "@/shared/ui";
-import { isStatusInWork } from "@/shared/statuses";
+import { Button, Modal, Textarea, Input, KbdBadge, useToast } from "@/shared/ui";
+import {
+  isStatusInWork,
+  isStatusResolved,
+  isStatusCancelled,
+} from "@/shared/statuses";
 import { useServicesCatalog } from "./queries";
 
 export interface ActionDockProps {
@@ -46,6 +50,8 @@ export const ActionDock: React.FC<ActionDockProps> = ({
   commentDraft = "",
   onCommentDraftChange,
 }) => {
+  const toast = useToast();
+
   // Comment state
   const [commentText, setCommentText] = useState(commentDraft);
   const [isPrivate, setIsPrivate] = useState(false);
@@ -87,29 +93,32 @@ export const ActionDock: React.FC<ActionDockProps> = ({
     }
   }, [selectedServiceId, services]);
 
+  const isAlreadyInWork = isStatusInWork(statusId);
+  const isCompleted = isStatusResolved(statusId) || isStatusCancelled(statusId);
+
   // Global hotkeys: Alt+1, Alt+2, Alt+3, Alt+4
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.altKey) {
         if (e.key === "1") {
           e.preventDefault();
-          onTake();
+          if (!isCompleted && !isAlreadyInWork && !isBusy) onTake();
         } else if (e.key === "2") {
           e.preventDefault();
-          setResolveModalOpen(true);
+          if (!isCompleted && !isBusy) handleOpenResolveModal();
         } else if (e.key === "3") {
           e.preventDefault();
-          setDupModalOpen(true);
+          if (!isCompleted && !isBusy) setDupModalOpen(true);
         } else if (e.key === "4") {
           e.preventDefault();
-          setRedirModalOpen(true);
+          if (!isCompleted && !isBusy) setRedirModalOpen(true);
         }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onTake]);
+  }, [onTake, isCompleted, isAlreadyInWork, isBusy]);
 
   const handleSendComment = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -119,50 +128,70 @@ export const ActionDock: React.FC<ActionDockProps> = ({
       setSendingComment(true);
       await onAddComment(commentText.trim(), isPrivate);
       handleCommentChange("");
+      toast.success(isPrivate ? "Служебная заметка добавлена" : "Ответ заявителю отправлен");
+    } catch {
+      // Error handled in TicketInspector executeAction
     } finally {
       setSendingComment(false);
     }
   };
 
+  // Business invariant v1 (UnifiedActionDock.tsx):
+  // Resolving ticket with internal private comment is strictly forbidden
+  const handleOpenResolveModal = () => {
+    if (isPrivate) {
+      toast.warning("Закрытие заявки запрещено со служебной заметкой. Переключите режим на «Заявителю».");
+      return;
+    }
+    setResolveModalOpen(true);
+  };
+
   const handleConfirmResolve = async () => {
-    if (!resolveComment.trim()) return;
+    if (!resolveComment.trim()) {
+      toast.warning("Заполните текст решения для заявителя");
+      return;
+    }
     await onResolve(resolveComment.trim());
     setResolveModalOpen(false);
+    toast.success(`Заявка #${ticketId} успешно закрыта`);
   };
 
   const handleConfirmDuplicate = async () => {
     const masterId = parseInt(dupMasterId.replace("#", "").trim(), 10);
     if (isNaN(masterId) || masterId <= 0) {
-      alert("Укажите корректный номер основной заявки (Master Ticket ID)");
+      toast.error("Укажите корректный номер основной заявки (Master Ticket ID)");
       return;
     }
     const finalComment =
       dupComment.trim() ||
-      `Заявка закрыта как дубликат обращения #${masterId}. Дальнейшие работы ведутся в основной заявке #${masterId}.`;
+      `Заявка закрыта как дубликат обращения #${masterId}. Дальнейшие работы ведутся в основной заявке #${masterId}: https://servicedesk-pub.corporate.loc/Task/View/${masterId}`;
 
     await onDuplicate(masterId, finalComment);
     setDupModalOpen(false);
     setDupMasterId("");
     setDupComment("");
+    toast.success(`Заявка #${ticketId} отменена как дубликат #${masterId}`);
   };
 
   const handleConfirmRedirect = async () => {
     if (!selectedServiceId) {
-      alert("Выберите целевой сервис");
+      toast.error("Выберите целевой сервис");
       return;
     }
     const sObj = services.find((s) => s.id === Number(selectedServiceId));
     const sName = sObj ? sObj.name : `ID ${selectedServiceId}`;
+    
+    // Helpdesk domain invariant (docs/architecture/domain-model-and-contracts.md)
+    // Never falsely promise applicant to "wait for specialists" on a cancelled ticket!
     const finalComment =
       redirComment.trim() ||
-      `Заявка перенаправлена в сервис: «${sName}». Пожалуйста, ожидайте ответа специалистов профильного подразделения.`;
+      `Заявка отменена, т. к. создана не в подходящем разделе каталога.\nТребуется оставить заявку в подходящем разделе: «${sName}».\nЕсли у вас остались вопросы, пожалуйста, напишите в комментариях к этой заявке.`;
 
     await onRedirect(Number(selectedServiceId), finalComment);
     setRedirModalOpen(false);
     setRedirComment("");
+    toast.success(`Заявка #${ticketId} перенаправлена в сервис «${sName}»`);
   };
-
-  const isAlreadyInWork = isStatusInWork(statusId);
 
   return (
     <div className="border-t border-neutral-800/80 bg-[#0c0d0e] p-3 space-y-2.5 shrink-0">
@@ -238,13 +267,21 @@ export const ActionDock: React.FC<ActionDockProps> = ({
         <button
           type="button"
           onClick={onTake}
-          disabled={isBusy || isAlreadyInWork}
+          disabled={isBusy || isAlreadyInWork || isCompleted}
           className={`flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-medium transition-all ${
-            isAlreadyInWork
+            isCompleted
+              ? "bg-[#101114] border-neutral-800/50 text-neutral-600 cursor-not-allowed opacity-60"
+              : isAlreadyInWork
               ? "bg-[#121316] border-emerald-900/40 text-emerald-400/70 opacity-80 cursor-default"
               : "bg-[#121316] border-neutral-800 hover:border-neutral-700 hover:bg-neutral-800/60 text-neutral-200 active:scale-95"
           }`}
-          title="Взять заявку в работу (Alt+1)"
+          title={
+            isCompleted
+              ? "Заявка уже завершена"
+              : isAlreadyInWork
+              ? "Заявка уже находится в работе"
+              : "Взять заявку в работу (Alt+1)"
+          }
         >
           <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
           <span className="truncate">В работу</span>
@@ -254,10 +291,14 @@ export const ActionDock: React.FC<ActionDockProps> = ({
         {/* Alt + 2: Решено */}
         <button
           type="button"
-          onClick={() => setResolveModalOpen(true)}
-          disabled={isBusy}
-          className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded border border-neutral-800 bg-[#121316] hover:border-neutral-700 hover:bg-neutral-800/60 text-neutral-200 text-xs font-medium transition-all active:scale-95"
-          title="Закрыть с решением (Alt+2)"
+          onClick={handleOpenResolveModal}
+          disabled={isBusy || isCompleted}
+          className={`flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-medium transition-all ${
+            isCompleted
+              ? "bg-[#101114] border-neutral-800/50 text-neutral-600 cursor-not-allowed opacity-60"
+              : "border-neutral-800 bg-[#121316] hover:border-neutral-700 hover:bg-neutral-800/60 text-neutral-200 active:scale-95"
+          }`}
+          title={isCompleted ? "Заявка уже завершена" : "Закрыть с решением (Alt+2)"}
         >
           <CheckCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
           <span className="truncate">Решено</span>
@@ -268,9 +309,13 @@ export const ActionDock: React.FC<ActionDockProps> = ({
         <button
           type="button"
           onClick={() => setDupModalOpen(true)}
-          disabled={isBusy}
-          className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded border border-neutral-800 bg-[#121316] hover:border-neutral-700 hover:bg-neutral-800/60 text-neutral-200 text-xs font-medium transition-all active:scale-95"
-          title="Отменить как дубликат (Alt+3)"
+          disabled={isBusy || isCompleted}
+          className={`flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-medium transition-all ${
+            isCompleted
+              ? "bg-[#101114] border-neutral-800/50 text-neutral-600 cursor-not-allowed opacity-60"
+              : "border-neutral-800 bg-[#121316] hover:border-neutral-700 hover:bg-neutral-800/60 text-neutral-200 active:scale-95"
+          }`}
+          title={isCompleted ? "Заявка уже завершена" : "Отменить как дубликат (Alt+3)"}
         >
           <Copy className="w-3.5 h-3.5 text-amber-400 shrink-0" />
           <span className="truncate">Дубликат</span>
@@ -281,9 +326,13 @@ export const ActionDock: React.FC<ActionDockProps> = ({
         <button
           type="button"
           onClick={() => setRedirModalOpen(true)}
-          disabled={isBusy}
-          className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded border border-neutral-800 bg-[#121316] hover:border-neutral-700 hover:bg-neutral-800/60 text-neutral-200 text-xs font-medium transition-all active:scale-95"
-          title="Перенаправить в другой сервис (Alt+4)"
+          disabled={isBusy || isCompleted}
+          className={`flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-medium transition-all ${
+            isCompleted
+              ? "bg-[#101114] border-neutral-800/50 text-neutral-600 cursor-not-allowed opacity-60"
+              : "border-neutral-800 bg-[#121316] hover:border-neutral-700 hover:bg-neutral-800/60 text-neutral-200 active:scale-95"
+          }`}
+          title={isCompleted ? "Заявка уже завершена" : "Перенаправить в другой сервис (Alt+4)"}
         >
           <ArrowRightLeft className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
           <span className="truncate">Перенаправить</span>
@@ -296,7 +345,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
         isOpen={resolveModalOpen}
         onClose={() => setResolveModalOpen(false)}
         title={`Закрытие заявки #${ticketId}`}
-        description="Выберите готовый шаблон решения или введите индивидуальный комментарий заявителю."
+        description="Выберите готовый шаблон решения или введите индивидуальный комментарий заявителю. Заявитель получит официальное уведомление о решении проблемы."
         footer={
           <>
             <Button
@@ -340,7 +389,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
           </div>
 
           <Textarea
-            label="Текст решения для заявителя"
+            label="Текст решения для заявителя (публичный)"
             value={resolveComment}
             onChange={(e) => setResolveComment(e.target.value)}
             rows={3}
@@ -396,7 +445,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
         isOpen={redirModalOpen}
         onClose={() => setRedirModalOpen(false)}
         title={`Перенаправление заявки #${ticketId}`}
-        description="Заявка будет отменена в текущем сервисе с четкой инструкцией для заявителя."
+        description="Заявка будет отменена в текущем сервисе (статус 30) с регламентной инструкцией заявителю подать заявку в корректный раздел."
         footer={
           <>
             <Button variant="ghost" size="sm" onClick={() => setRedirModalOpen(false)}>
@@ -433,7 +482,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
 
           <Textarea
             label="Инструкция для заявителя"
-            placeholder="Заявка перенаправлена в целевой сервис..."
+            placeholder="Заявка отменена, т. к. создана не в подходящем разделе..."
             value={redirComment}
             onChange={(e) => setRedirComment(e.target.value)}
             rows={3}

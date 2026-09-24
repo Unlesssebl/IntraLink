@@ -25,6 +25,7 @@ async def get_embedding_vector(
         response = await ai_client.embeddings.create(
             input=cleaned_text,
             model=model_name,
+            encoding_format="float",
         )
         if response.data and len(response.data) > 0:
             vec = response.data[0].embedding

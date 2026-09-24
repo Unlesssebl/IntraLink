@@ -51,6 +51,12 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      clearStoredAuth();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("intralink:unauthorized"));
+      }
+    }
     let errData;
     try {
       errData = await response.json();
@@ -143,27 +149,29 @@ export interface ServiceItem {
   description?: string | null;
 }
 
-export interface TriageResult {
-  task_id: number;
-  category: string;
+export interface TriageDecision {
+  action: string;
+  target_service_id?: number | null;
+  target_service_name?: string | null;
   confidence: number;
-  reasoning: string;
-  suggested_service_id?: number | null;
-  draft_reply?: string | null;
+  reason: string;
+  suggested_comment?: string | null;
+  suggested_status_id?: number | null;
   is_duplicate: boolean;
-  duplicate_of_task_id?: number | null;
-  ping_status?: boolean | null;
+  master_ticket_id?: number | null;
 }
 
-export interface TriageAuditItem {
-  id: number;
-  task_id: number;
-  category: string;
-  confidence: number;
-  is_duplicate: boolean;
-  duplicate_of_id?: number | null;
-  suggested_service_id?: number | null;
-  created_at: string;
+export interface TriageAnalysisResponse {
+  audit_id: string;
+  ticket_id: number;
+  decision: TriageDecision;
+  model_used: string;
+  rule_matched?: string | null;
+}
+
+export interface BatchTriageResponse {
+  total_analyzed: number;
+  decisions: TriageAnalysisResponse[];
 }
 
 export interface KBSearchResultItem {
@@ -172,21 +180,33 @@ export interface KBSearchResultItem {
   solution: string;
   similarity: number;
   service_name?: string | null;
+  service_id?: number | null;
+  original_name?: string | null;
+  quality_score?: number | null;
+  classification_data?: Record<string, any>;
+}
+
+export interface KBSearchResponse {
+  query: string;
+  total_found: number;
+  items: KBSearchResultItem[];
 }
 
 export interface KBAskResponse {
   answer: string;
-  sources: KBSearchResultItem[];
+  cited_tasks: number[];
+  confidence: number;
+  model_used: string;
+  context_used: KBSearchResultItem[];
 }
 
 export interface HostDiagnostic {
-  host: string;
-  is_online: boolean;
-  round_trip_ms?: number | null;
+  hostname: string;
   ip_address?: string | null;
-  smb_port_open: boolean;
-  winrm_port_open: boolean;
-  checked_at: string;
+  is_online: boolean;
+  avg_rtt?: string | null;
+  ports: Record<string, boolean>;
+  cached?: boolean;
 }
 
 export interface EngineerLoadMetric {
@@ -286,40 +306,58 @@ export const ticketsApi = {
   getServices: (signal?: AbortSignal) =>
     request<ServiceItem[]>("/tickets/services/catalog", { signal }),
 
-  getAttachmentUrl: (ticketId: number, fileId: number) =>
-    `${BASE_URL}/tickets/${ticketId}/attachments/${fileId}`,
+  getAttachmentUrl: (ticketId: number, fileId: number) => {
+    const auth = getStoredAuth();
+    const query = auth ? `?auth_b64=${encodeURIComponent(auth)}` : "";
+    return `${BASE_URL}/tickets/${ticketId}/attachments/${fileId}${query}`;
+  },
 };
 
 export const triageApi = {
-  classify: (task: {
-    task_id: number;
-    name: string;
-    description: string;
-    applicant_name?: string;
-    pc_name?: string;
-    service_name?: string;
-  }) =>
-    request<TriageResult>("/triage/classify", {
+  analyze: (ticketId: number, signal?: AbortSignal) =>
+    request<TriageAnalysisResponse>(`/triage/analyze/${ticketId}`, {
       method: "POST",
-      body: JSON.stringify(task),
-    }),
-
-  getAudit: (limit: number = 50) =>
-    request<TriageAuditItem[]>(`/triage/audit?limit=${limit}`),
-};
-
-export const kbApi = {
-  search: (query: string, limit: number = 5, threshold: number = 0.5, signal?: AbortSignal) =>
-    request<KBSearchResultItem[]>("/kb/search", {
-      method: "POST",
-      body: JSON.stringify({ query, limit, threshold }),
       signal,
     }),
 
-  ask: (query: string, limit: number = 5, signal?: AbortSignal) =>
+  batchAnalyze: (filterId: number = 984, limit: number = 20, signal?: AbortSignal) =>
+    request<BatchTriageResponse>("/triage/batch-analyze", {
+      method: "POST",
+      body: JSON.stringify({ filter_id: filterId, limit }),
+      signal,
+    }),
+
+  apply: (
+    auditId: string,
+    overrideComment?: string,
+    overrideStatusId?: number,
+    signal?: AbortSignal
+  ) =>
+    request<{ audit_id: string; ticket_id: number; applied: boolean }>(
+      `/triage/apply/${auditId}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          override_comment: overrideComment,
+          override_status_id: overrideStatusId,
+        }),
+        signal,
+      }
+    ),
+};
+
+export const kbApi = {
+  search: (query: string, limit: number = 5, minSimilarity: number = 0.60, signal?: AbortSignal) =>
+    request<KBSearchResponse>("/kb/search", {
+      method: "POST",
+      body: JSON.stringify({ query, limit, min_similarity: minSimilarity }),
+      signal,
+    }),
+
+  ask: (query: string, maxContextItems: number = 3, signal?: AbortSignal) =>
     request<KBAskResponse>("/kb/ask", {
       method: "POST",
-      body: JSON.stringify({ query, limit }),
+      body: JSON.stringify({ query, max_context_items: maxContextItems }),
       signal,
     }),
 };

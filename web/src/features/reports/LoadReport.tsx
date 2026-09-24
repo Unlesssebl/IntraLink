@@ -1,10 +1,11 @@
 import React, { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BarChart3, Download, RefreshCw, Users, Layers, Clock } from "lucide-react";
-import { Button, Card } from "@/shared/ui";
+import { Button, Card, useToast } from "@/shared/ui";
 import { reportsApi, LoadReport as ILoadReport } from "@/shared/api";
 
 export const LoadReport: React.FC = () => {
+  const toast = useToast();
   const currentDate = new Date();
   const [year, setYear] = useState(currentDate.getFullYear());
   const [month, setMonth] = useState(currentDate.getMonth() + 1);
@@ -29,8 +30,9 @@ export const LoadReport: React.FC = () => {
       setExporting(true);
       const url = reportsApi.getExportUrl(year, month);
       window.open(url, "_blank");
+      toast.success("Экспорт отчета запущен");
     } catch (err: any) {
-      alert(`Ошибка экспорта: ${err?.message}`);
+      toast.error(`Ошибка экспорта: ${err?.message || "Сбой формирования отчета"}`);
     } finally {
       setExporting(false);
     }

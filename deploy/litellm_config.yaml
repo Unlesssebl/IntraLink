@@ -49,6 +49,7 @@ router_settings:
     - helpdesk-fast: ["helpdesk-local"]
 
 litellm_settings:
+  drop_params: true
   cache: true
   cache_type: redis
   cache_host: redis

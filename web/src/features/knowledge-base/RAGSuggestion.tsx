@@ -20,10 +20,11 @@ export const RAGSuggestion: React.FC<RAGSuggestionProps> = ({
   const { data: match, isLoading } = useQuery({
     queryKey: ["kb", "suggestion", cleanQuery],
     queryFn: async ({ signal }) => {
-      const results = await kbApi.search(cleanQuery, 1, 0.72, signal);
-      return results.length > 0 ? results[0] : null;
+      // Backend returns KBSearchResponse { query, total_found, items: SearchResultItemDTO[] }
+      const res = await kbApi.search(cleanQuery, 1, 0.70, signal);
+      return res.items && res.items.length > 0 ? res.items[0] : null;
     },
-    enabled: cleanQuery.length >= 5,
+    enabled: cleanQuery.length >= 4,
     staleTime: 5 * 60 * 1000, // 5 minutes cache
     gcTime: 15 * 60 * 1000,
   });
@@ -54,6 +55,7 @@ export const RAGSuggestion: React.FC<RAGSuggestionProps> = ({
           <button
             onClick={() => setExpanded(!expanded)}
             className="text-neutral-400 hover:text-neutral-200 p-1 rounded hover:bg-neutral-800/60"
+            title={expanded ? "Свернуть" : "Развернуть"}
           >
             {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>

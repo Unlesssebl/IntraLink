@@ -1,6 +1,6 @@
 import React, { useState } from "react";
-import { Monitor, RefreshCw, CheckCircle2, XCircle } from "lucide-react";
-import { Badge } from "@/shared/ui";
+import { Monitor, RefreshCw, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
+import { Badge, Button } from "@/shared/ui";
 import { diagnosticsApi, HostDiagnostic } from "@/shared/api";
 
 export interface HostBadgeProps {
@@ -13,21 +13,26 @@ export const HostBadge: React.FC<HostBadgeProps> = ({ host }) => {
   const [error, setError] = useState<string | null>(null);
   const [popoverOpen, setPopoverOpen] = useState(false);
 
-  // If no host is provided, render nothing (after all hooks are initialized)
-  if (!host) {
+  // If no host is provided, render nothing
+  if (!host || !host.trim()) {
     return null;
   }
+
+  // Edge case (docs/architecture/domain-model-and-contracts.md):
+  // Clean host token if applicant specified composite names like "PC-01, PC-02"
+  const primaryHost = host.split(/[,;\s/]/)[0].trim();
+  if (!primaryHost) return null;
 
   const runCheck = async (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     try {
       setLoading(true);
       setError(null);
-      const res = await diagnosticsApi.diagnose(host);
+      const res = await diagnosticsApi.diagnose(primaryHost);
       setData(res);
       setPopoverOpen(true);
     } catch (err: any) {
-      setError(err?.message || "Ошибка диагностики");
+      setError(err?.message || "Ошибка опроса рабочей станции");
       setPopoverOpen(true);
     } finally {
       setLoading(false);
@@ -39,6 +44,9 @@ export const HostBadge: React.FC<HostBadgeProps> = ({ host }) => {
     return data.is_online ? "success" : "danger";
   };
 
+  const smbOpen = Boolean(data?.ports?.["smb_445"]);
+  const winrmOpen = Boolean(data?.ports?.["winrm_5985"]);
+
   return (
     <div className="relative inline-block font-mono">
       <div
@@ -48,11 +56,11 @@ export const HostBadge: React.FC<HostBadgeProps> = ({ host }) => {
       >
         <Badge variant={getVariant()} dot={!!data} pulse={loading}>
           <Monitor className="w-3 h-3 text-neutral-400" />
-          <span>{host}</span>
+          <span>{primaryHost}</span>
           {loading && <RefreshCw className="w-2.5 h-2.5 animate-spin ml-0.5" />}
           {data && (
             <span className="text-[10px] opacity-80">
-              {data.is_online ? `${data.round_trip_ms ?? 0}ms` : "down"}
+              {data.is_online ? (data.avg_rtt || "online") : "down"}
             </span>
           )}
         </Badge>
@@ -64,13 +72,14 @@ export const HostBadge: React.FC<HostBadgeProps> = ({ host }) => {
             className="fixed inset-0 z-40"
             onClick={() => setPopoverOpen(false)}
           />
-          <div className="absolute left-0 mt-1 z-50 w-56 bg-[#121316] border border-neutral-800 rounded shadow-2xl p-3 text-xs space-y-2 animate-in fade-in zoom-in-95 duration-100">
+          <div className="absolute left-0 mt-1 z-50 w-64 bg-[#121316] border border-neutral-800 rounded shadow-2xl p-3 text-xs space-y-2 animate-in fade-in zoom-in-95 duration-100">
             <div className="flex items-center justify-between border-b border-neutral-800/80 pb-1.5 font-semibold text-neutral-200">
-              <span className="truncate">{host}</span>
+              <span className="truncate">{primaryHost}</span>
               <button
                 onClick={runCheck}
                 disabled={loading}
                 className="text-neutral-400 hover:text-neutral-200 p-0.5 rounded hover:bg-neutral-800/50"
+                title="Обновить диагностику"
               >
                 <RefreshCw
                   className={`w-3 h-3 ${loading ? "animate-spin" : ""}`}
@@ -79,7 +88,20 @@ export const HostBadge: React.FC<HostBadgeProps> = ({ host }) => {
             </div>
 
             {error ? (
-              <p className="text-[11px] text-rose-400">{error}</p>
+              <div className="space-y-2 py-1">
+                <div className="flex items-start gap-1.5 text-[11px] text-rose-400">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>{error}</span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="w-full text-[10px] py-1"
+                  onClick={runCheck}
+                >
+                  Попробовать снова
+                </Button>
+              </div>
             ) : data ? (
               <div className="space-y-1 text-[11px] text-neutral-300">
                 <div className="flex justify-between items-center">
@@ -93,30 +115,36 @@ export const HostBadge: React.FC<HostBadgeProps> = ({ host }) => {
                     {data.is_online ? "Онлайн" : "Офлайн"}
                   </span>
                 </div>
-                {data.ip_address && (
+                {data.is_online && data.avg_rtt && (
                   <div className="flex justify-between">
-                    <span className="text-neutral-400">IP:</span>
-                    <span className="font-mono">{data.ip_address}</span>
+                    <span className="text-neutral-400">Время отклика (RTT):</span>
+                    <span className="font-mono text-neutral-200">{data.avg_rtt}</span>
                   </div>
                 )}
-                <div className="flex justify-between">
+                {data.ip_address && (
+                  <div className="flex justify-between">
+                    <span className="text-neutral-400">IP адрес:</span>
+                    <span className="font-mono text-neutral-200">{data.ip_address}</span>
+                  </div>
+                )}
+                <div className="flex justify-between pt-1 border-t border-neutral-800/60">
                   <span className="text-neutral-400">SMB (порт 445):</span>
                   <span
                     className={
-                      data.smb_port_open ? "text-emerald-400" : "text-neutral-500"
+                      smbOpen ? "text-emerald-400 font-medium" : "text-neutral-500"
                     }
                   >
-                    {data.smb_port_open ? "Открыт" : "Закрыт"}
+                    {smbOpen ? "Открыт" : "Закрыт"}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-neutral-400">WinRM (5985):</span>
                   <span
                     className={
-                      data.winrm_port_open ? "text-emerald-400" : "text-neutral-500"
+                      winrmOpen ? "text-emerald-400 font-medium" : "text-neutral-500"
                     }
                   >
-                    {data.winrm_port_open ? "Открыт" : "Закрыт"}
+                    {winrmOpen ? "Открыт" : "Закрыт"}
                   </span>
                 </div>
               </div>

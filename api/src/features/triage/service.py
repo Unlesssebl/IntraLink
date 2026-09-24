@@ -18,8 +18,6 @@ from .schemas import (
     ApplyDecisionRequest,
     BatchTriageResponse,
     TriageAnalysisResponse,
-    TriageQueueItemDTO,
-    TriageQueueResponse,
 )
 
 logger = logging.getLogger("api.features.triage")
@@ -40,30 +38,14 @@ class TriageService:
         )
         self.pipeline = TriagePipeline(self.ai_client)
 
-    async def get_queue(self, filter_id: int = 984, limit: int = 100) -> TriageQueueResponse:
-        tasks = await self.client.get_tasks_by_filter(filter_id=filter_id, page_size=limit)
-        items: List[TriageQueueItemDTO] = []
-        for t in tasks:
-            items.append(
-                TriageQueueItemDTO(
-                    id=t.id,
-                    name=t.name,
-                    service_id=t.service_id,
-                    service_name=t.service_name,
-                    applicant_name=t.applicant_name,
-                    created=t.created,
-                    pc_name=t.entities.pc_name if t.entities else None,
-                )
-            )
-        return TriageQueueResponse(filter_id=filter_id, total_count=len(items), items=items)
-
     async def analyze_ticket(
         self,
         ticket_id: int,
         session: AsyncSession,
         recent_tasks: Optional[List[TaskDTO]] = None,
+        auth_b64: Optional[str] = None,
     ) -> TriageAnalysisResponse:
-        task = await self.client.get_task(ticket_id=ticket_id)
+        task = await self.client.get_task(task_id=ticket_id, auth_b64=auth_b64)
 
         # 1. Check deterministic business rules
         rule_res = self.pipeline.run_deterministic_rules(task)
@@ -109,8 +91,9 @@ class TriageService:
         filter_id: int,
         limit: int,
         session: AsyncSession,
+        auth_b64: Optional[str] = None,
     ) -> BatchTriageResponse:
-        tasks = await self.client.get_tasks_by_filter(filter_id=filter_id, page_size=limit)
+        tasks = await self.client.get_tasks_by_filter(filter_id=filter_id, page_size=limit, auth_b64=auth_b64)
         decisions: List[TriageAnalysisResponse] = []
 
         for task in tasks:
@@ -118,6 +101,7 @@ class TriageService:
                 ticket_id=task.id,
                 session=session,
                 recent_tasks=tasks,
+                auth_b64=auth_b64,
             )
             decisions.append(analysis)
 
@@ -128,6 +112,7 @@ class TriageService:
         audit_id: uuid.UUID,
         req: ApplyDecisionRequest,
         session: AsyncSession,
+        auth_b64: Optional[str] = None,
     ) -> dict:
         stmt = select(TriageAudit).where(TriageAudit.id == audit_id)
         audit = (await session.execute(stmt)).scalar_one_or_none()
@@ -142,6 +127,7 @@ class TriageService:
             task_id=audit.task_id,
             status_id=status_id,
             comment=comment,
+            auth_b64=auth_b64,
         )
 
         if success:
