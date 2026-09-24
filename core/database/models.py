@@ -1,10 +1,11 @@
 """IntraLink v2 Core Database Models (Fresh DB Clean State).
 
-Only 4 active entities are maintained:
+Only 5 active entities are maintained:
 1. TaskKnowledgeBase (RAG dataset with pgvector HNSW index)
 2. User (Engineers, admin users, credentials)
 3. CommandRecord (Idempotent commands, outbox pattern)
 4. TriageAudit (Immutable audit log of LLM triage decisions)
+5. SystemState (System watermarks, poller cursors and settings)
 """
 
 import uuid
@@ -177,3 +178,23 @@ class TriageAudit(Base):
         kwargs.setdefault("context_snapshot", {})
         kwargs.setdefault("decision_json", {})
         super().__init__(**kwargs)
+
+
+class SystemState(Base, TimestampMixin):
+    """System-wide state, cursors and ingestion watermarks."""
+
+    __tablename__ = "system_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    last_poll_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_task_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    state_data: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=dict,
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("state_data", {})
+        super().__init__(**kwargs)
+

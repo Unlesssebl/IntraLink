@@ -13,7 +13,7 @@
 | **Спринт 1** | **Taskiq Runtime & Очереди** | `worker/src/broker.py`, `worker/src/main.py`, Docker Taskiq runtime | ✅ Завершен |
 | **Спринт 2** | **Фоновый синк Базы знаний** | `sync_kb.py`, PII-очистка, cron 19:00 МСК, FastEmbed батчи в pgvector | ✅ Завершен |
 
-| **Спринт 3** | **Ingestion & Пульс 30с** | Поллер `filterid=984` + `ChangedMoreThan`, двойной Watermark (Redis+Postgres) | ⏳ Готов к старту |
+| **Спринт 3** | **Ingestion & Пульс 30с** | Поллер `filterid=984` + `ChangedMoreThan`, двойной Watermark (Redis+Postgres) | ✅ Завершен |
 
 | **Спринт 4** | **Шлюз релевантности & Сущности** | Нормализация ПК/IP/Учеток, фоновый триаж, авто-отмена нецелевых тикетов | 📋 Запланирован |
 | **Спринт 5** | **Сценарии Core-3 & Диалог** | Принтеры, AD, RAG-консультации, диалог с заявителем, Circuit Breaker | 📋 Запланирован |
