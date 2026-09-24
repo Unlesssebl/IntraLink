@@ -47,26 +47,48 @@ class BaseScenario(ABC):
     scenario_key: str
     name: str
     description: str
+    semantic_prototypes: List[str] = []
 
     @abstractmethod
     async def can_handle(self, task: TaskDTO) -> bool:
         """Evaluate if this scenario matches the ticket."""
         ...
 
-    async def evaluate_match(self, task: TaskDTO) -> ScenarioMatch:
+    async def evaluate_match(self, task: TaskDTO, semantic_score: float = 0.0) -> ScenarioMatch:
         """Evaluate detailed match confidence and reasons.
 
-        Default implementation falls back to boolean can_handle.
-        Subclasses or the Multi-factor Router can provide granular scoring.
+        Default implementation falls back to boolean can_handle or semantic similarity.
         """
         handled = await self.can_handle(task)
+        if handled:
+            return ScenarioMatch(
+                scenario_key=self.scenario_key,
+                confidence=0.95,
+                matched=True,
+                reasons=[f"Direct rule match for scenario '{self.scenario_key}'"],
+                barriers=[],
+            )
+
+        # Semantic prototype fallback when keywords/regex missed but semantic affinity >= 0.75
+        if semantic_score >= 0.75:
+            return ScenarioMatch(
+                scenario_key=self.scenario_key,
+                confidence=semantic_score,
+                matched=True,
+                reasons=[
+                    f"Semantic prototype match for '{self.scenario_key}' (cosine={semantic_score:.2f})"
+                ],
+                barriers=[],
+            )
+
         return ScenarioMatch(
             scenario_key=self.scenario_key,
-            confidence=0.95 if handled else 0.0,
-            matched=handled,
-            reasons=[f"can_handle returned {handled}"] if handled else [],
-            barriers=[] if handled else ["can_handle returned false"],
+            confidence=0.0,
+            matched=False,
+            reasons=[],
+            barriers=["can_handle returned false and semantic score below threshold"],
         )
+
 
     @abstractmethod
     async def validate_preconditions(self, task: TaskDTO) -> PreconditionResult:

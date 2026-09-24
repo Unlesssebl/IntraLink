@@ -43,6 +43,13 @@ class OfflineHostScenario(BaseScenario):
     scenario_key = "offline_host"
     name = "Диагностика недоступности ПК"
     description = "Сокетная диагностика и наряд на выезд инженера при физической недоступности рабочего места"
+    semantic_prototypes = [
+        "компьютер не включается, чёрный экран, нет питания",
+        "рабочая станция не реагирует на нажатие кнопки питания",
+        "ПК не загружается, гудит кулер но монитор пустой",
+        "не могу запустить компьютер в кабинете, запах гари",
+        "рабочее место полностью недоступно, компьютер мертвый",
+    ]
 
     async def can_handle(self, task: TaskDTO) -> bool:
         """Check if ticket reports a dead or unreachable computer."""

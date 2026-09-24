@@ -17,6 +17,13 @@ class GrantWLANScenario(BaseScenario):
     scenario_key = "grant_wlan"
     name = "Доступ к Wi-Fi WLAN-WORKNET"
     description = "Предоставление доступа к корпоративной сети Wi-Fi через группу безопасности Active Directory"
+    semantic_prototypes = [
+        "прошу предоставить доступ к корпоративному Wi-Fi WLAN-WORKNET",
+        "нужно подключить ноутбук к беспроводной сети компании",
+        "нет доступа к wifi в офисе, требуется добавить в группу",
+        "хочу подключиться к вайфай, добавьте мою учетку",
+        "беспроводная сеть не доступна для моего устройства",
+    ]
 
     async def can_handle(self, task: TaskDTO) -> bool:
         """Check if ticket requests corporate Wi-Fi access."""

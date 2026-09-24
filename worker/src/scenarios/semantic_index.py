@@ -23,17 +23,19 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Dict, List, Optional, Tuple
+import os
+from typing import Any, Dict, List, Optional, Tuple
 
 from openai import AsyncOpenAI
 
 from core.rag.embedder import get_embedding_vector
 
-# Default LiteLLM Gateway endpoint (same as used in rag_consultation.py and core/rag/sync.py)
-_LITELLM_BASE_URL = "http://litellm:4000/v1"
-_LITELLM_API_KEY = "sk-intralink-dummy"
+# LiteLLM Gateway endpoint configured from environment
+_LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "http://litellm:4000/v1")
+_LITELLM_API_KEY = os.getenv("LITELLM_API_KEY", "sk-intraservice-master-key")
 
 logger = logging.getLogger("worker.scenarios.semantic_index")
+
 
 # ---------------------------------------------------------------------------
 # Scenario Prototypes
@@ -131,26 +133,36 @@ class SemanticPrototypeIndex:
         """True if prototype embeddings have been computed successfully."""
         return self._is_ready
 
-    async def warm_up(self) -> None:
-        """Vectorise all prototype phrases and cache results in memory.
+    async def warm_up(self, scenarios: Optional[Dict[str, Any]] = None) -> None:
+        """Vectorise prototype phrases and cache results in memory.
 
+        If ``scenarios`` dictionary is passed, pulls prototypes from ``scenario.semantic_prototypes``,
+        falling back to default SCENARIO_PROTOTYPES.
         Safe to call multiple times; subsequent calls are no-ops.
         """
         if self._is_ready:
             return
 
-        total_prototypes = sum(len(v) for v in SCENARIO_PROTOTYPES.values())
+        prototypes_to_use: Dict[str, List[str]] = dict(SCENARIO_PROTOTYPES)
+        if scenarios:
+            for scen_key, scen in scenarios.items():
+                proto_list = getattr(scen, "semantic_prototypes", None)
+                if proto_list:
+                    prototypes_to_use[scen_key] = proto_list
+
+        total_prototypes = sum(len(v) for v in prototypes_to_use.values())
         logger.info(
             "SemanticPrototypeIndex: warming up %d prototypes for %d scenarios…",
             total_prototypes,
-            len(SCENARIO_PROTOTYPES),
+            len(prototypes_to_use),
         )
 
         success_count = 0
         ai = self._get_ai_client()
-        for scenario_key, phrases in SCENARIO_PROTOTYPES.items():
+        for scenario_key, phrases in prototypes_to_use.items():
             vectors: List[List[float]] = []
             for phrase in phrases:
+
                 vec = await get_embedding_vector(phrase, ai)
                 if vec is not None:
                     vectors.append(vec)

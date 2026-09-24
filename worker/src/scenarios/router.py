@@ -60,12 +60,12 @@ class ScenarioRouter:
         # SemanticPrototypeIndex uses ai_client if provided, otherwise creates default LiteLLM client
         self._semantic_index = SemanticPrototypeIndex(ai_client=ai_client)
 
-    async def warm_up(self) -> None:
+    async def warm_up(self, scenarios: Optional[Dict[str, BaseScenario]] = None) -> None:
         """Pre-compute prototype embeddings (call once at application startup).
 
         Safe to call multiple times; subsequent calls are no-ops.
         """
-        await self._semantic_index.warm_up()
+        await self._semantic_index.warm_up(scenarios)
 
     async def route_task(
         self,
@@ -118,13 +118,16 @@ class ScenarioRouter:
             barriers: List[str] = []
             base_score: float = 0.0
 
-            # Factor A: Direct Match (domain rules & keyword heuristics)  max 0.50
-            direct_match = await scenario.evaluate_match(task)
+            # Factor E: Semantic Prototype Similarity                       max 0.20
+            e_score = semantic_scores.get(key, 0.0)
+
+            # Factor A: Direct Match (domain rules & keyword heuristics + semantic prototype)  max 0.50
+            direct_match = await scenario.evaluate_match(task, semantic_score=e_score)
             if direct_match.matched:
                 a_contrib = direct_match.confidence * WEIGHT_A_DIRECT
                 base_score += a_contrib
                 reasons.extend(direct_match.reasons)
-                reasons.append(f"Factor A: +{a_contrib:.2f} (direct match conf={direct_match.confidence:.2f})")
+                reasons.append(f"Factor A: +{a_contrib:.2f} (match conf={direct_match.confidence:.2f})")
             else:
                 barriers.extend(direct_match.barriers)
 
@@ -163,8 +166,13 @@ class ScenarioRouter:
                 )
 
             # Factor D: Coherence Guard delta                       -0.45 to +0.05
-            coherence = self.coherence_guard.evaluate(candidate_key=key, task=task)
+            coherence = self.coherence_guard.evaluate(
+                candidate_key=key,
+                task=task,
+                semantic_scores=semantic_scores,
+            )
             base_score += coherence.confidence_delta
+
             if coherence.status == CoherenceStatus.COHERENT:
                 reasons.append(
                     "Factor D (Coherence): +{:.2f} ({})".format(

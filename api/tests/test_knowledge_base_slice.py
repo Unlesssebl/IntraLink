@@ -35,12 +35,13 @@ async def test_kb_ask_endpoint():
     with (
         patch("api.src.features.knowledge_base.service.get_embedding_vector", new_callable=AsyncMock) as mock_embed,
         patch(
-            "api.src.features.knowledge_base.service.search_similar_solutions", new_callable=AsyncMock
+            "api.src.features.knowledge_base.service.search_hybrid_solutions", new_callable=AsyncMock
         ) as mock_search,
         patch("openai.resources.chat.completions.AsyncCompletions.create", new_callable=AsyncMock) as mock_chat,
     ):
         mock_embed.return_value = [0.1] * 1024
         mock_search.return_value = [mock_solution]
+
 
         mock_choice = AsyncMock()
         mock_choice.message.content = "Для решения проблемы очистите кэш согласно [Заявка #555]."

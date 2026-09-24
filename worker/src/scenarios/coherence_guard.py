@@ -6,7 +6,7 @@ and the actual textual body/extracted entities of the ticket.
 
 import logging
 from enum import Enum
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -43,21 +43,42 @@ SCENARIO_SIGNALS = {
 class CoherenceGuard:
     """Evaluates cross-domain contradictions between service catalog and ticket content."""
 
-    def evaluate(self, candidate_key: str, task: TaskDTO) -> CoherenceResult:
-        """Check whether candidate scenario agrees with ticket text and entities."""
+    def evaluate(
+        self,
+        candidate_key: str,
+        task: TaskDTO,
+        semantic_scores: Optional[Dict[str, float]] = None,
+    ) -> CoherenceResult:
+        """Check whether candidate scenario agrees with ticket text, entities and semantic affinity."""
         text = f"{task.name or ''} {task.description or ''}".lower()
 
         # 1. Check if candidate scenario keywords appear in text
         candidate_keywords = SCENARIO_SIGNALS.get(candidate_key, [])
         matches_candidate = any(kw in text for kw in candidate_keywords)
 
-        # 2. Check if a DIFFERENT scenario has strong contradicting signals
+        # 2. Check semantic prototype divergence if scores provided
+        if semantic_scores and not matches_candidate:
+            cand_sem = semantic_scores.get(candidate_key, 0.0)
+            for other_key, other_sem in semantic_scores.items():
+                if other_key != candidate_key and other_sem >= 0.85 and cand_sem <= 0.30:
+                    return CoherenceResult(
+                        status=CoherenceStatus.DIVERGENT,
+                        confidence_delta=-0.40,
+                        divergent_scenario=other_key,
+                        reasons=[
+                            f"Semantic prototype divergence: '{candidate_key}' (score={cand_sem:.2f}) "
+                            f"conflicts with high-affinity '{other_key}' (score={other_sem:.2f})"
+                        ],
+                    )
+
+        # 3. Check if a DIFFERENT scenario has strong contradicting lexical signals
         competing_matches = {}
         for other_key, kws in SCENARIO_SIGNALS.items():
             if other_key != candidate_key:
                 found = [kw for kw in kws if kw in text]
                 if found:
                     competing_matches[other_key] = found
+
 
         # 3. Analyze collisions
         if matches_candidate and not competing_matches:

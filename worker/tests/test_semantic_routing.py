@@ -10,8 +10,8 @@ Test strategy:
 from __future__ import annotations
 
 import math
-from typing import List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import List
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -22,7 +22,6 @@ from worker.src.scenarios.semantic_index import (
     SemanticPrototypeIndex,
     _cosine_similarity,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

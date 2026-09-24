@@ -19,6 +19,13 @@ class InstallPrinterScenario(BaseScenario):
     scenario_key = "install_printer"
     name = "Установка принтера"
     description = "Автономная установка и настройка принтеров и МФУ на рабочих станциях"
+    semantic_prototypes = [
+        "не могу подключить принтер к компьютеру",
+        "установить сетевой принтер на рабочей станции",
+        "принтер не печатает, ошибка драйвера Canon Kyocera",
+        "нужно настроить МФУ в офисе, не добавляется в Windows",
+        "принтер недоступен, не отображается в сети",
+    ]
 
     async def can_handle(self, task: TaskDTO) -> bool:
         """Check if ticket describes a printer installation request."""

@@ -1,7 +1,7 @@
-"""Semantic RAG consultation autonomous scenario."""
-
 import logging
-from typing import Optional
+import os
+from typing import Dict, Optional
+
 
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -11,10 +11,11 @@ from core.database.session import get_engine, get_session_factory
 from core.database.system_state import _get_active_session_factory
 from core.intraservice.dto import TaskDTO
 from core.rag.embedder import get_embedding_vector
-from core.rag.search import KnowledgeSolutionDTO, search_similar_solutions
+from core.rag.search import KnowledgeSolutionDTO, search_hybrid_solutions
 from worker.src.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
 
 logger = logging.getLogger("worker.scenarios.rag_consultation")
+
 
 
 class RAGConsultationScenario(BaseScenario):
@@ -23,6 +24,13 @@ class RAGConsultationScenario(BaseScenario):
     scenario_key = "rag_consultation"
     name = "RAG Консультация"
     description = "Автоматические консультации по типовым вопросам на базе базы знаний"
+    semantic_prototypes = [
+        "не знаю куда обратиться, общий вопрос по работе системы",
+        "не работает приложение, непонятная ошибка при запуске",
+        "возникла нестандартная ситуация, нужна консультация",
+        "медленно работает интернет, теряются пакеты",
+        "вопрос по настройке рабочего места, не знаю к кому идти",
+    ]
 
     def __init__(
         self,
@@ -31,7 +39,7 @@ class RAGConsultationScenario(BaseScenario):
     ) -> None:
         self.session_factory = session_factory
         self.ai_client = ai_client
-        self._cached_solution: Optional[KnowledgeSolutionDTO] = None
+        self._solutions_by_task: Dict[int, KnowledgeSolutionDTO] = {}
 
     def _get_session_factory(self) -> async_sessionmaker[AsyncSession]:
         if self.session_factory is not None:
@@ -45,7 +53,10 @@ class RAGConsultationScenario(BaseScenario):
     def _get_ai_client(self) -> AsyncOpenAI:
         if self.ai_client is not None:
             return self.ai_client
-        return AsyncOpenAI(base_url="http://litellm:4000/v1", api_key="sk-intralink-dummy")
+        base_url = os.getenv("LITELLM_BASE_URL", "http://litellm:4000/v1")
+        api_key = os.getenv("LITELLM_API_KEY", "sk-intraservice-master-key")
+        return AsyncOpenAI(base_url=base_url, api_key=api_key)
+
 
     async def can_handle(self, task: TaskDTO) -> bool:
         """Check if ticket can be resolved via knowledge base consultation."""
@@ -78,23 +89,28 @@ class RAGConsultationScenario(BaseScenario):
             )
 
         async with factory() as session:
-            matches = await search_similar_solutions(
+            matches = await search_hybrid_solutions(
                 session=session,
+                query_text=query_text,
                 query_vector=vector,
                 limit=1,
                 min_similarity=0.80,
                 service_id=task.service_id,
+                validate_quality=True,
             )
 
             if not matches:
                 # Fallback to unrestricted search across all services
-                matches = await search_similar_solutions(
+                matches = await search_hybrid_solutions(
                     session=session,
+                    query_text=query_text,
                     query_vector=vector,
                     limit=1,
                     min_similarity=0.80,
                     service_id=None,
+                    validate_quality=True,
                 )
+
 
         if not matches:
             return PreconditionResult(
@@ -102,16 +118,18 @@ class RAGConsultationScenario(BaseScenario):
                 missing_facts=["knowledge_base_match"],
             )
 
-        self._cached_solution = matches[0]
+        if task.id is not None:
+            self._solutions_by_task[task.id] = matches[0]
         return PreconditionResult(is_valid=True)
 
     async def execute(self, task: TaskDTO, policy: AutopilotPolicyDTO) -> ScenarioExecutionResult:
         """Post verified historical solution from knowledge base."""
-        solution_dto = self._cached_solution
+        solution_dto = self._solutions_by_task.pop(task.id, None) if task.id is not None else None
         if solution_dto is None:
             # Re-evaluate if not cached
             precond = await self.validate_preconditions(task)
-            if not precond.is_valid or self._cached_solution is None:
+            solution_dto = self._solutions_by_task.pop(task.id, None) if task.id is not None else None
+            if not precond.is_valid or solution_dto is None:
                 return ScenarioExecutionResult(
                     success=False,
                     action_taken="rag_consultation",
@@ -120,7 +138,6 @@ class RAGConsultationScenario(BaseScenario):
                     target_status_id=2,  # In progress
                     error="no_high_confidence_solution",
                 )
-            solution_dto = self._cached_solution
 
         logger.info(
             "Executing RAGConsultationScenario for task #%d using historical solution from task #%d (sim=%.2f)",

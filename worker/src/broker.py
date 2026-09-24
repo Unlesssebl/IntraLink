@@ -25,12 +25,26 @@ def create_broker(
 ) -> ListQueueBroker:
     """Create a configured ListQueueBroker instance with Redis result backend."""
     url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    result_backend = RedisAsyncResultBackend(redis_url=url)
+    # Invariants for resilient queue listening:
+    # 1. socket_timeout=None prevents premature TimeoutError during idle BRPOP blocking
+    # 2. socket_keepalive and health_check_interval keep long-lived connections open through NAT/Docker bridges
+    redis_conn_kwargs = {
+        "socket_timeout": None,
+        "socket_connect_timeout": 10.0,
+        "socket_keepalive": True,
+        "health_check_interval": 15,
+    }
+    result_backend = RedisAsyncResultBackend(
+        redis_url=url,
+        **redis_conn_kwargs,
+    )
     broker_instance = ListQueueBroker(
         url=url,
         queue_name=queue_name,
+        **redis_conn_kwargs,
     )
     return broker_instance.with_result_backend(result_backend)
+
 
 
 # Default worker broker instance

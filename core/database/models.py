@@ -24,7 +24,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -47,6 +47,11 @@ class TaskKnowledgeBase(Base, TimestampMixin):
         ),
         Index("idx_task_kb_service_id", "service_id"),
         Index("idx_task_kb_quality", "quality_score"),
+        Index(
+            "ix_task_kb_search_vector",
+            "search_vector",
+            postgresql_using="gin",
+        ),
     )
 
     task_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
@@ -68,6 +73,12 @@ class TaskKnowledgeBase(Base, TimestampMixin):
     # 1024-dimensional BGE-M3 vector embedding
     embedding: Mapped[Optional[List[float]]] = mapped_column(
         Vector(EMBEDDING_DIM),
+        nullable=True,
+    )
+
+    # Full-Text Search TSVECTOR column (GIN indexed in PostgreSQL)
+    search_vector: Mapped[Optional[Any]] = mapped_column(
+        TSVECTOR().with_variant(Text(), "sqlite"),
         nullable=True,
     )
 

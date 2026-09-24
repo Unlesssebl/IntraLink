@@ -186,8 +186,9 @@ async def test_rag_consultation_flow(default_policy):
 
     with (
         patch("worker.src.scenarios.rag_consultation.get_embedding_vector", return_value=[0.1] * 1024),
-        patch("worker.src.scenarios.rag_consultation.search_similar_solutions", return_value=[fake_match]),
+        patch("worker.src.scenarios.rag_consultation.search_hybrid_solutions", return_value=[fake_match]),
     ):
+
         precond = await scenario.validate_preconditions(task)
         assert precond.is_valid is True
 

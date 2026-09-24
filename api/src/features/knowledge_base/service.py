@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.src.core.ai import MODEL_REASONING, get_ai_client
 from core.database.models import EMBEDDING_DIM, TaskKnowledgeBase
-from core.rag import get_embedding_vector, search_similar_solutions
+from core.rag import get_embedding_vector, search_hybrid_solutions
 
 from .prompts import (
     RAG_SYSTEM_PROMPT,
@@ -38,19 +38,20 @@ class KnowledgeBaseService:
         req: SearchQuery,
         session: AsyncSession,
     ) -> List[SearchResultItemDTO]:
-        # 1. Generate query vector using LiteLLM
+        # 1. Generate query vector using LiteLLM (with transparent caching)
         query_vector = await get_embedding_vector(req.query, self.ai_client)
-        if not query_vector:
-            return []
 
-        # 2. Search pgvector HNSW index
-        results = await search_similar_solutions(
+        # 2. Execute Hybrid Search (Dense + FTS RRF with quality verification)
+        results = await search_hybrid_solutions(
             session=session,
+            query_text=req.query,
             query_vector=query_vector,
             limit=req.limit,
             min_similarity=req.min_similarity,
             service_id=req.service_id,
+            validate_quality=True,
         )
+
 
         return [
             SearchResultItemDTO(

@@ -40,6 +40,13 @@ class ServiceRedirectScenario(BaseScenario):
     scenario_key = "service_redirect"
     name = "Регламентное перенаправление"
     description = "Регламентная отмена нецелевых обращений со статусом 30 и перенаправление заявителя"
+    semantic_prototypes = [
+        "заявка на установку программы 1С для бухгалтерии",
+        "вопрос по системе Directum, договора и тендеры",
+        "заказать канцелярию, прошу выдать бумагу и ручки",
+        "нужен пропуск для посетителя в офис",
+        "клининг не приходил, уборка помещения",
+    ]
 
     def _find_redirect_target(self, task: TaskDTO) -> Optional[Tuple[str, str]]:
         text = f"{task.name or ''} {task.description or ''} {task.service_name or ''}".lower()

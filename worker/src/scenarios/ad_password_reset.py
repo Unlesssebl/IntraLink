@@ -33,6 +33,13 @@ class ADPasswordResetScenario(BaseScenario):
     scenario_key = "ad_password_reset"
     name = "Сброс пароля AD"
     description = "Безопасный сброс паролей учетных записей пользователей Active Directory"
+    semantic_prototypes = [
+        "забыл пароль от учетной записи, не могу войти в систему",
+        "заблокировалась доменная учетка, нужен сброс пароля",
+        "не помню пароль Active Directory, доступ закрыт",
+        "учетная запись заблокирована, прошу разблокировать",
+        "не могу авторизоваться, пароль не подходит",
+    ]
 
     async def can_handle(self, task: TaskDTO) -> bool:
         """Check if ticket requests AD account unlock or password reset."""
