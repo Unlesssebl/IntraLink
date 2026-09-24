@@ -112,12 +112,16 @@ class TaskLifetimeEventDTO(BaseModel):
     task_id: Optional[int] = Field(default=None, alias="TaskId")
     created: Optional[str] = Field(default=None, alias="Created")
     user_name: Optional[str] = Field(default=None, alias="UserName")
+    editor: Optional[str] = Field(default=None, alias="Editor")
+    editor_id: Optional[int] = Field(default=None, alias="EditorId")
+    status_id: Optional[int] = Field(default=None, alias="StatusId")
     comment: Optional[str] = Field(default=None, alias="Comment")
     old_status_name: Optional[str] = Field(default=None, alias="OldStatusName")
     new_status_name: Optional[str] = Field(default=None, alias="NewStatusName")
     is_private: bool = Field(default=False, alias="IsPrivateComment")
 
-    @field_validator("created", "user_name", "comment", "old_status_name", "new_status_name", mode="before")
+    @field_validator("created", "user_name", "editor", "comment", "old_status_name", "new_status_name", mode="before")
+
     @classmethod
     def coerce_lifetime_str(cls, v: Any) -> str:
         return "" if v is None else str(v)

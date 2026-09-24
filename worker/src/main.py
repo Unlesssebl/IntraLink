@@ -7,6 +7,7 @@ import signal
 from taskiq.receiver import Receiver
 
 import worker.src.tasks.command_dispatcher  # noqa: F401
+import worker.src.tasks.sync_kb  # noqa: F401
 from worker.src.broker import broker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")

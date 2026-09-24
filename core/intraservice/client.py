@@ -406,7 +406,62 @@ class IntraServiceClient:
 
         return all_tasks
 
+    async def get_tasks(
+        self,
+        filters: Optional[Dict[str, Any]] = None,
+        page: int = 1,
+        page_size: int = 200,
+        auth_b64: Optional[str] = None,
+    ) -> List[TaskDTO]:
+        """Fetch tickets matching custom IntraService query parameters (StatusIds, ChangedMoreThan, ServiceIds, etc.)."""
+        params: Dict[str, Any] = {
+            "include": "status,customfields,service",
+            "pagesize": str(min(page_size, 2000)),
+            "page": str(page),
+        }
+        if filters:
+            for k, v in filters.items():
+                if v is not None:
+                    params[k] = str(v)
+
+        res = await self._request(
+            method="GET",
+            endpoint="task",
+            params=params,
+            auth_b64=auth_b64,
+        )
+
+        raw_tasks = []
+        status_map = dict(DEFAULT_STATUS_MAP)
+
+        if isinstance(res, dict):
+            raw_tasks = res.get("Tasks", []) or []
+            if "Statuses" in res and isinstance(res["Statuses"], list):
+                for s in res["Statuses"]:
+                    if isinstance(s, dict) and "Id" in s and "Name" in s:
+                        try:
+                            status_map[int(s["Id"])] = str(s["Name"])
+                        except (ValueError, TypeError):
+                            pass
+        elif isinstance(res, list):
+            raw_tasks = res
+
+        all_tasks: List[TaskDTO] = []
+        for t in raw_tasks:
+            if isinstance(t, dict):
+                s_id = t.get("StatusId")
+                if not t.get("StatusName") and s_id is not None:
+                    try:
+                        t["StatusName"] = status_map.get(int(s_id), f"Статус {s_id}")
+                    except (ValueError, TypeError):
+                        pass
+                enriched = enrich_task_dict(t)
+                all_tasks.append(TaskDTO.model_validate(enriched))
+
+        return all_tasks
+
     async def get_task_lifetime(self, task_id: int, auth_b64: Optional[str] = None) -> List[TaskLifetimeEventDTO]:
+
         """Get ticket change history and comments."""
         res = await self._request(
             method="GET",
