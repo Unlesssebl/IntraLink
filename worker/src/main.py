@@ -13,6 +13,7 @@ import worker.src.tasks.poller  # noqa: F401
 import worker.src.tasks.sync_kb  # noqa: F401
 import worker.src.tasks.triage  # noqa: F401
 from worker.src.broker import broker
+from worker.src.scenarios.registry import get_default_scenario_registry
 from worker.src.tasks.poller import run_poller_loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -36,6 +37,13 @@ async def run_worker() -> None:
     if enable_poller:
         logger.info("Starting background ingestion poller loop (30s pulse)...")
         poller_coro = asyncio.create_task(run_poller_loop(stop_event=finish_event))
+
+    # Warm up the semantic scenario routing index (vectorises prototypes via BGE-M3 once)
+    logger.info("Warming up scenario semantic index (RAG prototype embeddings)...")
+    try:
+        await get_default_scenario_registry().initialize()
+    except Exception as exc:
+        logger.warning("Semantic index warm-up failed (Factor E disabled for this session): %s", exc)
 
     receiver = Receiver(broker=broker)
     try:

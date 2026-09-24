@@ -1,0 +1,33 @@
+# Autopilot Scenario Policies Baseline Configuration
+# Hierarchy: Redis (0ms) -> PostgreSQL (Override) -> YAML (Baseline Fallback)
+
+policies:
+  install_printer:
+    mode: "ASSISTED"
+    min_confidence: 0.85
+    description: "Автономная установка и настройка принтеров и МФУ на рабочих станциях"
+
+  ad_password_reset:
+    mode: "ASSISTED"
+    min_confidence: 0.90
+    description: "Безопасный сброс паролей учетных записей пользователей Active Directory"
+
+  grant_wlan:
+    mode: "ASSISTED"
+    min_confidence: 0.90
+    description: "Предоставление доступа к корпоративной сети Wi-Fi (WLAN-WORKNET) через Active Directory"
+
+  service_redirect:
+    mode: "FULL_AUTO"
+    min_confidence: 0.85
+    description: "Регламентная отмена нецелевых обращений со статусом 30 и перенаправление заявителя"
+
+  offline_host:
+    mode: "FULL_AUTO"
+    min_confidence: 0.85
+    description: "Сокетная диагностика и наряд на выезд инженера при физической недоступности рабочего места"
+
+  rag_consultation:
+    mode: "FULL_AUTO"
+    min_confidence: 0.85
+    description: "Автоматические консультации по типовым вопросам на базе базы знаний"

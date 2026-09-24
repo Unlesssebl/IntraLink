@@ -198,3 +198,24 @@ class SystemState(Base, TimestampMixin):
         kwargs.setdefault("state_data", {})
         super().__init__(**kwargs)
 
+
+class AutopilotPolicy(Base, TimestampMixin):
+    """Autopilot governance policy per scenario with Circuit Breaker tracking."""
+
+    __tablename__ = "autopilot_policies"
+
+    scenario_key: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, default="ASSISTED", server_default="ASSISTED")
+    min_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.85, server_default="0.85")
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_failure_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_circuit_broken: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    description: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("mode", "ASSISTED")
+        kwargs.setdefault("min_confidence", 0.85)
+        kwargs.setdefault("consecutive_failures", 0)
+        kwargs.setdefault("is_circuit_broken", False)
+        super().__init__(**kwargs)
+

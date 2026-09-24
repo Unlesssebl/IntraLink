@@ -10,12 +10,14 @@ import {
   LogOut,
   User,
   KeyRound,
+  Bot,
 } from "lucide-react";
 import { Badge, Button, ErrorBoundary, Input, Modal, useToast } from "@/shared/ui";
 import { TriageQueue } from "@/features/triage/TriageQueue";
 import { TicketInspector } from "@/features/tickets/TicketInspector";
 import { KBSearch } from "@/features/knowledge-base/KBSearch";
 import { LoadReport } from "@/features/reports/LoadReport";
+import { AutopilotConsole } from "@/features/autopilot/AutopilotConsole";
 import {
   authApi,
   getStoredAuth,
@@ -27,7 +29,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ticketKeys } from "@/features/tickets/queries";
 
-type Tab = "triage" | "kb" | "reports";
+type Tab = "triage" | "kb" | "reports" | "autopilot";
 
 export default function App() {
   const queryClient = useQueryClient();
@@ -177,6 +179,18 @@ export default function App() {
             <BarChart3 className="w-4 h-4" />
             <span>Аналитика нагрузки</span>
           </button>
+
+          <button
+            onClick={() => setActiveTab("autopilot")}
+            className={`w-full flex items-center gap-2 px-2.5 py-2 rounded text-xs font-medium transition-colors ${
+              activeTab === "autopilot"
+                ? "bg-neutral-800 text-white border border-neutral-700 shadow-xs"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
+            }`}
+          >
+            <Bot className="w-4 h-4 text-indigo-400" />
+            <span>Автопилот (Core-6)</span>
+          </button>
         </nav>
 
         {/* System & Backend Status Footer */}
@@ -248,6 +262,7 @@ export default function App() {
               {activeTab === "triage" && "Операторская панель очереди"}
               {activeTab === "kb" && "База знаний (RAG)"}
               {activeTab === "reports" && "Сводный отчет нагрузки"}
+              {activeTab === "autopilot" && "Операторская консоль Автопилота (Core-6)"}
             </span>
           </div>
 
@@ -311,6 +326,12 @@ export default function App() {
         <main className={`flex-1 overflow-y-auto p-6 ${activeTab === "reports" ? "" : "hidden"}`}>
           <ErrorBoundary fallbackTitle="Ошибка в модуле Аналитики и отчетов">
             <LoadReport />
+          </ErrorBoundary>
+        </main>
+
+        <main className={`flex-1 overflow-y-auto p-6 ${activeTab === "autopilot" ? "" : "hidden"}`}>
+          <ErrorBoundary fallbackTitle="Ошибка в консоли Автопилота">
+            <AutopilotConsole />
           </ErrorBoundary>
         </main>
       </div>

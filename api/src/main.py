@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from api.src.core.config import settings
 from api.src.core.db import check_db_health, dispose_db
 from api.src.core.redis import check_redis_health, close_redis
+from api.src.features.autopilot.router import router as autopilot_router
 from api.src.features.diagnostics.router import router as diagnostics_router
 from api.src.features.knowledge_base.router import router as kb_router
 from api.src.features.reports.router import router as reports_router
@@ -160,3 +161,4 @@ app.include_router(triage_router, prefix="/api/v2")
 app.include_router(kb_router, prefix="/api/v2")
 app.include_router(diagnostics_router, prefix="/api/v2")
 app.include_router(reports_router, prefix="/api/v2")
+app.include_router(autopilot_router, prefix="/api/v2")

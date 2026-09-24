@@ -1,0 +1,215 @@
+"""RAG-Augmented Semantic Prototype Index for IntraLink v2 Autopilot Router.
+
+Computes and caches dense vector representations of scenario exemplar phrases
+(prototypes). At routing time, computes cosine similarity between the incoming
+ticket text and each scenario's prototype cluster, returning a per-scenario
+semantic affinity score ∈ [0.0, 1.0].
+
+Design principles:
+- Prototype embeddings are computed ONCE at router initialization (warm-up) and
+  cached in-memory. Hot-path routing does not hit the LiteLLM gateway for
+  prototype vectors – only for the single query vector per ticket.
+- Cosine similarity is computed in pure Python (no pgvector dependency) because
+  the prototype set is tiny (≤ 30 vectors × 1024 dim) and resides in RAM.
+- Graceful degradation: if the LiteLLM gateway is unavailable (cold start, test
+  environment), the index silently skips vectorisation and semantic scoring
+  returns 0.0 for all scenarios (Factor E is zeroed out; other factors still
+  work normally).
+- ai_client is optional: if not provided, a default client pointed at the
+  LiteLLM Gateway (http://litellm:4000/v1) is created lazily on first use.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+from typing import Dict, List, Optional, Tuple
+
+from openai import AsyncOpenAI
+
+from core.rag.embedder import get_embedding_vector
+
+# Default LiteLLM Gateway endpoint (same as used in rag_consultation.py and core/rag/sync.py)
+_LITELLM_BASE_URL = "http://litellm:4000/v1"
+_LITELLM_API_KEY = "sk-intralink-dummy"
+
+logger = logging.getLogger("worker.scenarios.semantic_index")
+
+# ---------------------------------------------------------------------------
+# Scenario Prototypes
+# Each scenario is described by 4-6 diverse exemplar phrases in Russian that
+# represent the *range* of real ticket formulations for that domain.
+# More prototypes → better generalisation; keep them concise (≤ 50 tokens).
+# ---------------------------------------------------------------------------
+SCENARIO_PROTOTYPES: Dict[str, List[str]] = {
+    "install_printer": [
+        "не могу подключить принтер к компьютеру",
+        "установить сетевой принтер на рабочей станции",
+        "принтер не печатает, ошибка драйвера Canon Kyocera",
+        "нужно настроить МФУ в офисе, не добавляется в Windows",
+        "принтер недоступен, не отображается в сети",
+    ],
+    "ad_password_reset": [
+        "забыл пароль от учетной записи, не могу войти в систему",
+        "заблокировалась доменная учетка, нужен сброс пароля",
+        "не помню пароль Active Directory, доступ закрыт",
+        "учетная запись заблокирована, прошу разблокировать",
+        "не могу авторизоваться, пароль не подходит",
+    ],
+    "grant_wlan": [
+        "прошу предоставить доступ к корпоративному Wi-Fi WLAN-WORKNET",
+        "нужно подключить ноутбук к беспроводной сети компании",
+        "нет доступа к wifi в офисе, требуется добавить в группу",
+        "хочу подключиться к вайфай, добавьте мою учетку",
+        "беспроводная сеть не доступна для моего устройства",
+    ],
+    "offline_host": [
+        "компьютер не включается, чёрный экран, нет питания",
+        "рабочая станция не реагирует на нажатие кнопки питания",
+        "ПК не загружается, гудит кулер но монитор пустой",
+        "не могу запустить компьютер в кабинете, запах гари",
+        "рабочее место полностью недоступно, компьютер мертвый",
+    ],
+    "service_redirect": [
+        "заявка на установку программы 1С для бухгалтерии",
+        "вопрос по системе Directum, договора и тендеры",
+        "заказать канцелярию, прошу выдать бумагу и ручки",
+        "нужен пропуск для посетителя в офис",
+        "клининг не приходил, уборка помещения",
+    ],
+    "rag_consultation": [
+        "не знаю куда обратиться, общий вопрос по работе системы",
+        "не работает приложение, непонятная ошибка при запуске",
+        "возникла нестандартная ситуация, нужна консультация",
+        "медленно работает интернет, теряются пакеты",
+        "вопрос по настройке рабочего места, не знаю к кому идти",
+    ],
+}
+
+
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    """Compute cosine similarity between two vectors.
+
+    Returns value in [-1.0, 1.0]; typically ≥ 0 for natural language embeddings.
+    """
+    if len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+class SemanticPrototypeIndex:
+    """In-memory semantic index for scenario prototype matching.
+
+    Usage lifecycle:
+    1. ``index = SemanticPrototypeIndex(ai_client)``
+    2. ``await index.warm_up()``           ← call once at startup
+    3. ``scores = await index.score(text)`` ← call per ticket
+
+    The warm_up step vectorises all prototypes and stores them in RAM.
+    If warm_up is not called (or fails), score() returns empty dict (safe).
+    """
+
+    def __init__(self, ai_client: Optional[AsyncOpenAI] = None) -> None:
+        self._ai_client = ai_client
+        # scenario_key → list of pre-computed prototype vectors
+        self._prototype_vectors: Dict[str, List[List[float]]] = {}
+        self._is_ready: bool = False
+
+    def _get_ai_client(self) -> AsyncOpenAI:
+        """Return the AI client, creating a default one if not provided."""
+        if self._ai_client is not None:
+            return self._ai_client
+        return AsyncOpenAI(base_url=_LITELLM_BASE_URL, api_key=_LITELLM_API_KEY)
+
+    @property
+    def is_ready(self) -> bool:
+        """True if prototype embeddings have been computed successfully."""
+        return self._is_ready
+
+    async def warm_up(self) -> None:
+        """Vectorise all prototype phrases and cache results in memory.
+
+        Safe to call multiple times; subsequent calls are no-ops.
+        """
+        if self._is_ready:
+            return
+
+        total_prototypes = sum(len(v) for v in SCENARIO_PROTOTYPES.values())
+        logger.info(
+            "SemanticPrototypeIndex: warming up %d prototypes for %d scenarios…",
+            total_prototypes,
+            len(SCENARIO_PROTOTYPES),
+        )
+
+        success_count = 0
+        ai = self._get_ai_client()
+        for scenario_key, phrases in SCENARIO_PROTOTYPES.items():
+            vectors: List[List[float]] = []
+            for phrase in phrases:
+                vec = await get_embedding_vector(phrase, ai)
+                if vec is not None:
+                    vectors.append(vec)
+                    success_count += 1
+                else:
+                    logger.warning(
+                        "SemanticPrototypeIndex: failed to embed prototype for '%s': '%s'",
+                        scenario_key,
+                        phrase[:60],
+                    )
+            self._prototype_vectors[scenario_key] = vectors
+
+        if success_count == 0:
+            logger.warning(
+                "SemanticPrototypeIndex: zero prototypes vectorised – "
+                "semantic Factor E will be disabled (LiteLLM unavailable?)"
+            )
+        else:
+            self._is_ready = True
+            logger.info(
+                "SemanticPrototypeIndex ready: %d/%d prototypes vectorised.",
+                success_count,
+                total_prototypes,
+            )
+
+    async def score(self, text: str) -> Dict[str, float]:
+        """Return per-scenario semantic affinity score ∈ [0.0, 1.0].
+
+        Args:
+            text: Concatenated ticket name + description (pre-cleaned by caller).
+
+        Returns:
+            Dict mapping scenario_key → max cosine similarity with prototype cluster.
+            Returns empty dict if index is not ready (semantic factor will be 0.0).
+        """
+        if not self._is_ready or not text.strip():
+            return {}
+
+        query_vec = await get_embedding_vector(text, self._get_ai_client())
+        if query_vec is None:
+            logger.debug("SemanticPrototypeIndex: failed to embed query text; returning empty scores")
+            return {}
+
+        result: Dict[str, float] = {}
+        for scenario_key, proto_vecs in self._prototype_vectors.items():
+            if not proto_vecs:
+                result[scenario_key] = 0.0
+                continue
+            similarities = [_cosine_similarity(query_vec, pv) for pv in proto_vecs]
+            # Use top-1 max similarity as the cluster score (nearest-neighbor)
+            max_sim = max(similarities)
+            # Clamp to [0, 1]: BGE-M3 normalised embeddings rarely go negative, but be safe
+            result[scenario_key] = max(0.0, min(1.0, max_sim))
+
+        return result
+
+    def get_top_semantic_match(self, scores: Dict[str, float]) -> Optional[Tuple[str, float]]:
+        """Return (scenario_key, score) for the highest-scoring scenario, or None."""
+        if not scores:
+            return None
+        best = max(scores.items(), key=lambda kv: kv[1])
+        return best if best[1] > 0.0 else None

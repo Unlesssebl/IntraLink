@@ -1,0 +1,79 @@
+"""Base scenario interface and contracts for IntraLink v2 Autopilot."""
+
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+from core.autopilot.dto import AutopilotPolicyDTO
+from core.intraservice.dto import TaskDTO
+
+
+class PreconditionResult(BaseModel):
+    """Result of validating scenario prerequisites (data completeness and environment readiness)."""
+
+    is_valid: bool = Field(..., description="True if all required facts and environmental conditions are met")
+    missing_facts: List[str] = Field(default_factory=list, description="Missing entity keys (e.g. pc_name, printer_address)")
+    environment_barriers: List[str] = Field(default_factory=list, description="Barriers detected (e.g. host_offline, port_unreachable)")
+    clarification_prompt: Optional[str] = Field(default=None, description="Polite question or instruction for the applicant")
+
+
+class ScenarioExecutionResult(BaseModel):
+    """Result of autonomous scenario execution."""
+
+    success: bool = Field(..., description="True if execution succeeded")
+    action_taken: str = Field(..., description="Name of action executed")
+    resolution_comment: str = Field(..., description="Public comment to post in the ticket for applicant")
+    technical_note: str = Field(..., description="Hidden internal audit note for Helpdesk engineers (IsPrivateComment)")
+    target_status_id: int = Field(default=3, description="Target IntraService status (3=Completed, 6=Paused, 2=In Progress)")
+    error: Optional[str] = Field(default=None, description="Error message if execution failed")
+    command_id: Optional[str] = Field(default=None, description="UUID of associated CommandRecord if dispatched")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Supplementary execution metrics and context")
+
+
+class ScenarioMatch(BaseModel):
+    """Evaluation result of scenario matching against a ticket."""
+
+    scenario_key: str = Field(..., description="Key of the candidate scenario")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score between 0.0 and 1.0")
+    matched: bool = Field(..., description="True if confidence >= threshold and no blocking barriers")
+    reasons: List[str] = Field(default_factory=list, description="Positive contributing signals")
+    barriers: List[str] = Field(default_factory=list, description="Negative or blocking signals")
+
+
+class BaseScenario(ABC):
+    """Abstract base class for all autopilot scenarios."""
+
+    scenario_key: str
+    name: str
+    description: str
+
+    @abstractmethod
+    async def can_handle(self, task: TaskDTO) -> bool:
+        """Evaluate if this scenario matches the ticket."""
+        ...
+
+    async def evaluate_match(self, task: TaskDTO) -> ScenarioMatch:
+        """Evaluate detailed match confidence and reasons.
+
+        Default implementation falls back to boolean can_handle.
+        Subclasses or the Multi-factor Router can provide granular scoring.
+        """
+        handled = await self.can_handle(task)
+        return ScenarioMatch(
+            scenario_key=self.scenario_key,
+            confidence=0.95 if handled else 0.0,
+            matched=handled,
+            reasons=[f"can_handle returned {handled}"] if handled else [],
+            barriers=[] if handled else ["can_handle returned false"],
+        )
+
+    @abstractmethod
+    async def validate_preconditions(self, task: TaskDTO) -> PreconditionResult:
+        """Validate whether all required facts exist and host/device is online."""
+        ...
+
+    @abstractmethod
+    async def execute(self, task: TaskDTO, policy: AutopilotPolicyDTO) -> ScenarioExecutionResult:
+        """Execute autonomous resolution actions."""
+        ...

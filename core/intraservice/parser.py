@@ -419,3 +419,17 @@ def sanitize_ticket_description(text: Optional[str], max_chars: Optional[int] = 
 
     return cleaned
 
+
+class IntraServiceParser:
+    """Convenience facade for parsing IntraService workplace entities."""
+
+    @staticmethod
+    def extract_entities(
+        description: str,
+        custom_fields: Optional[Dict[str, str]] = None,
+        title: str = "",
+    ) -> ExtractedEntitiesDTO:
+        raw_dict = {"Name": title, "Description": description, "CustomFieldData": None}
+        enriched = enrich_task_dict(raw_dict)
+        return ExtractedEntitiesDTO.model_validate(enriched["entities"])
+

@@ -9,6 +9,7 @@ dependencies = [
     "taskiq-redis>=1.0.0",
     "taskiq-fastapi>=0.3.0",
     "redis>=5.0.0",
+    "openai>=1.30.0",
     "pywinrm>=0.4.3",
     "smbprotocol>=1.12.0",
     "impacket>=0.12.0",
