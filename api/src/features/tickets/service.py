@@ -46,6 +46,7 @@ class TicketService:
             TicketSummaryDTO(
                 id=t.id,
                 name=t.name,
+                description=t.description,
                 service_id=t.service_id,
                 service_name=t.service_name,
                 status_id=t.status_id,

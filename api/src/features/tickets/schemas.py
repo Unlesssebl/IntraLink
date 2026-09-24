@@ -15,6 +15,7 @@ class TicketApplicantDTO(BaseModel):
 class TicketSummaryDTO(BaseModel):
     id: int
     name: str = ""
+    description: str = ""
     service_id: Optional[int] = None
     service_name: Optional[str] = None
     status_id: int = 0
@@ -24,7 +25,7 @@ class TicketSummaryDTO(BaseModel):
     applicant_name: Optional[str] = None
     pc_name: Optional[str] = None
 
-    @field_validator("name", "status_name", mode="before")
+    @field_validator("name", "description", "status_name", mode="before")
     @classmethod
     def coerce_summary_str(cls, v: Any) -> str:
         return "" if v is None else str(v)

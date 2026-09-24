@@ -71,6 +71,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 export interface TicketListItem {
   id: number;
   name: string;
+  description?: string | null;
   created: string;
   applicant_name?: string | null;
   applicant_phone?: string | null;

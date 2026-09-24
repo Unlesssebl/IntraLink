@@ -59,7 +59,7 @@ export function useTicketDetail(ticketId: number | null) {
       return {
         id: item.id,
         name: item.name,
-        description: "",
+        description: item.description || "",
         created: item.created,
         status_id: item.status_id,
         status_name: item.status_name,
