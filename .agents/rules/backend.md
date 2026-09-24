@@ -1,6 +1,14 @@
-# 🛠 Стандарты написания бэкенд-кода (Backend Coding Rules)
+# 🛠 Стандарты написания бэкенд-кода v2 (Backend Coding Rules)
 
-Данный свод правил обязателен для AI-агента при генерации или модификации кода сервисов `core-api`, `execution-worker`, `helpdesk-cli` и `shared`.
+Данный свод правил обязателен для AI-агента при генерации или модификации кода модулей `api/src/features/*`, фонового сервиса `worker/` и ядра `core/` в архитектуре IntraLink v2.
+
+---
+
+## 0. 🚫 Принцип бескомпромиссного качества (No-Kludge & Root-Cause Policy)
+
+* **СТРОГО ЗАПРЕЩЕНО внедрять «костыли», временные заплатки, нетипизированные хаки или маскировать архитектурные дефекты.**
+* **Обязанность агента:** При обнаружении фундаментальной проблемы, несоответствия контрактов, узких мест или концептуальных противоречий в архитектуре — **агент обязан немедленно и открыто обозначить проблему, вскрыть первопричину (root cause) и предложить фундаментальное («big shot») решение**, устраняющее дефект в корне, а не прятать его под слоем условных операторов, фиктивных фолбэков или костылей.
+* Любое решение должно быть архитектурно чистым, расширяемым и долговечным.
 
 ---
 
@@ -8,18 +16,18 @@
 
 * **FastAPI:**
   * Все эндпоинты объявляются как `async def`.
-  * Для зависимостей использовать `Depends()`. Взаимодействие с базой данных — строго через `AsyncSession = Depends(get_db)`.
+  * Для зависимостей использовать `Depends()`. Взаимодействие с базой данных — строго через `AsyncSession = Depends(get_session)`.
   * Валидация входных данных: Pydantic v2 `BaseModel` в качестве тел запросов и query/path параметров.
 * **Неблокирующий I/O:**
-  * **Запрещены** блокирующие функции `time.sleep()`, `subprocess.run()`, синхронные WMI-запросы в основном цикле событий `asyncio`.
+  * **Запрещены** блокирующие функции `time.sleep()`, `subprocess.run()`, синхронные WMI/RPC-запросы в основном цикле событий `asyncio`.
   * Для пауз использовать `await asyncio.sleep(...)`.
-  * Для вызова синхронного системного кода или WinRM/WMI обязательно использовать:
+  * Для вызова синхронного системного кода или WinRM/PowerShell обязательно использовать:
     ```python
     result = await asyncio.to_thread(sync_heavy_function, *args, **kwargs)
     ```
-* **Сетевые клиенты (aiohttp):**
-  * Никогда не создавать новый `aiohttp.ClientSession()` на каждый запрос.
-  * Использовать долгоживущие сессии с пулом соединений (`TCPConnector(limit=..., ttl_dns_cache=300)`) и явным закрытием при `lifespan` завершении приложения.
+* **Сетевые клиенты (httpx):**
+  * Никогда не создавать новый `httpx.AsyncClient()` на каждый HTTP-запрос.
+  * Использовать долгоживущий клиент с пулом соединений (`httpx.Limits(max_keepalive_connections=20, max_connections=50)`) и явным закрытием при `lifespan` завершении приложения.
 
 ---
 
@@ -31,44 +39,48 @@
   * Извлечение сущностей: `items = result.scalars().all()` или `item = result.scalar_one_or_none()`.
   * **Запрещен устаревший синтаксис:** `session.query(Model)...`.
 * **Управление сессиями:**
-  * Всегда использовать контекстный менеджер:
+  * Модели `Mapped[...] = mapped_column(...)` строго с указанием типов.
+  * Всегда использовать контекстный менеджер при ручном управлении:
     ```python
-    async with AsyncSessionLocal() as session:
+    async with async_session_maker() as session:
         async with session.begin():
             # операции с авто-коммитом
     ```
-  * Модели `Mapped[...] = mapped_column(...)` строго с указанием типов.
 
 ---
 
 ## 3. Pydantic v2 и типизация
 
 * **Спецификация моделей:**
-  * Использовать `ConfigDict(from_attributes=True)` вместо устаревшего `class Config: orm_mode = True`.
+  * Использовать `ConfigDict(populate_by_name=True, from_attributes=True)` вместо устаревшего `class Config: orm_mode = True`.
   * Валидация объектов: `MySchema.model_validate(obj)`.
   * Сериализация в словарь: `schema.model_dump(mode="json")`.
-  * Валидаторы полей: `@field_validator("field_name")` вместо устаревшего `@validator`.
-* **Аннотации типов (Python 3.11+):**
+  * Валидаторы полей: `@field_validator("field_name", mode="before")` вместо устаревшего `@validator`.
+* **Аннотации типов (Python 3.12+):**
   * `value: str | None = None` (вместо `Optional[str]`).
   * `items: list[int]` (вместо `List[int]`).
   * `mapping: dict[str, Any]` (вместо `Dict[str, Any]`).
 
 ---
 
-## 4. Использование пакета shared (SSOT)
+## 4. Использование пакета `core/` (Web-Agnostic Core)
 
-* Всегда импортировать утилиты нормализации и диагностики из `shared`:
+* Вся повторно используемая бизнес-логика выносится в пакет `core/`:
   ```python
-  from shared.normalizer import normalize_pc_name, extract_pc_names_from_text, is_valid_pc_name
-  from shared.diagnostics import run_host_diagnostics
-  from shared.json_utils import json_dumps, json_loads
+  from core.diagnostic.ports import probe_diagnostic_ports, probe_tcp_port
+  from core.diagnostic.ping import fast_ping
+  from core.intraservice import IntraServiceClient, TaskDTO
+  from core.rag.embedder import get_embedding_vector
+  from core.database.models import CommandRecord, TaskKnowledgeBase
   ```
-* Запрещено создавать локальные дубликаты регулярных выражений или функций сетевых проверок.
+* Запрещено создавать локальные дубликаты сетевых проверок, клиентов API или функций парсинга.
 
 ---
 
-## 5. Работа с Redis и очередями
+## 5. Работа с очередями задач (Taskiq) и изоляция срезов (VSA)
 
-* Все обращения к Redis выполняются через `redis.asyncio` (`aioredis`).
-* События публикуются через `XADD` в персистентный стрим (с ограничением `maxlen=10000, approximate=True`).
-* Распределенные блокировки (`lock:host:<pc_name>`) всегда освобождаются через безопасный Lua-скрипт по токену владельца.
+* **Шина задач:** Фоновые задачи оформляются через `@broker.task(queue_name=...)`.
+* **Внедрение зависимостей:** Использовать `TaskiqDepends` для получения сессий БД и клиентов.
+* **Изоляция срезов (Banned API):**
+  * Вертикальные срезы `api/src/features/*` **строго изолированы** и не имеют права импортировать друг друга (контролируется правилом линтера `TID251` в `ruff.toml`).
+  * Любой общий функционал переносится в `core/`.

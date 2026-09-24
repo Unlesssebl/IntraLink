@@ -28,53 +28,29 @@ docs/
 │   ├── 0002-modular-worker-platform.md
 │   └── 0003-asynchronous-batch-triage-platform.md
 │
-├── services/                      ← Паспорта сервисов монорепозитория
-│   ├── core-api/                  ← FastAPI Gateway, Poller, Scenario Orchestrator, RAG
-│   ├── execution-worker/          ← Windows Headless Daemon (AD WLAN/User, WinRM/Printers)
-│   ├── desktop-companion/         ← Нативный Windows tray-helper (Tauri 2, Rust)
-│   ├── helpdesk-cli/              ← Машинный Tooling SDK агента Antigravity (AGY)
-│   ├── intra-web/                 ← Веб-панель управления и мониторинга (React 19, Vite)
-│   ├── shared/                    ← Единый SSOT пакет (нормализация, экспресс-диагностика)
-│   └── telegram-bot/              ← Мобильный пейджер и HITL-согласования (aiogram 3.x)
+├── architecture/                  ← Архитектурные спецификации v2
+│   ├── v2-architecture-blueprint.md ← Генеральный план VSA и LiteLLM Gateway
+│   ├── v2-automation-pipeline.md    ← Спецификация конвейера автопилота
+│   ├── v2-contracts-and-schemas.md  ← Схемы БД, Taskiq DTO и REST API
+│   └── domain-model-and-contracts.md← Доменные инварианты Helpdesk и Zero-Stub Policy
 │
-├── plans/                         ← Планы развития и дорожные карты
+├── adr/                           ← Архитектурные решения (Architecture Decision Records)
+│   ├── 0001-transactional-command-platform.md
+│   ├── 0002-modular-worker-platform.md
+│   ├── 0003-asynchronous-batch-triage-platform.md
+│   └── 0004-vertical-slice-architecture-and-litellm.md
+│
+├── plans/                         ← Планы реализации и спринты
+│   ├── v2-automation-implementation-plan.md ← 5-спринтовый план конвейера автопилота
 │   ├── roadmap.md                 ← Стратегический продуктовый план развития 2026–2027
-│   ├── intent-classification.md   ← Трехуровневый гибридный каскад классификации
-│   ├── model-adaptive-rag-and-tone-orchestration.md ← Адаптивный контекст RAG и тональность
-│   ├── scenarios-roadmap.md       ← Дорожная карта сценариев автоматизации
-│   ├── ticket-scenario-quality-roadmap.md ← Roadmap качества сценариев
-│   ├── ticket-scenario-quality-stage-2-plan.md ← План этапа 2 качества сценариев
 │   └── archive/                   ← Архив реализованных планов и чекпоинтов
-│       ├── scenario-orchestration/ ← Реализованный сценарный контур
-│       ├── worker-platform/       ← Реализованная платформа воркеров (5 инкрементов)
-│       ├── adaptive-inspector-implementation-plan.md
-│       ├── async-triage-implementation-plan.md
-│       ├── cleanup-plan-2026-09.md
-│       ├── desktop-companion-blueprint.md
-│       ├── hardware-specs-implementation-plan.md
-│       ├── rag-quality-roadmap.md
-│       └── scenario-core-readiness.md
 │
-├── runbooks/                      ← Инструкции по эксплуатации и безопасность
+├── runbooks/                      ← Инструкции по эксплуатации и верификации
+│   ├── v2-automation-verification.md ← 7 эталонных приемочных сценариев автопилота
 │   ├── identity-bootstrap.md      ← Инициализация сервисной учетной записи AD
-│   ├── triage-lifecycle.md        ← Регламент ANALYSIS_REVISION и кэширования решений
-│   └── production-readiness-ai.md ← Границы автономности, DLP и offline eval-gate
+│   └── triage-lifecycle.md        ← Регламент ANALYSIS_REVISION и кэширования решений
 │
-├── web-autopilot/                 ← Регламенты пилота и приёмки операторского веб-пульта
-│   ├── product-concept.md
-│   ├── lifecycle.md
-│   ├── operations.md
-│   ├── staging-acceptance.md
-│   └── stabilization-plan.md
-│
-├── reports/                       ← Чекпоинты модернизации и отчеты эвалов
-│   ├── 2026-09-07-decisioning-checkpoint.md
-│   └── evals/                     ← Логи прогонов оценки точности
-│
-├── presentations/                 ← Презентации и материалы для демонстрации
-│   └── SPEAKER_GUIDE.md
-│
-└── external/                      ← Документация сторонних систем (не наш код)
+└── external/                      ← Документация сторонних систем
     └── intraservice_api/          ← Справочник REST API IntraService (49 спецификаций)
 ```
 
@@ -84,61 +60,30 @@ docs/
 
 | Раздел | Документ | Статус | Назначение |
 |---|---|:---:|---|
-| **Ядро** | [architecture.md](architecture.md) | 🟢 Актуален | Целевая архитектура, схемы C4, шины, контуры DLP |
-| **Ядро** | [developer_guide.md](developer_guide.md) | 🟢 Актуален | Настольная книга архитектурных инвариантов и правил |
-| **Ядро** | [brandbook.md](brandbook.md) | 🟢 Актуален | Манифест информации, токены и Zero-Emoji Policy |
-| **Ядро** | [roadmap.md](plans/roadmap.md) | 🟢 Актуален | Стратегические горизонты 2026–2027 |
-| **ADR** | [ADR 0001](adr/0001-transactional-command-platform.md) | 🟢 Принят | Транзакционная шина команд и Transactional Outbox |
-| **ADR** | [ADR 0002](adr/0002-modular-worker-platform.md) | 🟢 Принят | Модульная архитектура воркеров и Functional Core |
-| **ADR** | [ADR 0003](adr/0003-asynchronous-batch-triage-platform.md) | 🟢 Принят | Асинхронная платформа пакетного анализа очереди |
-| **Сервисы** | [Core API](services/core-api/README.md) | 🟢 Актуален | Шлюз состояния, Poller, RAG, AI Hub, /admin |
-| **Сервисы** | [Execution Worker](services/execution-worker/README.md) | 🟢 Актуален | Windows-демон исполнения доменных задач |
-| **Сервисы** | [Desktop Companion](services/desktop-companion/README.md) | 🟢 Актуален | Windows tray-клиент (Tauri 2, DameWare, RDP, LM) |
-| **Сервисы** | [Helpdesk CLI](services/helpdesk-cli/README.md) | 🟢 Актуален | Tooling SDK агента Antigravity (AGY) |
-| **Сервисы** | [Intra Web](services/intra-web/README.md) | 🟢 Актуален | React 19 веб-пульт оператора и консоль администратора |
-| **Сервисы** | [Shared Package](services/shared/README.md) | 🟢 Актуален | Единый источник алгоритмов нормализации и зондов |
-| **Сервисы** | [Telegram Bot](services/telegram-bot/README.md) | 🟢 Актуален | Мобильный пейджер и согласования по Redis Streams |
-| **Регламенты** | [Triage Lifecycle](runbooks/triage-lifecycle.md) | 🟢 Актуален | Управление `ANALYSIS_REVISION`, Redis-локи и кэши |
-| **Регламенты** | [Identity Bootstrap](runbooks/identity-bootstrap.md) | 🟢 Актуален | Настройка сервисной учетной записи и доступов AD |
-| **Регламенты** | [AI Production Readiness](runbooks/production-readiness-ai.md) | 🟢 Актуален | Границы автономности ИИ, DLP-фильтры и eval-gate |
-| **Планы** | [Intent Classification](plans/intent-classification.md) | 🟡 В работе | Трехуровневый каскад классификации намерений |
-| **Планы** | [Model-Adaptive RAG & Tone](plans/model-adaptive-rag-and-tone-orchestration.md) | 🟡 В работе | Адаптивный контекст RAG и тональность |
-| **Планы** | [Scenarios Roadmap](plans/scenarios-roadmap.md) | 🟡 В работе | Дорожная карта сценариев автоматизации |
-| **Планы** | [Ticket Scenario Quality](plans/ticket-scenario-quality-roadmap.md) | 🟡 В работе | Повышение качества сценариев заявок |
-| **Планы** | [Quality Stage 2 Plan](plans/ticket-scenario-quality-stage-2-plan.md) | 🟡 В работе | Факты, маршрутизация и проверка решений |
-| **Архив** | [Scenario Transition](plans/archive/scenario-orchestration/transition-roadmap.md) | 🟢 Реализован | 5-этапный роадмап выкатки сценарного контура |
-| **Архив** | [Scenario Execution Plan](plans/archive/scenario-orchestration/execution-plan.md) | 🟢 Реализован | Спецификация FSM `TicketRunOrchestrator` |
-| **Архив** | [Worker Platform (5 инкрементов)](plans/archive/worker-platform/README.md) | 🟢 Реализован | Модульная платформа и доверенный PowerShell runner |
-| **Архив** | [Async Triage Implementation Plan](plans/archive/async-triage-implementation-plan.md) | 🟢 Реализован | Пакетный анализ очереди (HTTP 202, Redis, SSE) |
-| **Архив** | [RAG Quality Roadmap](plans/archive/rag-quality-roadmap.md) | 🟢 Реализован | Внедрение FastEmbed Cross-Encoder и FTS |
+| **Архитектура v2** | [Blueprint v2](architecture/v2-architecture-blueprint.md) | 🟢 Актуален | VSA, LiteLLM Gateway, модули `core/`, `api/`, `worker/`, `web/` |
+| **Автопилот** | [Automation Pipeline](architecture/v2-automation-pipeline.md) | 🟢 Актуален | Двухконтурная модель, Taskiq шина, матрица автономии, Anti-Loop |
+| **Контракты** | [Contracts & Schemas](architecture/v2-contracts-and-schemas.md) | 🟢 Актуален | DTO, схемы БД (`SystemState`, `AutopilotPolicy`, `CommandRecord`) |
+| **Домен** | [Domain Model](architecture/domain-model-and-contracts.md) | 🟢 Актуален | Инварианты Helpdesk, сервисы 05/09, Zero-Stub Policy |
+| **ADR** | [ADR 0004](adr/0004-vertical-slice-architecture-and-litellm.md) | 🟢 Принят | Переход на Vertical Slice Architecture и LiteLLM |
+| **Планы** | [Automation Plan](plans/v2-automation-implementation-plan.md) | 🟢 В работе | 5 спринтов интеграции Taskiq и автономного конвейера |
+| **Верификация** | [Automation Verification](runbooks/v2-automation-verification.md) | 🟢 Актуален | Приемочные тест-кейсы (Circuit Breaker, Anti-Loop, Lock) |
 
 ---
 
-## 🧭 Навигация по разделам
+## 🧭 Навигация по архитектуре v2
 
-### 1. Архитектура и стандарты разработки
-* **[Архитектура системы (`architecture.md`)](architecture.md)** — схемы компонентов, слои, каналы связи (HTTP REST, Redis Streams), контуры безопасности DLP и принципы надежного исполнения.
-* **[Руководство разработчика (`developer_guide.md`)](developer_guide.md)** — ключевые архитектурные инварианты («ПОЧЕМУ»), правила безопасности, межсервисные шины и стандарты кода.
-* **[Дорожная карта развития (`roadmap.md`)](plans/roadmap.md)** — стратегические горизонты развития 2026–2027 (AIOps, Hybrid RAG, Outage Detection).
-* **[Брендбук и дизайн-система (`brandbook.md`)](brandbook.md)** — манифест информации, цветовые токены и Zero-Emoji Policy.
+### 1. Архитектурные спецификации v2
+* **[V2 Architecture Blueprint (`architecture/v2-architecture-blueprint.md`)](architecture/v2-architecture-blueprint.md)** — вертикальные срезы `api/src/features/*`, чистое ядро `core/`, фоновый воркер `worker/` и веб-клиент `web/`.
+* **[Конвейер автопилота (`architecture/v2-automation-pipeline.md`)](architecture/v2-automation-pipeline.md)** — двухконтурная обработка заявок (Ко-пилот в UI vs Автопилот в Taskiq), шлюз релевантности, автономный диалоговый цикл.
+* **[Схемы данных и контракты (`architecture/v2-contracts-and-schemas.md`)](architecture/v2-contracts-and-schemas.md)** — таблицы `system_state`, `autopilot_policies`, `command_records`, DTO очередей Taskiq.
+* **[Доменная модель (`architecture/domain-model-and-contracts.md`)](architecture/domain-model-and-contracts.md)** — доменные инварианты Helpdesk, регламенты разделов 05 (Directum) и 09 (ЭЦП), Zero-Stub Policy.
 
 ### 2. Архитектурные решения (ADR)
+* **[ADR 0004: Vertical Slice Architecture & LiteLLM](adr/0004-vertical-slice-architecture-and-litellm.md)** — ликвидация зоопарка зависимостей, переход на модульный монорепозиторий v2.
 * **[ADR 0001: Transactional Command Platform](adr/0001-transactional-command-platform.md)** — транзакционный Outbox, идемпотентность и гарантированная доставка команд.
-* **[ADR 0002: Modular Worker Platform](adr/0002-modular-worker-platform.md)** — модульные хэндлеры действий, паттерн Functional Core / Imperative Shell.
-* **[ADR 0003: Asynchronous Batch Triage Platform](adr/0003-asynchronous-batch-triage-platform.md)** — неблокирующий анализ очередей (HTTP 202, Redis Hash/Set, SSE).
 
-### 3. Паспорта сервисов монорепозитория
-* **[Core API Gateway & Poller](services/core-api/README.md)** — центральный шлюз, Poller с Leader Lock, RAG, AI Hub, сценарный оркестратор и Swagger `/docs`.
-* **[Execution Worker](services/execution-worker/README.md)** — Windows-демон исполнения, Consumer Group, DLQ, Heartbeat и Human-in-the-Loop.
-* **[Desktop Companion](services/desktop-companion/README.md)** — нативный Windows tray-helper (Tauri 2) для локального запуска DameWare, LiteManager и RDP.
-* **[Helpdesk CLI](services/helpdesk-cli/README.md)** — машинный Tooling SDK агента AGY при обработке слэш-команд.
-  * **[Справочник Workflows и команд](services/helpdesk-cli/WORKFLOWS.md)** — сценарии взаимодействия инженера с AI-агентом (`/triage`, `/task`, `/diag`, `/screen`, `/kb`, `/sync`).
-* **[Shared Package (SSOT)](services/shared/README.md)** — единый источник правды для нормализации оборудования, сетевых экспресс-зондов и сериализации.
-* **[Telegram Bot](services/telegram-bot/README.md)** — тонкий мобильный клиент, гарантированная доставка Redis Streams (`XAUTOCLAIM`).
-* **[Intra Web (Operator & Admin Panel)](services/intra-web/README.md)** — React 19 интерфейс оператора очереди и консоль мониторинга.
-
-### 4. Регламенты эксплуатации (Runbooks)
-* **[Triage Lifecycle Operations](runbooks/triage-lifecycle.md)** — регламент управления ревизией логики анализа (`ANALYSIS_REVISION`), Redis-локи и правила повторного анализа.
+### 3. Регламенты эксплуатации (Runbooks)
+* **[V2 Automation Verification Runbook](runbooks/v2-automation-verification.md)** — сценарии верификации конвейера автопилота и приемочные тесты.
 * **[Identity Bootstrap](runbooks/identity-bootstrap.md)** — регламент инициализации доменной сервисной учетной записи и проверки прав Active Directory.
 * **[AI Production Readiness](runbooks/production-readiness-ai.md)** — границы автономности ИИ-модулей, защитные инварианты DLP и offline eval-gate.
 

@@ -6,7 +6,6 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
-
 class TriageDecisionDTO(BaseModel):
     action: str  # 'auto_classify', 'cancel_duplicate', 'redirect_service', 'manual_resolve'
     target_service_id: Optional[int] = None

@@ -299,18 +299,25 @@ class IntraServiceClient:
                 task_data["Attachments"] = raw["Attachments"]
             # Extract included status name if not in task_data
             status_id = task_data.get("StatusId")
-            if not task_data.get("StatusName") and status_id is not None:
-                try:
-                    s_id_int = int(status_id)
-                    if "Statuses" in raw and isinstance(raw["Statuses"], list):
-                        for s in raw["Statuses"]:
-                            if isinstance(s, dict) and s.get("Id") == s_id_int:
-                                task_data["StatusName"] = s.get("Name", "")
-                                break
-                    if not task_data.get("StatusName"):
-                        task_data["StatusName"] = DEFAULT_STATUS_MAP.get(s_id_int, f"Статус {status_id}")
-                except (ValueError, TypeError):
-                    pass
+            if not task_data.get("StatusName"):
+                if status_id is not None:
+                    try:
+                        s_id_int = int(status_id)
+                        if "Statuses" in raw and isinstance(raw["Statuses"], list):
+                            for s in raw["Statuses"]:
+                                if isinstance(s, dict) and s.get("Id") == s_id_int:
+                                    task_data["StatusName"] = s.get("Name", "")
+                                    break
+                        if not task_data.get("StatusName"):
+                            task_data["StatusName"] = DEFAULT_STATUS_MAP.get(s_id_int, f"Статус {status_id}")
+                    except (ValueError, TypeError):
+                        pass
+                elif "Statuses" in raw and isinstance(raw["Statuses"], list) and raw["Statuses"]:
+                    first_status = raw["Statuses"][0]
+                    if isinstance(first_status, dict):
+                        task_data["StatusName"] = first_status.get("Name", "")
+                        if "Id" in first_status and not task_data.get("StatusId"):
+                            task_data["StatusId"] = first_status.get("Id")
             # Extract included service name if not in task_data
             if "Services" in raw and isinstance(raw["Services"], list) and raw["Services"]:
                 if not task_data.get("ServiceName") and isinstance(raw["Services"][0], dict):

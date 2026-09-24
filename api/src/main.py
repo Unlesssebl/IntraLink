@@ -39,9 +39,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application startup and shutdown lifecycle manager."""
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION} [{settings.APP_ENV}]")
     try:
-        from core.database.base import Base
         import core.database.models  # noqa: F401
         from api.src.core.db import engine
+        from core.database.base import Base
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database schema verified (Base.metadata.create_all)")
