@@ -71,7 +71,6 @@ FIELD_NAME_MAP: Dict[str, str] = {
     "1509": "Доп. информация",
 }
 
-PC_NAME_REGEX = re.compile(r"^[a-zA-Z0-9_\-\.]{3,30}$")
 # Matches multi-segment PC hostnames like PC-BUHG-05, WS-SALES-10, PC-12345, NTEMW1020
 PC_EXTRACT_REGEX = re.compile(
     r"\b(?:[a-zA-Z]{2,10}(?:[-_][a-zA-Z0-9]{1,12})+|[a-zA-Z]{2,6}[\s\-_]?[0-9]{2,6})\b",
@@ -80,12 +79,44 @@ PC_EXTRACT_REGEX = re.compile(
 
 
 def normalize_pc_name(raw_pc: str) -> str:
-    """Normalize workstation hostname to clean uppercase NetBIOS format."""
+    """Normalize workstation hostname to clean uppercase format (e.g. WKS-XXXX or NTEMW1020).
+
+    Strips FQDN domain suffixes, spaces, special symbols, and converts pure digits or
+    wks variations into canonical WKS-XXXX notation. Preserves standard PC/WS/NTEMW prefixes.
+    """
     if not raw_pc:
         return ""
-    cleaned = raw_pc.strip().upper()
-    cleaned = cleaned.split(".")[0]
-    return cleaned
+    cleaned = raw_pc.strip()
+    # Strip FQDN domain suffix
+    cleaned = cleaned.split(".")[0].strip()
+    # Remove leading descriptive labels like "ПК: 1234", "хост #1234", "компьютер: "
+    cleaned = re.sub(
+        r"^(?:пк|хост|ноут|компьютер|arm|арм|host)\s*[:#№]\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    # Remove standalone labels before pure digits like "ПК 1020"
+    cleaned = re.sub(
+        r"^(?:пк|хост|ноут|компьютер|arm|арм)\s+(\d+)$",
+        r"\1",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = cleaned.strip(" #№.,;:()")
+    if not cleaned:
+        return ""
+
+    # Check if purely digits (e.g. "1020" or "0102") -> canonical WKS-XXXX
+    if cleaned.isdigit():
+        return f"WKS-{cleaned}"
+
+    # Handle WKS variants: wks_1020, wks-1020, wks1020, wks 1020 -> WKS-1020
+    m_wks = re.fullmatch(r"(?i)wks[\s\-_]*(\d+)", cleaned)
+    if m_wks:
+        return f"WKS-{m_wks.group(1)}"
+
+    return cleaned.upper()
 
 
 def extract_pc_names_from_text(text: str) -> List[str]:
@@ -95,10 +126,128 @@ def extract_pc_names_from_text(text: str) -> List[str]:
     matches = PC_EXTRACT_REGEX.findall(text)
     results: List[str] = []
     for m in matches:
+        # A valid computer hostname must contain at least one digit (avoids 'user_test', 'log_level')
+        if not any(ch.isdigit() for ch in m):
+            continue
         norm = normalize_pc_name(m)
         if norm and len(norm) >= 3 and norm not in results:
             results.append(norm)
     return results
+
+
+def normalize_printer_address(raw_address: str) -> str:
+    """Normalize IPv4 address or queue hostname for printers/MFUs.
+
+    Fixes typos with commas and spaces in IP addresses and validates 4 octets.
+    Converts queue names (e.g. SCSP 0001, ITTP 1000) to clean alphanumeric strings.
+    """
+    if not raw_address:
+        return ""
+    cleaned = raw_address.strip().strip(" #№.,;:()")
+    if not cleaned:
+        return ""
+
+    # IPv4 detection and cleanup (e.g. 10,244 1.20 -> 10.244.1.20)
+    ip_match = re.fullmatch(r"(\d{1,3})[.,\s]+(\d{1,3})[.,\s]+(\d{1,3})[.,\s]+(\d{1,3})", cleaned)
+    if ip_match:
+        octets = [int(p) for p in ip_match.groups()]
+        if all(0 <= o <= 255 for o in octets):
+            return ".".join(str(o) for o in octets)
+
+    # Queue name / Hostname (e.g. "SCSP 0001" -> "scsp0001", "ittp-1000" -> "ittp1000")
+    m_queue = re.fullmatch(r"([a-zA-Zа-яА-Я]+)[\s\-_]*(\d+)", cleaned)
+    if m_queue:
+        prefix = m_queue.group(1).lower()
+        # Homoglyphs transliteration
+        homoglyphs = str.maketrans("осваерхмтку", "ocwaerxmtku")
+        prefix = prefix.translate(homoglyphs)
+        return f"{prefix}{m_queue.group(2)}"
+
+    return cleaned.split(".")[0].strip()
+
+
+PRINTER_QUEUE_REGEX = re.compile(
+    r"\b[a-zA-Zа-яА-Я]{2,6}p[\s\-_]?[0-9]{2,6}\b",
+    re.IGNORECASE,
+)
+IPV4_REGEX = re.compile(
+    r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b"
+)
+
+
+def extract_printer_addresses_from_text(text: str) -> List[str]:
+    """Find potential IPv4 addresses and network queue names in text."""
+    if not text:
+        return []
+    results: List[str] = []
+
+    # 1. Search for IPv4 addresses
+    for m in IPV4_REGEX.finditer(text):
+        ip_candidate = m.group(0)
+        # Avoid version numbers (e.g. 1С:Предприятие 8.3.27.2214)
+        prefix = text[: m.start()].lower()
+        if any(v in prefix[-20:] for v in ("верси", "ver", "build", "платформ", "1с", "1c")):
+            continue
+        octets = [int(p) for p in ip_candidate.split(".")]
+        if all(0 <= o <= 255 for o in octets) and ip_candidate not in results:
+            results.append(ip_candidate)
+
+    # 2. Search for queue names (SCSP0001, ittp 1000)
+    for m in PRINTER_QUEUE_REGEX.finditer(text):
+        norm = normalize_printer_address(m.group(0))
+        if norm and norm not in results:
+            results.append(norm)
+
+    return results
+
+
+PRINTER_MODEL_PATTERNS = [
+    # HP
+    re.compile(
+        r"\b(?:HP|Hewlett[- ]Packard)\s+(?:Color\s+)?(?:LaserJet|DeskJet|PageWide)?\s*(?:Pro|Enterprise)?\s*(?:MFP\s+)?[A-Z0-9_-]+\b",
+        re.IGNORECASE,
+    ),
+    # Kyocera
+    re.compile(r"\bKyocera\s+(?:Ecosys|TASKalfa|FS)?\s*[A-Z0-9_-]+\b", re.IGNORECASE),
+    # Xerox
+    re.compile(r"\bXerox\s+(?:Phaser|WorkCentre|VersaLink|AltaLink|B\d{3}|C\d{3}|[0-9]{4})\b", re.IGNORECASE),
+    # Canon
+    re.compile(r"\bCanon\s+(?:i-SENSYS|imageRUNNER|LBP|MF)?\s*[A-Z0-9_-]+\b", re.IGNORECASE),
+    # Brother
+    re.compile(r"\bBrother\s+(?:DCP|HL|MFC)?[- ][A-Z0-9_-]+\b", re.IGNORECASE),
+    # Pantum
+    re.compile(r"\bPantum\s+[A-Z0-9_-]+\b", re.IGNORECASE),
+    # Label printers
+    re.compile(r"\b(?:Zebra|Godex)\s+[A-Z0-9_-]+\b", re.IGNORECASE),
+]
+
+
+def extract_printer_model_from_text(text: str) -> str:
+    """Find hardware vendor and printer model embedded in text."""
+    if not text:
+        return ""
+    for pat in PRINTER_MODEL_PATTERNS:
+        m = pat.search(text)
+        if m:
+            return m.group(0).strip()
+    return ""
+
+
+TARGET_USER_REGEX = re.compile(
+    r"(?i)(?:логин|учетная запись|учетка|пользователь|аккаунт|login|account|samaccountname)\s*[:=\-]\s*([a-zA-Z0-9_.\-]+)"
+)
+
+
+def extract_target_user_from_text(text: str) -> str:
+    """Extract domain username / sAMAccountName from text."""
+    if not text:
+        return ""
+    m = TARGET_USER_REGEX.search(text)
+    if m:
+        val = m.group(1).strip()
+        if len(val) >= 3:
+            return val
+    return ""
 
 
 def parse_custom_fields(data_xml: str | None) -> Tuple[ExtractedEntitiesDTO, Dict[str, str]]:
@@ -116,6 +265,9 @@ def parse_custom_fields(data_xml: str | None) -> Tuple[ExtractedEntitiesDTO, Dic
     department = ""
     user_name = ""
     email = ""
+    printer_address = ""
+    printer_model = ""
+    target_user = ""
 
     raw_fields: Dict[str, str] = {}
     for fid, val in matches:
@@ -133,6 +285,13 @@ def parse_custom_fields(data_xml: str | None) -> Tuple[ExtractedEntitiesDTO, Dic
             else:
                 pcs = extract_pc_names_from_text(v)
                 pc_name = ", ".join(pcs) if pcs else ""
+        elif fid in ("1104",):
+            norm_prn = normalize_printer_address(v)
+            printer_address = norm_prn if norm_prn else v
+        elif fid in ("1103",):
+            printer_model = v
+        elif fid in ("1488",):
+            target_user = v
         elif fid in ("1111",):
             inventory_number = v
         elif fid in ("1088", "1202", "1075", "1066", "1015", "1130"):
@@ -156,6 +315,9 @@ def parse_custom_fields(data_xml: str | None) -> Tuple[ExtractedEntitiesDTO, Dic
         if constructed:
             user_name = constructed
 
+    if not target_user and user_name:
+        target_user = user_name
+
     entities = ExtractedEntitiesDTO(
         pc_name=pc_name,
         phone=phone,
@@ -164,28 +326,56 @@ def parse_custom_fields(data_xml: str | None) -> Tuple[ExtractedEntitiesDTO, Dic
         user_name=user_name,
         email=email,
         inventory_number=inventory_number,
+        printer_address=printer_address,
+        printer_model=printer_model,
+        target_user=target_user,
     )
     return entities, friendly_fields
 
 
 def enrich_task_dict(task: Dict[str, Any]) -> Dict[str, Any]:
-    """Attach parsed custom field entities to raw task dictionary."""
+    """Attach parsed custom field entities to raw task dictionary with full fallbacks."""
     if not isinstance(task, dict):
         return task
 
     xml_data = task.get("CustomFieldData")
     entities, friendly = parse_custom_fields(xml_data)
 
-    task["entities"] = entities.model_dump()
+    task_entities = entities.model_dump()
+    task["entities"] = task_entities
     task["custom_fields"] = friendly
 
-    # Fallback PC search in task name or description if not filled in form
+    name = str(task.get("Name") or "")
+    desc = str(task.get("Description") or "")
+    full_text = f"{name} {desc}".strip()
+
+    # 1. Fallback PC search in task name or description
     if not task["entities"]["pc_name"]:
-        name_pcs = extract_pc_names_from_text(task.get("Name", ""))
-        desc_pcs = extract_pc_names_from_text(task.get("Description", ""))
-        candidates = list(dict.fromkeys(name_pcs + desc_pcs))
+        candidates = extract_pc_names_from_text(full_text)
         if candidates:
             task["entities"]["pc_name"] = ", ".join(candidates)
+
+    # 2. Fallback Printer Address search in name/description
+    if not task["entities"]["printer_address"]:
+        addrs = extract_printer_addresses_from_text(full_text)
+        if addrs:
+            task["entities"]["printer_address"] = addrs[0]
+
+    # 3. Fallback Printer Model search in name/description
+    if not task["entities"]["printer_model"]:
+        model = extract_printer_model_from_text(full_text)
+        if model:
+            task["entities"]["printer_model"] = model
+
+    # 4. Fallback Target User search in name/description
+    if not task["entities"]["target_user"]:
+        u = extract_target_user_from_text(full_text)
+        if u:
+            task["entities"]["target_user"] = u
+        elif task.get("ApplicantName"):
+            task["entities"]["target_user"] = str(task["ApplicantName"]).strip()
+        elif task["entities"].get("user_name"):
+            task["entities"]["target_user"] = task["entities"]["user_name"]
 
     return task
 

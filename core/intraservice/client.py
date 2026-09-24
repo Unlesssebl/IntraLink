@@ -4,6 +4,7 @@ import asyncio
 import base64
 import enum
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -142,13 +143,14 @@ class IntraServiceClient:
 
     def __init__(
         self,
-        base_url: str,
+        base_url: Optional[str] = None,
         auth_b64: Optional[str] = None,
         verify_ssl: bool = True,
         timeout: float = 30.0,
     ) -> None:
+        url = base_url or os.getenv("INTRASERVICE_URL", "https://servicedesk-pub.corporate.loc/api")
         # INVARIANT (GEMINI.md): Base URL must end with /api, no duplication allowed
-        cleaned_url = base_url.rstrip("/")
+        cleaned_url = url.rstrip("/")
         if not cleaned_url.endswith("/api"):
             cleaned_url = f"{cleaned_url}/api"
         self.base_url = cleaned_url

@@ -54,3 +54,55 @@ def test_enrich_task_dict_fallback_pc_detection():
     }
     enriched = enrich_task_dict(task_raw)
     assert enriched["entities"]["pc_name"] == "PC-SALES-10"
+
+
+def test_normalize_pc_name_wks_and_digits():
+    assert normalize_pc_name("wks_1020") == "WKS-1020"
+    assert normalize_pc_name("WKS1020") == "WKS-1020"
+    assert normalize_pc_name("1020") == "WKS-1020"
+    assert normalize_pc_name("ПК: 4521") == "WKS-4521"
+    assert normalize_pc_name("  wks-99.corporate.loc  ") == "WKS-99"
+
+
+def test_extract_printer_address_and_model_from_fields():
+    xml = """
+    <fields>
+        <field id="1089">WKS-4020</field>
+        <field id="1103">Kyocera Ecosys M2040dn</field>
+        <field id="1104">10,244 1.25</field>
+        <field id="1488">a.smirnov</field>
+    </fields>
+    """
+    entities, friendly = parse_custom_fields(xml)
+    assert entities.pc_name == "WKS-4020"
+    assert entities.printer_model == "Kyocera Ecosys M2040dn"
+    assert entities.printer_address == "10.244.1.25"
+    assert entities.target_user == "a.smirnov"
+    assert friendly["Модель принтера"] == "Kyocera Ecosys M2040dn"
+    assert friendly["IP принтера"] == "10,244 1.25"
+
+
+def test_extract_printer_address_and_model_from_text_fallback():
+    task_raw = {
+        "Id": 1002,
+        "Name": "Подключить принтер HP LaserJet Pro M404dn к WKS-0050",
+        "Description": "Сетевой адрес принтера 10.244.20.15, логин: user_test",
+        "CustomFieldData": None,
+    }
+    enriched = enrich_task_dict(task_raw)
+    assert enriched["entities"]["pc_name"] == "WKS-0050"
+    assert enriched["entities"]["printer_model"] == "HP LaserJet Pro M404dn"
+    assert enriched["entities"]["printer_address"] == "10.244.20.15"
+    assert enriched["entities"]["target_user"] == "user_test"
+
+
+def test_extract_printer_queue_name():
+    task_raw = {
+        "Id": 1003,
+        "Name": "Не печатает МФУ SCSP 0001",
+        "Description": "В бухгалтерии зависла очередь печати",
+        "CustomFieldData": None,
+    }
+    enriched = enrich_task_dict(task_raw)
+    assert enriched["entities"]["printer_address"] == "scsp0001"
+

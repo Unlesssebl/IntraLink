@@ -18,8 +18,23 @@ class ExtractedEntitiesDTO(BaseModel):
     user_name: str = ""
     email: str = ""
     inventory_number: str = ""
+    printer_address: str = ""
+    printer_model: str = ""
+    target_user: str = ""
 
-    @field_validator("pc_name", "phone", "room", "department", "user_name", "email", "inventory_number", mode="before")
+    @field_validator(
+        "pc_name",
+        "phone",
+        "room",
+        "department",
+        "user_name",
+        "email",
+        "inventory_number",
+        "printer_address",
+        "printer_model",
+        "target_user",
+        mode="before",
+    )
     @classmethod
     def coerce_entities_to_str(cls, v: Any) -> str:
         return "" if v is None else str(v)
@@ -101,6 +116,17 @@ class TaskDTO(BaseModel):
 
     # Attachments
     attachments: List[AttachmentDTO] = Field(default_factory=list, alias="Attachments")
+
+    def get_executor_ids(self) -> List[int]:
+        """Parse comma-separated ExecutorIds string into a list of integer IDs."""
+        if not self.executor_ids:
+            return []
+        result = []
+        for part in str(self.executor_ids).split(","):
+            part = part.strip()
+            if part.isdigit():
+                result.append(int(part))
+        return result
 
 
 class TaskLifetimeEventDTO(BaseModel):
