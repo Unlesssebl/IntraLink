@@ -210,7 +210,7 @@ export default function App() {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Topbar */}
-        <header className="h-11 border-b border-neutral-800/80 bg-[#0b0e15] px-4 flex items-center justify-between shrink-0">
+        <header className="h-11 border-b border-neutral-800/80 bg-[#0e1013] px-4 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2 text-xs text-neutral-400">
             <span>IntraLink</span>
             <span>/</span>
@@ -230,7 +230,7 @@ export default function App() {
                 value={searchTicketQuery}
                 onChange={(e) => setSearchTicketQuery(e.target.value)}
                 placeholder="Поиск по #ID..."
-                className="w-full bg-[#10141d] border border-neutral-800 rounded pl-8 pr-3 py-1 text-xs text-neutral-200 placeholder:text-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-400 focus:border-neutral-500 font-mono"
+                className="w-full bg-[#121316] border border-neutral-800 rounded pl-8 pr-3 py-1 text-xs text-neutral-200 placeholder:text-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-400 focus:border-neutral-500 font-mono"
               />
             </form>
 

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Search, Sparkles, BookOpen, Copy, Check } from "lucide-react";
 import { Button, Input, Card, Badge } from "@/shared/ui";
 import { kbApi, KBSearchResultItem, KBAskResponse } from "@/shared/api";
@@ -11,27 +11,47 @@ export const KBSearch: React.FC = () => {
   const [askResult, setAskResult] = useState<KBAskResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const searchAbortRef = React.useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (searchAbortRef.current) {
+        searchAbortRef.current.abort();
+      }
+    };
+  }, []);
 
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!query.trim()) return;
 
+    if (searchAbortRef.current) {
+      searchAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+
     try {
       setLoading(true);
       setError(null);
       if (mode === "ask") {
-        const res = await kbApi.ask(query.trim(), 4);
+        const res = await kbApi.ask(query.trim(), 4, controller.signal);
+        if (controller.signal.aborted) return;
         setAskResult(res);
         setSearchResults([]);
       } else {
-        const res = await kbApi.search(query.trim(), 6);
+        const res = await kbApi.search(query.trim(), 6, 0.5, controller.signal);
+        if (controller.signal.aborted) return;
         setSearchResults(res);
         setAskResult(null);
       }
     } catch (err: any) {
+      if (controller.signal.aborted || err.name === "AbortError") return;
       setError(err?.message || "Ошибка при поиске по базе знаний");
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
   };
 

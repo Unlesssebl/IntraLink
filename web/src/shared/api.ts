@@ -307,16 +307,18 @@ export const triageApi = {
 };
 
 export const kbApi = {
-  search: (query: string, limit: number = 5, threshold: number = 0.5) =>
+  search: (query: string, limit: number = 5, threshold: number = 0.5, signal?: AbortSignal) =>
     request<KBSearchResultItem[]>("/kb/search", {
       method: "POST",
       body: JSON.stringify({ query, limit, threshold }),
+      signal,
     }),
 
-  ask: (query: string, limit: number = 5) =>
+  ask: (query: string, limit: number = 5, signal?: AbortSignal) =>
     request<KBAskResponse>("/kb/ask", {
       method: "POST",
       body: JSON.stringify({ query, limit }),
+      signal,
     }),
 };
 
@@ -326,8 +328,8 @@ export const diagnosticsApi = {
 };
 
 export const reportsApi = {
-  getLoad: (year: number, month: number) =>
-    request<LoadReport>(`/reports/load?year=${year}&month=${month}`),
+  getLoad: (year: number, month: number, signal?: AbortSignal) =>
+    request<LoadReport>(`/reports/load?year=${year}&month=${month}`, { signal }),
 
   getExportUrl: (year: number, month: number) =>
     `${BASE_URL}/reports/export?year=${year}&month=${month}`,

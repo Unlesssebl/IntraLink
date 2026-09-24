@@ -13,21 +13,38 @@ export const LoadReport: React.FC = () => {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const reportAbortRef = React.useRef<AbortController | null>(null);
+
   const fetchReport = async () => {
+    if (reportAbortRef.current) {
+      reportAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    reportAbortRef.current = controller;
+
     try {
       setLoading(true);
       setError(null);
-      const res = await reportsApi.getLoad(year, month);
+      const res = await reportsApi.getLoad(year, month, controller.signal);
+      if (controller.signal.aborted) return;
       setData(res);
     } catch (err: any) {
+      if (controller.signal.aborted || err.name === "AbortError") return;
       setError(err?.message || "Ошибка загрузки отчета нагрузки");
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
     fetchReport();
+    return () => {
+      if (reportAbortRef.current) {
+        reportAbortRef.current.abort();
+      }
+    };
   }, [year, month]);
 
   const handleExport = () => {
