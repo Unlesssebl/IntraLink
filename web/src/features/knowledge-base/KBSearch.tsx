@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { Search, Sparkles, BookOpen, Copy, Check } from "lucide-react";
 import { Button, Input, Card, Badge } from "@/shared/ui";
 import { kbApi, KBSearchResultItem, KBAskResponse } from "@/shared/api";
@@ -6,54 +7,41 @@ import { kbApi, KBSearchResultItem, KBAskResponse } from "@/shared/api";
 export const KBSearch: React.FC = () => {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"search" | "ask">("ask");
-  const [loading, setLoading] = useState(false);
   const [searchResults, setSearchResults] = useState<KBSearchResultItem[]>([]);
   const [askResult, setAskResult] = useState<KBAskResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
-  const searchAbortRef = React.useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    return () => {
-      if (searchAbortRef.current) {
-        searchAbortRef.current.abort();
+  const searchMutation = useMutation({
+    mutationFn: async ({ q, m }: { q: string; m: "search" | "ask" }) => {
+      if (m === "ask") {
+        const data = await kbApi.ask(q, 4);
+        return { type: "ask" as const, askData: data, searchData: null };
+      } else {
+        const data = await kbApi.search(q, 6);
+        return { type: "search" as const, askData: null, searchData: data };
       }
-    };
-  }, []);
-
-  const handleSearch = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!query.trim()) return;
-
-    if (searchAbortRef.current) {
-      searchAbortRef.current.abort();
-    }
-    const controller = new AbortController();
-    searchAbortRef.current = controller;
-
-    try {
-      setLoading(true);
-      setError(null);
-      if (mode === "ask") {
-        const res = await kbApi.ask(query.trim(), 4, controller.signal);
-        if (controller.signal.aborted) return;
-        setAskResult(res);
+    },
+    onSuccess: (res) => {
+      if (res.type === "ask") {
+        setAskResult(res.askData);
         setSearchResults([]);
       } else {
-        const res = await kbApi.search(query.trim(), 6, 0.5, controller.signal);
-        if (controller.signal.aborted) return;
-        setSearchResults(res);
+        setSearchResults(res.searchData || []);
         setAskResult(null);
       }
-    } catch (err: any) {
-      if (controller.signal.aborted || err.name === "AbortError") return;
-      setError(err?.message || "Ошибка при поиске по базе знаний");
-    } finally {
-      if (!controller.signal.aborted) {
-        setLoading(false);
-      }
-    }
+    },
+  });
+
+  const handleSearch = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!query.trim()) return;
+    searchMutation.mutate({ q: query.trim(), m: mode });
   };
+
+  const loading = searchMutation.isPending;
+  const error = searchMutation.error
+    ? (searchMutation.error as any)?.message || "Ошибка при поиске по базе знаний"
+    : null;
 
   const copyToClipboard = (text: string, id: number) => {
     navigator.clipboard.writeText(text);

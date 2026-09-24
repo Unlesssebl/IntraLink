@@ -8,12 +8,8 @@ import {
 } from "lucide-react";
 import { Button, Badge, KbdBadge } from "@/shared/ui";
 import { TicketRow } from "./TicketRow";
-import {
-  ticketsApi,
-  triageApi,
-  TicketListItem,
-  TriageResult,
-} from "@/shared/api";
+import { useTicketQueue } from "@/features/tickets/queries";
+import { triageApi, TicketListItem, TriageResult } from "@/shared/api";
 
 export interface TriageQueueProps {
   onSelectTicket: (ticketId: number) => void;
@@ -26,53 +22,27 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
   onSelectTicket,
   selectedTicketId,
 }) => {
-  const [tickets, setTickets] = useState<TicketListItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    data: tickets = [],
+    isLoading,
+    isFetching,
+    error,
+    refetch,
+  } = useTicketQueue(984);
+
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<FilterCategory>("all");
 
   // AI Classification cache: ticketId -> TriageResult
   const [triageResults, setTriageResults] = useState<Record<number, TriageResult>>({});
   const [classifyingId, setClassifyingId] = useState<number | null>(null);
-  const queueAbortRef = React.useRef<AbortController | null>(null);
 
-  const fetchQueue = async () => {
-    if (queueAbortRef.current) {
-      queueAbortRef.current.abort();
-    }
-    const controller = new AbortController();
-    queueAbortRef.current = controller;
-
-    try {
-      setLoading(true);
-      setError(null);
-      // Filter 984 = standard 1st line queue
-      const list = await ticketsApi.list({ filter_id: 984, limit: 50 }, controller.signal);
-      if (controller.signal.aborted) return;
-      setTickets(list);
-      // Auto-select first ticket if none selected
-      if (!selectedTicketId && list.length > 0) {
-        onSelectTicket(list[0].id);
-      }
-    } catch (err: any) {
-      if (controller.signal.aborted || err.name === "AbortError") return;
-      setError(err?.message || "Не удалось загрузить очередь заявок");
-    } finally {
-      if (!controller.signal.aborted) {
-        setLoading(false);
-      }
-    }
-  };
-
+  // Auto-select first ticket if none selected
   useEffect(() => {
-    fetchQueue();
-    return () => {
-      if (queueAbortRef.current) {
-        queueAbortRef.current.abort();
-      }
-    };
-  }, []);
+    if (!selectedTicketId && tickets.length > 0) {
+      onSelectTicket(tickets[0].id);
+    }
+  }, [tickets, selectedTicketId, onSelectTicket]);
 
   // Filtered tickets memo
   const filteredTickets = useMemo(() => {
@@ -113,7 +83,6 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
   // Keyboard navigation: J/K or Up/Down arrows to switch tickets
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if typing in input or textarea
       const tag = (document.activeElement?.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea") return;
 
@@ -176,9 +145,9 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
             <Button
               size="sm"
               variant="secondary"
-              loading={loading}
-              icon={<RefreshCw className="w-3.5 h-3.5" />}
-              onClick={fetchQueue}
+              loading={isFetching}
+              icon={<RefreshCw className={`w-3.5 h-3.5 ${isFetching ? "animate-spin" : ""}`} />}
+              onClick={() => refetch()}
               title="Обновить список"
             />
           </div>
@@ -255,7 +224,7 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
       {error && (
         <div className="p-3 m-3 bg-rose-950/40 border border-rose-800/60 rounded text-xs text-rose-300 flex items-start gap-2">
           <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-          <span>{error}</span>
+          <span>{(error as any)?.message || "Не удалось загрузить очередь заявок"}</span>
         </div>
       )}
 
@@ -273,7 +242,7 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
           />
         ))}
 
-        {!loading && filteredTickets.length === 0 && (
+        {!isLoading && filteredTickets.length === 0 && (
           <div className="text-center py-12 px-4 space-y-2">
             <CheckCheck className="w-7 h-7 text-emerald-500 mx-auto" />
             <h4 className="text-xs font-semibold text-neutral-200">

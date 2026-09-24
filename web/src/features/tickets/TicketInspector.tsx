@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState } from "react";
 import {
   X,
   Maximize2,
@@ -19,55 +19,54 @@ import { Badge, StatusDot, Lightbox, KbdBadge } from "@/shared/ui";
 import { HostBadge } from "@/features/diagnostics/HostBadge";
 import { RAGSuggestion } from "@/features/knowledge-base/RAGSuggestion";
 import { ActionDock } from "./ActionDock";
+import { TicketAttachment } from "@/shared/api";
 import {
-  ticketsApi,
-  TicketDetail,
-  TicketLifetimeEvent,
-  TicketAttachment,
-} from "@/shared/api";
+  useTicketDetail,
+  useTicketLifetime,
+  useTicketActions,
+} from "./queries";
 
 export interface TicketInspectorProps {
   ticketId: number | null;
   onClose: () => void;
-  onTicketUpdated?: () => void;
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
-}
-
-// In-Memory SWR Cache for instant 0ms ticket switching
-interface CachedTicket {
-  ticket: TicketDetail;
-  events: TicketLifetimeEvent[];
-  cachedAt: number;
-}
-const TICKET_CACHE = new Map<number, CachedTicket>();
-const MAX_CACHE_SIZE = 60;
-const CACHE_TTL_MS = 60000; // 1 minute fresh TTL
-
-function setTicketCache(id: number, data: { ticket: TicketDetail; events: TicketLifetimeEvent[] }) {
-  if (TICKET_CACHE.size >= MAX_CACHE_SIZE) {
-    const oldestKey = TICKET_CACHE.keys().next().value;
-    if (oldestKey !== undefined) TICKET_CACHE.delete(oldestKey);
-  }
-  TICKET_CACHE.set(id, { ...data, cachedAt: Date.now() });
-}
-
-function invalidateTicketCache(id: number) {
-  TICKET_CACHE.delete(id);
 }
 
 export const TicketInspector: React.FC<TicketInspectorProps> = ({
   ticketId,
   onClose,
-  onTicketUpdated,
   isFullscreen = false,
   onToggleFullscreen,
 }) => {
-  const [ticket, setTicket] = useState<TicketDetail | null>(null);
-  const [events, setEvents] = useState<TicketLifetimeEvent[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busyAction, setBusyAction] = useState(false);
+  // 1. Data queries (auto-cached, automatic cancellation, 0ms placeholderData)
+  const {
+    data: ticket,
+    isLoading: ticketLoading,
+    isFetching: ticketFetching,
+    error: ticketError,
+  } = useTicketDetail(ticketId);
+
+  const {
+    data: events = [],
+    isFetching: eventsFetching,
+  } = useTicketLifetime(ticketId);
+
+  // 2. Declarative mutations with automatic query invalidation
+  const {
+    takeMutation,
+    resolveMutation,
+    duplicateMutation,
+    redirectMutation,
+    addCommentMutation,
+  } = useTicketActions();
+
+  const isBusy =
+    takeMutation.isPending ||
+    resolveMutation.isPending ||
+    duplicateMutation.isPending ||
+    redirectMutation.isPending ||
+    addCommentMutation.isPending;
 
   // Lightbox preview for screenshots
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -76,179 +75,49 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
   // Comment draft synced with RAG suggestions
   const [commentDraft, setCommentDraft] = useState("");
 
-  // Request cancellation and debounce references
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const loadTicketData = useCallback(async (id: number, isForceRefresh = false) => {
-    // 1. Cancel previous in-flight request immediately!
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    // 2. Check SWR cache for instant render
-    const cached = TICKET_CACHE.get(id);
-    const isCacheFresh = cached && Date.now() - cached.cachedAt < CACHE_TTL_MS;
-
-    if (cached && !isForceRefresh) {
-      setTicket(cached.ticket);
-      setEvents(cached.events);
-      setError(null);
-      setLoading(false);
-      // If cache is fresh, skip background re-fetch
-      if (isCacheFresh) {
-        return;
-      }
-    } else {
-      setLoading(true);
-      setError(null);
-    }
-
-    // 3. Fetch from API with abort signal
-    try {
-      const [ticketData, lifetimeData] = await Promise.all([
-        ticketsApi.get(id, controller.signal),
-        ticketsApi.getLifetime(id, controller.signal).catch((err) => {
-          if (err.name === "AbortError") throw err;
-          return [];
-        }),
-      ]);
-
-      if (controller.signal.aborted) return;
-
-      setTicketCache(id, { ticket: ticketData, events: lifetimeData });
-      setTicket(ticketData);
-      setEvents(lifetimeData);
-      setError(null);
-    } catch (err: any) {
-      if (controller.signal.aborted || err.name === "AbortError") {
-        return;
-      }
-      setError(err?.message || "Не удалось загрузить данные заявки");
-    } finally {
-      if (!controller.signal.aborted) {
-        setLoading(false);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!ticketId) {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
-      }
-      setTicket(null);
-      setEvents([]);
-      setLoading(false);
-      return;
-    }
-
-    // Fast-path: if ticket is already in cache, show it instantly without waiting for debounce
-    const cached = TICKET_CACHE.get(ticketId);
-    if (cached) {
-      setTicket(cached.ticket);
-      setEvents(cached.events);
-      setError(null);
-      setLoading(false);
-    }
-
-    // Debounce network requests by 60ms so rapid keyboard switching (J/K) doesn't flood the network
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-    }
-
-    debounceTimerRef.current = setTimeout(() => {
-      loadTicketData(ticketId);
-    }, 60);
-
-    return () => {
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
-      }
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
-  }, [ticketId, loadTicketData]);
-
-  // Handle action callbacks with cache invalidation
+  // Handlers for ActionDock
   const handleTake = async () => {
     if (!ticketId) return;
     try {
-      setBusyAction(true);
-      await ticketsApi.take(ticketId);
-      invalidateTicketCache(ticketId);
-      await loadTicketData(ticketId, true);
-      if (onTicketUpdated) onTicketUpdated();
+      await takeMutation.mutateAsync(ticketId);
     } catch (err: any) {
       alert(`Ошибка: ${err?.message}`);
-    } finally {
-      setBusyAction(false);
     }
   };
 
   const handleResolve = async (comment: string) => {
     if (!ticketId) return;
     try {
-      setBusyAction(true);
-      await ticketsApi.resolve(ticketId, comment);
-      invalidateTicketCache(ticketId);
-      await loadTicketData(ticketId, true);
-      if (onTicketUpdated) onTicketUpdated();
+      await resolveMutation.mutateAsync({ id: ticketId, comment });
     } catch (err: any) {
       alert(`Ошибка закрытия: ${err?.message}`);
-    } finally {
-      setBusyAction(false);
     }
   };
 
   const handleDuplicate = async (masterId: number, comment: string) => {
     if (!ticketId) return;
     try {
-      setBusyAction(true);
-      await ticketsApi.cancel(ticketId, comment, `Дубликат заявки #${masterId}`);
-      invalidateTicketCache(ticketId);
-      await loadTicketData(ticketId, true);
-      if (onTicketUpdated) onTicketUpdated();
+      await duplicateMutation.mutateAsync({ id: ticketId, masterId, comment });
     } catch (err: any) {
       alert(`Ошибка отмены дубликата: ${err?.message}`);
-    } finally {
-      setBusyAction(false);
     }
   };
 
   const handleRedirect = async (serviceId: number, comment: string) => {
     if (!ticketId) return;
     try {
-      setBusyAction(true);
-      await ticketsApi.redirect(ticketId, serviceId, comment);
-      invalidateTicketCache(ticketId);
-      await loadTicketData(ticketId, true);
-      if (onTicketUpdated) onTicketUpdated();
+      await redirectMutation.mutateAsync({ id: ticketId, serviceId, comment });
     } catch (err: any) {
       alert(`Ошибка перенаправления: ${err?.message}`);
-    } finally {
-      setBusyAction(false);
     }
   };
 
   const handleAddComment = async (comment: string, isPrivate: boolean) => {
     if (!ticketId) return;
     try {
-      setBusyAction(true);
-      await ticketsApi.addComment(ticketId, comment, isPrivate);
-      invalidateTicketCache(ticketId);
-      await loadTicketData(ticketId, true);
-      if (onTicketUpdated) onTicketUpdated();
+      await addCommentMutation.mutateAsync({ id: ticketId, comment, isPrivate });
     } catch (err: any) {
       alert(`Ошибка добавления комментария: ${err?.message}`);
-    } finally {
-      setBusyAction(false);
     }
   };
 
@@ -259,7 +128,7 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
 
   const handleAttachmentClick = (att: TicketAttachment) => {
     if (!ticketId) return;
-    const url = ticketsApi.getAttachmentUrl(ticketId, att.id || att.Id);
+    const url = `/api/v2/tickets/${ticketId}/attachments/${att.id || att.Id}`;
     if (isImageAttachment(att.name || att.Name || "")) {
       setLightboxSrc(url);
       setLightboxAlt(att.name || att.Name || "Вложение заявки");
@@ -282,6 +151,8 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
       </div>
     );
   }
+
+  const isBackgroundFetching = ticketFetching || eventsFetching;
 
   return (
     <>
@@ -347,16 +218,28 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
           </div>
         </div>
 
+        {/* Linear-style Delicate 1.5px Progress Bar */}
+        {isBackgroundFetching && (
+          <div className="h-[2px] w-full bg-neutral-900 overflow-hidden shrink-0">
+            <div className="h-full bg-neutral-400 animate-pulse w-full" />
+          </div>
+        )}
+
         {/* Scrollable Content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
-          {loading ? (
-            <div className="flex items-center justify-center py-20 text-neutral-400 text-xs">
-              Загрузка карточки заявки #{ticketId}...
-            </div>
-          ) : error ? (
+          {ticketError ? (
             <div className="p-4 bg-rose-950/40 border border-rose-800/60 rounded text-rose-300 flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{error}</span>
+              <span>{(ticketError as any)?.message || "Не удалось загрузить карточку заявки"}</span>
+            </div>
+          ) : !ticket && ticketLoading ? (
+            /* Linear Skeleton loading when no placeholder is available */
+            <div className="space-y-4 animate-pulse">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="h-28 bg-[#121316] rounded border border-neutral-800/80" />
+                <div className="h-28 bg-[#121316] rounded border border-neutral-800/80" />
+              </div>
+              <div className="h-32 bg-[#121316] rounded border border-neutral-800/80" />
             </div>
           ) : ticket ? (
             <>
@@ -377,7 +260,7 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
                   <div className="space-y-1 text-neutral-400 text-[11px] pt-1.5 border-t border-neutral-800/80">
                     {(ticket.applicant_phone || ticket.entities?.phone) && (
                       <div className="flex items-center gap-1.5">
-                        <Phone className="w-3 h-3 text-neutral-500 shrink-0" />
+                        <Phone className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
                         <a
                           href={`tel:${ticket.applicant_phone || ticket.entities?.phone}`}
                           className="hover:text-white transition-colors font-mono"
@@ -388,7 +271,7 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
                     )}
                     {(ticket.applicant_email || ticket.entities?.email) && (
                       <div className="flex items-center gap-1.5 truncate">
-                        <Mail className="w-3 h-3 text-neutral-500 shrink-0" />
+                        <Mail className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
                         <a
                           href={`mailto:${ticket.applicant_email || ticket.entities?.email}`}
                           className="hover:text-white transition-colors truncate"
@@ -399,13 +282,13 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
                     )}
                     {ticket.entities?.department && (
                       <div className="flex items-center gap-1.5 truncate">
-                        <Building className="w-3 h-3 text-neutral-500 shrink-0" />
+                        <Building className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
                         <span className="truncate">{ticket.entities.department}</span>
                       </div>
                     )}
                     {ticket.entities?.room && (
                       <div className="flex items-center gap-1.5">
-                        <MapPin className="w-3 h-3 text-neutral-500 shrink-0" />
+                        <MapPin className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
                         <span>Кабинет: {ticket.entities.room}</span>
                       </div>
                     )}
@@ -421,7 +304,7 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
                   <div className="flex items-center justify-between gap-2">
                     <HostBadge host={ticket.entities?.pc_name || ticket.pc_name} />
                     <div className="flex items-center gap-1 text-[11px] text-neutral-400 font-mono">
-                      <Clock className="w-3 h-3 text-neutral-500" />
+                      <Clock className="w-3.5 h-3.5 text-neutral-500" />
                       <span>
                         {ticket.created ? new Date(ticket.created).toLocaleString("ru-RU") : ""}
                       </span>
@@ -467,11 +350,19 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
                   Описание проблемы
                 </div>
                 <div className="p-3.5 bg-[#101114] border border-neutral-800/80 rounded text-neutral-200 whitespace-pre-wrap leading-relaxed select-text font-normal">
-                  {ticket.description || "(Текст описания отсутствует)"}
+                  {ticket.description ? (
+                    ticket.description
+                  ) : ticketFetching ? (
+                    <div className="text-neutral-500 italic py-1 animate-pulse">
+                      Загрузка полного текста заявки...
+                    </div>
+                  ) : (
+                    <span className="text-neutral-500 italic">Описание отсутствует</span>
+                  )}
                 </div>
               </div>
 
-              {/* Attachments / Screenshots Gallery */}
+              {/* Attachments Section */}
               {ticket.attachments && ticket.attachments.length > 0 && (
                 <div className="space-y-2">
                   <div className="flex items-center gap-1.5 text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">
@@ -479,27 +370,23 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
                     <span>Вложения ({ticket.attachments.length})</span>
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                    {ticket.attachments.map((att, idx) => {
-                      const attId = att.id || att.Id;
-                      const attName = att.name || att.Name || `Файл #${attId}`;
-                      const isImg = isImageAttachment(attName);
-                      const downloadUrl = ticketsApi.getAttachmentUrl(ticket.id, attId);
-
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {ticket.attachments.map((att: TicketAttachment) => {
+                      const isImg = isImageAttachment(att.name || att.Name || "");
                       return (
                         <div
-                          key={attId || idx}
+                          key={att.id || att.Id}
                           onClick={() => handleAttachmentClick(att)}
                           className="group p-2 bg-[#121316] border border-neutral-800/80 hover:border-neutral-600 rounded cursor-pointer transition-all flex items-center gap-2"
                         >
                           {isImg ? (
                             <div className="w-9 h-9 rounded bg-[#18191d] flex items-center justify-center shrink-0 overflow-hidden border border-neutral-800">
                               <img
-                                src={downloadUrl}
-                                alt={attName}
+                                src={`/api/v2/tickets/${ticket.id}/attachments/${att.id || att.Id}`}
+                                alt={att.name || att.Name}
                                 className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                                 onError={(e) => {
-                                  (e.currentTarget as HTMLElement).style.display = "none";
+                                  (e.target as HTMLElement).style.display = "none";
                                 }}
                               />
                             </div>
@@ -510,8 +397,8 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
                           )}
 
                           <div className="min-w-0 flex-1">
-                            <div className="text-[11px] font-medium text-neutral-200 truncate group-hover:text-white">
-                              {attName}
+                            <div className="text-xs text-neutral-200 truncate group-hover:text-white font-medium">
+                              {att.name || att.Name}
                             </div>
                             <div className="text-[10px] text-neutral-500">
                               {isImg ? "Изображение (клик для зума)" : "Документ"}
@@ -531,6 +418,11 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
                     <MessageSquare className="w-3.5 h-3.5 text-neutral-400" />
                     История переписки и событий ({events.length})
                   </span>
+                  {eventsFetching && (
+                    <span className="text-[10px] text-neutral-500 animate-pulse font-normal lowercase">
+                      обновление...
+                    </span>
+                  )}
                 </div>
 
                 <div className="space-y-2">
@@ -592,7 +484,7 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
 
                   {events.length === 0 && (
                     <div className="text-center py-6 text-neutral-500 italic text-[11px]">
-                      История изменений пока отсутствует
+                      {eventsFetching ? "Загрузка истории..." : "История изменений пока отсутствует"}
                     </div>
                   )}
                 </div>
@@ -612,7 +504,7 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
             onDuplicate={handleDuplicate}
             onRedirect={handleRedirect}
             onAddComment={handleAddComment}
-            isBusy={busyAction}
+            isBusy={isBusy}
             commentDraft={commentDraft}
             onCommentDraftChange={setCommentDraft}
           />

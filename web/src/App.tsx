@@ -24,9 +24,13 @@ import {
   clearStoredAuth,
 } from "@/shared/api";
 
+import { useQueryClient } from "@tanstack/react-query";
+import { ticketKeys } from "@/features/tickets/queries";
+
 type Tab = "triage" | "kb" | "reports";
 
 export default function App() {
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<Tab>("triage");
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null);
   const [isInspectorFullscreen, setIsInspectorFullscreen] = useState(false);
@@ -40,7 +44,6 @@ export default function App() {
   const [passwordInput, setPasswordInput] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [queueRefreshKey, setQueueRefreshKey] = useState(0);
 
   const checkHealth = async () => {
     try {
@@ -87,7 +90,7 @@ export default function App() {
       setCurrentUser(res.login);
       setAuthModalOpen(false);
       setPasswordInput("");
-      setQueueRefreshKey((prev) => prev + 1);
+      queryClient.invalidateQueries({ queryKey: ticketKeys.all });
     } catch (err: any) {
       setAuthError(err?.message || "Ошибка авторизации");
     } finally {
@@ -98,7 +101,7 @@ export default function App() {
   const handleLogout = () => {
     clearStoredAuth();
     setCurrentUser(null);
-    setQueueRefreshKey((prev) => prev + 1);
+    queryClient.invalidateQueries({ queryKey: ticketKeys.all });
   };
 
   return (
@@ -248,49 +251,41 @@ export default function App() {
         </header>
 
         {/* Viewport Content */}
-        {activeTab === "triage" && (
-          <div className="flex-1 flex overflow-hidden">
-            {/* Master Column: Triage Queue */}
-            {!isInspectorFullscreen && (
-              <div className="w-[380px] lg:w-[410px] shrink-0 h-full flex flex-col">
-                <TriageQueue
-                  key={queueRefreshKey}
-                  onSelectTicket={(id) => setSelectedTicketId(id)}
-                  selectedTicketId={selectedTicketId}
-                />
-              </div>
-            )}
-
-            {/* Detail Column: Modular Inspector */}
-            <div className="flex-1 h-full flex flex-col min-w-0 bg-[#08090a]">
-              <TicketInspector
-                ticketId={selectedTicketId}
-                onClose={() => setSelectedTicketId(null)}
-                onTicketUpdated={() => setQueueRefreshKey((prev) => prev + 1)}
-                isFullscreen={isInspectorFullscreen}
-                onToggleFullscreen={() =>
-                  setIsInspectorFullscreen(!isInspectorFullscreen)
-                }
+        <div className={`flex-1 flex overflow-hidden ${activeTab === "triage" ? "" : "hidden"}`}>
+          {/* Master Column: Triage Queue */}
+          {!isInspectorFullscreen && (
+            <div className="w-[380px] lg:w-[410px] shrink-0 h-full flex flex-col">
+              <TriageQueue
+                onSelectTicket={(id) => setSelectedTicketId(id)}
+                selectedTicketId={selectedTicketId}
               />
             </div>
+          )}
+
+          {/* Detail Column: Modular Inspector */}
+          <div className="flex-1 h-full flex flex-col min-w-0 bg-[#08090a]">
+            <TicketInspector
+              ticketId={selectedTicketId}
+              onClose={() => setSelectedTicketId(null)}
+              isFullscreen={isInspectorFullscreen}
+              onToggleFullscreen={() =>
+                setIsInspectorFullscreen(!isInspectorFullscreen)
+              }
+            />
           </div>
-        )}
+        </div>
 
-        {activeTab === "kb" && (
-          <main className="flex-1 overflow-y-auto p-6">
-            <ErrorBoundary fallbackTitle="Ошибка в модуле Базы знаний">
-              <KBSearch />
-            </ErrorBoundary>
-          </main>
-        )}
+        <main className={`flex-1 overflow-y-auto p-6 ${activeTab === "kb" ? "" : "hidden"}`}>
+          <ErrorBoundary fallbackTitle="Ошибка в модуле Базы знаний">
+            <KBSearch />
+          </ErrorBoundary>
+        </main>
 
-        {activeTab === "reports" && (
-          <main className="flex-1 overflow-y-auto p-6">
-            <ErrorBoundary fallbackTitle="Ошибка в модуле Аналитики и отчетов">
-              <LoadReport />
-            </ErrorBoundary>
-          </main>
-        )}
+        <main className={`flex-1 overflow-y-auto p-6 ${activeTab === "reports" ? "" : "hidden"}`}>
+          <ErrorBoundary fallbackTitle="Ошибка в модуле Аналитики и отчетов">
+            <LoadReport />
+          </ErrorBoundary>
+        </main>
       </div>
 
       {/* Login Modal */}

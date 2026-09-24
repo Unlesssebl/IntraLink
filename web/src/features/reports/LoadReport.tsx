@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { BarChart3, Download, RefreshCw, Users, Layers, Clock } from "lucide-react";
 import { Button, Card } from "@/shared/ui";
 import { reportsApi, LoadReport as ILoadReport } from "@/shared/api";
@@ -7,45 +8,21 @@ export const LoadReport: React.FC = () => {
   const currentDate = new Date();
   const [year, setYear] = useState(currentDate.getFullYear());
   const [month, setMonth] = useState(currentDate.getMonth() + 1);
-
-  const [data, setData] = useState<ILoadReport | null>(null);
-  const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  const reportAbortRef = React.useRef<AbortController | null>(null);
+  const {
+    data,
+    isLoading: loading,
+    error: queryError,
+    refetch: fetchReport,
+  } = useQuery({
+    queryKey: ["reports", "load", year, month],
+    queryFn: ({ signal }) => reportsApi.getLoad(year, month, signal),
+  });
 
-  const fetchReport = async () => {
-    if (reportAbortRef.current) {
-      reportAbortRef.current.abort();
-    }
-    const controller = new AbortController();
-    reportAbortRef.current = controller;
-
-    try {
-      setLoading(true);
-      setError(null);
-      const res = await reportsApi.getLoad(year, month, controller.signal);
-      if (controller.signal.aborted) return;
-      setData(res);
-    } catch (err: any) {
-      if (controller.signal.aborted || err.name === "AbortError") return;
-      setError(err?.message || "Ошибка загрузки отчета нагрузки");
-    } finally {
-      if (!controller.signal.aborted) {
-        setLoading(false);
-      }
-    }
-  };
-
-  useEffect(() => {
-    fetchReport();
-    return () => {
-      if (reportAbortRef.current) {
-        reportAbortRef.current.abort();
-      }
-    };
-  }, [year, month]);
+  const error = queryError
+    ? (queryError as any)?.message || "Ошибка загрузки отчета нагрузки"
+    : null;
 
   const handleExport = () => {
     try {
@@ -121,7 +98,7 @@ export const LoadReport: React.FC = () => {
             variant="secondary"
             loading={loading}
             icon={<RefreshCw className="w-3.5 h-3.5" />}
-            onClick={fetchReport}
+            onClick={() => fetchReport()}
           >
             Обновить
           </Button>
