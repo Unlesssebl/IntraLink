@@ -264,7 +264,7 @@ export const ticketsApi = {
 
   resolve: (id: number, comment: string) =>
     ticketsApi.update(id, {
-      status_id: 5,
+      status_id: 3,
       comment,
       is_private: false,
     }),

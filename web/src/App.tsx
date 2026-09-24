@@ -24,7 +24,7 @@ import {
   clearStoredAuth,
 } from "@/shared/api";
 
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ticketKeys } from "@/features/tickets/queries";
 
 type Tab = "triage" | "kb" | "reports";
@@ -34,8 +34,28 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("triage");
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null);
   const [isInspectorFullscreen, setIsInspectorFullscreen] = useState(false);
-  const [backendStatus, setBackendStatus] = useState<"online" | "checking" | "offline">("checking");
   const [searchTicketQuery, setSearchTicketQuery] = useState("");
+
+  // Declarative backend health check
+  const { data: isHealthy = true, isLoading: isCheckingHealth } = useQuery({
+    queryKey: ["health"],
+    queryFn: async () => {
+      try {
+        const res = await fetch("/api/v2/health");
+        return res.ok;
+      } catch {
+        return false;
+      }
+    },
+    refetchInterval: 30000,
+    staleTime: 10000,
+  });
+
+  const backendStatus: "online" | "checking" | "offline" = isCheckingHealth
+    ? "checking"
+    : isHealthy
+    ? "online"
+    : "offline";
 
   // Auth state
   const [currentUser, setCurrentUser] = useState<string | null>(getStoredUserLogin());
@@ -44,25 +64,6 @@ export default function App() {
   const [passwordInput, setPasswordInput] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
-
-  const checkHealth = async () => {
-    try {
-      const res = await fetch("/api/v2/health");
-      if (res.ok) {
-        setBackendStatus("online");
-      } else {
-        setBackendStatus("offline");
-      }
-    } catch {
-      setBackendStatus("offline");
-    }
-  };
-
-  useEffect(() => {
-    checkHealth();
-    const interval = setInterval(checkHealth, 30000);
-    return () => clearInterval(interval);
-  }, []);
 
   const handleQuickSearch = (e: React.FormEvent) => {
     e.preventDefault();
