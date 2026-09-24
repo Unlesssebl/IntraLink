@@ -27,6 +27,19 @@ export function useTicketQueue(filterId: number = 984) {
     queryKey: ticketKeys.queue(filterId),
     queryFn: ({ signal }) =>
       ticketsApi.list({ filter_id: filterId, limit: 50 }, signal),
+    refetchInterval: 30_000, // Silent background poll every 30s for queue freshness
+  });
+}
+
+// -------------------------------------------------------------
+// 1.1 Services Catalog Query Hook (Cached statically)
+// -------------------------------------------------------------
+export function useServicesCatalog() {
+  return useQuery({
+    queryKey: ["services", "catalog"] as const,
+    queryFn: ({ signal }) => ticketsApi.getServices(signal),
+    staleTime: Infinity,
+    gcTime: 24 * 60 * 60 * 1000,
   });
 }
 

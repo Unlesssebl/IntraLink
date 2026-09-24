@@ -19,7 +19,11 @@ from core.intraservice.exceptions import (
     IntraServiceServerError,
     IntraServiceValidationError,
 )
-from core.intraservice.parser import enrich_task_dict, parse_custom_fields
+from core.intraservice.parser import (
+    enrich_task_dict,
+    parse_custom_fields,
+    sanitize_ticket_description,
+)
 
 __all__ = [
     "IntraServiceClient",
@@ -33,6 +37,7 @@ __all__ = [
     "ExtractedEntitiesDTO",
     "parse_custom_fields",
     "enrich_task_dict",
+    "sanitize_ticket_description",
     "IntraServiceError",
     "IntraServiceAuthError",
     "IntraServiceNotFoundError",

@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { Sparkles, ArrowDownToLine, ChevronDown, ChevronUp } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Button, Badge } from "@/shared/ui";
-import { kbApi, KBSearchResultItem } from "@/shared/api";
+import { kbApi } from "@/shared/api";
 
 export interface RAGSuggestionProps {
   query: string;
@@ -12,41 +13,22 @@ export const RAGSuggestion: React.FC<RAGSuggestionProps> = ({
   query,
   onApplySolution,
 }) => {
-  const [match, setMatch] = useState<KBSearchResultItem | null>(null);
-  const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
-  useEffect(() => {
-    if (!query || query.length < 5) {
-      setMatch(null);
-      return;
-    }
+  const cleanQuery = query?.trim() || "";
 
-    let isMounted = true;
-    const searchKB = async () => {
-      try {
-        setLoading(true);
-        const results = await kbApi.search(query, 1, 0.72);
-        if (isMounted && results.length > 0) {
-          setMatch(results[0]);
-        } else if (isMounted) {
-          setMatch(null);
-        }
-      } catch {
-        if (isMounted) setMatch(null);
-      } finally {
-        if (isMounted) setLoading(false);
-      }
-    };
+  const { data: match, isLoading } = useQuery({
+    queryKey: ["kb", "suggestion", cleanQuery],
+    queryFn: async ({ signal }) => {
+      const results = await kbApi.search(cleanQuery, 1, 0.72, signal);
+      return results.length > 0 ? results[0] : null;
+    },
+    enabled: cleanQuery.length >= 5,
+    staleTime: 5 * 60 * 1000, // 5 minutes cache
+    gcTime: 15 * 60 * 1000,
+  });
 
-    const timer = setTimeout(searchKB, 300);
-    return () => {
-      isMounted = false;
-      clearTimeout(timer);
-    };
-  }, [query]);
-
-  if (loading || !match) return null;
+  if (isLoading || !match) return null;
 
   return (
     <div className="p-3 bg-[#121316] border border-neutral-700/80 rounded text-xs space-y-2 animate-in fade-in duration-200">

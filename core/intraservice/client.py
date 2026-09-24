@@ -272,7 +272,7 @@ class IntraServiceClient:
             method="GET",
             endpoint=f"task/{task_id}",
             auth_b64=auth_b64,
-            params={"include": "customfields,status,service,comments,attachments,usertaskrights"},
+            params={"include": "customfields,status,service,attachments"},
         )
         task_data: Dict[str, Any] = {}
         if isinstance(raw, dict):

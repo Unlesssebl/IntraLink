@@ -283,7 +283,8 @@ export const ticketsApi = {
       is_private: false,
     }),
 
-  getServices: () => request<ServiceItem[]>("/tickets/services/catalog"),
+  getServices: (signal?: AbortSignal) =>
+    request<ServiceItem[]>("/tickets/services/catalog", { signal }),
 
   getAttachmentUrl: (ticketId: number, fileId: number) =>
     `${BASE_URL}/tickets/${ticketId}/attachments/${fileId}`,

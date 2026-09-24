@@ -1,7 +1,6 @@
-"""IntraService custom field XML parsing and workplace entity normalization."""
-
+import html
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.intraservice.dto import ExtractedEntitiesDTO
 
@@ -189,3 +188,44 @@ def enrich_task_dict(task: Dict[str, Any]) -> Dict[str, Any]:
             task["entities"]["pc_name"] = ", ".join(candidates)
 
     return task
+
+
+def sanitize_ticket_description(text: Optional[str], max_chars: Optional[int] = None) -> str:
+    """Clean HTML tags, convert breaks to newlines, strip heavy Base64 data-URIs, and truncate if requested."""
+    if not text:
+        return ""
+
+    # 1. Replace inline Base64 data-URIs (embedded images that cause megabyte payloads)
+    cleaned = re.sub(
+        r"data:image\/[a-zA-Z0-9\+\-\.]+;base64,[a-zA-Z0-9+/=]+",
+        "[встроенное изображение]",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # 2. Convert standard block & line-break tags to linebreaks
+    cleaned = re.sub(r"<\s*br\s*/?>", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<\s*/p\s*>", "\n\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<\s*/div\s*>", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<\s*li\s*>", "• ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<\s*/li\s*>", "\n", cleaned, flags=re.IGNORECASE)
+
+    # 3. Strip all remaining HTML tags
+    cleaned = re.sub(r"<[^>]+>", "", cleaned)
+
+    # 4. Decode HTML entities (&quot;, &amp;, &lt;, &gt;, &#39;, &nbsp;, etc.)
+    cleaned = html.unescape(cleaned)
+
+    # 5. Normalize whitespace (replace non-breaking space, collapse 3+ newlines to 2)
+    cleaned = cleaned.replace("\xa0", " ")
+    cleaned = re.sub(r"\r\n|\r", "\n", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = cleaned.strip()
+
+    # 6. Apply character limit if requested (e.g. for queue preview)
+    if max_chars and len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars].rstrip() + "\n\n[...описание сокращено для превью]"
+
+    return cleaned
+

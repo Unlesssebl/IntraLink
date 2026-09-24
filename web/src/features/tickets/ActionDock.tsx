@@ -9,7 +9,7 @@ import {
   Globe,
 } from "lucide-react";
 import { Button, Modal, Textarea, Input, KbdBadge } from "@/shared/ui";
-import { ticketsApi, ServiceItem } from "@/shared/api";
+import { useServicesCatalog } from "./queries";
 
 export interface ActionDockProps {
   ticketId: number;
@@ -59,7 +59,11 @@ export const ActionDock: React.FC<ActionDockProps> = ({
   const [dupComment, setDupComment] = useState("");
 
   const [redirModalOpen, setRedirModalOpen] = useState(false);
-  const [services, setServices] = useState<ServiceItem[]>([]);
+  const { data: rawServices = [] } = useServicesCatalog();
+  const services = React.useMemo(
+    () => rawServices.filter((s) => s.is_active !== false),
+    [rawServices]
+  );
   const [selectedServiceId, setSelectedServiceId] = useState<number | "">("");
   const [redirComment, setRedirComment] = useState("");
 
@@ -75,20 +79,12 @@ export const ActionDock: React.FC<ActionDockProps> = ({
     if (onCommentDraftChange) onCommentDraftChange(text);
   };
 
-  // Pre-load services catalog for redirect
+  // Pre-select first service when catalog loads
   useEffect(() => {
-    if (redirModalOpen && services.length === 0) {
-      ticketsApi
-        .getServices()
-        .then((data) => {
-          setServices(data.filter((s) => s.is_active !== false));
-          if (data.length > 0 && !selectedServiceId) {
-            setSelectedServiceId(data[0].id);
-          }
-        })
-        .catch(() => {});
+    if (!selectedServiceId && services.length > 0) {
+      setSelectedServiceId(services[0].id);
     }
-  }, [redirModalOpen, services.length, selectedServiceId]);
+  }, [selectedServiceId, services]);
 
   // Global hotkeys: Alt+1, Alt+2, Alt+3, Alt+4
   useEffect(() => {

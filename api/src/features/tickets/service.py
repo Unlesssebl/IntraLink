@@ -1,5 +1,7 @@
 """Business logic and IntraService orchestration for Tickets feature slice."""
 
+import json
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -7,8 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.src.core.config import settings
+from api.src.core.redis import get_redis_client
 from core.database.models import CommandRecord
-from core.intraservice import IntraServiceClient, TaskDTO, TaskLifetimeEventDTO
+from core.intraservice import (
+    IntraServiceClient,
+    TaskDTO,
+    TaskLifetimeEventDTO,
+    sanitize_ticket_description,
+)
 
 from .schemas import (
     AddCommentRequest,
@@ -19,6 +27,8 @@ from .schemas import (
     UpdateTicketRequest,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class TicketService:
     """Service handling ticket read and write operations."""
@@ -28,6 +38,14 @@ class TicketService:
             base_url=settings.INTRASERVICE_URL,
             verify_ssl=settings.SSL_VERIFY,
         )
+
+    async def _invalidate_ticket_cache(self, ticket_id: int) -> None:
+        """Evict cached ticket details and lifetime events from Redis."""
+        try:
+            redis = get_redis_client()
+            await redis.delete(f"cache:ticket:{ticket_id}", f"cache:ticket:{ticket_id}:lifetime")
+        except Exception as exc:
+            logger.warning("Redis ticket cache invalidation failed: %s", exc)
 
     async def list_tickets(
         self,
@@ -46,7 +64,7 @@ class TicketService:
             TicketSummaryDTO(
                 id=t.id,
                 name=t.name,
-                description=t.description,
+                description=sanitize_ticket_description(t.description, max_chars=4000),
                 service_id=t.service_id,
                 service_name=t.service_name,
                 status_id=t.status_id,
@@ -60,11 +78,20 @@ class TicketService:
         ]
 
     async def get_ticket(self, ticket_id: int, auth_b64: Optional[str] = None) -> TicketDetailDTO:
+        cache_key = f"cache:ticket:{ticket_id}"
+        redis = get_redis_client()
+        try:
+            cached_data = await redis.get(cache_key)
+            if cached_data:
+                return TicketDetailDTO.model_validate_json(cached_data)
+        except Exception as exc:
+            logger.warning("Redis ticket cache read failed: %s", exc)
+
         task: TaskDTO = await self.client.get_task(task_id=ticket_id, auth_b64=auth_b64)
-        return TicketDetailDTO(
+        detail = TicketDetailDTO(
             id=task.id,
             name=task.name,
-            description=task.description,
+            description=sanitize_ticket_description(task.description),
             service_id=task.service_id,
             service_name=task.service_name,
             status_id=task.status_id,
@@ -79,9 +106,32 @@ class TicketService:
             attachments=[a.model_dump() for a in task.attachments],
         )
 
+        try:
+            await redis.set(cache_key, detail.model_dump_json(), ex=60)
+        except Exception as exc:
+            logger.warning("Redis ticket cache write failed: %s", exc)
+
+        return detail
+
     async def get_ticket_lifetime(self, ticket_id: int, auth_b64: Optional[str] = None) -> List[Dict[str, Any]]:
+        cache_key = f"cache:ticket:{ticket_id}:lifetime"
+        redis = get_redis_client()
+        try:
+            cached_data = await redis.get(cache_key)
+            if cached_data:
+                return json.loads(cached_data)
+        except Exception as exc:
+            logger.warning("Redis ticket lifetime cache read failed: %s", exc)
+
         events: List[TaskLifetimeEventDTO] = await self.client.get_task_lifetime(task_id=ticket_id, auth_b64=auth_b64)
-        return [e.model_dump() for e in events]
+        result = [e.model_dump() for e in events]
+
+        try:
+            await redis.set(cache_key, json.dumps(result, default=str), ex=60)
+        except Exception as exc:
+            logger.warning("Redis ticket lifetime cache write failed: %s", exc)
+
+        return result
 
     async def update_ticket(
         self,
@@ -89,7 +139,7 @@ class TicketService:
         req: UpdateTicketRequest,
         auth_b64: Optional[str] = None,
     ) -> bool:
-        return await self.client.update_task(
+        success = await self.client.update_task(
             task_id=ticket_id,
             status_id=req.status_id,
             comment=req.comment,
@@ -97,6 +147,9 @@ class TicketService:
             is_private=req.is_private,
             auth_b64=auth_b64,
         )
+        if success:
+            await self._invalidate_ticket_cache(ticket_id)
+        return success
 
     async def add_comment(
         self,
@@ -104,12 +157,15 @@ class TicketService:
         req: AddCommentRequest,
         auth_b64: Optional[str] = None,
     ) -> bool:
-        return await self.client.add_task_comment(
+        success = await self.client.add_task_comment(
             task_id=ticket_id,
             comment=req.comment,
             is_private=req.is_private,
             auth_b64=auth_b64,
         )
+        if success:
+            await self._invalidate_ticket_cache(ticket_id)
+        return success
 
     async def execute_action(
         self,

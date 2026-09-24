@@ -13,12 +13,12 @@ export interface TicketRowProps {
   isClassifying?: boolean;
 }
 
-export const TicketRow: React.FC<TicketRowProps> = ({
+export const TicketRow = React.memo<TicketRowProps>(function TicketRow({
   ticket,
   isSelected,
   onSelect,
   aiResult,
-}) => {
+}) {
   // Format relative or local time
   const formatTime = (isoString: string) => {
     try {
@@ -99,4 +99,4 @@ export const TicketRow: React.FC<TicketRowProps> = ({
       )}
     </div>
   );
-};
+});
