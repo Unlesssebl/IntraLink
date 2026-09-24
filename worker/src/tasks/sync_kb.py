@@ -33,8 +33,8 @@ def _get_active_session_factory() -> async_sessionmaker[AsyncSession]:
     queue_name=QUEUE_RAG_COMPUTE,
     schedule=[
         {
-            "cron": "0 2 * * *",
-            "schedule_id": "sync_kb_daily_02_00",
+            "cron": "0 16 * * *",
+            "schedule_id": "sync_kb_daily_19_00_msk",
         }
     ],
 )
@@ -45,7 +45,8 @@ async def sync_kb_task(
     auth_b64: Optional[str] = None,
     ai_eval: bool = True,
 ) -> Dict[str, Any]:
-    """Scheduled Taskiq background job running daily at 02:00 UTC."""
+    """Scheduled Taskiq background job running daily at 19:00 MSK (16:00 UTC)."""
+
     logger.info(
         "Executing sync_kb_task on %s: hours=%d, quota_per_service=%d, ai_eval=%s",
         QUEUE_RAG_COMPUTE,

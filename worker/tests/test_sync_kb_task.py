@@ -44,7 +44,7 @@ async def test_db():
 
 
 def test_sync_kb_task_registration_and_schedule():
-    """Verify task is registered with rag_compute queue and daily 02:00 cron schedule."""
+    """Verify task is registered with rag_compute queue and daily 19:00 MSK (16:00 UTC) cron schedule."""
     all_tasks = broker.get_all_tasks()
     assert "sync_kb_task" in all_tasks
 
@@ -52,12 +52,13 @@ def test_sync_kb_task_registration_and_schedule():
     assert task_obj.task_name == "sync_kb_task"
     assert task_obj.labels.get("queue_name") == QUEUE_RAG_COMPUTE
 
-    # Verify daily 02:00 cron schedule in task labels
+    # Verify daily 19:00 MSK (16:00 UTC) cron schedule in task labels
     schedules = task_obj.labels.get("schedule", [])
     assert len(schedules) > 0
 
     cron_schedules = [s.get("cron") for s in schedules if "cron" in s]
-    assert "0 2 * * *" in cron_schedules
+    assert "0 16 * * *" in cron_schedules
+
 
 
 @pytest.mark.asyncio
