@@ -29,6 +29,17 @@ from core.intraservice.parser import enrich_task_dict
 
 logger = logging.getLogger("core.intraservice")
 
+DEFAULT_STATUS_MAP: Dict[int, str] = {
+    1: "Новая",
+    2: "В работе",
+    3: "Выполнена",
+    4: "Закрыта",
+    5: "Отклонена",
+    6: "Приостановлена",
+    7: "Переоткрыта",
+    30: "Отменена",
+}
+
 
 class CircuitState(str, enum.Enum):
     CLOSED = "CLOSED"
@@ -287,9 +298,19 @@ class IntraServiceClient:
             if "Attachments" in raw and "Attachments" not in task_data:
                 task_data["Attachments"] = raw["Attachments"]
             # Extract included status name if not in task_data
-            if "Statuses" in raw and isinstance(raw["Statuses"], list) and raw["Statuses"]:
-                if not task_data.get("StatusName") and isinstance(raw["Statuses"][0], dict):
-                    task_data["StatusName"] = raw["Statuses"][0].get("Name", "")
+            status_id = task_data.get("StatusId")
+            if not task_data.get("StatusName") and status_id is not None:
+                try:
+                    s_id_int = int(status_id)
+                    if "Statuses" in raw and isinstance(raw["Statuses"], list):
+                        for s in raw["Statuses"]:
+                            if isinstance(s, dict) and s.get("Id") == s_id_int:
+                                task_data["StatusName"] = s.get("Name", "")
+                                break
+                    if not task_data.get("StatusName"):
+                        task_data["StatusName"] = DEFAULT_STATUS_MAP.get(s_id_int, f"Статус {status_id}")
+                except (ValueError, TypeError):
+                    pass
             # Extract included service name if not in task_data
             if "Services" in raw and isinstance(raw["Services"], list) and raw["Services"]:
                 if not task_data.get("ServiceName") and isinstance(raw["Services"][0], dict):
@@ -340,14 +361,30 @@ class IntraServiceClient:
 
             raw_tasks = []
             paginator = {}
+            status_map = dict(DEFAULT_STATUS_MAP)
+
             if isinstance(res, dict):
                 raw_tasks = res.get("Tasks", []) or []
                 paginator = res.get("Paginator", {}) or {}
+                if "Statuses" in res and isinstance(res["Statuses"], list):
+                    for s in res["Statuses"]:
+                        if isinstance(s, dict) and "Id" in s and "Name" in s:
+                            try:
+                                status_map[int(s["Id"])] = str(s["Name"])
+                            except (ValueError, TypeError):
+                                pass
             elif isinstance(res, list):
                 raw_tasks = res
 
             for t in raw_tasks:
                 if isinstance(t, dict):
+                    # Ensure StatusName is populated from StatusId
+                    s_id = t.get("StatusId")
+                    if not t.get("StatusName") and s_id is not None:
+                        try:
+                            t["StatusName"] = status_map.get(int(s_id), f"Статус {s_id}")
+                        except (ValueError, TypeError):
+                            pass
                     enriched = enrich_task_dict(t)
                     all_tasks.append(TaskDTO.model_validate(enriched))
 

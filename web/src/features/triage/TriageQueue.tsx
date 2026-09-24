@@ -9,6 +9,7 @@ import {
 import { Button, Badge, KbdBadge } from "@/shared/ui";
 import { TicketRow } from "./TicketRow";
 import { useTicketQueue } from "@/features/tickets/queries";
+import { isStatusInWork } from "@/shared/statuses";
 import { triageApi, TicketListItem, TriageResult } from "@/shared/api";
 
 export interface TriageQueueProps {
@@ -62,10 +63,10 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
 
       // 2. Category filter
       if (activeFilter === "new") {
-        return t.status_id === 1 || (t.status_name || "").toLowerCase().includes("нов");
+        return t.status_id === 1;
       }
       if (activeFilter === "in_progress") {
-        return t.status_id === 2 || (t.status_name || "").toLowerCase().includes("работ");
+        return isStatusInWork(t.status_id);
       }
       if (activeFilter === "directum") {
         const sName = (t.service_name || "").toLowerCase();

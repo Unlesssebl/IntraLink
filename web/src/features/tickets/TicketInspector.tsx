@@ -18,6 +18,7 @@ import {
 import { Badge, StatusDot, Lightbox, KbdBadge } from "@/shared/ui";
 import { HostBadge } from "@/features/diagnostics/HostBadge";
 import { RAGSuggestion } from "@/features/knowledge-base/RAGSuggestion";
+import { getStatusMeta } from "@/shared/statuses";
 import { ActionDock } from "./ActionDock";
 import { TicketAttachment } from "@/shared/api";
 import {
@@ -75,51 +76,42 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
   // Comment draft synced with RAG suggestions
   const [commentDraft, setCommentDraft] = useState("");
 
-  // Handlers for ActionDock
-  const handleTake = async () => {
+  // Reusable unified action executor with error handling
+  const executeAction = async (fn: () => Promise<any>, errorPrefix: string) => {
     if (!ticketId) return;
     try {
-      await takeMutation.mutateAsync(ticketId);
+      await fn();
     } catch (err: any) {
-      alert(`Ошибка: ${err?.message}`);
+      alert(`${errorPrefix}: ${err?.message || "Произошла ошибка"}`);
     }
   };
 
-  const handleResolve = async (comment: string) => {
-    if (!ticketId) return;
-    try {
-      await resolveMutation.mutateAsync({ id: ticketId, comment });
-    } catch (err: any) {
-      alert(`Ошибка закрытия: ${err?.message}`);
-    }
-  };
+  const handleTake = () =>
+    executeAction(() => takeMutation.mutateAsync(ticketId!), "Ошибка взятия в работу");
 
-  const handleDuplicate = async (masterId: number, comment: string) => {
-    if (!ticketId) return;
-    try {
-      await duplicateMutation.mutateAsync({ id: ticketId, masterId, comment });
-    } catch (err: any) {
-      alert(`Ошибка отмены дубликата: ${err?.message}`);
-    }
-  };
+  const handleResolve = (comment: string) =>
+    executeAction(
+      () => resolveMutation.mutateAsync({ id: ticketId!, comment }),
+      "Ошибка закрытия заявки"
+    );
 
-  const handleRedirect = async (serviceId: number, comment: string) => {
-    if (!ticketId) return;
-    try {
-      await redirectMutation.mutateAsync({ id: ticketId, serviceId, comment });
-    } catch (err: any) {
-      alert(`Ошибка перенаправления: ${err?.message}`);
-    }
-  };
+  const handleDuplicate = (masterId: number, comment: string) =>
+    executeAction(
+      () => duplicateMutation.mutateAsync({ id: ticketId!, masterId, comment }),
+      "Ошибка отмены дубликата"
+    );
 
-  const handleAddComment = async (comment: string, isPrivate: boolean) => {
-    if (!ticketId) return;
-    try {
-      await addCommentMutation.mutateAsync({ id: ticketId, comment, isPrivate });
-    } catch (err: any) {
-      alert(`Ошибка добавления комментария: ${err?.message}`);
-    }
-  };
+  const handleRedirect = (serviceId: number, comment: string) =>
+    executeAction(
+      () => redirectMutation.mutateAsync({ id: ticketId!, serviceId, comment }),
+      "Ошибка перенаправления"
+    );
+
+  const handleAddComment = (comment: string, isPrivate: boolean) =>
+    executeAction(
+      () => addCommentMutation.mutateAsync({ id: ticketId!, comment, isPrivate }),
+      "Ошибка добавления комментария"
+    );
 
   const isImageAttachment = (filename: string) => {
     const ext = filename.split(".").pop()?.toLowerCase() || "";
@@ -175,19 +167,9 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
                 {ticket.name || "(Без темы)"}
               </span>
             )}
-            {ticket?.status_name && (
-              <Badge
-                variant={
-                  ticket.status_name.toLowerCase().includes("отмен")
-                    ? "danger"
-                    : ticket.status_name.toLowerCase().includes("работ")
-                    ? "warning"
-                    : ticket.status_name.toLowerCase().includes("решен")
-                    ? "success"
-                    : "neutral"
-                }
-              >
-                {ticket.status_name}
+            {ticket && (
+              <Badge variant={getStatusMeta(ticket.status_id, ticket.status_name).variant}>
+                {getStatusMeta(ticket.status_id, ticket.status_name).name}
               </Badge>
             )}
           </div>

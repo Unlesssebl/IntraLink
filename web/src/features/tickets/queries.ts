@@ -1,10 +1,11 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, QueryClient } from "@tanstack/react-query";
 import {
   ticketsApi,
   TicketListItem,
   TicketDetail,
   TicketLifetimeEvent,
 } from "@/shared/api";
+import { getStatusMeta } from "@/shared/statuses";
 
 // -------------------------------------------------------------
 // Query Key Factory (Strict Typing)
@@ -56,18 +57,27 @@ export function useTicketDetail(ticketId: number | null) {
       return ticketsApi.get(ticketId, signal);
     },
     enabled: Boolean(ticketId && ticketId > 0),
-    // Linear-style instant render: seed initial fields from the queue cache
+    // Linear-style instant render: seed initial fields from any active queue cache
     placeholderData: (previousData) => {
       if (previousData && previousData.id === ticketId) {
         return previousData;
       }
       if (!ticketId) return undefined;
 
-      const queueItems = queryClient.getQueryData<TicketListItem[]>(
-        ticketKeys.queue(984)
-      );
-      const item = queueItems?.find((t) => t.id === ticketId);
+      let item: TicketListItem | undefined;
+      const allQueues = queryClient.getQueriesData<TicketListItem[]>({
+        queryKey: ticketKeys.queues(),
+      });
+      for (const [, queue] of allQueues) {
+        if (Array.isArray(queue)) {
+          item = queue.find((t) => t.id === ticketId);
+          if (item) break;
+        }
+      }
+
       if (!item) return undefined;
+
+      const meta = getStatusMeta(item.status_id, item.status_name);
 
       return {
         id: item.id,
@@ -75,7 +85,7 @@ export function useTicketDetail(ticketId: number | null) {
         description: item.description || "",
         created: item.created,
         status_id: item.status_id,
-        status_name: item.status_name,
+        status_name: meta.name,
         priority_name: item.priority_name,
         applicant_name: item.applicant_name,
         applicant_phone: item.applicant_phone,
@@ -109,7 +119,42 @@ export function useTicketLifetime(ticketId: number | null) {
 }
 
 // -------------------------------------------------------------
-// 4. Ticket Mutation Hooks
+// Helper: Optimistic Ticket Status & Queue Updater
+// -------------------------------------------------------------
+export interface TicketCacheUpdate {
+  status_id?: number;
+  status_name?: string;
+  service_id?: number;
+  service_name?: string;
+}
+
+function updateTicketInCache(
+  queryClient: QueryClient,
+  ticketId: number,
+  updates: TicketCacheUpdate
+) {
+  // 1. Update Detail Cache
+  queryClient.setQueryData<TicketDetail>(ticketKeys.detail(ticketId), (old) => {
+    if (!old) return old;
+    return { ...old, ...updates };
+  });
+
+  // 2. Update all active queues in cache
+  const queueQueries = queryClient.getQueriesData<TicketListItem[]>({
+    queryKey: ticketKeys.queues(),
+  });
+  for (const [key, list] of queueQueries) {
+    if (Array.isArray(list)) {
+      queryClient.setQueryData<TicketListItem[]>(key, (oldList) => {
+        if (!oldList) return oldList;
+        return oldList.map((t) => (t.id === ticketId ? { ...t, ...updates } : t));
+      });
+    }
+  }
+}
+
+// -------------------------------------------------------------
+// 4. Ticket Mutation Hooks (with Instant Optimistic UI)
 // -------------------------------------------------------------
 export function useTicketActions() {
   const queryClient = useQueryClient();
@@ -117,18 +162,7 @@ export function useTicketActions() {
   const takeMutation = useMutation({
     mutationFn: (id: number) => ticketsApi.take(id),
     onSuccess: (_, id) => {
-      // Optimistically update status in queue & detail
-      queryClient.setQueryData<TicketDetail>(ticketKeys.detail(id), (old) => {
-        if (!old) return old;
-        return { ...old, status_id: 2, status_name: "В работе" };
-      });
-      queryClient.setQueryData<TicketListItem[]>(ticketKeys.queue(984), (old) => {
-        if (!old) return old;
-        return old.map((t) =>
-          t.id === id ? { ...t, status_id: 2, status_name: "В работе" } : t
-        );
-      });
-      // Invalidate to guarantee full backend sync
+      updateTicketInCache(queryClient, id, { status_id: 2, status_name: "В работе" });
       queryClient.invalidateQueries({ queryKey: ticketKeys.all });
     },
   });
@@ -136,7 +170,8 @@ export function useTicketActions() {
   const resolveMutation = useMutation({
     mutationFn: ({ id, comment }: { id: number; comment: string }) =>
       ticketsApi.resolve(id, comment),
-    onSuccess: () => {
+    onSuccess: (_, { id }) => {
+      updateTicketInCache(queryClient, id, { status_id: 3, status_name: "Выполнена" });
       queryClient.invalidateQueries({ queryKey: ticketKeys.all });
     },
   });
@@ -151,7 +186,8 @@ export function useTicketActions() {
       masterId: number;
       comment: string;
     }) => ticketsApi.cancel(id, comment, `Дубликат заявки #${masterId}`),
-    onSuccess: () => {
+    onSuccess: (_, { id }) => {
+      updateTicketInCache(queryClient, id, { status_id: 30, status_name: "Отменена" });
       queryClient.invalidateQueries({ queryKey: ticketKeys.all });
     },
   });
@@ -166,7 +202,8 @@ export function useTicketActions() {
       serviceId: number;
       comment: string;
     }) => ticketsApi.redirect(id, serviceId, comment),
-    onSuccess: () => {
+    onSuccess: (_, { id }) => {
+      updateTicketInCache(queryClient, id, { status_id: 30, status_name: "Отменена" });
       queryClient.invalidateQueries({ queryKey: ticketKeys.all });
     },
   });

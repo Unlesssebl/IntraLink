@@ -9,6 +9,7 @@ import {
   Globe,
 } from "lucide-react";
 import { Button, Modal, Textarea, Input, KbdBadge } from "@/shared/ui";
+import { isStatusInWork } from "@/shared/statuses";
 import { useServicesCatalog } from "./queries";
 
 export interface ActionDockProps {
@@ -161,7 +162,7 @@ export const ActionDock: React.FC<ActionDockProps> = ({
     setRedirComment("");
   };
 
-  const isAlreadyInWork = statusId === 2;
+  const isAlreadyInWork = isStatusInWork(statusId);
 
   return (
     <div className="border-t border-neutral-800/80 bg-[#0c0d0e] p-3 space-y-2.5 shrink-0">
