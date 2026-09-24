@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   X,
   Maximize2,
@@ -34,6 +34,28 @@ export interface TicketInspectorProps {
   onToggleFullscreen?: () => void;
 }
 
+// In-Memory SWR Cache for instant 0ms ticket switching
+interface CachedTicket {
+  ticket: TicketDetail;
+  events: TicketLifetimeEvent[];
+  cachedAt: number;
+}
+const TICKET_CACHE = new Map<number, CachedTicket>();
+const MAX_CACHE_SIZE = 60;
+const CACHE_TTL_MS = 60000; // 1 minute fresh TTL
+
+function setTicketCache(id: number, data: { ticket: TicketDetail; events: TicketLifetimeEvent[] }) {
+  if (TICKET_CACHE.size >= MAX_CACHE_SIZE) {
+    const oldestKey = TICKET_CACHE.keys().next().value;
+    if (oldestKey !== undefined) TICKET_CACHE.delete(oldestKey);
+  }
+  TICKET_CACHE.set(id, { ...data, cachedAt: Date.now() });
+}
+
+function invalidateTicketCache(id: number) {
+  TICKET_CACHE.delete(id);
+}
+
 export const TicketInspector: React.FC<TicketInspectorProps> = ({
   ticketId,
   onClose,
@@ -54,39 +76,114 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
   // Comment draft synced with RAG suggestions
   const [commentDraft, setCommentDraft] = useState("");
 
-  const loadTicketData = async (id: number) => {
-    try {
+  // Request cancellation and debounce references
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadTicketData = useCallback(async (id: number, isForceRefresh = false) => {
+    // 1. Cancel previous in-flight request immediately!
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    // 2. Check SWR cache for instant render
+    const cached = TICKET_CACHE.get(id);
+    const isCacheFresh = cached && Date.now() - cached.cachedAt < CACHE_TTL_MS;
+
+    if (cached && !isForceRefresh) {
+      setTicket(cached.ticket);
+      setEvents(cached.events);
+      setError(null);
+      setLoading(false);
+      // If cache is fresh, skip background re-fetch
+      if (isCacheFresh) {
+        return;
+      }
+    } else {
       setLoading(true);
       setError(null);
+    }
+
+    // 3. Fetch from API with abort signal
+    try {
       const [ticketData, lifetimeData] = await Promise.all([
-        ticketsApi.get(id),
-        ticketsApi.getLifetime(id).catch(() => []),
+        ticketsApi.get(id, controller.signal),
+        ticketsApi.getLifetime(id, controller.signal).catch((err) => {
+          if (err.name === "AbortError") throw err;
+          return [];
+        }),
       ]);
+
+      if (controller.signal.aborted) return;
+
+      setTicketCache(id, { ticket: ticketData, events: lifetimeData });
       setTicket(ticketData);
       setEvents(lifetimeData);
+      setError(null);
     } catch (err: any) {
+      if (controller.signal.aborted || err.name === "AbortError") {
+        return;
+      }
       setError(err?.message || "Не удалось загрузить данные заявки");
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
-  };
+  }, []);
 
   useEffect(() => {
-    if (ticketId) {
-      loadTicketData(ticketId);
-    } else {
+    if (!ticketId) {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
       setTicket(null);
       setEvents([]);
+      setLoading(false);
+      return;
     }
-  }, [ticketId]);
 
-  // Handle action callbacks
+    // Fast-path: if ticket is already in cache, show it instantly without waiting for debounce
+    const cached = TICKET_CACHE.get(ticketId);
+    if (cached) {
+      setTicket(cached.ticket);
+      setEvents(cached.events);
+      setError(null);
+      setLoading(false);
+    }
+
+    // Debounce network requests by 60ms so rapid keyboard switching (J/K) doesn't flood the network
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    debounceTimerRef.current = setTimeout(() => {
+      loadTicketData(ticketId);
+    }, 60);
+
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, [ticketId, loadTicketData]);
+
+  // Handle action callbacks with cache invalidation
   const handleTake = async () => {
     if (!ticketId) return;
     try {
       setBusyAction(true);
       await ticketsApi.take(ticketId);
-      await loadTicketData(ticketId);
+      invalidateTicketCache(ticketId);
+      await loadTicketData(ticketId, true);
       if (onTicketUpdated) onTicketUpdated();
     } catch (err: any) {
       alert(`Ошибка: ${err?.message}`);
@@ -100,7 +197,8 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
     try {
       setBusyAction(true);
       await ticketsApi.resolve(ticketId, comment);
-      await loadTicketData(ticketId);
+      invalidateTicketCache(ticketId);
+      await loadTicketData(ticketId, true);
       if (onTicketUpdated) onTicketUpdated();
     } catch (err: any) {
       alert(`Ошибка закрытия: ${err?.message}`);
@@ -114,7 +212,8 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
     try {
       setBusyAction(true);
       await ticketsApi.cancel(ticketId, comment, `Дубликат заявки #${masterId}`);
-      await loadTicketData(ticketId);
+      invalidateTicketCache(ticketId);
+      await loadTicketData(ticketId, true);
       if (onTicketUpdated) onTicketUpdated();
     } catch (err: any) {
       alert(`Ошибка отмены дубликата: ${err?.message}`);
@@ -128,7 +227,8 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
     try {
       setBusyAction(true);
       await ticketsApi.redirect(ticketId, serviceId, comment);
-      await loadTicketData(ticketId);
+      invalidateTicketCache(ticketId);
+      await loadTicketData(ticketId, true);
       if (onTicketUpdated) onTicketUpdated();
     } catch (err: any) {
       alert(`Ошибка перенаправления: ${err?.message}`);
@@ -142,7 +242,8 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
     try {
       setBusyAction(true);
       await ticketsApi.addComment(ticketId, comment, isPrivate);
-      await loadTicketData(ticketId);
+      invalidateTicketCache(ticketId);
+      await loadTicketData(ticketId, true);
       if (onTicketUpdated) onTicketUpdated();
     } catch (err: any) {
       alert(`Ошибка добавления комментария: ${err?.message}`);
@@ -318,10 +419,7 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
                   </div>
 
                   <div className="flex items-center justify-between gap-2">
-                    <HostBadge
-                      host={ticket.entities?.pc_name || ticket.pc_name}
-                      autoCheck={true}
-                    />
+                    <HostBadge host={ticket.entities?.pc_name || ticket.pc_name} />
                     <div className="flex items-center gap-1 text-[11px] text-neutral-400 font-mono">
                       <Clock className="w-3 h-3 text-neutral-500" />
                       <span>

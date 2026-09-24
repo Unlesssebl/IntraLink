@@ -216,25 +216,29 @@ export interface LoadReport {
 // -------------------------------------------------------------
 
 export const ticketsApi = {
-  list: (params: {
-    filter_id?: number;
-    service_id?: number;
-    status_id?: number;
-    limit?: number;
-    offset?: number;
-  } = {}) => {
+  list: (
+    params: {
+      filter_id?: number;
+      service_id?: number;
+      status_id?: number;
+      limit?: number;
+      offset?: number;
+    } = {},
+    signal?: AbortSignal
+  ) => {
     const q = new URLSearchParams();
     if (params.filter_id !== undefined) q.set("filter_id", String(params.filter_id));
     if (params.service_id !== undefined) q.set("service_id", String(params.service_id));
     if (params.status_id !== undefined) q.set("status_id", String(params.status_id));
     if (params.limit !== undefined) q.set("limit", String(params.limit));
     if (params.offset !== undefined) q.set("offset", String(params.offset));
-    return request<TicketListItem[]>(`/tickets?${q.toString()}`);
+    return request<TicketListItem[]>(`/tickets?${q.toString()}`, { signal });
   },
 
-  get: (id: number) => request<TicketDetail>(`/tickets/${id}`),
+  get: (id: number, signal?: AbortSignal) => request<TicketDetail>(`/tickets/${id}`, { signal }),
 
-  getLifetime: (id: number) => request<TicketLifetimeEvent[]>(`/tickets/${id}/lifetime`),
+  getLifetime: (id: number, signal?: AbortSignal) =>
+    request<TicketLifetimeEvent[]>(`/tickets/${id}/lifetime`, { signal }),
 
   update: (
     id: number,
@@ -317,11 +321,8 @@ export const kbApi = {
 };
 
 export const diagnosticsApi = {
-  diagnose: (host: string) =>
-    request<HostDiagnostic>("/diagnostics/host", {
-      method: "POST",
-      body: JSON.stringify({ host }),
-    }),
+  diagnose: (host: string, signal?: AbortSignal) =>
+    request<HostDiagnostic>(`/diagnostics/host/${encodeURIComponent(host)}`, { signal }),
 };
 
 export const reportsApi = {

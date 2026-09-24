@@ -5,15 +5,15 @@ import { diagnosticsApi, HostDiagnostic } from "@/shared/api";
 
 export interface HostBadgeProps {
   host?: string | null;
-  autoCheck?: boolean;
 }
 
-export const HostBadge: React.FC<HostBadgeProps> = ({ host, autoCheck = false }) => {
+export const HostBadge: React.FC<HostBadgeProps> = ({ host }) => {
   const [data, setData] = useState<HostDiagnostic | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [popoverOpen, setPopoverOpen] = useState(false);
 
+  // If no host is provided, render nothing (after all hooks are initialized)
   if (!host) {
     return null;
   }
@@ -33,12 +33,6 @@ export const HostBadge: React.FC<HostBadgeProps> = ({ host, autoCheck = false })
       setLoading(false);
     }
   };
-
-  React.useEffect(() => {
-    if (autoCheck && host) {
-      runCheck();
-    }
-  }, [host, autoCheck]);
 
   const getVariant = () => {
     if (!data) return "neutral";

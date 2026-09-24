@@ -65,7 +65,7 @@ export const TicketRow: React.FC<TicketRowProps> = ({
 
           {ticket.pc_name && (
             <div className="flex items-center gap-1 shrink-0">
-              <HostBadge host={ticket.pc_name} autoCheck={false} />
+              <HostBadge host={ticket.pc_name} />
             </div>
           )}
         </div>
