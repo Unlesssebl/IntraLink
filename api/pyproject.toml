@@ -5,6 +5,9 @@ description = "IntraLink API Service (Vertical Slice Architecture)"
 requires-python = ">=3.13"
 dependencies = [
     "intralink-core",
+    "intralink-worker",
+    "taskiq>=0.11.0",
+    "taskiq-redis>=1.0.0",
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.30.0",
     "pydantic>=2.7.0",
@@ -20,6 +23,7 @@ dependencies = [
 
 [tool.uv.sources]
 intralink-core = { workspace = true }
+intralink-worker = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

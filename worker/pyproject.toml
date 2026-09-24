@@ -5,6 +5,9 @@ description = "IntraLink Background Automation Worker"
 requires-python = ">=3.13"
 dependencies = [
     "intralink-core",
+    "taskiq>=0.11.0",
+    "taskiq-redis>=1.0.0",
+    "taskiq-fastapi>=0.3.0",
     "redis>=5.0.0",
     "pywinrm>=0.4.3",
     "smbprotocol>=1.12.0",

@@ -3,6 +3,7 @@
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
@@ -21,6 +22,7 @@ from core.intraservice import (
 from .schemas import (
     AddCommentRequest,
     CommandActionResponse,
+    CommandStatusResponse,
     ExecuteTicketActionRequest,
     TicketDetailDTO,
     TicketSummaryDTO,
@@ -205,10 +207,43 @@ class TicketService:
         await session.commit()
         await session.refresh(cmd)
 
+        try:
+            from worker.src.tasks.command_dispatcher import dispatch_command_task
+
+            await dispatch_command_task.kiq(str(cmd.id))
+        except Exception as exc:
+            logger.warning("Failed to dispatch Taskiq task for command %s: %s", cmd.id, exc)
+
         return CommandActionResponse(
             command_id=cmd.id,
             idempotency_key=cmd.idempotency_key,
             action=cmd.action,
             status=cmd.status,
-            created_at=cmd.created_at,
+            created_at=cmd.created_at or datetime.now(timezone.utc),
+        )
+
+    async def get_command_status(
+        self,
+        command_id: uuid.UUID,
+        session: AsyncSession,
+    ) -> Optional[CommandStatusResponse]:
+        """Fetch CommandRecord status for Short-Polling and status inspection."""
+        stmt = select(CommandRecord).where(CommandRecord.id == command_id)
+        cmd = (await session.execute(stmt)).scalar_one_or_none()
+        if not cmd:
+            return None
+
+        return CommandStatusResponse(
+            command_id=cmd.id,
+            idempotency_key=cmd.idempotency_key,
+            action=cmd.action,
+            status=cmd.status,
+            initiator=cmd.initiator,
+            task_id=cmd.task_id,
+            target_json=cmd.target_json or {},
+            params_json=cmd.params_json or {},
+            result_json=cmd.result_json,
+            error_message=cmd.error_message,
+            created_at=cmd.created_at or datetime.now(timezone.utc),
+            updated_at=cmd.updated_at,
         )

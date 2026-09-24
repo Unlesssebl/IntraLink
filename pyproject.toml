@@ -29,6 +29,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
 asyncio_mode = "auto"
 testpaths = ["core/tests", "api/tests", "worker/tests"]
 pythonpath = [".", "core", "api", "worker"]

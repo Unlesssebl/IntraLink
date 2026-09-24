@@ -88,3 +88,18 @@ class CommandActionResponse(BaseModel):
     action: str
     status: str
     created_at: datetime
+
+
+class CommandStatusResponse(BaseModel):
+    command_id: uuid.UUID
+    idempotency_key: str
+    action: str
+    status: str
+    initiator: str
+    task_id: Optional[int] = None
+    target_json: Dict[str, Any] = Field(default_factory=dict)
+    params_json: Dict[str, Any] = Field(default_factory=dict)
+    result_json: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None

@@ -1,5 +1,6 @@
 """Tickets feature router."""
 
+import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -12,6 +13,7 @@ from core.intraservice.exceptions import IntraServiceNotFoundError
 from .schemas import (
     AddCommentRequest,
     CommandActionResponse,
+    CommandStatusResponse,
     ExecuteTicketActionRequest,
     TicketDetailDTO,
     TicketSummaryDTO,
@@ -20,6 +22,7 @@ from .schemas import (
 from .service import TicketService
 
 router = APIRouter(prefix="/tickets", tags=["Tickets"])
+tasks_router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
 
 def get_ticket_service() -> TicketService:
@@ -113,6 +116,32 @@ async def execute_ticket_action(
         initiator="web-user",
         session=db,
     )
+
+
+@tasks_router.get("/{command_id}", response_model=CommandStatusResponse)
+async def get_task_status(
+    command_id: uuid.UUID,
+    service: TicketService = Depends(get_ticket_service),
+    db: AsyncSession = Depends(get_db_session),
+) -> CommandStatusResponse:
+    """Retrieve command execution status (pending | running | succeeded | failed) for Short-Polling."""
+    status_dto = await service.get_command_status(command_id=command_id, session=db)
+    if not status_dto:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Command '{command_id}' not found",
+        )
+    return status_dto
+
+
+@router.get("/tasks/{command_id}", response_model=CommandStatusResponse)
+async def get_ticket_task_status(
+    command_id: uuid.UUID,
+    service: TicketService = Depends(get_ticket_service),
+    db: AsyncSession = Depends(get_db_session),
+) -> CommandStatusResponse:
+    """Alias for command status polling under tickets router."""
+    return await get_task_status(command_id=command_id, service=service, db=db)
 
 
 @router.get("/{ticket_id}/attachments/{file_id}")

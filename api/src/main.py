@@ -19,6 +19,7 @@ from api.src.features.reports.router import router as reports_router
 
 # Vertical feature slices
 from api.src.features.tickets.router import router as tickets_router
+from api.src.features.tickets.router import tasks_router
 from api.src.features.triage.router import router as triage_router
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.exceptions import (
@@ -42,6 +43,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         import core.database.models  # noqa: F401
         from api.src.core.db import engine
         from core.database.base import Base
+
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database schema verified (Base.metadata.create_all)")
@@ -153,6 +155,7 @@ async def login(payload: LoginRequest) -> dict:
 
 # Mount Vertical Feature Slices (/api/v2/...)
 app.include_router(tickets_router, prefix="/api/v2")
+app.include_router(tasks_router, prefix="/api/v2")
 app.include_router(triage_router, prefix="/api/v2")
 app.include_router(kb_router, prefix="/api/v2")
 app.include_router(diagnostics_router, prefix="/api/v2")
