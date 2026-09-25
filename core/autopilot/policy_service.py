@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.autopilot.dto import AutopilotPolicyDTO, AutopilotPolicyUpdateDTO
-from core.database.models import AutopilotPolicy
+from core.database.models import AutopilotPolicy, SystemState
 from core.database.session import get_engine, get_session_factory
 from core.database.system_state import _get_active_session_factory
 from core.redis_client import get_redis_client
@@ -284,6 +284,19 @@ class AutopilotPolicyService:
 
             record.last_failure_at = now
 
+            # Record error in Redis sliding window (cb:errors:{scenario_key})
+            if redis is not None:
+                try:
+                    cb_key = f"cb:errors:{scenario_key}"
+                    now_ts = now.timestamp()
+                    entry = json.dumps({"ts": now_ts, "error": str(error or "")[:300]})
+                    if hasattr(redis, "zadd"):
+                        await redis.zadd(cb_key, {entry: now_ts})
+                        await redis.zremrangebyscore(cb_key, 0, now_ts - CIRCUIT_BREAKER_WINDOW_SEC)
+                        await redis.expire(cb_key, CIRCUIT_BREAKER_WINDOW_SEC)
+                except Exception as exc:
+                    logger.debug("Redis cb:errors update error: %s", exc)
+
             # Check if threshold reached
             if record.consecutive_failures >= CIRCUIT_BREAKER_FAILURES_THRESHOLD:
                 record.is_circuit_broken = True
@@ -297,6 +310,27 @@ class AutopilotPolicyService:
                         error,
                     )
 
+            # Persist alert event to PostgreSQL if tripped
+            if record.is_circuit_broken:
+                stmt_state = select(SystemState).where(SystemState.key == f"cb_alert:{scenario_key}")
+                alert_rec = (await db_sess.execute(stmt_state)).scalar_one_or_none()
+                alert_payload = {
+                    "scenario_key": scenario_key,
+                    "event": "circuit_breaker_tripped",
+                    "failures": record.consecutive_failures,
+                    "last_error": error,
+                    "timestamp": now.isoformat(),
+                }
+                if alert_rec is not None:
+                    alert_rec.last_poll_at = now
+                    alert_rec.state_data = alert_payload
+                else:
+                    db_sess.add(SystemState(
+                        key=f"cb_alert:{scenario_key}",
+                        last_poll_at=now,
+                        state_data=alert_payload,
+                    ))
+
             await db_sess.commit()
             await db_sess.refresh(record)
             dto = AutopilotPolicyDTO.model_validate(record)
@@ -304,6 +338,17 @@ class AutopilotPolicyService:
             if redis is not None:
                 try:
                     await redis.set(cache_key, dto.model_dump_json(), ex=REDIS_POLICY_TTL_SEC)
+                    if record.is_circuit_broken:
+                        alert_json = json.dumps({
+                            "event": "circuit_breaker_tripped",
+                            "scenario_key": scenario_key,
+                            "failures": record.consecutive_failures,
+                            "last_error": error,
+                            "timestamp": now.isoformat(),
+                        })
+                        await redis.set(f"cb:alert:{scenario_key}", alert_json, ex=86400)
+                        if hasattr(redis, "publish"):
+                            await redis.publish("autopilot:events", alert_json)
                 except Exception:
                     pass
 
@@ -324,6 +369,12 @@ class AutopilotPolicyService:
         """Reset consecutive failures upon successful autonomous execution."""
         redis = self._get_redis()
         cache_key = f"{REDIS_POLICY_PREFIX}{scenario_key}"
+
+        if redis is not None:
+            try:
+                await redis.delete(f"cb:errors:{scenario_key}", f"cb:alert:{scenario_key}")
+            except Exception:
+                pass
 
         async def _success(db_sess: AsyncSession) -> AutopilotPolicyDTO:
             stmt = select(AutopilotPolicy).where(AutopilotPolicy.scenario_key == scenario_key)

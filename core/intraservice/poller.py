@@ -6,11 +6,8 @@ Slices:
   2. Incremental updates (ChangedMoreThan=<watermark>).
 Backoff:
   30s -> 60s -> 120s on network/5xx server errors. Resets to 30s on success.
-Routing:
-  - Unassigned tickets -> enqueue in triage_task.
-  - Bot assigned tickets -> enqueue in autopilot_task.
 Watermark:
-  - Dual persistent state: Redis (autopilot:watermark:ts, autopilot:watermark:task_id) + PostgreSQL (system_state table).
+  Dual persistent state: Redis (autopilot:watermark:ts, autopilot:watermark:task_id) + PostgreSQL (system_state table).
 Concurrency & Idempotency:
   - Single-Flight: checks active in-flight worker locks (lock:task:{id}).
   - Event Lock: suppresses redundant enqueuing for unmodified ticket events within 300s window.
@@ -20,9 +17,10 @@ import asyncio
 import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Set
 
 import redis.asyncio as aioredis
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.database.system_state import (
@@ -35,17 +33,38 @@ from core.intraservice.auth import (
 )
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
-from core.intraservice.poller import (
-    PollerStepResult,
-    PollStepResult,
-    get_executor_ids_list,
-)
 from core.redis_client import get_redis_client
-from worker.src.broker import QUEUE_DEFAULT, broker
-from worker.src.tasks.autopilot import autopilot_task
-from worker.src.tasks.triage import triage_task
 
-logger = logging.getLogger("worker.tasks.poller")
+logger = logging.getLogger("core.intraservice.poller")
+
+
+def get_executor_ids_list(task: TaskDTO) -> List[int]:
+    """Parse comma-separated ExecutorIds string into a list of integer IDs."""
+    if not task.executor_ids:
+        return []
+    result = []
+    for part in str(task.executor_ids).split(","):
+        part = part.strip()
+        if part.isdigit():
+            result.append(int(part))
+    return result
+
+
+class PollerStepResult(BaseModel):
+    """Result summary of a single polling iteration."""
+
+    polled_at: datetime
+    filter_tasks_count: int
+    changed_tasks_count: int
+    unique_tasks_count: int
+    triaged_tasks_count: int
+    autopilot_tasks_count: int
+    next_interval_sec: float
+    consecutive_errors: int = 0
+    error: Optional[str] = None
+
+
+PollStepResult = PollerStepResult
 
 
 class IngestionPoller:
@@ -65,6 +84,8 @@ class IngestionPoller:
         client: Optional[IntraServiceClient] = None,
         redis_client: Optional[aioredis.Redis] = None,
         session_factory: Optional[async_sessionmaker[AsyncSession]] = None,
+        on_enqueue_triage: Optional[Callable[[int], Coroutine[Any, Any, None]]] = None,
+        on_enqueue_autopilot: Optional[Callable[[int], Coroutine[Any, Any, None]]] = None,
     ) -> None:
         self.service_auth = service_auth or ServiceAuthBootstrap()
         self.watermark_service = watermark_service or WatermarkService(
@@ -74,6 +95,8 @@ class IngestionPoller:
         self.client = client or IntraServiceClient()
         self.redis_client = redis_client
         self.session_factory = session_factory
+        self._on_enqueue_triage = on_enqueue_triage
+        self._on_enqueue_autopilot = on_enqueue_autopilot
 
         self.consecutive_errors: int = 0
         self.current_interval_sec: float = self.DEFAULT_POLL_INTERVAL_SEC
@@ -107,7 +130,7 @@ class IngestionPoller:
 
         if self.redis_client is not None:
             try:
-                # 1. Single-Flight Concurrency check: is ticket actively being executed?
+                # 1. Single-Flight Concurrency check: is ticket actively being processed?
                 inflight_lock = await self.redis_client.exists(f"lock:task:{task.id}")
                 if inflight_lock:
                     logger.debug(
@@ -135,7 +158,7 @@ class IngestionPoller:
             except Exception as exc:
                 logger.debug("Redis error in _is_event_locked for task #%d: %s", task.id, exc)
 
-        # In-memory fallback for testing / no Redis
+        # In-memory fallback
         in_mem_key = f"{queue_type}:{event_signature}"
         if in_mem_key in self._in_memory_event_cache:
             return True
@@ -189,7 +212,7 @@ class IngestionPoller:
 
         # Determine cutoff timestamp for ChangedMoreThan
         if watermark and watermark.last_poll_at is not None:
-            # Overlap by 2 minutes to protect against server clock skew and in-flight transactions
+            # Overlap by 2 minutes to protect against clock skew
             cutoff = watermark.last_poll_at - timedelta(minutes=2)
         else:
             # Cold-start fallback: look back 30 minutes
@@ -235,7 +258,7 @@ class IngestionPoller:
         for t in tasks_changed:
             unique_tasks[t.id] = t
 
-        # 5. Route tickets to appropriate queues with Event Lock & Single-Flight protection
+        # 5. Route tickets with Event Lock and Single-Flight protection
         triaged_count = 0
         autopilot_count = 0
 
@@ -246,14 +269,16 @@ class IngestionPoller:
                 if await self._is_event_locked("triage", task):
                     continue
                 logger.debug("Enqueuing unassigned ticket #%d in triage_task", task.id)
-                await triage_task.kiq(task_id=task.id)
+                if self._on_enqueue_triage is not None:
+                    await self._on_enqueue_triage(task.id)
                 triaged_count += 1
             elif auth.bot_user_id in executors:
                 # Bot assigned ticket -> enqueue in autopilot
                 if await self._is_event_locked("autopilot", task):
                     continue
                 logger.debug("Enqueuing bot ticket #%d in autopilot_task", task.id)
-                await autopilot_task.kiq(task_id=task.id)
+                if self._on_enqueue_autopilot is not None:
+                    await self._on_enqueue_autopilot(task.id)
                 autopilot_count += 1
             else:
                 # Assigned to human engineer -> do not interfere
@@ -298,64 +323,3 @@ class IngestionPoller:
             consecutive_errors=0,
             error=None,
         )
-
-
-_active_poller: Optional[IngestionPoller] = None
-
-
-def get_active_poller() -> IngestionPoller:
-    """Return or initialize global IngestionPoller instance."""
-    global _active_poller
-    if _active_poller is None:
-        redis_conn = get_redis_client()
-        session_factory = _get_active_session_factory()
-        _active_poller = IngestionPoller(
-            redis_client=redis_conn,
-            session_factory=session_factory,
-        )
-    return _active_poller
-
-
-def set_active_poller(poller: Optional[IngestionPoller]) -> None:
-    """Override active poller instance for testing."""
-    global _active_poller
-    _active_poller = poller
-
-
-@broker.task(task_name="poll_queue_task", queue_name=QUEUE_DEFAULT)
-async def poll_queue_task() -> Dict[str, Any]:
-    """Taskiq task executing a single iteration of queue polling and ingestion."""
-    poller = get_active_poller()
-    res = await poller.poll_step()
-    return res.model_dump()
-
-
-async def run_poller_loop(
-    poller: Optional[IngestionPoller] = None,
-    stop_event: Optional[asyncio.Event] = None,
-) -> None:
-    """Continuous 30-second pulse polling loop with exponential backoff on failure."""
-    p = poller or get_active_poller()
-    logger.info("Ingestion poller loop started (pulse: %.1fs)", p.DEFAULT_POLL_INTERVAL_SEC)
-
-    while not (stop_event and stop_event.is_set()):
-        try:
-            res = await p.poll_step()
-            delay = res.next_interval_sec
-        except Exception as exc:
-            logger.exception("Unexpected error during poller step: %s", exc)
-            delay = p.record_failure(exc)
-
-        if stop_event and stop_event.is_set():
-            break
-
-        try:
-            if stop_event is not None:
-                await asyncio.wait_for(stop_event.wait(), timeout=delay)
-                break
-            else:
-                await asyncio.sleep(delay)
-        except asyncio.TimeoutError:
-            pass
-
-    logger.info("Ingestion poller loop terminated cleanly.")

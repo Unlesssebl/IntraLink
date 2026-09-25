@@ -15,10 +15,12 @@ from core.scenarios.registry import (
     get_default_scenario_registry,
     reset_registry,
 )
+from core.scenarios.reporter import AutopilotReporter, get_autopilot_reporter
 from core.scenarios.router import ScenarioRouter
 from core.scenarios.semantic_index import SemanticPrototypeIndex
 
 __all__ = [
+    "AutopilotReporter",
     "BaseScenario",
     "CatalogPriorProvider",
     "CoherenceGuard",
@@ -32,6 +34,7 @@ __all__ = [
     "ScenarioRegistry",
     "ScenarioRouter",
     "SemanticPrototypeIndex",
+    "get_autopilot_reporter",
     "get_default_scenario_registry",
     "reset_registry",
 ]
