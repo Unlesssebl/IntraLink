@@ -19,6 +19,7 @@ from api.src.features.knowledge_base.router import router as kb_router
 from api.src.features.reports.router import router as reports_router
 
 # Vertical feature slices
+from api.src.features.events import events_router
 from api.src.features.tickets.router import router as tickets_router
 from api.src.features.tickets.router import tasks_router
 from api.src.features.triage.router import router as triage_router
@@ -171,12 +172,35 @@ async def login(payload: LoginRequest) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный логин или пароль в IntraService",
         )
+
+    # Automatically synchronize valid credentials to worker vault tiers (L1, L2 Redis, L3 DB)
+    try:
+        from api.src.core.db import async_session_factory
+        from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
+        from core.redis_client import get_redis_client
+
+        redis = get_redis_client()
+        bootstrap = ServiceAuthBootstrap()
+        creds = ServiceAuthCredentials(
+            auth_b64=auth_b64,
+            bot_user_id=user_id or 0,
+            login=payload.login.strip(),
+        )
+        await bootstrap.save_credentials(
+            credentials=creds,
+            redis_client=redis,
+            session_factory=async_session_factory,
+        )
+    except Exception as exc:
+        logger.debug("Service auth vault warm-up skipped: %s", exc)
+
     return {
         "status": "ok",
         "auth_b64": auth_b64,
         "user_id": user_id,
         "login": payload.login.strip(),
     }
+
 
 
 # Mount Vertical Feature Slices (/api/v2/...)
@@ -187,3 +211,4 @@ app.include_router(kb_router, prefix="/api/v2")
 app.include_router(diagnostics_router, prefix="/api/v2")
 app.include_router(reports_router, prefix="/api/v2")
 app.include_router(autopilot_router, prefix="/api/v2")
+app.include_router(events_router)
