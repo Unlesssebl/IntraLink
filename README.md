@@ -12,11 +12,14 @@
 
 ```text
 IntraLink/
-├── core/                  # Web-Agnostic Core: база данных, DTO, клиент IntraService, RAG, диагностика
+├── core/                  # Web-Agnostic Core: база данных, DTO, клиент IntraService, RAG, диагностика, сценарии
 │   ├── database/          # SQLAlchemy 2.0 Async модели (CommandRecord, TaskKnowledgeBase, User)
-│   ├── diagnostic/        # Неблокирующие зонды портов (SMB:445, WinRM:5985) и Ping
+│   ├── diagnostic/        # Неблокирующие зонды портов (FastSocketProbe 1.5с), Ping и WinRMExecutor
 │   ├── intraservice/      # Строгий типизированный Pydantic v2 клиент с Circuit Breaker
-│   └── rag/               # Векторный эмбеддинг через LiteLLM Gateway и pgvector
+│   ├── scenarios/         # Универсальное ядро жизненного цикла сценариев (PlanSynthesizer, Orchestrator, Router)
+│   │   └── adapters/      # Сервисные адаптеры (account_create, account_lock, printer_spooler_restart, default_printer_fix, etc.)
+│   ├── ad/                # ActiveDirectoryPool (LDAP ServerPool), ГОСТ-транслитерация и Zero-Plaintext пароли
+│   └── rag/               # Двухуровневый кэш (L1 RAM + L2 Redis), гибридный RRF-поиск и LiteLLM Gateway
 ├── api/                   # FastAPI Backend на базе Vertical Slice Architecture (VSA)
 │   └── src/features/      # Изолированные срезы функционала:
 │       ├── tickets/       # Карточка заявки, история действий, Outbox-команды
@@ -47,6 +50,7 @@ IntraLink/
 * **Автономный диалоговый цикл**: При нехватке данных или выключенном компьютере автопилот переводит заявку в статус `6` («Приостановлена») с регламентной инструкцией и возобновляет решение при ответе заявителя.
 * **Централизованный AI Gateway (LiteLLM)**: Единая точка доступа к LLM и моделям эмбеддингов (`bge-m3`) с кэшированием, ретраями и фолбэками.
 * **Надежная шина задач (Taskiq + Redis)**: Распределенная очередь задач с гарантией надежности, обработкой сбоев и состоянием команд в `command_records`.
+* **Универсальные сервисные адаптеры и Zero-Plaintext Policy**: Автономные адаптеры онбординга (`account_create`, ГОСТ 7.79-2000, `pwdLastSet=0`), оффбординга (`account_lock`, `ACCOUNTDISABLE`) и печати (`printer_spooler_restart`, `default_printer_fix` через WinRM) с изоляцией синхронного I/O в отдельных потоках и криптостойкими маскируемыми паролями (`SecretPassword`).
 * **Zero-Stub & No-Kludge Policy**: Строгий запрет на создание фиктивных визуальных элементов, заглушек и временных «костылей».
 
 ---

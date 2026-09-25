@@ -121,6 +121,17 @@ class ScenarioRouter:
                 elif key == "offline_host" and task.entities.pc_name:
                     c_contrib = WEIGHT_C_ENTITIES
                     reasons.append(f"Factor C: +{c_contrib:.2f} (target offline PC specified)")
+                elif key == "account_create" and (
+                    task.entities.last_name or task.entities.first_name or task.entities.user_name
+                ):
+                    c_contrib = WEIGHT_C_ENTITIES
+                    reasons.append(f"Factor C: +{c_contrib:.2f} (employee identity fields identified)")
+                elif key == "account_lock" and (task.entities.target_user or task.entities.user_name):
+                    c_contrib = WEIGHT_C_ENTITIES
+                    reasons.append(f"Factor C: +{c_contrib:.2f} (target lock username identified)")
+                elif key in ("printer_spooler_restart", "default_printer_fix") and task.entities.pc_name:
+                    c_contrib = WEIGHT_C_ENTITIES
+                    reasons.append(f"Factor C: +{c_contrib:.2f} (workstation PC identified)")
                 base_score += c_contrib
 
             # Factor E: Semantic Prototype Similarity

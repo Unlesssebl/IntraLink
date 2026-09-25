@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ExtractedEntitiesDTO(BaseModel):
@@ -105,6 +105,16 @@ class TaskDTO(BaseModel):
     """Normalized IntraService task representation."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_entities_key(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "Entities" in data and "entities" not in data:
+                data["entities"] = data.pop("Entities")
+            if "CustomFields" in data and "custom_fields" not in data:
+                data["custom_fields"] = data.pop("CustomFields")
+        return data
 
     id: int = Field(alias="Id")
     name: str = Field(alias="Name", default="")

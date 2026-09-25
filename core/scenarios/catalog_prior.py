@@ -13,6 +13,12 @@ logger = logging.getLogger("core.scenarios.catalog_prior")
 
 # Known exact service ID mappings
 SERVICE_ID_MAPPINGS: Dict[int, Tuple[str, float, str]] = {
+    # 55 = Заявка на пользователя Directum
+    55: ("account_create", 0.95, "ServiceId 55 (Directum User Account Provisioning)"),
+    # 232 = Доступ к корпоративным системам
+    232: ("account_create", 0.95, "ServiceId 232 (Corporate Systems Access Provisioning)"),
+    # 8 = Увольнение / блокировка доступа
+    8: ("account_lock", 0.95, "ServiceId 8 (Employee Offboarding / Account Lock)"),
     # 62 = Установка локальных и сетевых принтеров / МФУ
     62: ("install_printer", 0.95, "ServiceId 62 (Printers/MFU installation)"),
     # 63 = Доступ к корпоративной сети Wi-Fi (WLAN-WORKNET)
@@ -25,10 +31,14 @@ SERVICE_ID_MAPPINGS: Dict[int, Tuple[str, float, str]] = {
 
 # Fuzzy keyword patterns in Service Name if ID is not statically known
 SERVICE_NAME_PATTERNS = [
+    (("создать пользователя", "создание учетной записи", "новый сотрудник", "онбординг", "пользовател directum"), "account_create", 0.90, "Service relates to user onboarding"),
+    (("увольнение", "блокировка учетной записи", "заблокировать пользователя", "оффбординг"), "account_lock", 0.90, "Service relates to employee offboarding"),
+    (("очередь печати", "spooler", "спулер"), "printer_spooler_restart", 0.90, "Service name relates to print queue/spooler"),
+    (("по умолчанию", "дефолтн"), "default_printer_fix", 0.90, "Service name relates to default printer setup"),
     (("принтер", "печать", "мфу", "сканер"), "install_printer", 0.90, "Service name relates to printing/MFU"),
     (("wi-fi", "wifi", "вайфай", "беспроводн", "wlan"), "grant_wlan", 0.90, "Service name relates to Wi-Fi/WLAN"),
     (("не включается", "нет питания", "не доступен пк", "оффлайн"), "offline_host", 0.85, "Service name relates to workstation power/hardware"),
-    (("1с", "directum", "директум", "клининг", "бухгалтер", "хоз"), "service_redirect", 0.85, "Service name relates to redirectable external services"),
+    (("1с", "клининг", "бухгалтер", "хоз"), "service_redirect", 0.85, "Service name relates to redirectable external services"),
 ]
 
 
@@ -45,6 +55,11 @@ class CatalogPriorProvider:
             key, conf, reason = SERVICE_ID_MAPPINGS[task.service_id]
             logger.debug("Catalog exact match for ticket #%s: %s (conf: %.2f)", task.id, key, conf)
             return key, conf, reason
+
+        # 1.5. TaskTypeId 1018 (Directum User Account Provisioning)
+        if task.task_type_id is not None and task.task_type_id == 1018:
+            logger.debug("Catalog task_type exact match for ticket #%s: account_create", task.id)
+            return "account_create", 0.95, "TaskTypeId 1018 (Directum User Account)"
 
         # 2. Service Name matching
         if task.service_name:

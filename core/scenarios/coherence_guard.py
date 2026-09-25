@@ -35,7 +35,15 @@ SCENARIO_SIGNALS = {
     "install_printer": ["принтер", "мфу", "печать", "печатает", "драйвер", "кэнон", "canon", "kyocera", "hp laserjet", "pantum"],
     "grant_wlan": ["wi-fi", "wifi", "вайфай", "беспроводн", "wlan-worknet", "wlan"],
     "offline_host": ["не включается", "компьютер не реагирует", "нет питания", "черный экран", "гудит но не включается", "запах гари"],
-    "service_redirect": ["1с", "directum", "бухгалтер", "стул", "клининг", "пропуск", "канцеляр"],
+    "service_redirect": ["1с", "бухгалтер", "стул", "клининг", "пропуск", "канцеляр"],
+    "account_create": ["создать учет", "создать учёт", "создать пользователя", "завести сотрудника", "новый сотрудник", "создание уз", "выход сотрудника", "онбординг"],
+    "account_lock": ["увольнен", "уволить", "заблокировать учет", "заблокировать учёт", "закрыть доступ", "блокировка пользователя", "отключить учет", "оффбординг"],
+}
+
+# Scenario family domain mapping for cross-domain collision detection
+DOMAIN_MAPPING = {
+    "printer_spooler_restart": "install_printer",
+    "default_printer_fix": "install_printer",
 }
 
 
@@ -51,8 +59,11 @@ class CoherenceGuard:
         """Check whether candidate scenario agrees with ticket text, entities and semantic affinity."""
         text = f"{task.name or ''} {task.description or ''}".lower()
 
+        # Map child scenarios to primary domain
+        domain_key = DOMAIN_MAPPING.get(candidate_key, candidate_key)
+
         # 1. Check if candidate scenario keywords appear in text
-        candidate_keywords = SCENARIO_SIGNALS.get(candidate_key, [])
+        candidate_keywords = SCENARIO_SIGNALS.get(domain_key, [])
         matches_candidate = any(kw in text for kw in candidate_keywords)
 
         # 2. Check semantic prototype divergence if scores provided
@@ -73,7 +84,7 @@ class CoherenceGuard:
         # 3. Check if a DIFFERENT scenario has strong contradicting lexical signals
         competing_matches = {}
         for other_key, kws in SCENARIO_SIGNALS.items():
-            if other_key != candidate_key:
+            if other_key != domain_key:
                 found = [kw for kw in kws if kw in text]
                 if found:
                     competing_matches[other_key] = found

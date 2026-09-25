@@ -30,10 +30,11 @@ export interface AgentPlanCardProps {
 }
 
 const SCENARIO_OPTIONS = [
+  { key: "account_create", name: "Создание учетной записи Directum / AD" },
+  { key: "account_lock", name: "Блокировка учетной записи (Увольнение)" },
   { key: "printer_spooler_restart", name: "Перезапуск очереди печати (Spooler)" },
   { key: "default_printer_fix", name: "Установка принтера по умолчанию" },
   { key: "ad_account_unlock", name: "Разблокировка учетной записи AD" },
-  { key: "ad_password_reset", name: "Сброс пароля пользователя в AD" },
   { key: "shared_folder_access", name: "Проверка доступа к сетевой папке (SMB)" },
   { key: "vpn_diagnostic", name: "Диагностика VPN подключения" },
   { key: "directum_cache_clear", name: "Очистка локального кэша Directum" },

@@ -8,9 +8,13 @@ from typing import Dict, List, Optional
 from openai import AsyncOpenAI
 
 from core.intraservice.dto import TaskDTO
+from core.scenarios.adapters.account_create import AccountCreateScenario
+from core.scenarios.adapters.account_lock import AccountLockScenario
+from core.scenarios.adapters.default_printer_fix import DefaultPrinterFixScenario
 from core.scenarios.adapters.grant_wlan import GrantWLANScenario
 from core.scenarios.adapters.install_printer import InstallPrinterScenario
 from core.scenarios.adapters.offline_host import OfflineHostScenario
+from core.scenarios.adapters.printer_spooler_restart import PrinterSpoolerRestartScenario
 from core.scenarios.adapters.rag_consultation import RAGConsultationScenario
 from core.scenarios.adapters.service_redirect import ServiceRedirectScenario
 from core.scenarios.base import BaseScenario
@@ -80,7 +84,11 @@ def get_default_scenario_registry(ai_client: Optional[AsyncOpenAI] = None) -> Sc
         router = ScenarioRouter(ai_client=ai_client)
         registry = ScenarioRegistry(router=router)
         registry.register(InstallPrinterScenario())
+        registry.register(PrinterSpoolerRestartScenario())
+        registry.register(DefaultPrinterFixScenario())
         registry.register(GrantWLANScenario())
+        registry.register(AccountCreateScenario())
+        registry.register(AccountLockScenario())
         registry.register(ServiceRedirectScenario())
         registry.register(OfflineHostScenario())
         registry.register(RAGConsultationScenario())
