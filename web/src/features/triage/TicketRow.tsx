@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { User, Sparkles, Loader2, Check, MessageSquare } from "lucide-react";
+import { User, Sparkles, Loader2, Check, MessageSquare, Zap, Paperclip } from "lucide-react";
 import { StatusDot, useToast } from "@/shared/ui";
 import { HostBadge } from "@/features/diagnostics/HostBadge";
 import { TicketListItem, TriageAnalysisResponse, triageApi } from "@/shared/api";
@@ -80,6 +80,23 @@ export const TicketRow = React.memo<TicketRowProps>(function TicketRow({
           <span className="font-medium text-neutral-200 truncate leading-tight group-hover:text-white">
             {ticket.name || "(Без темы)"}
           </span>
+          {ticket.is_tense && (
+            <span
+              className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-[9px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40 shrink-0 animate-pulse"
+              title={ticket.tense_reason || "Срочный / обеспокоенный тон"}
+            >
+              <Zap className="w-2.5 h-2.5 text-amber-400" />
+              ⚡ Срочно
+            </span>
+          )}
+          {ticket.has_attachments && (
+            <span
+              className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-[9px] font-medium bg-blue-500/20 text-blue-300 border border-blue-500/40 shrink-0"
+              title="Есть прикрепленные файлы"
+            >
+              <Paperclip className="w-2.5 h-2.5 text-blue-400" />
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">

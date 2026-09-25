@@ -187,6 +187,7 @@ async def approve_agent_plan(
     req: ApprovePlanRequest,
     auth_b64: Optional[str] = Depends(get_intraservice_auth),
     db: AsyncSession = Depends(get_db_session),
+    redis: aioredis.Redis = Depends(get_redis),
     service: AutopilotService = Depends(get_autopilot_service_dep),
 ) -> dict:
     """1-Click approve agent plan: verify optimistic lock, dispatch Taskiq command, log positive feedback."""
@@ -196,6 +197,7 @@ async def approve_agent_plan(
         req=req,
         operator_username=operator,
         session=db,
+        redis_client=redis,
         auth_b64=auth_b64,
     )
 
@@ -206,6 +208,7 @@ async def correct_agent_plan(
     req: CorrectPlanRequest,
     auth_b64: Optional[str] = Depends(get_intraservice_auth),
     db: AsyncSession = Depends(get_db_session),
+    redis: aioredis.Redis = Depends(get_redis),
     service: AutopilotService = Depends(get_autopilot_service_dep),
 ) -> dict:
     """Correct agent plan: record Ground-Truth delta in AutopilotCorrection and dispatch corrected Taskiq task."""
@@ -215,6 +218,24 @@ async def correct_agent_plan(
         req=req,
         operator_username=operator,
         session=db,
+        redis_client=redis,
+        auth_b64=auth_b64,
+    )
+
+
+@router.post("/reclaim/{ticket_id}")
+async def reclaim_ticket(
+    ticket_id: int,
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
+    redis: aioredis.Redis = Depends(get_redis),
+    service: AutopilotService = Depends(get_autopilot_service_dep),
+) -> dict:
+    """Instantly reclaim ticket by human operator with cooperative worker cancellation."""
+    operator = _extract_username(auth_b64)
+    return await service.reclaim_ticket(
+        ticket_id=ticket_id,
+        operator_username=operator,
+        redis_client=redis,
         auth_b64=auth_b64,
     )
 

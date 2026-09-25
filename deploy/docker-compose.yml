@@ -1,4 +1,4 @@
-name: intralink-v2
+name: intralink
 
 services:
   postgres:
@@ -81,6 +81,10 @@ services:
       - LITELLM_API_KEY=${LITELLM_API_KEY:-sk-intralink-dev}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      - ../core:/workspace/core
+      - ../api:/workspace/api
+      - ../worker:/workspace/worker
     depends_on:
       postgres:
         condition: service_healthy
@@ -104,6 +108,10 @@ services:
       - LITELLM_API_KEY=${LITELLM_API_KEY:-sk-intralink-dev}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      - ../core:/workspace/core
+      - ../api:/workspace/api
+      - ../worker:/workspace/worker
     depends_on:
       postgres:
         condition: service_healthy

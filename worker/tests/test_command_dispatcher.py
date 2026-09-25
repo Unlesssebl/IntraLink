@@ -1,6 +1,7 @@
 """Unit and integration tests for Taskiq broker and Command Dispatcher."""
 
 import uuid
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -8,6 +9,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from core.database.base import Base
 from core.database.models import CommandRecord
+from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
+from worker.tests.test_autopilot_task import MockRedis
 from worker.src.broker import (
     QUEUE_DEFAULT,
     QUEUE_RAG_COMPUTE,
@@ -16,10 +19,29 @@ from worker.src.broker import (
     broker,
     get_broker_for_queue,
 )
+from worker.src.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
+from worker.src.scenarios.registry import ScenarioRegistry
+from worker.src.services.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from worker.src.tasks.command_dispatcher import (
     dispatch_command_task,
+    set_dispatcher_client,
+    set_dispatcher_redis_client,
+    set_dispatcher_registry,
+    set_dispatcher_service_auth,
     set_session_factory,
 )
+
+
+@pytest.fixture
+def mock_redis() -> MockRedis:
+    return MockRedis()
+
+
+@pytest.fixture(autouse=True)
+def isolate_dispatcher_redis(mock_redis):
+    set_dispatcher_redis_client(mock_redis)
+    yield
+    set_dispatcher_redis_client(None)
 
 
 @pytest.fixture
@@ -277,3 +299,191 @@ async def test_dispatch_cancel_ticket(async_db):
     assert res["status"] == "succeeded"
     assert res["result"]["status_applied"] == 30
     assert res["result"]["public_comment"] == "Дубликат заявки #5550"
+
+
+class DummyScenario(BaseScenario):
+    scenario_key = "dummy_scenario"
+    name = "Тестовый сценарий"
+    description = "Тестирование диспетчера"
+
+    async def can_handle(self, task: TaskDTO) -> bool:
+        return True
+
+    async def validate_preconditions(self, task: TaskDTO) -> PreconditionResult:
+        return PreconditionResult(is_valid=True)
+
+    async def execute(self, task: TaskDTO, policy: Any) -> ScenarioExecutionResult:
+        return ScenarioExecutionResult(
+            success=True,
+            action_taken="dummy_action",
+            resolution_comment="Регламентный ответ заявителю.",
+            technical_note="Дополнительные детали аудита.",
+            target_status_id=3,
+        )
+
+
+@pytest.fixture
+def mock_dispatcher_intraservice():
+    from unittest.mock import AsyncMock
+
+    mock_client = AsyncMock()
+    mock_auth = AsyncMock()
+    mock_auth.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="bW9jazp0b2tlbg==",
+        bot_user_id=999,
+        login="alen_assistant",
+    )
+
+    registry = ScenarioRegistry()
+    registry.register(DummyScenario())
+
+    set_dispatcher_client(mock_client)
+    set_dispatcher_service_auth(mock_auth)
+    set_dispatcher_registry(registry)
+
+    yield mock_client, mock_auth, registry
+
+    set_dispatcher_client(None)
+    set_dispatcher_service_auth(None)
+    set_dispatcher_registry(None)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_canonical_scenario_execution_with_dual_audit(async_db, mock_dispatcher_intraservice):
+    mock_client, _, _ = mock_dispatcher_intraservice
+    mock_client.get_task.return_value = TaskDTO(
+        id=7777,
+        name="Настройка принтера",
+        status_id=1,
+        status_name="Новая",
+        entities=ExtractedEntitiesDTO(pc_name="WKS-999"),
+    )
+
+    cmd_id = uuid.uuid4()
+    async with async_db() as session:
+        cmd = CommandRecord(
+            id=cmd_id,
+            idempotency_key="test-canonical-001",
+            action="dummy_scenario",
+            executor="worker",
+            target_json={"ticket_id": 7777},
+            params_json={"expected_status_id": 1, "override_comment": "Кастомный комментарий оператора"},
+            status="pending",
+            initiator="supervisor:petrov",
+            task_id=7777,
+        )
+        session.add(cmd)
+        await session.commit()
+
+    res = await dispatch_command_task(cmd_id)
+    assert res["status"] == "succeeded"
+
+    # Verify update_task was called for resolution comment and technical audit note
+    assert mock_client.update_task.await_count == 2
+    calls = mock_client.update_task.await_args_list
+
+    # First call: resolution comment & status 3 transition
+    call1 = calls[0].kwargs
+    assert call1["task_id"] == 7777
+    assert call1["status_id"] == 3
+    assert call1["comment"] == "Кастомный комментарий оператора"
+    assert call1["is_private"] is False
+
+    # Second call: internal audit note with dual attribution
+    call2 = calls[1].kwargs
+    assert call2["task_id"] == 7777
+    assert call2["is_private"] is True
+    assert "Одобрил: supervisor:petrov" in call2["comment"]
+    assert "Исполнил: alen_assistant" in call2["comment"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_occ_version_guard_conflict(async_db, mock_dispatcher_intraservice):
+    mock_client, _, _ = mock_dispatcher_intraservice
+    # Ticket status has changed from 1 to 2
+    mock_client.get_task.return_value = TaskDTO(
+        id=7778,
+        name="Заявка",
+        status_id=2,
+        status_name="В работе",
+        entities=ExtractedEntitiesDTO(),
+    )
+
+    cmd_id = uuid.uuid4()
+    async with async_db() as session:
+        cmd = CommandRecord(
+            id=cmd_id,
+            idempotency_key="test-occ-001",
+            action="dummy_scenario",
+            executor="worker",
+            target_json={"ticket_id": 7778},
+            params_json={"expected_status_id": 1},
+            status="pending",
+            initiator="supervisor:petrov",
+            task_id=7778,
+        )
+        session.add(cmd)
+        await session.commit()
+
+    res = await dispatch_command_task(cmd_id)
+    assert res["status"] == "failed"
+    assert "Статус заявки изменился с 1 на 2" in res["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_optimistic_lock_already_closed(async_db, mock_dispatcher_intraservice):
+    mock_client, _, _ = mock_dispatcher_intraservice
+    # Ticket already closed
+    mock_client.get_task.return_value = TaskDTO(
+        id=7779,
+        name="Заявка закрыта",
+        status_id=3,
+        status_name="Выполнена",
+        entities=ExtractedEntitiesDTO(),
+    )
+
+    cmd_id = uuid.uuid4()
+    async with async_db() as session:
+        cmd = CommandRecord(
+            id=cmd_id,
+            idempotency_key="test-closed-001",
+            action="dummy_scenario",
+            executor="worker",
+            target_json={"ticket_id": 7779},
+            params_json={},
+            status="pending",
+            initiator="supervisor:petrov",
+            task_id=7779,
+        )
+        session.add(cmd)
+        await session.commit()
+
+    res = await dispatch_command_task(cmd_id)
+    assert res["status"] == "skipped"
+    assert res["result"]["reason"] == "already_closed"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_cooperative_cancellation_reclaimed(async_db, mock_dispatcher_intraservice, mock_redis):
+    # Set operator abort flag in Redis
+    await mock_redis.set("autopilot:abort:7780", "petrov")
+
+    cmd_id = uuid.uuid4()
+    async with async_db() as session:
+        cmd = CommandRecord(
+            id=cmd_id,
+            idempotency_key="test-reclaim-001",
+            action="dummy_scenario",
+            executor="worker",
+            target_json={"ticket_id": 7780},
+            params_json={},
+            status="pending",
+            initiator="supervisor:petrov",
+            task_id=7780,
+        )
+        session.add(cmd)
+        await session.commit()
+
+    res = await dispatch_command_task(cmd_id)
+    assert res["status"] == "aborted"
+    assert "перехвачена оператором" in res["error_message"]

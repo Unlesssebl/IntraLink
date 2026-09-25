@@ -262,6 +262,14 @@ async def triage_task(task_id: int) -> Dict[str, Any]:
         "Ticket #%d passed Filter #1 (Relevance Gateway). Eligible for automation/assignment.",
         task.id,
     )
+
+    # Step 6.1: Enqueue background plan prefetch for 0 ms delivery in UI
+    try:
+        from worker.src.tasks.plan_prefetch import prefetch_agent_plan_task
+
+        await prefetch_agent_plan_task.kiq(ticket_id=task.id)
+    except Exception as exc:
+        logger.debug("Failed to dispatch plan prefetch task for ticket #%d: %s", task.id, exc)
     return {
         "status": "passed_gateway",
         "reason": decision.reason,

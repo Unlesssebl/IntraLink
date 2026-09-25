@@ -24,6 +24,12 @@ class TicketSummaryDTO(BaseModel):
     created: Optional[str] = None
     applicant_name: Optional[str] = None
     pc_name: Optional[str] = None
+    is_tense: bool = False
+    tense_reason: Optional[str] = None
+    has_attachments: bool = False
+    scenario_key: Optional[str] = None
+    scenario_name: Optional[str] = None
+    confidence: Optional[float] = None
 
     @field_validator("name", "description", "status_name", mode="before")
     @classmethod

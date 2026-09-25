@@ -89,6 +89,12 @@ export interface TicketListItem {
   priority_name?: string | null;
   executor_name?: string | null;
   pc_name?: string | null;
+  is_tense?: boolean;
+  tense_reason?: string | null;
+  has_attachments?: boolean;
+  scenario_key?: string | null;
+  scenario_name?: string | null;
+  confidence?: number | null;
 }
 
 export interface TicketEntities {

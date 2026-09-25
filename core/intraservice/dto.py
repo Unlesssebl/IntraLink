@@ -21,6 +21,18 @@ class ExtractedEntitiesDTO(BaseModel):
     printer_address: str = ""
     printer_model: str = ""
     target_user: str = ""
+    first_name: str = ""
+    last_name: str = ""
+    middle_name: str = ""
+    title: str = ""
+    company: str = ""
+    tab_number: str = ""
+    similar_user: str = ""
+    install_directum: str = ""
+    directum_actions: str = ""
+    it_login: str = ""
+    it_password: str = ""
+    directum_task_id: str = ""
 
     @field_validator(
         "pc_name",
@@ -33,6 +45,18 @@ class ExtractedEntitiesDTO(BaseModel):
         "printer_address",
         "printer_model",
         "target_user",
+        "first_name",
+        "last_name",
+        "middle_name",
+        "title",
+        "company",
+        "tab_number",
+        "similar_user",
+        "install_directum",
+        "directum_actions",
+        "it_login",
+        "it_password",
+        "directum_task_id",
         mode="before",
     )
     @classmethod
@@ -93,6 +117,7 @@ class TaskDTO(BaseModel):
     priority_name: Optional[str] = Field(default=None, alias="PriorityName")
     task_type_id: Optional[int] = Field(default=None, alias="TaskTypeId")
     created: Optional[str] = Field(default=None, alias="Created")
+    changed: Optional[str] = Field(default=None, alias="Changed")
 
     @field_validator("name", "description", "status_name", mode="before")
     @classmethod

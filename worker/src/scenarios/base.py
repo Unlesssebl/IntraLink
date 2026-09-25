@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from core.autopilot.dto import AutopilotPolicyDTO
 from core.intraservice.dto import TaskDTO
+from core.intraservice.service_definition import ServiceDefinition
 
 
 class PreconditionResult(BaseModel):
@@ -48,6 +49,7 @@ class BaseScenario(ABC):
     name: str
     description: str
     semantic_prototypes: List[str] = []
+    definition: Optional[ServiceDefinition] = None
 
     @abstractmethod
     async def can_handle(self, task: TaskDTO) -> bool:

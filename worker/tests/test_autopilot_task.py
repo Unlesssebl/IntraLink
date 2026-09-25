@@ -19,6 +19,7 @@ from worker.src.tasks.autopilot import (
     set_autopilot_client,
     set_autopilot_policy_service,
     set_autopilot_redis_client,
+    set_autopilot_registry,
     set_autopilot_service_auth,
     set_autopilot_session_factory,
 )
@@ -37,8 +38,12 @@ class MockRedis:
         self.store[key] = value
         return True
 
-    async def delete(self, key: str):
-        self.store.pop(key, None)
+    async def delete(self, *keys: str):
+        for k in keys:
+            self.store.pop(k, None)
+
+    async def exists(self, *keys: str) -> int:
+        return sum(1 for k in keys if k in self.store)
 
 
 @pytest.fixture
@@ -55,6 +60,13 @@ async def test_session_factory() -> AsyncGenerator[async_sessionmaker[AsyncSessi
 @pytest.fixture
 def mock_redis() -> MockRedis:
     return MockRedis()
+
+
+@pytest.fixture(autouse=True)
+def isolate_autopilot_redis(mock_redis):
+    set_autopilot_redis_client(mock_redis)
+    yield
+    set_autopilot_redis_client(None)
 
 
 @pytest.fixture
@@ -275,13 +287,13 @@ async def test_autopilot_dialogue_resume_loop_enriches_and_resolves(mock_client,
         assert res["status"] == "resolved"
         assert res["target_status_id"] == 3
 
-        # Verify task completed (Status Transit Safeguard: 6 -> 2 -> 3)
-        assert mock_client.update_task.call_count == 3
-        transit_call = mock_client.update_task.call_args_list[0].kwargs
-        assert transit_call["status_id"] == 2  # Intermediate transition from paused
-        res_call = mock_client.update_task.call_args_list[1].kwargs
-        assert res_call["status_id"] == 3  # Final completion
+        # Verify task completed (Direct 6 -> 3 transition without intermediate 2)
+        assert mock_client.update_task.call_count == 2
+        res_call = mock_client.update_task.call_args_list[0].kwargs
+        assert res_call["status_id"] == 3  # Direct completion
         assert "успешно настроен" in res_call["comment"]
+        audit_call = mock_client.update_task.call_args_list[1].kwargs
+        assert audit_call["is_private"] is True
 
 
 @pytest.mark.asyncio
@@ -326,7 +338,7 @@ async def test_autopilot_dialogue_limit_escalates_to_human(mock_client, mock_ser
 # -------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_autopilot_circuit_breaker_trips_on_failures(mock_client, mock_service_auth, test_session_factory, policy_service):
+async def test_autopilot_circuit_breaker_trips_on_failures(mock_client, mock_service_auth, test_session_factory, policy_service, mock_redis):
     task = TaskDTO(
         Id=508,
         Name="Сброс пароля AD",
@@ -346,27 +358,38 @@ async def test_autopilot_circuit_breaker_trips_on_failures(mock_client, mock_ser
     set_autopilot_service_auth(mock_service_auth)
     set_autopilot_session_factory(test_session_factory)
     set_autopilot_policy_service(policy_service)
+    set_autopilot_redis_client(mock_redis)
 
-    with patch("worker.src.tasks.ad_actions.reset_ad_password_task", side_effect=Exception("LDAP Server Down")):
-        # Failure 1
-        res1 = await autopilot_task(508)
-        assert res1["status"] == "failed"
-        assert res1["circuit_broken"] is False
+    from worker.src.scenarios.ad_password_reset import ADPasswordResetScenario
+    from worker.src.scenarios.registry import ScenarioRegistry
+    test_reg = ScenarioRegistry()
+    test_reg.register(ADPasswordResetScenario())
+    set_autopilot_registry(test_reg)
 
-        # Failure 2
-        res2 = await autopilot_task(508)
-        assert res2["status"] == "failed"
-        assert res2["circuit_broken"] is False
+    try:
+        with patch("worker.src.tasks.ad_actions.reset_ad_password_task", side_effect=Exception("LDAP Server Down")):
+            # Failure 1
+            res1 = await autopilot_task(508)
+            assert res1["status"] == "failed"
+            assert res1["circuit_broken"] is False
 
-        # Failure 3 -> Trips Circuit Breaker!
-        res3 = await autopilot_task(508)
-        assert res3["status"] == "failed"
-        assert res3["circuit_broken"] is True
+            # Failure 2
+            res2 = await autopilot_task(508)
+            assert res2["status"] == "failed"
+            assert res2["circuit_broken"] is False
 
-        # Verify policy degraded to ASSISTED
-        policy = await policy_service.get_policy("ad_password_reset")
-        assert policy.mode == "ASSISTED"
-        assert policy.is_circuit_broken is True
+            # Failure 3 -> Trips Circuit Breaker!
+            res3 = await autopilot_task(508)
+            assert res3["status"] == "failed"
+            assert res3["circuit_broken"] is True
+
+            # Verify policy degraded to ASSISTED
+            policy = await policy_service.get_policy("ad_password_reset")
+            assert policy.mode == "ASSISTED"
+            assert policy.is_circuit_broken is True
+    finally:
+        set_autopilot_registry(None)
+        set_autopilot_redis_client(None)
 
 
 # -------------------------------------------------------------

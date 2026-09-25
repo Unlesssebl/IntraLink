@@ -71,7 +71,9 @@ async def test_embedding_cache_l2_redis_hit_and_l1_hydration():
 @pytest.mark.asyncio
 async def test_embedder_uses_cache():
     """Verify get_embedding_vector transparently checks and updates cache."""
+    import uuid
     from unittest.mock import MagicMock
+    from core.rag.embed_cache import set_embedding_cache
 
     mock_ai = AsyncMock()
     mock_resp = MagicMock()
@@ -81,21 +83,21 @@ async def test_embedder_uses_cache():
     mock_ai.embeddings.create.return_value = mock_resp
 
     test_cache = EmbeddingCache(in_memory_maxsize=10, redis_client=None)
+    set_embedding_cache(test_cache)
+
+    unique_query = f"уникальный запрос с кэшем_{uuid.uuid4()}"
 
     # First call - calls AI client
-    vec1 = await get_embedding_vector("тестовый запрос", mock_ai, use_cache=False)
+    vec1 = await get_embedding_vector(f"тестовый запрос_{uuid.uuid4()}", mock_ai, use_cache=False)
     assert vec1 == [0.42] * 1024
     assert mock_ai.embeddings.create.await_count == 1
 
     # Call with cache
-    from core.rag.embed_cache import set_embedding_cache
-    set_embedding_cache(test_cache)
-
-    vec2 = await get_embedding_vector("запрос с кэшем", mock_ai, use_cache=True)
+    vec2 = await get_embedding_vector(unique_query, mock_ai, use_cache=True)
     assert vec2 == [0.42] * 1024
     assert mock_ai.embeddings.create.await_count == 2
 
     # Second call with same text - cached in L1, AI client NOT called!
-    vec3 = await get_embedding_vector("запрос с кэшем", mock_ai, use_cache=True)
+    vec3 = await get_embedding_vector(unique_query, mock_ai, use_cache=True)
     assert vec3 == [0.42] * 1024
     assert mock_ai.embeddings.create.await_count == 2  # Remains 2!

@@ -268,5 +268,12 @@ async def test_supervisor_plan_approve_and_correct_endpoints(test_db_session, ov
         assert "application/x-ndjson" in export_res.headers["content-type"]
         assert "ad_password_reset" in export_res.text
 
+        # 7. POST /reclaim/777
+        reclaim_res = await client.post("/api/v2/autopilot/reclaim/777")
+        assert reclaim_res.status_code == 200
+        assert reclaim_res.json()["status"] == "reclaimed"
+        assert reclaim_res.json()["ticket_id"] == 777
+        assert mock_client.update_task.await_count >= 1
+
     app.dependency_overrides.clear()
 

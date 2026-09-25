@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.src.core.ai import get_ai_client
 from api.src.core.config import settings
 from api.src.features.diagnostics.service import DiagnosticsService
+from core.autopilot.intent import detect_tense_tone
 from core.autopilot.policy_service import AutopilotPolicyService
 from core.database.models import AutopilotCorrection, CommandRecord
 from core.intraservice.client import IntraServiceClient
@@ -59,6 +60,16 @@ class AutopilotService:
         auth_b64: Optional[str] = None,
     ) -> AgentPlanDTO:
         """Synthesize real-time evaluation plan of the autonomous agent for a ticket."""
+        cache_key = f"cache:autopilot:plan:{ticket_id}"
+        if redis_client is not None:
+            try:
+                cached_raw = await redis_client.get(cache_key)
+                if cached_raw:
+                    logger.debug("Serving agent plan for ticket #%d from Redis cache (0 ms)", ticket_id)
+                    return AgentPlanDTO.model_validate_json(cached_raw)
+            except Exception as exc:
+                logger.debug("Redis plan cache read error for ticket #%d: %s", ticket_id, exc)
+
         try:
             task: TaskDTO = await self.client.get_task(task_id=ticket_id, auth_b64=auth_b64)
         except IntraServiceNotFoundError as exc:
@@ -166,7 +177,11 @@ class AutopilotService:
         except Exception:
             last_event_id = None
 
-        return AgentPlanDTO(
+        raw_text = f"{task.name} {task.description or ''}"
+        is_tense, tense_reason = detect_tense_tone(raw_text)
+        has_attachments = bool(task.attachments)
+
+        plan = AgentPlanDTO(
             task_id=task.id,
             scenario_key=scenario_key,
             scenario_name=scenario_name,
@@ -187,7 +202,18 @@ class AutopilotService:
             last_event_id=last_event_id,
             is_circuit_broken=is_circuit_broken,
             mode=mode,
+            is_tense=is_tense,
+            tense_reason=tense_reason,
+            has_attachments=has_attachments,
         )
+
+        if redis_client is not None:
+            try:
+                await redis_client.set(cache_key, plan.model_dump_json(), ex=300)
+            except Exception as exc:
+                logger.debug("Redis plan cache write error for ticket #%d: %s", ticket_id, exc)
+
+        return plan
 
     async def approve_plan(
         self,
@@ -195,10 +221,11 @@ class AutopilotService:
         req: ApprovePlanRequest,
         operator_username: str,
         session: AsyncSession,
+        redis_client: Optional[aioredis.Redis] = None,
         auth_b64: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Approve agent plan: verify optimistic lock, dispatch Taskiq command, log positive feedback."""
-        # 1. Optimistic Concurrency Check (Edge Case 1)
+        # 1. Optimistic Concurrency Check & OCC Version Guard
         task: TaskDTO = await self.client.get_task(task_id=ticket_id, auth_b64=auth_b64)
         if req.expected_status_id is not None and task.status_id != req.expected_status_id:
             raise HTTPException(
@@ -208,6 +235,20 @@ class AutopilotService:
                     f"({task.status_name}) во время просмотра. План обновлен."
                 ),
             )
+
+        if req.last_event_id is not None:
+            lifetimes: List[TaskLifetimeEventDTO] = await self.client.get_task_lifetime(
+                task_id=ticket_id, auth_b64=auth_b64
+            )
+            current_last_event_id = lifetimes[-1].id if lifetimes else None
+            if current_last_event_id is not None and current_last_event_id != req.last_event_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"История тикета изменилась во время рассмотрения (событие #{current_last_event_id} "
+                        f"вместо #{req.last_event_id}). План обновлен."
+                    ),
+                )
 
         # 2. Find matching scenario
         registry = get_default_scenario_registry(ai_client=get_ai_client())
@@ -225,6 +266,7 @@ class AutopilotService:
             params_json={
                 **task.entities.model_dump(),
                 "override_comment": req.override_comment,
+                "expected_status_id": req.expected_status_id,
             },
             status="pending",
             initiator=f"supervisor:{operator_username}",
@@ -233,6 +275,13 @@ class AutopilotService:
         session.add(cmd)
         await session.commit()
         await session.refresh(cmd)
+
+        # Invalidate plan cache in Redis upon approval
+        if redis_client is not None:
+            try:
+                await redis_client.delete(f"cache:autopilot:plan:{ticket_id}")
+            except Exception:
+                pass
 
         # 4. Dispatch Taskiq task
         try:
@@ -256,10 +305,11 @@ class AutopilotService:
         req: CorrectPlanRequest,
         operator_username: str,
         session: AsyncSession,
+        redis_client: Optional[aioredis.Redis] = None,
         auth_b64: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Record Ground-Truth delta in AutopilotCorrection and dispatch corrected Taskiq command."""
-        # 1. Optimistic Concurrency Check (Edge Case 1)
+        # 1. Optimistic Concurrency Check & OCC Version Guard
         task: TaskDTO = await self.client.get_task(task_id=ticket_id, auth_b64=auth_b64)
         if req.expected_status_id is not None and task.status_id != req.expected_status_id:
             raise HTTPException(
@@ -269,6 +319,20 @@ class AutopilotService:
                     f"({task.status_name}) во время просмотра. План обновлен."
                 ),
             )
+
+        if req.last_event_id is not None:
+            lifetimes: List[TaskLifetimeEventDTO] = await self.client.get_task_lifetime(
+                task_id=ticket_id, auth_b64=auth_b64
+            )
+            current_last_event_id = lifetimes[-1].id if lifetimes else None
+            if current_last_event_id is not None and current_last_event_id != req.last_event_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"История тикета изменилась во время рассмотрения (событие #{current_last_event_id} "
+                        f"вместо #{req.last_event_id}). План обновлен."
+                    ),
+                )
 
         # 2. Get baseline agent prediction
         registry = get_default_scenario_registry(ai_client=get_ai_client())
@@ -327,6 +391,7 @@ class AutopilotService:
             params_json={
                 **req.corrected_params,
                 "override_comment": req.corrected_comment,
+                "expected_status_id": req.expected_status_id,
             },
             status="pending",
             initiator=f"supervisor_corrected:{operator_username}",
@@ -335,6 +400,13 @@ class AutopilotService:
         session.add(cmd)
         await session.commit()
         await session.refresh(cmd)
+
+        # Invalidate plan cache in Redis upon correction
+        if redis_client is not None:
+            try:
+                await redis_client.delete(f"cache:autopilot:plan:{ticket_id}")
+            except Exception:
+                pass
 
         try:
             from worker.src.tasks.command_dispatcher import dispatch_command_task
@@ -349,6 +421,48 @@ class AutopilotService:
             "command_id": str(cmd.id),
             "ticket_id": ticket_id,
             "action": req.corrected_scenario,
+        }
+
+    async def reclaim_ticket(
+        self,
+        ticket_id: int,
+        operator_username: str,
+        redis_client: Optional[aioredis.Redis] = None,
+        auth_b64: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Instantly reclaim ticket by human operator with cooperative worker cancellation."""
+        if redis_client is not None:
+            try:
+                await redis_client.set(f"autopilot:abort:{ticket_id}", operator_username, ex=120)
+                await redis_client.delete(
+                    f"lock:task:{ticket_id}",
+                    f"lock:autopilot:{ticket_id}",
+                    f"cache:autopilot:plan:{ticket_id}",
+                )
+            except Exception as exc:
+                logger.debug("Redis abort flag error for ticket #%d: %s", ticket_id, exc)
+
+        note = (
+            f"🛑 [Перехват оператором: {operator_username}]\n"
+            f"Заявка снята с автопилота и взята в ручную обработку.\n"
+            "Фоновые действия агента принудительно остановлены."
+        )
+        try:
+            await self.client.update_task(
+                task_id=ticket_id,
+                comment=note,
+                is_private=True,
+                auth_b64=auth_b64,
+            )
+        except Exception as exc:
+            logger.warning("Failed to post reclaim audit note for ticket #%d: %s", ticket_id, exc)
+
+        logger.info("Ticket #%d reclaimed by operator %s", ticket_id, operator_username)
+        return {
+            "status": "reclaimed",
+            "ticket_id": ticket_id,
+            "operator": operator_username,
+            "message": "Тикет успешно перехвачен в ручную работу",
         }
 
     async def list_corrections(

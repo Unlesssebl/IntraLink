@@ -76,15 +76,20 @@ export interface AgentPlan {
   last_event_id?: number | null;
   is_circuit_broken: boolean;
   mode: string;
+  is_tense?: boolean;
+  tense_reason?: string | null;
+  has_attachments?: boolean;
 }
 
 export interface ApprovePlanRequest {
   expected_status_id?: number;
+  last_event_id?: number;
   override_comment?: string;
 }
 
 export interface CorrectPlanRequest {
   expected_status_id?: number;
+  last_event_id?: number;
   corrected_scenario: string;
   corrected_params: Record<string, any>;
   corrected_comment?: string;

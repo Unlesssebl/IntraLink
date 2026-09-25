@@ -283,9 +283,11 @@ class TestRouterFactorE:
     @pytest.mark.asyncio
     async def test_factor_e_disabled_falls_back_gracefully(self, router_no_semantic):
         """When semantic index not ready, router must still route via A+B+C+D factors."""
+        from worker.src.scenarios.ad_password_reset import ADPasswordResetScenario
         from worker.src.scenarios.registry import get_default_scenario_registry, reset_registry
         reset_registry()
         registry = get_default_scenario_registry()
+        registry.register(ADPasswordResetScenario())
 
         router = router_no_semantic
         # Semantic index created but not warmed up → is_ready = False

@@ -31,6 +31,7 @@ class ScenarioRegistry:
 
     def __init__(self, router: Optional[ScenarioRouter] = None) -> None:
         self._scenarios: Dict[str, BaseScenario] = {}
+        self._scenarios_by_service_id: Dict[int, List[BaseScenario]] = {}
         self._router = router or ScenarioRouter()
 
     async def initialize(self) -> None:
@@ -38,13 +39,24 @@ class ScenarioRegistry:
         await self._router.warm_up()
 
     def register(self, scenario: BaseScenario) -> None:
-        """Register a scenario instance."""
+        """Register a scenario instance and index its service IDs."""
         self._scenarios[scenario.scenario_key] = scenario
+        if getattr(scenario, "definition", None) and scenario.definition.service_ids:
+            for sid in scenario.definition.service_ids:
+                self._scenarios_by_service_id.setdefault(sid, []).append(scenario)
         logger.debug("Registered scenario '%s' (%s)", scenario.scenario_key, scenario.name)
 
     def get(self, scenario_key: str) -> Optional[BaseScenario]:
         """Get scenario by key."""
         return self._scenarios.get(scenario_key)
+
+    def get_scenario(self, scenario_key: str) -> Optional[BaseScenario]:
+        """Alias for get(scenario_key)."""
+        return self.get(scenario_key)
+
+    def get_by_service_id(self, service_id: int) -> List[BaseScenario]:
+        """Get scenarios matching catalog service ID."""
+        return self._scenarios_by_service_id.get(service_id, [])
 
     def list_all(self) -> List[BaseScenario]:
         """List all registered scenarios."""
@@ -69,7 +81,7 @@ _global_registry: Optional[ScenarioRegistry] = None
 
 
 def get_default_scenario_registry(ai_client: Optional[AsyncOpenAI] = None) -> ScenarioRegistry:
-    """Singleton factory for ScenarioRegistry with Core-6 pre-registered.
+    """Singleton factory for ScenarioRegistry with active Core scenarios pre-registered.
 
     Args:
         ai_client: AsyncOpenAI client pointed at the LiteLLM Gateway.
@@ -85,7 +97,7 @@ def get_default_scenario_registry(ai_client: Optional[AsyncOpenAI] = None) -> Sc
         router = ScenarioRouter(ai_client=ai_client)
         registry = ScenarioRegistry(router=router)
         registry.register(InstallPrinterScenario())
-        registry.register(ADPasswordResetScenario())
+        # ad_password_reset isolated per v2-universal-scenario-core specification
         registry.register(GrantWLANScenario())
         registry.register(ServiceRedirectScenario())
         registry.register(OfflineHostScenario())

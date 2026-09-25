@@ -9,9 +9,11 @@ from taskiq.receiver import Receiver
 
 import worker.src.tasks.autopilot  # noqa: F401
 import worker.src.tasks.command_dispatcher  # noqa: F401
+import worker.src.tasks.plan_prefetch  # noqa: F401
 import worker.src.tasks.poller  # noqa: F401
 import worker.src.tasks.sync_kb  # noqa: F401
 import worker.src.tasks.triage  # noqa: F401
+import worker.src.tasks.watchdog  # noqa: F401
 from worker.src.broker import broker
 from worker.src.scenarios.registry import get_default_scenario_registry
 from worker.src.tasks.poller import run_poller_loop

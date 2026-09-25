@@ -1,7 +1,6 @@
-"""Data Transfer Objects for Autopilot policies and governance."""
-
+import uuid
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,3 +28,31 @@ class AutopilotPolicyUpdateDTO(BaseModel):
 
     mode: AutopilotMode = Field(..., description="New mode: FULL_AUTO, ASSISTED, or DISABLED")
     min_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="New confidence threshold")
+
+
+class AgentPlanDTO(BaseModel):
+    """Full blueprint for a ticket evaluated by the autonomous agent."""
+
+    task_id: int
+    scenario_key: str
+    scenario_name: str
+    description: str = ""
+    confidence: float = 0.0
+    matched: bool = False
+    factor_breakdown: Dict[str, float] = Field(default_factory=dict)
+    preconditions: Dict[str, Any] = Field(default_factory=dict)
+    host_diagnostic: Optional[Dict[str, Any]] = None
+    extracted_entities: Dict[str, Any] = Field(default_factory=dict)
+    candidate_hosts: List[str] = Field(default_factory=list)
+    proposed_action: str = ""
+    proposed_params: Dict[str, Any] = Field(default_factory=dict)
+    suggested_comment: str = ""
+    target_status_id: int = 3
+    dialogue_state: Optional[Dict[str, Any]] = None
+    command_id: Optional[uuid.UUID] = None
+    last_event_id: Optional[int] = None
+    is_circuit_broken: bool = False
+    mode: str = "ASSISTED"
+    is_tense: bool = False
+    tense_reason: Optional[str] = None
+    has_attachments: bool = False

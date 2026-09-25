@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.src.core.config import settings
 from api.src.core.redis import get_redis_client
+from core.autopilot.intent import detect_tense_tone
 from core.database.models import CommandRecord
 from core.intraservice import (
     IntraServiceClient,
@@ -62,22 +63,61 @@ class TicketService:
             page_size=page_size,
             auth_b64=auth_b64,
         )
-        return [
-            TicketSummaryDTO(
-                id=t.id,
-                name=t.name,
-                description=sanitize_ticket_description(t.description, max_chars=4000),
-                service_id=t.service_id,
-                service_name=t.service_name,
-                status_id=t.status_id,
-                status_name=t.status_name,
-                priority_name=t.priority_name,
-                created=t.created,
-                applicant_name=t.applicant_name,
-                pc_name=t.entities.pc_name if t.entities else None,
+        # Batch fetch prefetched plans from Redis for instant enrichment
+        redis = get_redis_client()
+        plans_by_id: Dict[int, Any] = {}
+        if redis is not None and tasks:
+            try:
+                plan_keys = [f"cache:autopilot:plan:{t.id}" for t in tasks]
+                cached_plans = await redis.mget(plan_keys)
+                for t, raw_plan in zip(tasks, cached_plans):
+                    if raw_plan:
+                        try:
+                            plans_by_id[t.id] = json.loads(raw_plan)
+                        except Exception:
+                            pass
+            except Exception as exc:
+                logger.debug("Failed to mget cached plans from Redis: %s", exc)
+
+        results = []
+        for t in tasks:
+            plan = plans_by_id.get(t.id)
+            if plan:
+                is_tense = plan.get("is_tense", False)
+                tense_reason = plan.get("tense_reason")
+                has_attachments = plan.get("has_attachments", bool(t.attachments))
+                scenario_key = plan.get("scenario_key")
+                scenario_name = plan.get("scenario_name")
+                confidence = plan.get("confidence")
+            else:
+                is_tense, tense_reason = detect_tense_tone(f"{t.name} {t.description or ''}")
+                has_attachments = bool(t.attachments)
+                scenario_key = None
+                scenario_name = None
+                confidence = None
+
+            results.append(
+                TicketSummaryDTO(
+                    id=t.id,
+                    name=t.name,
+                    description=sanitize_ticket_description(t.description, max_chars=4000),
+                    service_id=t.service_id,
+                    service_name=t.service_name,
+                    status_id=t.status_id,
+                    status_name=t.status_name,
+                    priority_name=t.priority_name,
+                    created=t.created,
+                    applicant_name=t.applicant_name,
+                    pc_name=t.entities.pc_name if t.entities else None,
+                    is_tense=is_tense,
+                    tense_reason=tense_reason,
+                    has_attachments=has_attachments,
+                    scenario_key=scenario_key,
+                    scenario_name=scenario_name,
+                    confidence=confidence,
+                )
             )
-            for t in tasks
-        ]
+        return results
 
     async def get_ticket(self, ticket_id: int, auth_b64: Optional[str] = None) -> TicketDetailDTO:
         cache_key = f"cache:ticket:{ticket_id}"

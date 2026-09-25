@@ -3,7 +3,7 @@
 Verifies system stability during external service outages (LiteLLM down, Redis unavailable).
 """
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -91,23 +91,24 @@ async def test_router_operates_when_semantic_index_cold():
     printer_scen = InstallPrinterScenario()
     scenarios = {"ad_password_reset": ad_scen, "install_printer": printer_scen}
 
-    # Router with failing LiteLLM
+    # Router with failing LiteLLM and no cache
     failing_ai = AsyncMock()
     failing_ai.embeddings.create.side_effect = RuntimeError("LiteLLM offline")
 
-    router = ScenarioRouter(ai_client=failing_ai)
-    await router.warm_up()
-    assert router._semantic_index.is_ready is False
+    with patch("worker.src.scenarios.semantic_index.get_embedding_vector", new=AsyncMock(return_value=None)):
+        router = ScenarioRouter(ai_client=failing_ai)
+        await router.warm_up()
+        assert router._semantic_index.is_ready is False
 
-    task = TaskDTO(
-        Id=505,
-        Name="Сброс пароля",
-        Description="Забыл пароль от домена, прошу сбросить",
-    )
+        task = TaskDTO(
+            Id=505,
+            Name="Сброс пароля",
+            Description="Забыл пароль от домена, прошу сбросить",
+        )
 
-    # Route task: must use Factor A (keyword matching) without crash
-    route_res = await router.route_task(task, scenarios, threshold=0.50)
-    assert route_res is not None
-    matched_scenario, match_dto = route_res
-    assert matched_scenario.scenario_key == "ad_password_reset"
-    assert match_dto.matched is True
+        # Route task: must use Factor A (keyword matching) without crash
+        route_res = await router.route_task(task, scenarios, threshold=0.50)
+        assert route_res is not None
+        matched_scenario, match_dto = route_res
+        assert matched_scenario.scenario_key == "ad_password_reset"
+        assert match_dto.matched is True

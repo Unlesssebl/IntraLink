@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Send,
   Zap,
+  Paperclip,
 } from "lucide-react";
 import { Button, Badge, KbdBadge, useToast } from "@/shared/ui";
 import { HostBadge } from "@/features/diagnostics/HostBadge";
@@ -112,6 +113,7 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
       setIsSubmitting(true);
       const req: ApprovePlanRequest = {
         expected_status_id: currentStatusId,
+        last_event_id: plan.last_event_id ?? undefined,
         override_comment: comment !== plan.suggested_comment ? comment : undefined,
       };
       const res = await autopilotApi.approvePlan(ticketId, req);
@@ -135,6 +137,7 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
       setIsSubmitting(true);
       const req: CorrectPlanRequest = {
         expected_status_id: currentStatusId,
+        last_event_id: plan.last_event_id ?? undefined,
         corrected_scenario: scenarioKey,
         corrected_params: params,
         corrected_comment: comment,
@@ -239,6 +242,24 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
               <Badge variant={plan.mode === "FULL_AUTO" ? "success" : "warning"}>
                 {plan.mode === "FULL_AUTO" ? "FULL-AUTO" : "ASSISTED"}
               </Badge>
+              {plan.is_tense && (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse"
+                  title={plan.tense_reason || "Срочный / обеспокоенный тон"}
+                >
+                  <Zap className="w-3 h-3 text-amber-400" />
+                  ⚡ Заявитель обеспокоен / Срочно
+                </span>
+              )}
+              {plan.has_attachments && (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/20 text-blue-300 border border-blue-500/40"
+                  title="В тикете есть прикрепленные файлы"
+                >
+                  <Paperclip className="w-3 h-3 text-blue-400" />
+                  Вложения
+                </span>
+              )}
             </div>
             <div className="text-[10px] text-neutral-400 truncate">{plan.description}</div>
           </div>

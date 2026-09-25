@@ -160,15 +160,32 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
     anti_loop = AntiLoopGuard()
     intent_analyzer = UserReplyIntentAnalyzer()
 
-    # 0. Distributed Concurrency Lock: only one worker processes task_id at a time
-    lock_key = f"lock:autopilot:{task_id}"
+    # 0. Cooperative Cancellation check
+    abort_key = f"autopilot:abort:{task_id}"
+    if redis_conn is not None:
+        try:
+            if await redis_conn.exists(abort_key):
+                logger.info("Ticket #%d was reclaimed by human operator (abort flag active). Skipping autopilot.", task_id)
+                return {"status": "aborted", "reason": "reclaimed_by_operator", "task_id": task_id}
+        except Exception as exc:
+            logger.debug("Redis abort check error for ticket #%d: %s", task_id, exc)
+
+    # 0.1. Distributed Concurrency Lock: only one worker processes task_id at a time
+    lock_key = f"lock:task:{task_id}"
+    lock_key_legacy = f"lock:autopilot:{task_id}"
     lock_acquired = False
     if redis_conn is not None:
         try:
-            lock_acquired = bool(await redis_conn.set(lock_key, "locked", nx=True, ex=60))
-            if not lock_acquired:
+            acquired_canonical = bool(await redis_conn.set(lock_key, "locked", nx=True, ex=60))
+            acquired_legacy = bool(await redis_conn.set(lock_key_legacy, "locked", nx=True, ex=60))
+            if not acquired_canonical or not acquired_legacy:
+                if acquired_canonical:
+                    await redis_conn.delete(lock_key)
+                if acquired_legacy:
+                    await redis_conn.delete(lock_key_legacy)
                 logger.info("Ticket #%d is already in-flight by another worker. Skipping concurrent execution.", task_id)
                 return {"status": "skipped", "reason": "concurrent_lock_active", "task_id": task_id}
+            lock_acquired = True
         except Exception as exc:
             logger.debug("Redis lock error for ticket #%d: %s", task_id, exc)
 
@@ -207,7 +224,7 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
         # 5. Fetch lifetime history & resume dialogue loop
         # -------------------------------------------------------------
         lifetimes: List[TaskLifetimeEventDTO] = await client.get_task_lifetime(task_id=task.id, auth_b64=auth.auth_b64)
-        clarification_rounds = _count_clarification_rounds(lifetimes, auth.bot_user_id)
+        clarification_rounds = anti_loop.count_clarification_rounds(lifetimes, auth.bot_user_id)
 
         applicant_comments = [
             e for e in lifetimes
@@ -215,6 +232,11 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
         ]
         if applicant_comments:
             latest_reply = applicant_comments[-1].comment or ""
+            # Anti-Loop check: email robot auto-reply (out of office / vacation notice)
+            if anti_loop.is_auto_reply(text=latest_reply):
+                logger.warning("Applicant comment in ticket #%d is an automated out-of-office bounce response. Skipping.", task.id)
+                return {"status": "skipped", "reason": "auto_reply_in_dialogue", "task_id": task.id}
+
             intent_res = intent_analyzer.analyze_reply(
                 text=latest_reply,
                 has_new_attachments=bool(task.attachments),
@@ -362,6 +384,37 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
         preconditions = await scenario.validate_preconditions(task)
 
         if not preconditions.is_valid:
+            # 8.1. Attachment Heuristic (Edge Case 6):
+            # Если реквизитов не хватает, но в тикете есть прикрепленные файлы (сканы, PDF, фото стикеров) -
+            # автопилот НЕ шлет вопрос заявителю, а сразу передает заявку дежурному инженеру (статус 2)
+            if task.attachments:
+                logger.info(
+                    "Ticket #%d is missing facts (%s) but has %d attachment(s). Escalating to human for visual inspection.",
+                    task.id,
+                    preconditions.missing_facts,
+                    len(task.attachments),
+                )
+                await client.update_task(
+                    task_id=task.id,
+                    status_id=2,  # В работе
+                    comment=(
+                        f"🤖 [Автопилот: Требуется визуальный осмотр вложений]\n"
+                        f"Недостающие реквизиты: {', '.join(preconditions.missing_facts) if preconditions.missing_facts else 'Барьеры окружения'}.\n"
+                        f"В заявке обнаружены прикрепленные файлы ({len(task.attachments)} шт.). "
+                        "Заявка передана дежурному инженеру для анализа сканов/фотографий без отправки повторного вопроса заявителю."
+                    ),
+                    is_private=True,
+                    auth_b64=auth.auth_b64,
+                )
+                return {
+                    "status": "escalated_attachments_present",
+                    "task_id": task.id,
+                    "scenario": scenario.scenario_key,
+                    "attachments_count": len(task.attachments),
+                    "missing_facts": preconditions.missing_facts,
+                }
+
+            # 8.2. Dialogue turn limit
             if clarification_rounds >= 2:
                 logger.warning("Ticket #%d exceeded clarification limit (%d rounds). Escalating to human.", task.id, clarification_rounds)
                 await client.update_task(
@@ -382,12 +435,17 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
                     "rounds": clarification_rounds,
                 }
 
-            if preconditions.clarification_prompt:
-                logger.info("Suspending ticket #%d (Status 6) with prompt: %s", task.id, preconditions.clarification_prompt)
+            # 8.3. Resolve clarification prompt: from preconditions or service definition
+            prompt = preconditions.clarification_prompt
+            if not prompt and scenario.definition and scenario.definition.clarification_template:
+                prompt = scenario.definition.clarification_template
+
+            if prompt:
+                logger.info("Suspending ticket #%d (Status 6) with prompt: %s", task.id, prompt)
                 await client.update_task(
                     task_id=task.id,
                     status_id=6,
-                    comment=preconditions.clarification_prompt,
+                    comment=prompt,
                     is_private=False,
                     auth_b64=auth.auth_b64,
                 )
@@ -431,14 +489,8 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
 
         if exec_result.success:
             logger.info("Scenario '%s' succeeded for ticket #%d. Closing ticket with status %d.", scenario.scenario_key, task.id, exec_result.target_status_id)
-            # Step 9.1: Status Transit Safeguard: if ticket is paused (Status 6), transit via Status 2 to avoid lifecycle violation
-            if task.status_id == 6 and exec_result.target_status_id == 3:
-                try:
-                    await client.update_task(task_id=task.id, status_id=2, auth_b64=auth.auth_b64)
-                except Exception as exc:
-                    logger.debug("Intermediate transition 6->2 not required or supported: %s", exc)
 
-            # Step 9.2: Post public resolution to applicant and transition status
+            # Step 9.1: Direct transition to target status with public resolution comment
             await client.update_task(
                 task_id=task.id,
                 status_id=exec_result.target_status_id,
@@ -446,15 +498,22 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
                 is_private=False,
                 auth_b64=auth.auth_b64,
             )
-            # Step 9.3: Post hidden internal technical audit note
+            # Step 9.2: Post hidden internal technical audit note
             await client.update_task(
                 task_id=task.id,
                 comment=exec_result.technical_note,
                 is_private=True,
                 auth_b64=auth.auth_b64,
             )
-            # Step 9.4: Reset Circuit Breaker failures counter
+            # Step 9.3: Reset Circuit Breaker failures counter
             await policy_service.record_success(scenario.scenario_key)
+
+            # Step 9.4: Invalidate plan cache in Redis
+            if redis_conn is not None:
+                try:
+                    await redis_conn.delete(f"cache:autopilot:plan:{task.id}")
+                except Exception:
+                    pass
 
             return {
                 "status": "resolved",
@@ -498,6 +557,6 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
     finally:
         if redis_conn is not None and lock_acquired:
             try:
-                await redis_conn.delete(lock_key)
+                await redis_conn.delete(lock_key, lock_key_legacy)
             except Exception:
                 pass

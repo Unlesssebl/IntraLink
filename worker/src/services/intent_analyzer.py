@@ -11,10 +11,11 @@ Classifies applicant replies into actionable intents:
 import logging
 import re
 from enum import Enum
-from typing import Optional
+from typing import Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.autopilot.intent import detect_tense_tone
 from core.intraservice.dto import ExtractedEntitiesDTO
 from core.intraservice.parser import IntraServiceParser
 
@@ -41,6 +42,8 @@ class UserReplyIntentResult(BaseModel):
     suggested_reply: Optional[str] = Field(default=None, description="Prompt to send back to applicant if clarification or mismatch")
     summary: str = Field(default="", description="Summary of applicant intent for internal audit note")
     invalid_ip: Optional[str] = Field(default=None, description="Non-corporate IP if detected")
+    is_tense: bool = Field(default=False, description="True if emotional or urgent markers are detected")
+    tense_reason: Optional[str] = Field(default=None, description="Matched keyword or reason for urgency/tension")
 
 
 CANCEL_PATTERNS = [
@@ -59,7 +62,7 @@ QUESTION_PATTERNS = [
 
 # Non-corporate / home subnets
 HOME_LOOPBACK_IP_REGEX = re.compile(
-    r"\b(?:192\.168\.\d{1,3}\.\d{1,3}|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3}|10\.0\.2\.15)\b"
+    r"\b(?:192\.168\.\d{1,3}\.\d{1,3}|127\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3}|10\.0\.2\.15)\b"
 )
 
 
@@ -78,6 +81,9 @@ class UserReplyIntentAnalyzer:
         clean_text = (text or "").strip()
         clean_lower = clean_text.lower()
 
+        # Mood detection (emotional / urgent tone)
+        is_tense, tense_reason = detect_tense_tone(clean_text)
+
         # 1. Check for cancel / self-resolved request
         for pat in CANCEL_PATTERNS:
             if pat.search(clean_lower):
@@ -85,6 +91,8 @@ class UserReplyIntentAnalyzer:
                     intent=UserReplyIntent.CANCEL_REQUEST,
                     confidence=0.98,
                     summary="Заявитель сообщил, что вопрос решен или запросил отмену заявки",
+                    is_tense=is_tense,
+                    tense_reason=tense_reason,
                 )
 
         # 2. Check for question about where to find facts
@@ -99,6 +107,8 @@ class UserReplyIntentAnalyzer:
                         "• IP-адрес сетевого принтера указан на корпусе устройства (наклейка с IP) либо распечатывается через меню принтера (Отчет о конфигурации сети)."
                     ),
                     summary="Заявитель уточняет, где найти сетевые реквизиты оборудования",
+                    is_tense=is_tense,
+                    tense_reason=tense_reason,
                 )
 
         # 3. Check for Home/Loopback subnet mismatch (e.g. 192.168.1.100)
@@ -115,6 +125,8 @@ class UserReplyIntentAnalyzer:
                     "(указан на наклейке на корпусе устройства)."
                 ),
                 summary=f"Заявитель указал некорпоративный домашний IP-адрес: {bad_ip}",
+                is_tense=is_tense,
+                tense_reason=tense_reason,
             )
 
         # 4. Check for attachments-only response (photo of sticker / screenshot)
@@ -123,6 +135,8 @@ class UserReplyIntentAnalyzer:
                 intent=UserReplyIntent.ATTACHMENTS_ONLY,
                 confidence=0.90,
                 summary="Заявитель прикрепил файл/скриншот без текстовых реквизитов (требуется осмотр инженером)",
+                is_tense=is_tense,
+                tense_reason=tense_reason,
             )
 
         # 5. Extract workplace facts
@@ -144,6 +158,8 @@ class UserReplyIntentAnalyzer:
                 confidence=0.95,
                 extracted_entities=extracted,
                 summary=f"Извлечены реквизиты: WKS={extracted.pc_name or '-'}, IP={extracted.printer_address or '-'}",
+                is_tense=is_tense,
+                tense_reason=tense_reason,
             )
 
         # 6. Fallback unsupported
@@ -151,4 +167,6 @@ class UserReplyIntentAnalyzer:
             intent=UserReplyIntent.UNSUPPORTED,
             confidence=0.70,
             summary="Текст ответа заявителя не содержит реквизитов оборудования",
+            is_tense=is_tense,
+            tense_reason=tense_reason,
         )

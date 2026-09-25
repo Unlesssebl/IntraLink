@@ -237,6 +237,25 @@ TARGET_USER_REGEX = re.compile(
     r"(?i)(?:логин|учетная запись|учетка|пользователь|аккаунт|login|account|samaccountname)\s*[:=\-]\s*([a-zA-Z0-9_.\-]+)"
 )
 
+PHONE_TEXT_REGEX = re.compile(
+    r"(?i)(?:(?:тел(?:ефон)?|сот(?:овый)?|моб(?:ильный)?|внутр(?:енний)?|доб(?:авочный)?)[:\s.]*(\+?[0-9\s()_-]{3,25}\b))|"
+    r"(\+?[78][\s\-(]?\d{3,4}[\s\-)]?\d{2,3}[\s\-]?\d{2}[\s\-]?\d{2}\b)"
+)
+
+
+def extract_phone_from_text(text: str) -> str:
+    """Extract contact phone number avoiding collision with inventory/tab numbers."""
+    if not text:
+        return ""
+    m = PHONE_TEXT_REGEX.search(text)
+    if m:
+        val = (m.group(1) or m.group(2) or "").strip()
+        val = re.sub(r"[.,;]+$", "", val).strip()
+        digits = re.sub(r"\D", "", val)
+        if len(digits) >= 3 and not extract_pc_names_from_text(val):
+            return val
+    return ""
+
 
 def extract_target_user_from_text(text: str) -> str:
     """Extract domain username / sAMAccountName from text."""
@@ -256,7 +275,7 @@ def parse_custom_fields(data_xml: str | None) -> Tuple[ExtractedEntitiesDTO, Dic
         return ExtractedEntitiesDTO(), {}
 
     friendly_fields: Dict[str, str] = {}
-    matches = re.findall(r'<field id="(\d+)">([^<]*)</field>', data_xml)
+    matches = re.findall(r"""<field id=['"](\d+)['"]>([^<]*)</field>""", data_xml)
 
     pc_name = ""
     inventory_number = ""
@@ -305,18 +324,42 @@ def parse_custom_fields(data_xml: str | None) -> Tuple[ExtractedEntitiesDTO, Dic
         elif fid in ("1494", "1523", "1519", "1521"):
             email = v
 
+    # Extract onboarding and Directum custom fields
+    last_name = raw_fields.get("1121") or raw_fields.get("1057") or raw_fields.get("1069") or ""
+    first_name = raw_fields.get("1122") or raw_fields.get("1058") or raw_fields.get("1070") or ""
+    middle_name = raw_fields.get("1123") or raw_fields.get("1059") or raw_fields.get("1071") or ""
+    title = (
+        raw_fields.get("1129")
+        or raw_fields.get("1198")
+        or raw_fields.get("1065")
+        or raw_fields.get("1073")
+        or ""
+    )
+    company = raw_fields.get("1017") or ""
+    tab_number = raw_fields.get("1133") or ""
+    similar_user = raw_fields.get("1134") or ""
+    install_directum = raw_fields.get("1180") or ""
+    directum_actions = raw_fields.get("1135") or ""
+    it_login = raw_fields.get("1488") or ""
+    it_password = raw_fields.get("1489") or ""
+    directum_task_id = raw_fields.get("1181") or ""
+
     if not user_name:
-        parts = [
-            raw_fields.get("1057") or raw_fields.get("1069") or raw_fields.get("1121") or "",
-            raw_fields.get("1058") or raw_fields.get("1070") or raw_fields.get("1122") or "",
-            raw_fields.get("1059") or raw_fields.get("1071") or raw_fields.get("1123") or "",
-        ]
+        parts = [last_name, first_name, middle_name]
         constructed = " ".join(p.strip() for p in parts if p.strip())
         if constructed:
             user_name = constructed
 
-    if not target_user and user_name:
-        target_user = user_name
+    if user_name and not (last_name and first_name):
+        fio_parts = user_name.split()
+        if len(fio_parts) >= 2:
+            last_name = last_name or fio_parts[0]
+            first_name = first_name or fio_parts[1]
+            if len(fio_parts) >= 3:
+                middle_name = middle_name or " ".join(fio_parts[2:])
+
+    if not target_user:
+        target_user = it_login or user_name
 
     entities = ExtractedEntitiesDTO(
         pc_name=pc_name,
@@ -329,12 +372,29 @@ def parse_custom_fields(data_xml: str | None) -> Tuple[ExtractedEntitiesDTO, Dic
         printer_address=printer_address,
         printer_model=printer_model,
         target_user=target_user,
+        first_name=first_name,
+        last_name=last_name,
+        middle_name=middle_name,
+        title=title,
+        company=company,
+        tab_number=tab_number,
+        similar_user=similar_user,
+        install_directum=install_directum,
+        directum_actions=directum_actions,
+        it_login=it_login,
+        it_password=it_password,
+        directum_task_id=directum_task_id,
     )
     return entities, friendly_fields
 
 
 def enrich_task_dict(task: Dict[str, Any]) -> Dict[str, Any]:
-    """Attach parsed custom field entities to raw task dictionary with full fallbacks."""
+    """Attach parsed custom field entities to raw task dictionary with deterministic hardware fallbacks.
+
+    Tier 1: Structured XML CustomFieldData (0 ms).
+    Tier 3: Strict deterministic host, printer queue/IP and phone normalizers (0 ms).
+    Safe for bulk operations (poller / 200 items batch queries).
+    """
     if not isinstance(task, dict):
         return task
 
@@ -367,7 +427,7 @@ def enrich_task_dict(task: Dict[str, Any]) -> Dict[str, Any]:
         if model:
             task["entities"]["printer_model"] = model
 
-    # 4. Fallback Target User search in name/description
+    # 4. Fallback Target User / Login search in name/description
     if not task["entities"]["target_user"]:
         u = extract_target_user_from_text(full_text)
         if u:
@@ -376,6 +436,67 @@ def enrich_task_dict(task: Dict[str, Any]) -> Dict[str, Any]:
             task["entities"]["target_user"] = str(task["ApplicantName"]).strip()
         elif task["entities"].get("user_name"):
             task["entities"]["target_user"] = task["entities"]["user_name"]
+
+    # 5. Fallback Phone search (strictly formatted numbers with prefix or +7/8)
+    if not task["entities"]["phone"]:
+        p = extract_phone_from_text(full_text)
+        if p:
+            task["entities"]["phone"] = p
+
+    return task
+
+
+async def enrich_task_dict_async(
+    task: Dict[str, Any],
+    ai_client: Optional[Any] = None,
+    timeout_sec: float = 2.5,
+) -> Dict[str, Any]:
+    """Asynchronously enrich task dictionary using the Three-Tier Hybrid Pipeline:
+
+    - Tier 1: Exact XML CustomFieldData parsing (< 0.1 ms).
+    - Tier 2: AI Fast NER (LiteLLM Gateway / Ollama) for unstructured natural text if facts missing.
+    - Tier 3: Deterministic hardware host/printer normalizers.
+    """
+    if not isinstance(task, dict):
+        return task
+
+    # Run Tier 1 + Tier 3 fast pass
+    task = enrich_task_dict(task)
+    ent_dict = task.get("entities", {})
+
+    name = str(task.get("Name") or "")
+    desc = str(task.get("Description") or "")
+    full_text = f"{name} {desc}".strip()
+
+    # Check if critical entity fields are missing from XML and text is substantial
+    facts_missing = (
+        not ent_dict.get("last_name")
+        or not ent_dict.get("first_name")
+        or not ent_dict.get("title")
+        or not ent_dict.get("department")
+        or not ent_dict.get("similar_user")
+        or not ent_dict.get("tab_number")
+        or not ent_dict.get("pc_name")
+        or not ent_dict.get("printer_address")
+    )
+
+    if facts_missing and len(full_text) >= 10:
+        from core.intraservice.ai_extractor import get_ai_extractor
+
+        try:
+            extractor = get_ai_extractor(ai_client)
+            ai_entities = await extractor.extract_entities(full_text, timeout_sec=timeout_sec)
+            ai_dict = ai_entities.model_dump()
+
+            for key, val in ai_dict.items():
+                if val and not ent_dict.get(key):
+                    ent_dict[key] = val
+
+            # Keep target_user synchronized if newly identified
+            if not ent_dict.get("target_user"):
+                ent_dict["target_user"] = ent_dict.get("it_login") or ent_dict.get("user_name") or ""
+        except Exception:
+            pass
 
     return task
 
@@ -431,5 +552,18 @@ class IntraServiceParser:
     ) -> ExtractedEntitiesDTO:
         raw_dict = {"Name": title, "Description": description, "CustomFieldData": None}
         enriched = enrich_task_dict(raw_dict)
+        return ExtractedEntitiesDTO.model_validate(enriched["entities"])
+
+    @staticmethod
+    async def extract_entities_async(
+        description: str,
+        custom_fields: Optional[Dict[str, str]] = None,
+        title: str = "",
+        ai_client: Optional[Any] = None,
+        timeout_sec: float = 2.5,
+    ) -> ExtractedEntitiesDTO:
+        """Asynchronously extract entities using Three-Tier Hybrid Pipeline with AI fast pass."""
+        raw_dict = {"Name": title, "Description": description, "CustomFieldData": None}
+        enriched = await enrich_task_dict_async(raw_dict, ai_client=ai_client, timeout_sec=timeout_sec)
         return ExtractedEntitiesDTO.model_validate(enriched["entities"])
 

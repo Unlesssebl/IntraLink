@@ -46,35 +46,14 @@ class AutopilotStatsResponse(BaseModel):
     tripped_circuit_breakers: int
 
 
-class AgentPlanDTO(BaseModel):
-    """Full supervisor blueprint for a ticket evaluated by the autonomous agent."""
-
-    task_id: int
-    scenario_key: str
-    scenario_name: str
-    description: str = ""
-    confidence: float = 0.0
-    matched: bool = False
-    factor_breakdown: Dict[str, float] = Field(default_factory=dict)
-    preconditions: Dict[str, Any] = Field(default_factory=dict)
-    host_diagnostic: Optional[Dict[str, Any]] = None
-    extracted_entities: Dict[str, Any] = Field(default_factory=dict)
-    candidate_hosts: List[str] = Field(default_factory=list)
-    proposed_action: str = ""
-    proposed_params: Dict[str, Any] = Field(default_factory=dict)
-    suggested_comment: str = ""
-    target_status_id: int = 3
-    dialogue_state: Optional[Dict[str, Any]] = None
-    command_id: Optional[uuid.UUID] = None
-    last_event_id: Optional[int] = None
-    is_circuit_broken: bool = False
-    mode: str = "ASSISTED"
+from core.autopilot.dto import AgentPlanDTO
 
 
 class ApprovePlanRequest(BaseModel):
     """Payload to approve agent plan without changes."""
 
     expected_status_id: Optional[int] = None
+    last_event_id: Optional[int] = None
     override_comment: Optional[str] = None
 
 
@@ -82,6 +61,7 @@ class CorrectPlanRequest(BaseModel):
     """Payload to correct agent plan and contribute to the Ground-Truth dataset."""
 
     expected_status_id: Optional[int] = None
+    last_event_id: Optional[int] = None
     corrected_scenario: str
     corrected_params: Dict[str, Any] = Field(default_factory=dict)
     corrected_comment: Optional[str] = None
