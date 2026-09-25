@@ -14,9 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.src.core.ai import get_ai_client
 from api.src.core.config import settings
+from api.src.core.task_dispatch import TaskDispatchService
 from core.diagnostic.service import HostDiagnosticsService
 from core.autopilot.policy_service import AutopilotPolicyService
 from core.database.models import AutopilotCorrection, CommandRecord
+from core.intraservice.auth import ServiceAuthBootstrap
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO, TaskLifetimeEventDTO
 from core.intraservice.exceptions import IntraServiceNotFoundError
@@ -28,6 +30,7 @@ from .schemas import (
     AgentPlanDTO,
     ApprovePlanRequest,
     AutopilotCorrectionDTO,
+    BatchAssignResponse,
     CorrectPlanRequest,
 )
 
@@ -414,3 +417,67 @@ class AutopilotService:
         corrections = await self.list_corrections(limit=limit, tag=None, session=session)
         lines = [json.dumps(c.model_dump(), default=str, ensure_ascii=False) for c in corrections]
         return "\n".join(lines)
+
+    async def batch_assign(
+        self,
+        ticket_ids: List[int],
+        redis_client: Optional[aioredis.Redis] = None,
+        auth_b64: Optional[str] = None,
+    ) -> BatchAssignResponse:
+        """Batch assign tickets to autopilot service bot and dispatch background tasks."""
+        # 1. Determine bot user id
+        bot_user_id = getattr(settings, "BOT_USER_ID", None)
+        bot_auth_b64 = None
+        try:
+            bootstrap = ServiceAuthBootstrap()
+            creds = await bootstrap.bootstrap_auth(client=self.client, redis_client=redis_client)
+            if not bot_user_id and creds.bot_user_id:
+                bot_user_id = creds.bot_user_id
+            bot_auth_b64 = creds.auth_b64
+        except Exception as exc:
+            logger.debug("Failed to bootstrap bot credentials for batch_assign: %s", exc)
+
+        effective_auth = auth_b64 or bot_auth_b64
+
+        assigned_count = 0
+        failed_ids: List[int] = []
+        details: Dict[int, str] = {}
+
+        for tid in ticket_ids:
+            try:
+                # Fetch ticket state to check current status
+                task: TaskDTO = await self.client.get_task(task_id=tid, auth_b64=effective_auth)
+
+                # If status is 1 (New), transition to 2 (In work)
+                new_status_id: Optional[int] = None
+                comment_text = "🤖 [Автопилот] Заявка передана на автоматическую обработку автопилоту (alen_assistant)."
+                if task.status_id == 1:
+                    new_status_id = 2
+
+                # Update executor and status
+                await self.client.update_task(
+                    task_id=tid,
+                    status_id=new_status_id,
+                    comment=comment_text,
+                    executor_ids=str(bot_user_id) if bot_user_id is not None else None,
+                    is_private=True,
+                    auth_b64=effective_auth,
+                )
+
+                # Dispatch background task to worker queue
+                await TaskDispatchService.dispatch_autopilot_task(tid)
+
+                assigned_count += 1
+                details[tid] = "Успешно назначена на автопилот и поставлена в очередь воркера"
+                logger.info("Ticket #%d batch-assigned to bot (executor: %s) and dispatched", tid, bot_user_id)
+            except Exception as exc:
+                failed_ids.append(tid)
+                details[tid] = str(exc)
+                logger.warning("Failed to batch-assign ticket #%d to autopilot: %s", tid, exc)
+
+        return BatchAssignResponse(
+            assigned_count=assigned_count,
+            failed_ids=failed_ids,
+            details=details,
+        )
+

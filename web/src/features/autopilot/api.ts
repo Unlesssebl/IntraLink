@@ -141,4 +141,17 @@ export const autopilotApi = {
     }
     return res.json();
   },
+
+  async batchAssign(ticketIds: number[]): Promise<import("./types").BatchAssignResponse> {
+    const res = await fetch("/api/v2/autopilot/batch-assign", {
+      method: "POST",
+      headers: getHeaders(),
+      body: JSON.stringify({ ticket_ids: ticketIds }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      throw new Error(err?.detail || `Failed to batch assign: ${res.statusText}`);
+    }
+    return res.json();
+  },
 };

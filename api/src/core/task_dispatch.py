@@ -14,6 +14,7 @@ from core.broker import broker
 logger = logging.getLogger("api.core.task_dispatch")
 
 DISPATCH_COMMAND_TASK = "dispatch_command_task"
+AUTOPILOT_TASK = "autopilot_task"
 
 # Client-side task handle for enqueuing via Taskiq without importing worker code
 dispatch_command_task = broker.register_task(
@@ -21,27 +22,46 @@ dispatch_command_task = broker.register_task(
     task_name=DISPATCH_COMMAND_TASK,
 )
 
+dispatch_autopilot_task_proxy = broker.register_task(
+    lambda task_id: None,
+    task_name=AUTOPILOT_TASK,
+)
+
+
+class TaskDispatchService:
+    """Service isolating API from Worker task queue via Taskiq broker proxies."""
+
+    @staticmethod
+    async def dispatch_command(command_id: UUID) -> None:
+        """Enqueue a CommandRecord for execution by the worker via Taskiq."""
+        try:
+            await dispatch_command_task.kiq(str(command_id))
+        except Exception as exc:
+            logger.warning(
+                "Failed to dispatch Taskiq task for command %s: %s",
+                command_id,
+                exc,
+            )
+
+    @staticmethod
+    async def dispatch_autopilot_task(ticket_id: int) -> None:
+        """Enqueue a ticket for autonomous background execution by autopilot_task."""
+        try:
+            await dispatch_autopilot_task_proxy.kiq(ticket_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to dispatch Taskiq autopilot task for ticket %s: %s",
+                ticket_id,
+                exc,
+            )
+
 
 async def dispatch_command(command_id: UUID) -> None:
-    """Enqueue a CommandRecord for execution by the worker via Taskiq.
+    """Enqueue a CommandRecord for execution by the worker via Taskiq."""
+    await TaskDispatchService.dispatch_command(command_id)
 
-    Uses dispatch_command_task.kiq() with registered proxy to avoid importing
-    worker task modules (which would create an unwanted code dependency
-    and prevent API-only container deployments).
 
-    Args:
-        command_id: UUID of the CommandRecord to execute.
+async def dispatch_autopilot_task(ticket_id: int) -> None:
+    """Enqueue a ticket for autonomous background execution by autopilot_task."""
+    await TaskDispatchService.dispatch_autopilot_task(ticket_id)
 
-    Raises:
-        Does NOT raise — failures are logged as warnings to preserve
-        the Outbox pattern guarantee: the CommandRecord already exists in
-        the DB and will be picked up by a retry/watchdog if dispatch fails.
-    """
-    try:
-        await dispatch_command_task.kiq(str(command_id))
-    except Exception as exc:
-        logger.warning(
-            "Failed to dispatch Taskiq task for command %s: %s",
-            command_id,
-            exc,
-        )

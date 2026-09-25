@@ -1,6 +1,6 @@
 """IntraLink API configuration settings (Pydantic Settings v2)."""
 
-from typing import List, Union
+from typing import List, Optional, Union
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     INTRASERVICE_LOGIN: str = ""
     INTRASERVICE_PASSWORD: str = ""
     SSL_VERIFY: bool = False
+    BOT_USER_ID: Optional[int] = None
 
     # Security & CORS
     CORS_ORIGINS: Union[List[str], str] = ["http://localhost:3000", "http://localhost:5173"]

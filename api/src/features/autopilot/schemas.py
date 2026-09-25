@@ -97,6 +97,25 @@ class CorrectionsListResponse(BaseModel):
     total: int
 
 
+class BatchAssignRequest(BaseModel):
+    """Payload to batch assign tickets to autopilot service bot."""
+
+    ticket_ids: List[int] = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        description="List of ticket IDs to assign to bot (1..50)",
+    )
+
+
+class BatchAssignResponse(BaseModel):
+    """Result of batch assignment to autopilot bot."""
+
+    assigned_count: int
+    failed_ids: List[int]
+    details: Dict[int, str]
+
+
 __all__ = [
     "AgentPlanDTO",
     "ApprovePlanRequest",
@@ -106,7 +125,10 @@ __all__ = [
     "AutopilotPoliciesListResponse",
     "AutopilotPolicyDTO",
     "AutopilotStatsResponse",
+    "BatchAssignRequest",
+    "BatchAssignResponse",
     "CorrectPlanRequest",
     "CorrectionsListResponse",
     "UpdateAutopilotPolicyRequest",
 ]
+

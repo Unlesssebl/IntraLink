@@ -393,3 +393,7 @@ export const authApi = {
       body: JSON.stringify({ login, password }),
     }),
 };
+
+export { autopilotApi } from "@/features/autopilot/api";
+export type { BatchAssignRequest, BatchAssignResponse } from "@/features/autopilot/types";
+

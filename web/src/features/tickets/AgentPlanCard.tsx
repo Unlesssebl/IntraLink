@@ -159,12 +159,11 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
     }
   };
 
-  // Keyboard shortcut handler (Enter = approve if not dirty, Ctrl+Enter = correct or approve)
+  // Keyboard shortcut handler (Enter = approve plan, Ctrl+Enter / Cmd+Enter = correct or approve plan)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLTextAreaElement && !e.ctrlKey && !e.metaKey) {
-        return; // Allow newlines in textarea unless Ctrl is held
-      }
+      const isInputFocused =
+        e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
 
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
@@ -174,12 +173,9 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
           handleApprove();
         }
       } else if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
-        // If focused in regular input or outside
-        if (!(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) {
+        if (!isInputFocused) {
           e.preventDefault();
-          if (!isDirty) {
-            handleApprove();
-          }
+          handleApprove();
         }
       }
     };
@@ -187,6 +183,7 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isDirty, plan, currentStatusId, scenarioKey, params, comment, correctionTag, operatorNotes, isSubmitting]);
+
 
   if (isLoading) {
     return (
@@ -395,7 +392,7 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
         </div>
 
         {/* Dynamic Secondary Parameters */}
-        {(scenarioKey === "ad_account_unlock" || scenarioKey === "ad_password_reset") && (
+        {scenarioKey === "ad_account_unlock" && (
           <div>
             <label className="block text-[10px] font-semibold text-neutral-400 uppercase tracking-wider mb-1">
               Логин Active Directory
@@ -499,26 +496,40 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
 
         <div className="flex items-center gap-2">
           {isDirty ? (
-            <Button
-              variant="secondary"
-              loading={isSubmitting}
-              onClick={handleCorrect}
-              icon={<Zap className="w-3.5 h-3.5 text-amber-400" />}
-              className="text-xs bg-amber-600 hover:bg-amber-500 text-neutral-950 font-semibold border-amber-500"
-            >
-              <span>Скорректировать и обучить</span>
-              <KbdBadge shortcut="Ctrl+Enter" />
-            </Button>
+            <>
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={isSubmitting}
+                onClick={handleApprove}
+                className="text-xs bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border-neutral-700"
+              >
+                <span>Одобрить план</span>
+                <KbdBadge>Enter</KbdBadge>
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={isSubmitting}
+                onClick={handleCorrect}
+                icon={<Zap className="w-3.5 h-3.5 text-amber-400" />}
+                className="text-xs bg-amber-600 hover:bg-amber-500 text-neutral-950 font-semibold border-amber-500 shadow-md"
+              >
+                <span>Одобрить с исправлениями</span>
+                <KbdBadge>Ctrl+Enter</KbdBadge>
+              </Button>
+            </>
           ) : (
             <Button
               variant="primary"
+              size="sm"
               loading={isSubmitting}
               onClick={handleApprove}
               icon={<CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}
-              className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white"
+              className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow-md"
             >
-              <span>Одобрить и выполнить</span>
-              <KbdBadge shortcut="Enter" />
+              <span>Одобрить план</span>
+              <KbdBadge>Enter</KbdBadge>
             </Button>
           )}
         </div>

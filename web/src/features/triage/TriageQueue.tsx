@@ -5,13 +5,14 @@ import {
   Search,
   CheckCheck,
   AlertTriangle,
-  Sparkles,
+  Zap,
 } from "lucide-react";
 import { Button, Badge, KbdBadge, useToast } from "@/shared/ui";
 import { TicketRow } from "./TicketRow";
-import { useTicketQueue } from "@/features/tickets/queries";
+import { useTicketQueue, ticketKeys } from "@/features/tickets/queries";
 import { isStatusInWork, isStatusResolved, isStatusCancelled } from "@/shared/statuses";
-import { triageApi, TriageAnalysisResponse } from "@/shared/api";
+import { autopilotApi } from "@/features/autopilot/api";
+import { useQueryClient } from "@tanstack/react-query";
 
 export interface TriageQueueProps {
   onSelectTicket: (ticketId: number) => void;
@@ -25,6 +26,7 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
   selectedTicketId,
 }) => {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const {
     data: tickets = [],
     isLoading,
@@ -35,11 +37,8 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
 
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<FilterCategory>("validation");
-
-  // AI Classification cache: ticketId -> TriageAnalysisResponse
-  const [triageResults, setTriageResults] = useState<Record<number, TriageAnalysisResponse>>({});
-  const [analyzingTicketId, setAnalyzingTicketId] = useState<number | null>(null);
-  const [batchAnalyzing, setBatchAnalyzing] = useState(false);
+  const [selectedTicketIds, setSelectedTicketIds] = useState<number[]>([]);
+  const [isBatchAssigning, setIsBatchAssigning] = useState(false);
 
   // Counters for pipeline tabs
   const counts = useMemo(() => {
@@ -86,6 +85,61 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
     });
   }, [tickets, searchQuery, activeFilter]);
 
+  // Check if all currently visible tickets are selected
+  const isAllSelected = useMemo(() => {
+    if (filteredTickets.length === 0) return false;
+    return filteredTickets.every((t) => selectedTicketIds.includes(t.id));
+  }, [filteredTickets, selectedTicketIds]);
+
+  const handleToggleSelectAll = () => {
+    if (isAllSelected) {
+      // Unselect all currently filtered tickets
+      const filteredIdSet = new Set(filteredTickets.map((t) => t.id));
+      setSelectedTicketIds((prev) => prev.filter((id) => !filteredIdSet.has(id)));
+    } else {
+      // Select all currently filtered tickets
+      const newIds = new Set([...selectedTicketIds, ...filteredTickets.map((t) => t.id)]);
+      setSelectedTicketIds(Array.from(newIds));
+    }
+  };
+
+  const handleToggleBatchSelect = (ticketId: number) => {
+    setSelectedTicketIds((prev) =>
+      prev.includes(ticketId) ? prev.filter((id) => id !== ticketId) : [...prev, ticketId]
+    );
+  };
+
+  const handleClearSelection = () => {
+    setSelectedTicketIds([]);
+  };
+
+  const handleSyncQueue = async () => {
+    await queryClient.invalidateQueries({ queryKey: ticketKeys.all });
+    await refetch();
+    toast.success("Очередь синхронизирована с сервером");
+  };
+
+  const handleBatchAssign = async () => {
+    if (selectedTicketIds.length === 0 || isBatchAssigning) return;
+    try {
+      setIsBatchAssigning(true);
+      const res = await autopilotApi.batchAssign(selectedTicketIds);
+      if (res.assigned_count > 0) {
+        toast.success(`Передано автопилоту: ${res.assigned_count} заявок`);
+      }
+      if (res.failed_ids && res.failed_ids.length > 0) {
+        toast.error(`Не удалось назначить ${res.failed_ids.length} заявок`);
+      }
+      setSelectedTicketIds([]);
+      await queryClient.invalidateQueries({ queryKey: ticketKeys.all });
+      await refetch();
+    } catch (err: any) {
+      toast.error(`Ошибка пакетного назначения: ${err?.message || "Сбой запроса"}`);
+    } finally {
+      setIsBatchAssigning(false);
+    }
+  };
+
   // Auto-shift focus when selected ticket completes or disappears
   useEffect(() => {
     if (filteredTickets.length > 0) {
@@ -121,39 +175,8 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [filteredTickets, selectedTicketId, onSelectTicket]);
 
-  const handleAnalyzeSingle = async (e: React.MouseEvent, ticketId: number) => {
-    e.stopPropagation();
-    try {
-      setAnalyzingTicketId(ticketId);
-      const res = await triageApi.analyze(ticketId);
-      setTriageResults((prev) => ({ ...prev, [ticketId]: res }));
-      toast.success(`Анализ тикета #${ticketId} выполнен`);
-    } catch (err: any) {
-      toast.error(`Ошибка анализа AI: ${err?.message || "Сбой запроса"}`);
-    } finally {
-      setAnalyzingTicketId(null);
-    }
-  };
-
-  const handleBatchAnalyze = async () => {
-    try {
-      setBatchAnalyzing(true);
-      const res = await triageApi.batchAnalyze(984, 25);
-      const map: Record<number, TriageAnalysisResponse> = {};
-      for (const item of res.decisions) {
-        map[item.ticket_id] = item;
-      }
-      setTriageResults((prev) => ({ ...prev, ...map }));
-      toast.success(`Проанализировано ${res.total_analyzed} заявок`);
-    } catch (err: any) {
-      toast.error(`Ошибка пакетного анализа: ${err?.message || "Сбой запроса"}`);
-    } finally {
-      setBatchAnalyzing(false);
-    }
-  };
-
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-[#0c0d0e] border-r border-neutral-800/80">
+    <div className="flex flex-col h-full overflow-hidden bg-[#0c0d0e] border-r border-neutral-800/80 relative">
       {/* Top Header */}
       <div className="p-3 border-b border-neutral-800/80 space-y-2.5 shrink-0 bg-[#0e1013]">
         <div className="flex items-center justify-between">
@@ -172,19 +195,28 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
             <Button
               size="sm"
               variant="secondary"
-              loading={batchAnalyzing}
-              icon={<Sparkles className="w-3.5 h-3.5 text-purple-400" />}
-              onClick={handleBatchAnalyze}
-              title="Пакетный AI-анализ очереди"
-            />
-            <Button
-              size="sm"
-              variant="secondary"
               loading={isFetching}
               icon={<RefreshCw className={`w-3.5 h-3.5 ${isFetching ? "animate-spin" : ""}`} />}
-              onClick={() => refetch()}
-              title="Обновить список"
-            />
+              onClick={handleSyncQueue}
+              title="Синхронизировать очередь"
+            >
+              Синхронизировать
+            </Button>
+          </div>
+        </div>
+
+        {/* Pipeline Heartbeat Banner */}
+        <div className="flex items-center justify-between bg-[#121418] px-2.5 py-1.5 rounded border border-neutral-800/80 text-[11px] text-neutral-300">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+            </span>
+            <span className="font-medium text-emerald-400">Конвейер активен</span>
+            <span className="text-neutral-500">•</span>
+            <span className="text-neutral-400">Пульс каждые 30с</span>
+            <span className="text-neutral-500">•</span>
+            <span className="text-neutral-400">Очередь актуальна</span>
           </div>
         </div>
 
@@ -198,6 +230,24 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
             placeholder="Фильтр по номеру, теме, заявителю..."
             className="w-full bg-[#121316] border border-neutral-800 rounded pl-8 pr-3 py-1.5 text-xs text-neutral-100 placeholder:text-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-400 focus:border-neutral-500"
           />
+        </div>
+
+        {/* Batch Select All Toolbar */}
+        <div className="flex items-center justify-between text-[11px] text-neutral-400 pt-0.5">
+          <label className="flex items-center gap-2 cursor-pointer hover:text-neutral-200 transition-colors select-none">
+            <input
+              type="checkbox"
+              checked={isAllSelected}
+              onChange={handleToggleSelectAll}
+              className="w-3.5 h-3.5 rounded border-neutral-700 bg-neutral-900 text-blue-500 focus:ring-0 focus:ring-offset-0 cursor-pointer accent-blue-600"
+            />
+            <span>Выбрать все ({filteredTickets.length})</span>
+          </label>
+          {selectedTicketIds.length > 0 && (
+            <span className="text-blue-400 font-medium">
+              Выбрано: {selectedTicketIds.length}
+            </span>
+          )}
         </div>
 
         {/* Pipeline state category filter tabs */}
@@ -268,16 +318,15 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
       )}
 
       {/* Ticket List */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+      <div className="flex-1 overflow-y-auto p-2 space-y-1.5 pb-20">
         {filteredTickets.map((t) => (
           <TicketRow
             key={t.id}
             ticket={t}
             isSelected={selectedTicketId === t.id}
             onSelect={onSelectTicket}
-            aiResult={triageResults[t.id]}
-            onAnalyze={handleAnalyzeSingle}
-            isAnalyzing={analyzingTicketId === t.id}
+            isSelectedForBatch={selectedTicketIds.includes(t.id)}
+            onToggleBatchSelect={handleToggleBatchSelect}
           />
         ))}
 
@@ -295,6 +344,41 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
           </div>
         )}
       </div>
+
+      {/* Floating Action Bar for Batch Operations (Linear Style) */}
+      {selectedTicketIds.length > 0 && (
+        <div className="absolute bottom-4 left-4 right-4 z-30 animate-in fade-in slide-in-from-bottom-2 duration-200">
+          <div className="bg-[#14161b]/95 backdrop-blur-md border border-neutral-700/80 shadow-2xl rounded-lg p-2.5 flex items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2 pl-1.5">
+              <span className="w-2 h-2 rounded-full bg-blue-400" />
+              <span className="text-neutral-200 font-medium">
+                Выбрано заявок: <span className="font-mono font-bold text-white">{selectedTicketIds.length}</span>
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                variant="primary"
+                size="sm"
+                loading={isBatchAssigning}
+                onClick={handleBatchAssign}
+                icon={<Zap className="w-3.5 h-3.5 text-amber-400" />}
+                className="bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs shadow-md"
+              >
+                ⚡ Передать автопилоту (alen_assistant)
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClearSelection}
+                className="text-neutral-400 hover:text-white text-xs"
+              >
+                Снять выбор
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

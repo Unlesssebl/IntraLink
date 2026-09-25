@@ -21,6 +21,8 @@ from .schemas import (
     AutopilotCommandDTO,
     AutopilotPoliciesListResponse,
     AutopilotStatsResponse,
+    BatchAssignRequest,
+    BatchAssignResponse,
     CorrectPlanRequest,
     CorrectionsListResponse,
     UpdateAutopilotPolicyRequest,
@@ -237,6 +239,22 @@ async def reclaim_ticket(
         redis_client=redis,
         auth_b64=auth_b64,
     )
+
+
+@router.post("/batch-assign", response_model=BatchAssignResponse)
+async def batch_assign(
+    req: BatchAssignRequest,
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
+    redis: aioredis.Redis = Depends(get_redis),
+    service: AutopilotService = Depends(get_autopilot_service_dep),
+) -> BatchAssignResponse:
+    """Batch assign tickets to service bot and dispatch background autopilot tasks."""
+    return await service.batch_assign(
+        ticket_ids=req.ticket_ids,
+        redis_client=redis,
+        auth_b64=auth_b64,
+    )
+
 
 
 @router.get("/corrections", response_model=CorrectionsListResponse)

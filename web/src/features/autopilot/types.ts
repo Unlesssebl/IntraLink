@@ -133,3 +133,14 @@ export interface CommandExecutionStatus {
   created_at: string;
   updated_at?: string | null;
 }
+
+export interface BatchAssignRequest {
+  ticket_ids: number[];
+}
+
+export interface BatchAssignResponse {
+  assigned_count: number;
+  failed_ids: number[];
+  details: Record<string, string>;
+}
+

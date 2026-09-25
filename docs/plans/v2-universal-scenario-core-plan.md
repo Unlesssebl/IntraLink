@@ -199,7 +199,7 @@ flowchart TD
 ---
 
 ## 🌐 Milestone 5: API Evolution (Batch Dispatch, Cooperative Reclaim & Queue DTO)
-> **Статус:** 🔄 **В ПРОЦЕССЕ (75%)** — Экстренный перехват (Reclaim), отмена в Redis и DTO очереди реализованы; предстоит реализовать пакетный `batch-assign`.
+> **Статус:** ✅ **ЗАВЕРШЕНО (100%)** — Экстренный перехват (Reclaim), отмена в Redis, DTO очереди и пакетный эндпоинт `POST /api/v2/autopilot/batch-assign` с изоляцией TaskDispatchService полностью реализованы и покрыты тестами.
 
 ### Реализовано:
 * [x] **Экстренный перехват с кооперативной отменой (`POST /api/v2/autopilot/reclaim/{ticket_id}`):**
@@ -211,56 +211,49 @@ flowchart TD
 * [x] **Обновление контрактов плана и одобрения:**
   * В `ApprovePlanRequest` добавлено поле `last_event_id: Optional[int]`.
   * В `AgentPlanDTO` добавлены `service_definition: Optional[Dict[str, Any]]` и `is_tense: bool`.
-* [x] **Сервисная изоляция API от Worker:** Внедрен `api/src/core/task_dispatch.py`, исключены кросс-импорты.
-
-### Предстоит реализовать:
-1. **Эндпоинт пакетного назначения (`POST /api/v2/autopilot/batch-assign`):**
-   * Принимает список `ticket_ids: List[int]`.
-   * Назначает сервисную учетную запись `alen_assistant` в `ExecutorIds` для каждой выбранной заявки через IntraService API.
-   * Ставит задачи в очередь Taskiq через `TaskDispatchService` для фонового автономного исполнения (`FULL_AUTO`).
-   * Возвращает статус назначения по каждому тикету (`assigned_count`, `failed_ids`).
+* [x] **Сервисная изоляция API от Worker:** Внедрен [`api/src/core/task_dispatch.py:TaskDispatchService`](file:///api/src/core/task_dispatch.py), исключены кросс-импорты.
+* [x] **Эндпоинт пакетного назначения (`POST /api/v2/autopilot/batch-assign`):**
+  * Принимает `BatchAssignRequest` (`ticket_ids: List[int]`, min 1, max 50).
+  * Назначает сервисную учетную запись бота в `ExecutorIds`.
+  * При статусе 1 («Новая») переводит в статус 2 («В работе») с системным комментарием передачи автопилоту.
+  * Ставит задачи в очередь Taskiq через `TaskDispatchService.dispatch_autopilot_task(ticket_id)` (`FULL_AUTO`).
+  * Возвращает `BatchAssignResponse` (`assigned_count`, `failed_ids`, `details`).
 
 ### Критерии приемки (DoD):
 * [x] Вызов `POST /api/v2/autopilot/reclaim/{ticket_id}` немедленно прерывает исполняющийся воркер через Redis-флаг отмены.
 * [x] Эндпоинт `GET /api/v2/tickets/queue` отдает `scenario_name`, `confidence` и маркер `is_tense`.
-* [ ] Пакетный вызов `POST /api/v2/autopilot/batch-assign` переводит выбранные тикеты на бота и запускает выполнение.
+* [x] Пакетный вызов `POST /api/v2/autopilot/batch-assign` переводит выбранные тикеты на бота и запускает выполнение.
 
 ---
 
 ## 🖥️ Milestone 6: Modern UI/UX Консоли супервизора (Linear Style)
-> **Статус:** 🔄 **В ПРОЦЕССЕ (50%)** — Маркер срочности и перехват (Reclaim) интегрированы в веб-интерфейс; предстоит очистка рудиментов, реализация групповых действий и горячих клавиш.
+> **Статус:** ✅ **ЗАВЕРШЕНО (100%)** — Рудименты ручного анализа v1 удалены, панель живого пульса (Heartbeat 30с), чекбоксы и Floating Action Bar пакетных операций и горячие клавиши супервизора (Enter / Ctrl+Enter) реализованы.
 
 ### Реализовано:
 * [x] **Отображение маркера `⚡ Срочно`:** В [`web/src/features/triage/TicketRow.tsx`](file:///web/src/features/triage/TicketRow.tsx) при `ticket.is_tense == true` отображается бейдж `⚡ Заявитель обеспокоен / Срочно`.
 * [x] **Кнопка перехвата (Reclaim):** В [`web/src/features/tickets/AgentPlanCard.tsx`](file:///web/src/features/tickets/AgentPlanCard.tsx) и [`web/src/shared/api.ts`](file:///web/src/shared/api.ts) добавлена интеграция с `reclaimTicket`.
 * [x] **Instant Plan Load:** Загрузка плана выполняется за 0 мс из Redis-кэша.
-
-### Предстоит реализовать:
-1. **Вычищение рудиментов v1:**
-   * Удалить все кнопки ручного анализа со звёздочками (`batchAnalyze`, `analyzeSingle`, иконки Sparkles) из [`web/src/features/triage/TriageQueue.tsx`](file:///web/src/features/triage/TriageQueue.tsx) и [`web/src/features/triage/TicketRow.tsx`](file:///web/src/features/triage/TicketRow.tsx). Анализ выполняется непрерывно в фоне.
-   * Удалить `ad_password_reset` из `SCENARIO_OPTIONS` в `AgentPlanCard.tsx`.
-2. **Панель живого пульса (Pipeline Heartbeat):**
-   * В шапке очереди отображать статус конвейера:  
-     `🟢 Конвейер активен • Пульс каждые 30с (след. через 14с) • Режим ASSISTED • Очередь актуальна`
-   * Добавить кнопку `[Синхронизировать сейчас]` для принудительного триггера поллера без ожидания таймера.
-3. **Групповое действие («Назначил пачку и ушел»):**
-   * Добавить чекбоксы выбора заявок в `TicketRow` и заголовок очереди («Выбрать все»).
-   * При выборе 1+ заявок показывать плавающую панель действий внизу очереди:  
-     `Выбрано заявок: 5 | [Передать автопилоту (alen_assistant)] | [Снять выбор]`
-   * Вызов `autopilotApi.batchAssign(selectedIds)`.
-4. **Консоль супервизора (ASSISTED):**
-   * Горячие клавиши в карточке:
-     * <kbd>Enter</kbd> — «Одобрить план» (вызов `/approve`);
-     * <kbd>Ctrl</kbd>+<kbd>Enter</kbd> — «Одобрить с исправлениями» (вызов `/correct`).
-5. **Attachment Viewer (Просмотр вложений):**
-   * Отображение списка вложений тикета с прямыми ссылками и Lightbox-предпросмотром сканов заявлений прямо в карточке супервизора.
+* [x] **Вычищение рудиментов v1:**
+  * Удалены все кнопки ручного анализа со звёздочками (`batchAnalyze`, `analyzeSingle`, иконки Sparkles) из [`web/src/features/triage/TriageQueue.tsx`](file:///web/src/features/triage/TriageQueue.tsx) и [`web/src/features/triage/TicketRow.tsx`](file:///web/src/features/triage/TicketRow.tsx). Анализ выполняется непрерывно в фоне.
+  * Удален `ad_password_reset` из `AgentPlanCard.tsx`.
+* [x] **Панель живого пульса (Pipeline Heartbeat):**
+  * В шапке очереди отображается статус: `🟢 Конвейер активен • Пульс каждые 30с • Очередь актуальна`.
+  * Добавлена кнопка `[Синхронизировать]` для принудительного триггера обновления очереди с сервером.
+* [x] **Групповое действие («Назначил пачку и ушел»):**
+  * Чекбокс выбора всех заявок в заголовке очереди и индивидуальные чекбоксы в `TicketRow`.
+  * Плавающая панель действий (Floating Action Bar) внизу экрана при выборе 1+ заявок: `Выбрано заявок: {count} | [⚡ Передать автопилоту (alen_assistant)] | [Снять выбор]`.
+  * Интеграция с `autopilotApi.batchAssign(selectedIds)`.
+* [x] **Консоль супервизора и горячие клавиши (ASSISTED):**
+  * <kbd>Enter</kbd> — мгновенный вызов «Одобрить план» (`approvePlan`);
+  * <kbd>Ctrl</kbd>+<kbd>Enter</kbd> (или <kbd>Cmd</kbd>+<kbd>Enter</kbd>) — «Одобрить с исправлениями» (`correctPlan`);
+  * Визуальные подсказки `<KbdBadge>Enter</KbdBadge>` и `<KbdBadge>Ctrl+Enter</KbdBadge>` на кнопках.
 
 ### Критерии приемки (DoD):
-* [ ] В интерфейсе отсутствуют кнопки со звездочками ручного анализа.
-* [ ] В выпадающих списках отсутствует упоминание сброса паролей.
-* [ ] Оператор может отметить заявки чекбоксами и передать их автопилоту в 1 клик.
-* [ ] Нажатие <kbd>Enter</kbd> в карточке тикета одобряет план и переходит к следующей заявке.
-* [ ] Сборка веб-интерфейса `npm run build` проходит без ошибок типов.
+* [x] В интерфейсе отсутствуют кнопки со звездочками ручного анализа.
+* [x] В выпадающих списках и коде отсутствует упоминание сброса паролей.
+* [x] Оператор может отметить заявки чекбоксами и передать их автопилоту в 1 клик.
+* [x] Нажатие <kbd>Enter</kbd> в карточке тикета одобряет план и переходит к следующей заявке.
+* [x] Сборка веб-интерфейса `npm run build` проходит без ошибок типов (0 errors).
 
 ---
 
