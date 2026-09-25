@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { User, Sparkles, Loader2, Check } from "lucide-react";
+import { User, Sparkles, Loader2, Check, MessageSquare } from "lucide-react";
 import { StatusDot, useToast } from "@/shared/ui";
 import { HostBadge } from "@/features/diagnostics/HostBadge";
 import { TicketListItem, TriageAnalysisResponse, triageApi } from "@/shared/api";
@@ -132,6 +132,13 @@ export const TicketRow = React.memo<TicketRowProps>(function TicketRow({
           </span>
         )}
       </div>
+
+      {ticket.status_id === 6 && (
+        <div className="mt-1.5 pt-1.5 border-t border-neutral-800/80 flex items-center gap-1.5 text-[10px] text-blue-400">
+          <MessageSquare className="w-3 h-3 shrink-0" />
+          <span className="font-medium">Ожидает ответа заявителя (Автономный диалог)</span>
+        </div>
+      )}
 
       {/* AI Decision Flag (Duplicate, Routing, Confidence) */}
       {aiResult && aiResult.decision && (

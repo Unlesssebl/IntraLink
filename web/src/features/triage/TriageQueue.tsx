@@ -10,7 +10,7 @@ import {
 import { Button, Badge, KbdBadge, useToast } from "@/shared/ui";
 import { TicketRow } from "./TicketRow";
 import { useTicketQueue } from "@/features/tickets/queries";
-import { isStatusInWork } from "@/shared/statuses";
+import { isStatusInWork, isStatusResolved, isStatusCancelled } from "@/shared/statuses";
 import { triageApi, TriageAnalysisResponse } from "@/shared/api";
 
 export interface TriageQueueProps {
@@ -18,7 +18,7 @@ export interface TriageQueueProps {
   selectedTicketId: number | null;
 }
 
-type FilterCategory = "all" | "new" | "in_progress" | "directum" | "1c";
+type FilterCategory = "validation" | "dialogue" | "resolved" | "cancelled" | "all";
 
 export const TriageQueue: React.FC<TriageQueueProps> = ({
   onSelectTicket,
@@ -34,12 +34,23 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
   } = useTicketQueue(984);
 
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeFilter, setActiveFilter] = useState<FilterCategory>("all");
+  const [activeFilter, setActiveFilter] = useState<FilterCategory>("validation");
 
   // AI Classification cache: ticketId -> TriageAnalysisResponse
   const [triageResults, setTriageResults] = useState<Record<number, TriageAnalysisResponse>>({});
   const [analyzingTicketId, setAnalyzingTicketId] = useState<number | null>(null);
   const [batchAnalyzing, setBatchAnalyzing] = useState(false);
+
+  // Counters for pipeline tabs
+  const counts = useMemo(() => {
+    return {
+      validation: tickets.filter((t) => (t.status_id === 1 || isStatusInWork(t.status_id)) && t.status_id !== 6).length,
+      dialogue: tickets.filter((t) => t.status_id === 6).length,
+      resolved: tickets.filter((t) => isStatusResolved(t.status_id)).length,
+      cancelled: tickets.filter((t) => isStatusCancelled(t.status_id)).length,
+      all: tickets.length,
+    };
+  }, [tickets]);
 
   // Filtered tickets memo
   const filteredTickets = useMemo(() => {
@@ -57,20 +68,18 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
         }
       }
 
-      // 2. Category filter
-      if (activeFilter === "new") {
-        return t.status_id === 1;
+      // 2. Pipeline state category filter
+      if (activeFilter === "validation") {
+        return (t.status_id === 1 || isStatusInWork(t.status_id)) && t.status_id !== 6;
       }
-      if (activeFilter === "in_progress") {
-        return isStatusInWork(t.status_id);
+      if (activeFilter === "dialogue") {
+        return t.status_id === 6;
       }
-      if (activeFilter === "directum") {
-        const sName = (t.service_name || "").toLowerCase();
-        return sName.includes("directum") || [40, 41, 55, 232, 233, 234].includes(t.service_id || 0);
+      if (activeFilter === "resolved") {
+        return isStatusResolved(t.status_id);
       }
-      if (activeFilter === "1c") {
-        const sName = (t.service_name || "").toLowerCase();
-        return sName.includes("1с") || sName.includes("1c");
+      if (activeFilter === "cancelled") {
+        return isStatusCancelled(t.status_id);
       }
 
       return true;
@@ -191,8 +200,52 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
           />
         </div>
 
-        {/* Category filter tabs */}
+        {/* Pipeline state category filter tabs */}
         <div className="flex items-center gap-1 overflow-x-auto pb-0.5 text-[11px] no-scrollbar">
+          <button
+            onClick={() => setActiveFilter("validation")}
+            className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+              activeFilter === "validation"
+                ? "bg-amber-950/60 text-amber-300 font-medium border border-amber-800/80 shadow-xs"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+            <span>Валидация ({counts.validation})</span>
+          </button>
+          <button
+            onClick={() => setActiveFilter("dialogue")}
+            className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+              activeFilter === "dialogue"
+                ? "bg-blue-950/60 text-blue-300 font-medium border border-blue-800/80 shadow-xs"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0" />
+            <span>Диалог ({counts.dialogue})</span>
+          </button>
+          <button
+            onClick={() => setActiveFilter("resolved")}
+            className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+              activeFilter === "resolved"
+                ? "bg-emerald-950/60 text-emerald-300 font-medium border border-emerald-800/80 shadow-xs"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+            <span>Решено ({counts.resolved})</span>
+          </button>
+          <button
+            onClick={() => setActiveFilter("cancelled")}
+            className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+              activeFilter === "cancelled"
+                ? "bg-rose-950/60 text-rose-300 font-medium border border-rose-800/80 shadow-xs"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
+            <span>Отклонено ({counts.cancelled})</span>
+          </button>
           <button
             onClick={() => setActiveFilter("all")}
             className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap ${
@@ -201,47 +254,7 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
                 : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
             }`}
           >
-            Все ({tickets.length})
-          </button>
-          <button
-            onClick={() => setActiveFilter("new")}
-            className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap ${
-              activeFilter === "new"
-                ? "bg-neutral-800 text-neutral-100 font-medium border border-neutral-700 shadow-xs"
-                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
-            }`}
-          >
-            Новые
-          </button>
-          <button
-            onClick={() => setActiveFilter("in_progress")}
-            className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap ${
-              activeFilter === "in_progress"
-                ? "bg-neutral-800 text-neutral-100 font-medium border border-neutral-700 shadow-xs"
-                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
-            }`}
-          >
-            В работе
-          </button>
-          <button
-            onClick={() => setActiveFilter("directum")}
-            className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap ${
-              activeFilter === "directum"
-                ? "bg-neutral-800 text-neutral-100 font-medium border border-neutral-700 shadow-xs"
-                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
-            }`}
-          >
-            Directum
-          </button>
-          <button
-            onClick={() => setActiveFilter("1c")}
-            className={`px-2 py-0.5 rounded transition-colors whitespace-nowrap ${
-              activeFilter === "1c"
-                ? "bg-neutral-800 text-neutral-100 font-medium border border-neutral-700 shadow-xs"
-                : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
-            }`}
-          >
-            1С
+            Все ({counts.all})
           </button>
         </div>
       </div>

@@ -18,13 +18,18 @@ import {
 import { Badge, StatusDot, Lightbox, KbdBadge, useToast } from "@/shared/ui";
 import { HostBadge } from "@/features/diagnostics/HostBadge";
 import { RAGSuggestion } from "@/features/knowledge-base/RAGSuggestion";
-import { getStatusMeta } from "@/shared/statuses";
+import { getStatusMeta, isStatusResolved, isStatusCancelled } from "@/shared/statuses";
 import { ActionDock } from "./ActionDock";
+import { AgentPlanCard } from "./AgentPlanCard";
+import { LiveExecutionStepper } from "./LiveExecutionStepper";
+import { DialogueLoopCard } from "./DialogueLoopCard";
+import { DomainMetadataGrid } from "./DomainMetadataGrid";
 import { TicketAttachment, ticketsApi } from "@/shared/api";
 import {
   useTicketDetail,
   useTicketLifetime,
   useTicketActions,
+  useAgentPlan,
 } from "./queries";
 
 export interface TicketInspectorProps {
@@ -75,6 +80,10 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
 
   // Comment draft synced with RAG suggestions
   const [commentDraft, setCommentDraft] = useState("");
+
+  // HITL Autopilot execution tracking
+  const [activeCommandId, setActiveCommandId] = useState<string | null>(null);
+  const { data: agentPlan } = useAgentPlan(ticketId);
 
   const toast = useToast();
 
@@ -227,6 +236,35 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
             </div>
           ) : ticket ? (
             <>
+              {/* 1. Live Execution Stepper (Active Taskiq Worker progression) */}
+              {activeCommandId && (
+                <LiveExecutionStepper
+                  commandId={activeCommandId}
+                  onDismiss={() => setActiveCommandId(null)}
+                />
+              )}
+
+              {/* 2. Autonomous Dialogue Loop Card (Status #6) */}
+              {ticket.status_id === 6 && agentPlan && (
+                <DialogueLoopCard
+                  plan={agentPlan}
+                  onForceResume={() => {}}
+                />
+              )}
+
+              {/* 3. Primary Autonomous Agent Plan Supervisor Card */}
+              {!isStatusResolved(ticket.status_id) && !isStatusCancelled(ticket.status_id) && (
+                <AgentPlanCard
+                  ticketId={ticket.id}
+                  currentStatusId={ticket.status_id}
+                  onExecutionStarted={(cmdId) => setActiveCommandId(cmdId)}
+                  onClose={onClose}
+                />
+              )}
+
+              {/* 4. Domain Metadata Grid (Directum / 1C / custom entities) */}
+              <DomainMetadataGrid ticket={ticket} />
+
               {/* Context Cards: Applicant + Workstation */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {/* Applicant Card */}

@@ -13,10 +13,12 @@ import {
   Settings2,
   Activity,
   Terminal,
+  Download,
+  FileJson,
 } from "lucide-react";
 import { Badge, Button, useToast } from "@/shared/ui";
 import { autopilotApi } from "./api";
-import { AutopilotMode, AutopilotPolicy } from "./types";
+import { AutopilotCorrection, AutopilotMode, AutopilotPolicy } from "./types";
 
 const SCENARIO_NAMES: Record<string, string> = {
   install_printer: "Установка и настройка принтеров",
@@ -50,6 +52,13 @@ export function AutopilotConsole() {
     queryKey: ["autopilot", "commands"],
     queryFn: () => autopilotApi.getCommands(30),
     refetchInterval: 1500,
+  });
+
+  // 4. Fetch human supervisor corrections (Harness Ground Truth)
+  const { data: correctionsData } = useQuery({
+    queryKey: ["autopilot", "corrections"],
+    queryFn: () => autopilotApi.getCorrections(20),
+    refetchInterval: 10000,
   });
 
   // Policy update mutation (optimistic UI)
@@ -400,6 +409,76 @@ export function AutopilotConsole() {
                       second: "2-digit",
                     })}
                   </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 4. Harness Ground Truth Feedback Dataset */}
+      <div className="bg-[#121418] border border-neutral-800 rounded-lg overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-800/80 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <FileJson className="w-4 h-4 text-amber-400" />
+            <h2 className="text-sm font-semibold text-neutral-100">
+              Датасет корректировок супервизора (Harness Ground Truth)
+            </h2>
+            <Badge variant="warning">
+              {correctionsData?.total ?? 0} правок
+            </Badge>
+          </div>
+
+          <a
+            href={autopilotApi.getExportCorrectionsUrl(500)}
+            download="autopilot_corrections.jsonl"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 text-neutral-950 font-semibold text-xs transition-colors shadow-xs"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Экспорт JSONL для Pytest / AI Coder</span>
+          </a>
+        </div>
+
+        {correctionsData?.corrections?.length === 0 ? (
+          <div className="p-8 text-center text-xs text-neutral-500">
+            Правок пока нет. Когда оператор корректирует параметры или сценарий в карточке заявки, диф автоматически попадает в обучающий датасет.
+          </div>
+        ) : (
+          <div className="divide-y divide-neutral-800/60 max-h-[320px] overflow-y-auto">
+            {correctionsData?.corrections?.map((c: AutopilotCorrection) => (
+              <div
+                key={c.id}
+                className="px-4 py-2.5 flex items-center justify-between text-xs hover:bg-neutral-800/20 transition-colors"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="text-[11px] text-neutral-400 bg-neutral-900 border border-neutral-800 px-1.5 py-0.5 rounded font-mono shrink-0">
+                    #{c.task_id}
+                  </span>
+
+                  <Badge variant="warning">
+                    {c.correction_tag}
+                  </Badge>
+
+                  <div className="flex items-center gap-1.5 min-w-0 font-mono text-[11px]">
+                    <span className="text-neutral-400 line-through truncate max-w-[120px]">
+                      {c.original_scenario}
+                    </span>
+                    <span className="text-neutral-500">➔</span>
+                    <span className="text-emerald-400 font-semibold truncate max-w-[140px]">
+                      {c.corrected_scenario}
+                    </span>
+                  </div>
+
+                  {c.operator_notes && (
+                    <span className="text-[11px] text-neutral-400 italic truncate max-w-xs" title={c.operator_notes}>
+                      "{c.operator_notes}"
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-3 text-neutral-500 text-[10px] shrink-0 font-mono">
+                  <span>{c.operator_username}</span>
+                  <span>{new Date(c.created_at).toLocaleString("ru-RU")}</span>
                 </div>
               </div>
             ))}

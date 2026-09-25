@@ -74,4 +74,71 @@ export const autopilotApi = {
     }
     return res.json();
   },
+
+  async getPlan(ticketId: number, signal?: AbortSignal) {
+    const res = await fetch(`/api/v2/autopilot/plan/${ticketId}`, {
+      headers: getHeaders(),
+      signal,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      throw new Error(err?.detail || `Failed to fetch agent plan: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async approvePlan(ticketId: number, req: import("./types").ApprovePlanRequest) {
+    const res = await fetch(`/api/v2/autopilot/plan/${ticketId}/approve`, {
+      method: "POST",
+      headers: getHeaders(),
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      throw new Error(err?.detail || `Failed to approve agent plan: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async correctPlan(ticketId: number, req: import("./types").CorrectPlanRequest) {
+    const res = await fetch(`/api/v2/autopilot/plan/${ticketId}/correct`, {
+      method: "POST",
+      headers: getHeaders(),
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      throw new Error(err?.detail || `Failed to correct agent plan: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  async getCorrections(limit = 100, tag?: string) {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (tag) q.set("tag", tag);
+    const res = await fetch(`/api/v2/autopilot/corrections?${q.toString()}`, {
+      headers: getHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch corrections: ${res.statusText}`);
+    }
+    return res.json();
+  },
+
+  getExportCorrectionsUrl(limit = 500): string {
+    const auth = getStoredAuth();
+    const query = auth ? `?limit=${limit}&auth_b64=${encodeURIComponent(auth)}` : `?limit=${limit}`;
+    return `/api/v2/autopilot/corrections/export${query}`;
+  },
+
+  async getCommandStatus(commandId: string, signal?: AbortSignal) {
+    const res = await fetch(`/api/v2/tasks/${commandId}`, {
+      headers: getHeaders(),
+      signal,
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to poll task status: ${res.statusText}`);
+    }
+    return res.json();
+  },
 };

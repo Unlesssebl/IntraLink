@@ -232,3 +232,36 @@ export function useTicketActions() {
     addCommentMutation,
   };
 }
+
+// -------------------------------------------------------------
+// 4. Supervisor Agent Plan Query Hook
+// -------------------------------------------------------------
+export function useAgentPlan(ticketId: number | null) {
+  return useQuery({
+    queryKey: ["autopilot", "plan", ticketId || 0],
+    queryFn: ({ signal }) => {
+      if (!ticketId) throw new Error("Ticket ID required");
+      return import("@/features/autopilot/api").then((m) => m.autopilotApi.getPlan(ticketId, signal));
+    },
+    enabled: Boolean(ticketId && ticketId > 0),
+    staleTime: 5000,
+  });
+}
+
+// -------------------------------------------------------------
+// 5. Short-polling Taskiq Command Status Hook
+// -------------------------------------------------------------
+export function useCommandStatus(commandId: string | null) {
+  return useQuery({
+    queryKey: ["task", commandId || ""],
+    queryFn: ({ signal }) => {
+      if (!commandId) throw new Error("Command ID required");
+      return import("@/features/autopilot/api").then((m) => m.autopilotApi.getCommandStatus(commandId, signal));
+    },
+    enabled: Boolean(commandId),
+    refetchInterval: (query) => {
+      const s = query.state.data?.status;
+      return s === "succeeded" || s === "failed" ? false : 1200;
+    },
+  });
+}

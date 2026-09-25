@@ -230,3 +230,61 @@ class AutopilotPolicy(Base, TimestampMixin):
         kwargs.setdefault("is_circuit_broken", False)
         super().__init__(**kwargs)
 
+
+def sanitize_secrets(data: Any) -> Any:
+    """Recursively mask sensitive values (passwords, tokens, credentials)."""
+    if isinstance(data, dict):
+        sanitized = {}
+        for k, v in data.items():
+            k_lower = str(k).lower()
+            if any(secret_kw in k_lower for secret_kw in ("password", "token", "secret", "auth_b64", "pass")):
+                sanitized[k] = "***REDACTED***"
+            else:
+                sanitized[k] = sanitize_secrets(v)
+        return sanitized
+    elif isinstance(data, list):
+        return [sanitize_secrets(item) for item in data]
+    return data
+
+
+class AutopilotCorrection(Base, TimestampMixin):
+    """Ground-truth training dataset capturing differences between agent plans and human supervisor corrections."""
+
+    __tablename__ = "autopilot_corrections"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    original_scenario: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    corrected_scenario: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    original_params: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=dict,
+    )
+    corrected_params: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=dict,
+    )
+    original_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    corrected_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    factors_snapshot: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=dict,
+    )
+    correction_tag: Mapped[str] = mapped_column(String(64), nullable=False, default="general", index=True)
+    operator_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    operator_username: Mapped[str] = mapped_column(String(100), nullable=False, default="operator")
+
+    def __init__(self, **kwargs: Any) -> None:
+        if "original_params" in kwargs and kwargs["original_params"]:
+            kwargs["original_params"] = sanitize_secrets(kwargs["original_params"])
+        if "corrected_params" in kwargs and kwargs["corrected_params"]:
+            kwargs["corrected_params"] = sanitize_secrets(kwargs["corrected_params"])
+        kwargs.setdefault("correction_tag", "general")
+        kwargs.setdefault("operator_username", "operator")
+        kwargs.setdefault("factors_snapshot", {})
+        super().__init__(**kwargs)
+

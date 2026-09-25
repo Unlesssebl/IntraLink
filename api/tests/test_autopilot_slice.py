@@ -169,3 +169,104 @@ async def test_list_commands_and_stats_endpoints(test_db_session, override_polic
 
     app.dependency_overrides.clear()
 
+
+@pytest.mark.asyncio
+async def test_supervisor_plan_approve_and_correct_endpoints(test_db_session, override_policy_service):
+    from unittest.mock import AsyncMock, patch
+    from api.src.features.autopilot.router import get_autopilot_service_dep
+    from api.src.features.autopilot.service import AutopilotService
+    from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
+
+    mock_client = AsyncMock()
+    dummy_task = TaskDTO(
+        id=777,
+        service_id=62,
+        service_name="Установка принтеров",
+        name="Настройка принтера в кабинете 305",
+        description="Установить сетевой принтер HP на ПК WKS-042",
+        status_id=1,
+        status_name="Новая",
+        entities=ExtractedEntitiesDTO(pc_name="WKS-042", printer_model="HP LaserJet"),
+    )
+    mock_client.get_task.return_value = dummy_task
+    mock_client.get_task_lifetime.return_value = []
+
+    mock_diag = AsyncMock()
+    mock_diag.diagnose_host.return_value = AsyncMock(model_dump=lambda: {"is_online": True, "avg_rtt": "1.2ms"})
+
+    service = AutopilotService(
+        client=mock_client,
+        policy_service=override_policy_service,
+        diagnostics_service=mock_diag,
+    )
+
+    async def override_db():
+        yield test_db_session
+
+    app.dependency_overrides[get_db_session] = override_db
+    app.dependency_overrides[get_policy_service_dep] = lambda: override_policy_service
+    app.dependency_overrides[get_autopilot_service_dep] = lambda: service
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        # 1. GET /plan/777
+        plan_res = await client.get("/api/v2/autopilot/plan/777")
+        assert plan_res.status_code == 200
+        plan = plan_res.json()
+        assert plan["task_id"] == 777
+        assert plan["scenario_key"] == "install_printer"
+        assert "WKS-042" in plan["candidate_hosts"]
+
+        # 2. POST /plan/777/approve with OCC conflict check
+        conflict_res = await client.post(
+            "/api/v2/autopilot/plan/777/approve",
+            json={"expected_status_id": 999},  # expected status 999 != actual status 1
+        )
+        assert conflict_res.status_code == 409
+        assert "Статус заявки изменился" in conflict_res.json()["detail"]
+
+        # 3. Successful approve
+        with patch("worker.src.tasks.command_dispatcher.dispatch_command_task.kiq", new_callable=AsyncMock):
+            approve_res = await client.post(
+                "/api/v2/autopilot/plan/777/approve",
+                json={"expected_status_id": 1, "override_comment": "Одобрено супервизором"},
+            )
+            assert approve_res.status_code == 200
+            assert approve_res.json()["status"] == "approved"
+            assert approve_res.json()["action"] == "install_printer"
+
+        # 4. POST /plan/777/correct with secret sanitization
+        with patch("worker.src.tasks.command_dispatcher.dispatch_command_task.kiq", new_callable=AsyncMock):
+            correct_res = await client.post(
+                "/api/v2/autopilot/plan/777/correct",
+                json={
+                    "expected_status_id": 1,
+                    "corrected_scenario": "ad_password_reset",
+                    "corrected_params": {"pc_name": "WKS-042", "user_password": "super_secret_password_123"},
+                    "corrected_comment": "Сброшен пароль в AD",
+                    "correction_tag": "wrong_scenario",
+                    "operator_notes": "Заявитель просил сброс пароля, а не принтер",
+                },
+            )
+            assert correct_res.status_code == 200
+            assert correct_res.json()["status"] == "corrected"
+            assert correct_res.json()["action"] == "ad_password_reset"
+
+        # 5. GET /corrections and verify secrets redacted
+        corr_res = await client.get("/api/v2/autopilot/corrections")
+        assert corr_res.status_code == 200
+        corrections = corr_res.json()["corrections"]
+        assert len(corrections) >= 1
+        last_c = corrections[0]
+        assert last_c["corrected_scenario"] == "ad_password_reset"
+        assert last_c["correction_tag"] == "wrong_scenario"
+        assert last_c["corrected_params"]["user_password"] == "***REDACTED***"
+
+        # 6. GET /corrections/export (JSONL format)
+        export_res = await client.get("/api/v2/autopilot/corrections/export")
+        assert export_res.status_code == 200
+        assert "application/x-ndjson" in export_res.headers["content-type"]
+        assert "ad_password_reset" in export_res.text
+
+    app.dependency_overrides.clear()
+
