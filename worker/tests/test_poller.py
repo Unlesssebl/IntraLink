@@ -16,7 +16,7 @@ from core.database.system_state import (
 )
 from core.intraservice.dto import TaskDTO
 from worker.src.broker import QUEUE_DEFAULT, broker
-from worker.src.services.auth import (
+from core.intraservice.auth import (
     ServiceAuthBootstrap,
     ServiceAuthCredentials,
     ServiceAuthError,

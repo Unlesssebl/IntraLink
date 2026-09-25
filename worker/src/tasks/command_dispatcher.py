@@ -24,10 +24,11 @@ from core.database.session import get_engine, get_session_factory
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
 from core.redis_client import get_redis_client
+from core.scenarios.base import BaseScenario
+from core.scenarios.orchestrator import ScenarioLifecycleOrchestrator
+from core.scenarios.registry import ScenarioRegistry, get_default_scenario_registry
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from worker.src.broker import broker
-from worker.src.scenarios.base import BaseScenario, ScenarioExecutionResult
-from worker.src.scenarios.registry import ScenarioRegistry, get_default_scenario_registry
-from worker.src.services.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from worker.src.tasks.ad_actions import reset_ad_password_task, unlock_ad_account_task
 from worker.src.tasks.printers import install_printer_task
 from worker.src.tasks.sync_kb import sync_closed_tickets_task
@@ -297,49 +298,28 @@ async def _execute_scenario_for_ticket(
             if v and hasattr(task.entities, k):
                 setattr(task.entities, k, v)
 
-        # 6. Execute Scenario
+        # 6. Execute Scenario via ScenarioLifecycleOrchestrator
+        # Handles: execute() → IntraService update → dual audit → cache invalidation.
+        # Circuit Breaker updates are NOT used here: cmd.status manages failure tracking.
         policy: AutopilotPolicyDTO = await policy_service.get_policy(scenario.scenario_key)
-        exec_result: ScenarioExecutionResult = await scenario.execute(task, policy)
+        orchestrator = ScenarioLifecycleOrchestrator(
+            client=client,
+            redis_conn=redis_conn,
+            policy_service=policy_service,
+        )
+        exec_result = await orchestrator.execute_and_audit(
+            scenario=scenario,
+            task=task,
+            policy=policy,
+            auth_b64=auth.auth_b64,
+            initiator=cmd.initiator or "operator",
+            override_comment=cmd_params.get("override_comment"),
+            update_circuit_breaker=False,
+        )
 
         if not exec_result.success:
             err_msg = exec_result.error or f"Scenario '{scenario.scenario_key}' execution failed."
             raise RuntimeError(err_msg)
-
-        # 7. Unified Completion Step: direct transition without intermediate 6->2->3 transit
-        public_comment = cmd_params.get("override_comment") or exec_result.resolution_comment
-        await client.update_task(
-            task_id=ticket_id,
-            status_id=exec_result.target_status_id,
-            comment=public_comment,
-            is_private=False,
-            auth_b64=auth.auth_b64,
-        )
-
-        # 8. Post hidden internal technical audit note (Dual Audit)
-        initiator_name = cmd.initiator or "operator"
-        audit_note = (
-            f"🤖 [Автопилот / Ко-пилот: Исполнение плана]\n"
-            f"Сценарий: {scenario.name} ({scenario.scenario_key})\n"
-            f"Одобрил: {initiator_name}\n"
-            f"Исполнил: alen_assistant\n"
-            f"Статус переведен в {exec_result.target_status_id}."
-        )
-        if exec_result.technical_note:
-            audit_note += f"\nТехнические детали: {exec_result.technical_note}"
-
-        await client.update_task(
-            task_id=ticket_id,
-            comment=audit_note,
-            is_private=True,
-            auth_b64=auth.auth_b64,
-        )
-
-        # 9. Invalidate Redis plan cache
-        if redis_conn is not None:
-            try:
-                await redis_conn.delete(f"cache:autopilot:plan:{ticket_id}")
-            except Exception:
-                pass
 
         return exec_result.model_dump()
 
@@ -395,7 +375,6 @@ async def dispatch_command_task(command_id: Union[uuid.UUID, str]) -> Dict[str, 
         scenario = registry.get_scenario(cmd.action)
 
         result: Optional[Dict[str, Any]] = None
-        execution_error: Optional[str] = None
 
         try:
             if ticket_id is not None and scenario is not None:

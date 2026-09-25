@@ -30,7 +30,7 @@ from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
 from core.redis_client import get_redis_client
 from worker.src.broker import QUEUE_DEFAULT, broker
-from worker.src.services.auth import (
+from core.intraservice.auth import (
     ServiceAuthBootstrap,
     ServiceAuthCredentials,
 )

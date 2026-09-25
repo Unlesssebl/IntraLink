@@ -6,14 +6,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.autopilot.dto import AgentPlanDTO
+from core.autopilot.dto import AgentPlanDTO, AutopilotPolicyDTO
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
-from worker.src.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
-from worker.src.scenarios.registry import ScenarioRegistry
-from worker.src.services.auth import ServiceAuthCredentials
+from core.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
+from core.scenarios.registry import ScenarioRegistry
+from core.intraservice.auth import ServiceAuthCredentials
 from worker.src.tasks.plan_prefetch import (
     prefetch_agent_plan_task,
     set_prefetch_client,
+    set_prefetch_policy_service,
     set_prefetch_redis_client,
     set_prefetch_registry,
     set_prefetch_service_auth,
@@ -55,10 +56,18 @@ def mock_prefetch_env():
     registry = ScenarioRegistry()
     registry.register(DummyPrinterScenario())
 
+    mock_policy_service = AsyncMock()
+    mock_policy_service.get_policy.return_value = AutopilotPolicyDTO(
+        scenario_key="install_printer",
+        mode="ASSISTED",
+        min_confidence=0.85,
+    )
+
     set_prefetch_client(mock_client)
     set_prefetch_service_auth(mock_auth)
     set_prefetch_redis_client(mock_redis)
     set_prefetch_registry(registry)
+    set_prefetch_policy_service(mock_policy_service)
 
     yield mock_client, mock_auth, mock_redis, registry
 
@@ -66,6 +75,7 @@ def mock_prefetch_env():
     set_prefetch_service_auth(None)
     set_prefetch_redis_client(None)
     set_prefetch_registry(None)
+    set_prefetch_policy_service(None)
 
 
 @pytest.mark.asyncio

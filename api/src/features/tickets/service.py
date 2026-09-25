@@ -248,9 +248,9 @@ class TicketService:
         await session.refresh(cmd)
 
         try:
-            from worker.src.tasks.command_dispatcher import dispatch_command_task
+            from api.src.core.task_dispatch import dispatch_command
 
-            await dispatch_command_task.kiq(str(cmd.id))
+            await dispatch_command(cmd.id)
         except Exception as exc:
             logger.warning("Failed to dispatch Taskiq task for command %s: %s", cmd.id, exc)
 

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from core.autopilot.dto import AutopilotMode, AutopilotPolicyDTO
+from core.autopilot.dto import AgentPlanDTO, AutopilotMode, AutopilotPolicyDTO
 
 
 class AutopilotPoliciesListResponse(BaseModel):
@@ -46,7 +46,6 @@ class AutopilotStatsResponse(BaseModel):
     tripped_circuit_breakers: int
 
 
-from core.autopilot.dto import AgentPlanDTO
 
 
 class ApprovePlanRequest(BaseModel):
@@ -96,3 +95,18 @@ class CorrectionsListResponse(BaseModel):
 
     corrections: List[AutopilotCorrectionDTO]
     total: int
+
+
+__all__ = [
+    "AgentPlanDTO",
+    "ApprovePlanRequest",
+    "AutopilotCommandDTO",
+    "AutopilotCorrectionDTO",
+    "AutopilotMode",
+    "AutopilotPoliciesListResponse",
+    "AutopilotPolicyDTO",
+    "AutopilotStatsResponse",
+    "CorrectPlanRequest",
+    "CorrectionsListResponse",
+    "UpdateAutopilotPolicyRequest",
+]

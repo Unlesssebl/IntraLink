@@ -226,7 +226,7 @@ async def test_supervisor_plan_approve_and_correct_endpoints(test_db_session, ov
         assert "Статус заявки изменился" in conflict_res.json()["detail"]
 
         # 3. Successful approve
-        with patch("worker.src.tasks.command_dispatcher.dispatch_command_task.kiq", new_callable=AsyncMock):
+        with patch("api.src.core.task_dispatch.dispatch_command_task.kiq", new_callable=AsyncMock):
             approve_res = await client.post(
                 "/api/v2/autopilot/plan/777/approve",
                 json={"expected_status_id": 1, "override_comment": "Одобрено супервизором"},
@@ -236,7 +236,7 @@ async def test_supervisor_plan_approve_and_correct_endpoints(test_db_session, ov
             assert approve_res.json()["action"] == "install_printer"
 
         # 4. POST /plan/777/correct with secret sanitization
-        with patch("worker.src.tasks.command_dispatcher.dispatch_command_task.kiq", new_callable=AsyncMock):
+        with patch("api.src.core.task_dispatch.dispatch_command_task.kiq", new_callable=AsyncMock):
             correct_res = await client.post(
                 "/api/v2/autopilot/plan/777/correct",
                 json={

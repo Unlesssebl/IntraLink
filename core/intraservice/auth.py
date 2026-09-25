@@ -1,4 +1,4 @@
-"""Service Auth Bootstrap for IntraLink Autopilot Worker.
+"""Service Auth Bootstrap for IntraLink Service Bot.
 
 Handles credentials retrieval, validation against IntraService API,
 Fernet encryption and Redis caching.
@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from core.crypto import decrypt_token, encrypt_token
 from core.intraservice.client import IntraServiceClient
 
-logger = logging.getLogger("worker.services.auth")
+logger = logging.getLogger("core.intraservice.auth")
 
 
 class ServiceAuthError(Exception):
@@ -51,14 +51,7 @@ class ServiceAuthBootstrap:
         redis_client: Optional[aioredis.Redis] = None,
         force_refresh: bool = False,
     ) -> ServiceAuthCredentials:
-        """Bootstrap service bot credentials.
-
-        Resolution order:
-        1. In-memory cache (if not force_refresh).
-        2. Encrypted Redis cache (if available and valid).
-        3. Environment variables (INTRASERVICE_BOT_LOGIN / INTRASERVICE_BOT_PASSWORD)
-           with live validation via IntraService API.
-        """
+        """Bootstrap service bot credentials."""
         # 1. Fast in-memory cache
         if not force_refresh and self._cached_credentials is not None:
             return self._cached_credentials

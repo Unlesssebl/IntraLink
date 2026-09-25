@@ -97,7 +97,7 @@ class TestSemanticPrototypeIndex:
             axis = hash(text) % dim
             return _make_unit_vec(dim, axis)
 
-        with patch("worker.src.scenarios.semantic_index.get_embedding_vector", side_effect=fake_embed):
+        with patch("core.scenarios.semantic_index.get_embedding_vector", side_effect=fake_embed):
             await index.warm_up()
 
         assert index.is_ready is True
@@ -117,7 +117,7 @@ class TestSemanticPrototypeIndex:
             call_count += 1
             return [1.0 / math.sqrt(4)] * 4  # normalized 4-dim vector
 
-        with patch("worker.src.scenarios.semantic_index.get_embedding_vector", side_effect=fake_embed):
+        with patch("core.scenarios.semantic_index.get_embedding_vector", side_effect=fake_embed):
             await index.warm_up()
             first_count = call_count
             await index.warm_up()  # Second call – must be no-op
@@ -131,7 +131,7 @@ class TestSemanticPrototypeIndex:
         async def always_fails(text, ai_client, model_name="bge-m3"):
             return None
 
-        with patch("worker.src.scenarios.semantic_index.get_embedding_vector", side_effect=always_fails):
+        with patch("core.scenarios.semantic_index.get_embedding_vector", side_effect=always_fails):
             await index.warm_up()
 
         assert index.is_ready is False
@@ -155,7 +155,7 @@ class TestSemanticPrototypeIndex:
             # Query – we'll patch it separately in score()
             return None
 
-        with patch("worker.src.scenarios.semantic_index.get_embedding_vector", side_effect=fake_embed):
+        with patch("core.scenarios.semantic_index.get_embedding_vector", side_effect=fake_embed):
             await index.warm_up()
 
         assert index.is_ready is True
@@ -167,7 +167,7 @@ class TestSemanticPrototypeIndex:
         async def fake_query_embed(text, ai_client, model_name="bge-m3"):
             return query_vec
 
-        with patch("worker.src.scenarios.semantic_index.get_embedding_vector", side_effect=fake_query_embed):
+        with patch("core.scenarios.semantic_index.get_embedding_vector", side_effect=fake_query_embed):
             scores = await index.score("Установите принтер на рабочей станции")
 
         assert target_key in scores
@@ -193,7 +193,7 @@ class TestSemanticPrototypeIndex:
         async def fake_embed(text, ai_client, model_name="bge-m3"):
             return [1.0, 0.0]
 
-        with patch("worker.src.scenarios.semantic_index.get_embedding_vector", side_effect=fake_embed):
+        with patch("core.scenarios.semantic_index.get_embedding_vector", side_effect=fake_embed):
             await index.warm_up()
 
         scores = await index.score("   ")
@@ -213,7 +213,7 @@ class TestSemanticPrototypeIndex:
                 return [1.0, 0.0, 0.0, 0.0]
             return None
 
-        with patch("worker.src.scenarios.semantic_index.get_embedding_vector", side_effect=embed_prototypes_then_fail):
+        with patch("core.scenarios.semantic_index.get_embedding_vector", side_effect=embed_prototypes_then_fail):
             await index.warm_up()
             scores = await index.score("запрос который провалится")
 
@@ -269,7 +269,7 @@ class TestRouterFactorE:
             ServiceId=62,  # Strong catalog prior
         )
 
-        with patch("worker.src.scenarios.semantic_index.get_embedding_vector", side_effect=fake_query_embed):
+        with patch("core.scenarios.semantic_index.get_embedding_vector", side_effect=fake_query_embed):
             result = await router.route_task(task, registry._scenarios)
 
         assert result is not None
@@ -283,27 +283,27 @@ class TestRouterFactorE:
     @pytest.mark.asyncio
     async def test_factor_e_disabled_falls_back_gracefully(self, router_no_semantic):
         """When semantic index not ready, router must still route via A+B+C+D factors."""
-        from worker.src.scenarios.ad_password_reset import ADPasswordResetScenario
+        from worker.src.scenarios.grant_wlan import GrantWLANScenario
+        from worker.src.scenarios.install_printer import InstallPrinterScenario
         from worker.src.scenarios.registry import get_default_scenario_registry, reset_registry
         reset_registry()
         registry = get_default_scenario_registry()
-        registry.register(ADPasswordResetScenario())
 
         router = router_no_semantic
         # Semantic index created but not warmed up → is_ready = False
 
         task = TaskDTO(
             Id=301,
-            Name="Сброс пароля в домене",
-            Description="Забыл пароль от учетной записи Active Directory",
-            ServiceId=23,  # Password reset catalog
+            Name="Подключение к корпоративному Wi-Fi",
+            Description="Прошу добавить мою учетную запись в группу доступа беспроводной сети",
             ApplicantName="Козлов К.К.",
+            ServiceId=63,  # ServiceId 63 = Corporate Wi-Fi WLAN-WORKNET → Factor B boost
         )
 
         result = await router.route_task(task, registry._scenarios)
         assert result is not None
         scenario, match = result
-        assert scenario.scenario_key == "ad_password_reset"
+        assert scenario.scenario_key == "grant_wlan"
         assert match.matched is True
         # No Factor E in reasons since index not ready
         factor_e_reasons = [r for r in match.reasons if "Factor E" in r]
@@ -325,7 +325,7 @@ class TestRouterFactorE:
         index = router._semantic_index
         assert index.is_ready is True, "Semantic index must be ready after fixture warm-up"
 
-        with patch("worker.src.scenarios.semantic_index.get_embedding_vector", side_effect=fake_query_embed):
+        with patch("core.scenarios.semantic_index.get_embedding_vector", side_effect=fake_query_embed):
             scores = await index.score("Проблема с рабочим местом Оборудование не работает")
 
         assert target_key in scores, f"'{target_key}' missing from semantic scores"
@@ -344,9 +344,9 @@ class TestRouterFactorE:
 # ---------------------------------------------------------------------------
 
 class TestPrototypeCatalog:
-    def test_all_core6_scenarios_have_prototypes(self):
-        """Every Core-6 scenario must have at least 3 prototype phrases."""
-        required = {"install_printer", "ad_password_reset", "grant_wlan", "offline_host",
+    def test_all_core_scenarios_have_prototypes(self):
+        """Every core scenario must have at least 3 prototype phrases."""
+        required = {"install_printer", "grant_wlan", "offline_host",
                     "service_redirect", "rag_consultation"}
         for key in required:
             assert key in SCENARIO_PROTOTYPES, f"No prototypes for '{key}'"

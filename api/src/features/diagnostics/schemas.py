@@ -1,17 +1,11 @@
 """Pydantic schemas for Diagnostics feature slice."""
 
-from typing import Dict, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
 
-class HostDiagnosticDTO(BaseModel):
-    hostname: str
-    ip_address: Optional[str] = None
-    is_online: bool
-    avg_rtt: Optional[str] = None
-    ports: Dict[str, bool] = Field(default_factory=dict)
-    cached: bool = False
+from core.diagnostic.service import HostDiagnosticDTO
 
 
 class TicketDiagnosticDTO(BaseModel):

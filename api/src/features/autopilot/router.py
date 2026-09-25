@@ -19,7 +19,6 @@ from .schemas import (
     AgentPlanDTO,
     ApprovePlanRequest,
     AutopilotCommandDTO,
-    AutopilotCorrectionDTO,
     AutopilotPoliciesListResponse,
     AutopilotStatsResponse,
     CorrectPlanRequest,

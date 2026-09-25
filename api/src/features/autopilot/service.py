@@ -14,15 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.src.core.ai import get_ai_client
 from api.src.core.config import settings
-from api.src.features.diagnostics.service import DiagnosticsService
-from core.autopilot.intent import detect_tense_tone
+from core.diagnostic.service import HostDiagnosticsService
 from core.autopilot.policy_service import AutopilotPolicyService
 from core.database.models import AutopilotCorrection, CommandRecord
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO, TaskLifetimeEventDTO
 from core.intraservice.exceptions import IntraServiceNotFoundError
-from worker.src.scenarios.base import BaseScenario
-from worker.src.scenarios.registry import get_default_scenario_registry
+from core.scenarios.base import BaseScenario
+from core.scenarios.engine import PlanSynthesizer
+from core.scenarios.registry import get_default_scenario_registry
 
 from .schemas import (
     AgentPlanDTO,
@@ -43,14 +43,14 @@ class AutopilotService:
         self,
         client: Optional[IntraServiceClient] = None,
         policy_service: Optional[AutopilotPolicyService] = None,
-        diagnostics_service: Optional[DiagnosticsService] = None,
+        diagnostics_service: Optional[HostDiagnosticsService] = None,
     ) -> None:
         self.client = client or IntraServiceClient(
             base_url=settings.INTRASERVICE_URL,
             verify_ssl=settings.SSL_VERIFY,
         )
         self.policy_service = policy_service or AutopilotPolicyService()
-        self.diagnostics_service = diagnostics_service or DiagnosticsService()
+        self.diagnostics_service = diagnostics_service or HostDiagnosticsService()
 
     async def get_agent_plan(
         self,
@@ -60,15 +60,11 @@ class AutopilotService:
         auth_b64: Optional[str] = None,
     ) -> AgentPlanDTO:
         """Synthesize real-time evaluation plan of the autonomous agent for a ticket."""
-        cache_key = f"cache:autopilot:plan:{ticket_id}"
         if redis_client is not None:
-            try:
-                cached_raw = await redis_client.get(cache_key)
-                if cached_raw:
-                    logger.debug("Serving agent plan for ticket #%d from Redis cache (0 ms)", ticket_id)
-                    return AgentPlanDTO.model_validate_json(cached_raw)
-            except Exception as exc:
-                logger.debug("Redis plan cache read error for ticket #%d: %s", ticket_id, exc)
+            cached_plan = await PlanSynthesizer.get_cached(ticket_id, redis_client)
+            if cached_plan is not None:
+                logger.debug("Serving agent plan for ticket #%d from Redis cache (0 ms)", ticket_id)
+                return cached_plan
 
         try:
             task: TaskDTO = await self.client.get_task(task_id=ticket_id, auth_b64=auth_b64)
@@ -78,71 +74,14 @@ class AutopilotService:
                 detail=f"Ticket #{ticket_id} not found in IntraService",
             ) from exc
 
-        # 1. Candidate hosts discovery (Edge Case 6: multiple candidate hosts)
-        raw_text = f"{task.name} {task.description or ''}"
-        candidate_matches = PC_REGEX.findall(raw_text)
-        cleaned_candidates = list(dict.fromkeys(c.strip().upper() for c in candidate_matches if len(c.strip()) >= 3))
-        if task.entities.pc_name and task.entities.pc_name.upper() not in cleaned_candidates:
-            cleaned_candidates.insert(0, task.entities.pc_name.upper())
-
-        # 2. Scenario discovery via Multi-Factor Router (Factor A + Factor E + Coherence)
-        registry = get_default_scenario_registry(ai_client=get_ai_client())
-        scenario: Optional[BaseScenario] = await registry.find_scenario(task)
-
-        scenario_key = scenario.scenario_key if scenario else "unmatched"
-        scenario_name = scenario.name if scenario else "Ручной разбор (сценарий не определен)"
-        description = scenario.description if scenario else "Заявка передана на ручную классификацию оператору"
-
-        # 3. Policy and Tripwire Status
-        policy = await self.policy_service.get_policy(scenario_key, session=session)
-        is_circuit_broken = policy.is_circuit_broken
-        mode = policy.mode
-
-        # 4. Evaluation match and preconditions
-        confidence = 0.0
-        factor_breakdown: Dict[str, float] = {}
-        preconditions_dict: Dict[str, Any] = {"is_valid": False, "missing_facts": [], "environment_barriers": []}
-        suggested_comment = ""
-        target_status_id = 3
-
-        if scenario:
-            match_res = await scenario.evaluate_match(task)
-            confidence = match_res.confidence
-            factor_breakdown = {
-                "confidence": confidence,
-            }
-            precond_res = await scenario.validate_preconditions(task)
-            preconditions_dict = precond_res.model_dump()
-
-            # Draft comment based on scenario defaults
-            if scenario_key == "ad_password_reset":
-                suggested_comment = (
-                    "Здравствуйте! Ваш временный пароль для входа в домен: TempPass123! "
-                    "При первом входе система попросит сменить его."
-                )
-            elif scenario_key == "install_printer":
-                suggested_comment = (
-                    f"Здравствуйте! Сетевой принтер настроен на вашем рабочем месте {task.entities.pc_name or ''}. "
-                    "Отправлена тестовая страница."
-                )
-            elif scenario_key == "grant_wlan":
-                suggested_comment = "Здравствуйте! Доступ к сети WLAN-WORKNET предоставлен для вашей учетной записи."
-            elif scenario_key == "service_redirect":
-                suggested_comment = (
-                    "Заявка отменена, т. к. создана не в подходящем разделе каталога.\n"
-                    "Требуется оставить заявку в подходящем разделе каталога услуг."
-                )
-                target_status_id = 30
-            elif scenario_key == "offline_host":
-                suggested_comment = (
-                    f"Здравствуйте! Компьютер {task.entities.pc_name or ''} недоступен в корпоративной сети. "
-                    "Пожалуйста, включите ПК и оставьте ответный комментарий — настройка продолжится автоматически."
-                )
-                target_status_id = 6
-
-        # 5. Live Network Diagnostics (Express check of host)
+        # 1. Live Network Diagnostics (Express check of host)
         host_diag_dto = None
-        target_host = task.entities.pc_name or (cleaned_candidates[0] if cleaned_candidates else None)
+        target_host = task.entities.pc_name
+        if not target_host:
+            raw_text = f"{task.name} {task.description or ''}"
+            matches = PC_REGEX.findall(raw_text)
+            if matches:
+                target_host = matches[0].strip().upper()
         if target_host:
             try:
                 diag = await self.diagnostics_service.diagnose_host(hostname=target_host, redis_client=redis_client)
@@ -150,7 +89,7 @@ class AutopilotService:
             except Exception as exc:
                 logger.debug("Diagnostics for host %s failed: %s", target_host, exc)
 
-        # 6. Check existing CommandRecord for this ticket (ASSISTED mode pending command)
+        # 2. Check existing CommandRecord for this ticket (ASSISTED mode pending command)
         stmt = (
             select(CommandRecord)
             .where(CommandRecord.task_id == ticket_id)
@@ -160,8 +99,9 @@ class AutopilotService:
         existing_cmd = (await session.execute(stmt)).scalar_one_or_none()
         command_id = existing_cmd.id if existing_cmd and existing_cmd.status == "pending" else None
 
-        # 7. Check Dialogue Loop State (rounds count, waiting for applicant)
+        # 3. Check Dialogue Loop State (rounds count, waiting for applicant)
         dialogue_state = None
+        last_event_id = None
         try:
             lifetimes: List[TaskLifetimeEventDTO] = await self.client.get_task_lifetime(
                 task_id=ticket_id, auth_b64=auth_b64
@@ -175,43 +115,23 @@ class AutopilotService:
                 "total_events": len(lifetimes),
             }
         except Exception:
-            last_event_id = None
+            pass
 
-        raw_text = f"{task.name} {task.description or ''}"
-        is_tense, tense_reason = detect_tense_tone(raw_text)
-        has_attachments = bool(task.attachments)
-
-        plan = AgentPlanDTO(
-            task_id=task.id,
-            scenario_key=scenario_key,
-            scenario_name=scenario_name,
-            description=description,
-            confidence=confidence,
-            matched=scenario is not None and confidence >= policy.min_confidence,
-            factor_breakdown=factor_breakdown,
-            preconditions=preconditions_dict,
-            host_diagnostic=host_diag_dto,
-            extracted_entities=task.entities.model_dump(),
-            candidate_hosts=cleaned_candidates,
-            proposed_action=scenario_key,
-            proposed_params=task.entities.model_dump(),
-            suggested_comment=suggested_comment,
-            target_status_id=target_status_id,
+        # 4. Canonical plan synthesis via PlanSynthesizer
+        registry = get_default_scenario_registry(ai_client=get_ai_client())
+        synthesizer = PlanSynthesizer(registry=registry, policy_service=self.policy_service)
+        plan = await synthesizer.synthesize_plan(
+            task=task,
+            host_diag=host_diag_dto,
+            existing_command_id=command_id,
             dialogue_state=dialogue_state,
-            command_id=command_id,
             last_event_id=last_event_id,
-            is_circuit_broken=is_circuit_broken,
-            mode=mode,
-            is_tense=is_tense,
-            tense_reason=tense_reason,
-            has_attachments=has_attachments,
+            session=session,
         )
 
+        # 5. Cache in Redis
         if redis_client is not None:
-            try:
-                await redis_client.set(cache_key, plan.model_dump_json(), ex=300)
-            except Exception as exc:
-                logger.debug("Redis plan cache write error for ticket #%d: %s", ticket_id, exc)
+            await PlanSynthesizer.store_cached(plan, redis_client, ttl=300)
 
         return plan
 
@@ -277,17 +197,13 @@ class AutopilotService:
         await session.refresh(cmd)
 
         # Invalidate plan cache in Redis upon approval
-        if redis_client is not None:
-            try:
-                await redis_client.delete(f"cache:autopilot:plan:{ticket_id}")
-            except Exception:
-                pass
+        await PlanSynthesizer.invalidate(ticket_id, redis_client)
 
         # 4. Dispatch Taskiq task
         try:
-            from worker.src.tasks.command_dispatcher import dispatch_command_task
+            from api.src.core.task_dispatch import dispatch_command
 
-            await dispatch_command_task.kiq(str(cmd.id))
+            await dispatch_command(cmd.id)
         except Exception as exc:
             logger.warning("Failed to dispatch Taskiq task for approved command %s: %s", cmd.id, exc)
 
@@ -402,16 +318,12 @@ class AutopilotService:
         await session.refresh(cmd)
 
         # Invalidate plan cache in Redis upon correction
-        if redis_client is not None:
-            try:
-                await redis_client.delete(f"cache:autopilot:plan:{ticket_id}")
-            except Exception:
-                pass
+        await PlanSynthesizer.invalidate(ticket_id, redis_client)
 
         try:
-            from worker.src.tasks.command_dispatcher import dispatch_command_task
+            from api.src.core.task_dispatch import dispatch_command
 
-            await dispatch_command_task.kiq(str(cmd.id))
+            await dispatch_command(cmd.id)
         except Exception as exc:
             logger.warning("Failed to dispatch Taskiq task for corrected command %s: %s", cmd.id, exc)
 

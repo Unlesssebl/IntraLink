@@ -7,7 +7,7 @@ import pytest
 
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
-from worker.src.services.auth import ServiceAuthBootstrap, ServiceAuthCredentials
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from worker.src.tasks.watchdog import (
     InactivityWatchdog,
     inactivity_watchdog_task,

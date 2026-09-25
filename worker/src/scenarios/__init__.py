@@ -1,26 +1,30 @@
-"""Worker Scenarios Package (Core-6 and Scenario Registry)."""
+"""Worker scenario facades (canonical location: core.scenarios)."""
 
-from .ad_password_reset import ADPasswordResetScenario
-from .base import BaseScenario, PreconditionResult, ScenarioExecutionResult
-from .grant_wlan import GrantWLANScenario
-from .install_printer import InstallPrinterScenario
-from .offline_host import OfflineHostScenario
-from .rag_consultation import RAGConsultationScenario
-from .registry import ScenarioRegistry, get_default_scenario_registry, reset_registry
-from .router import ScenarioRouter
-from .semantic_index import SemanticPrototypeIndex
-from .service_redirect import ServiceRedirectScenario
+from core.scenarios import (
+    BaseScenario,
+    CatalogPriorProvider,
+    CoherenceGuard,
+    CoherenceResult,
+    CoherenceStatus,
+    PreconditionResult,
+    ScenarioExecutionResult,
+    ScenarioMatch,
+    ScenarioRegistry,
+    ScenarioRouter,
+    SemanticPrototypeIndex,
+    get_default_scenario_registry,
+    reset_registry,
+)
 
 __all__ = [
     "BaseScenario",
+    "CatalogPriorProvider",
+    "CoherenceGuard",
+    "CoherenceResult",
+    "CoherenceStatus",
     "PreconditionResult",
     "ScenarioExecutionResult",
-    "InstallPrinterScenario",
-    "ADPasswordResetScenario",
-    "GrantWLANScenario",
-    "OfflineHostScenario",
-    "ServiceRedirectScenario",
-    "RAGConsultationScenario",
+    "ScenarioMatch",
     "ScenarioRegistry",
     "ScenarioRouter",
     "SemanticPrototypeIndex",

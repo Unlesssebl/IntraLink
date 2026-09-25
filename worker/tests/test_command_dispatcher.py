@@ -19,12 +19,13 @@ from worker.src.broker import (
     broker,
     get_broker_for_queue,
 )
-from worker.src.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
-from worker.src.scenarios.registry import ScenarioRegistry
-from worker.src.services.auth import ServiceAuthBootstrap, ServiceAuthCredentials
+from core.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
+from core.scenarios.registry import ScenarioRegistry
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from worker.src.tasks.command_dispatcher import (
     dispatch_command_task,
     set_dispatcher_client,
+    set_dispatcher_policy_service,
     set_dispatcher_redis_client,
     set_dispatcher_registry,
     set_dispatcher_service_auth,
@@ -337,15 +338,25 @@ def mock_dispatcher_intraservice():
     registry = ScenarioRegistry()
     registry.register(DummyScenario())
 
+    mock_policy = AsyncMock()
+    from core.autopilot.dto import AutopilotPolicyDTO
+    mock_policy.get_policy.return_value = AutopilotPolicyDTO(
+        scenario_key="dummy_scenario",
+        mode="ASSISTED",
+        min_confidence=0.85,
+    )
+
     set_dispatcher_client(mock_client)
     set_dispatcher_service_auth(mock_auth)
     set_dispatcher_registry(registry)
+    set_dispatcher_policy_service(mock_policy)
 
     yield mock_client, mock_auth, registry
 
     set_dispatcher_client(None)
     set_dispatcher_service_auth(None)
     set_dispatcher_registry(None)
+    set_dispatcher_policy_service(None)
 
 
 @pytest.mark.asyncio

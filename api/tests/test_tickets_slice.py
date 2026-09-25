@@ -111,7 +111,7 @@ async def test_execute_ticket_action_enqueues_taskiq():
     app.dependency_overrides[get_db_session] = override_db
 
     transport = ASGITransport(app=app)
-    with patch("worker.src.tasks.command_dispatcher.dispatch_command_task.kiq", new_callable=AsyncMock) as mock_kiq:
+    with patch("api.src.core.task_dispatch.dispatch_command_task.kiq", new_callable=AsyncMock) as mock_kiq:
         mock_kiq.return_value = None
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(

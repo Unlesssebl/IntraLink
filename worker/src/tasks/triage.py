@@ -22,8 +22,8 @@ from core.intraservice.dto import TaskDTO
 from core.redis_client import get_redis_client
 from core.triage.gateway import RelevanceDecision, RelevanceGateway
 from worker.src.broker import QUEUE_DEFAULT, broker
-from worker.src.services.anti_loop import AntiLoopGuard
-from worker.src.services.auth import (
+from core.autopilot.dialogue import AntiLoopGuard
+from core.intraservice.auth import (
     ServiceAuthBootstrap,
     ServiceAuthCredentials,
 )

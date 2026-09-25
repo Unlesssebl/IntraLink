@@ -13,7 +13,7 @@ from core.database.base import Base
 from core.database.models import CommandRecord
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO, TaskLifetimeEventDTO
-from worker.src.services.auth import ServiceAuthBootstrap, ServiceAuthCredentials
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from worker.src.tasks.autopilot import (
     autopilot_task,
     set_autopilot_client,
@@ -243,7 +243,7 @@ async def test_autopilot_dialogue_missing_facts_suspends_ticket(mock_client, moc
     first_call = mock_client.update_task.call_args_list[0].kwargs
     assert first_call["status_id"] == 6
     assert first_call["is_private"] is False
-    assert "укажите, пожалуйста, сетевое имя" in first_call["comment"]
+    assert "укажите сетевое имя" in first_call["comment"]
 
     # Second call is private technical note
     second_call = mock_client.update_task.call_args_list[1].kwargs
@@ -278,10 +278,9 @@ async def test_autopilot_dialogue_resume_loop_enriches_and_resolves(mock_client,
     set_autopilot_policy_service(policy_service)
 
     with (
-        patch("worker.src.scenarios.install_printer.probe_diagnostic_ports", return_value={"smb_445": True, "winrm_5985": True}),
-        patch("worker.src.tasks.printers.install_printer_task", new_callable=AsyncMock) as mock_prn,
+        patch("core.scenarios.adapters.install_printer.probe_diagnostic_ports", return_value=[{"port": 5985, "is_open": True}, {"port": 445, "is_open": True}]),
+        patch("core.scenarios.adapters.install_printer.fast_ping", return_value={"host": "WKS-7777", "is_online": True}),
     ):
-        mock_prn.return_value = {"status": "ok"}
         res = await autopilot_task(506)
 
         assert res["status"] == "resolved"
@@ -341,18 +340,19 @@ async def test_autopilot_dialogue_limit_escalates_to_human(mock_client, mock_ser
 async def test_autopilot_circuit_breaker_trips_on_failures(mock_client, mock_service_auth, test_session_factory, policy_service, mock_redis):
     task = TaskDTO(
         Id=508,
-        Name="Сброс пароля AD",
-        Description="Сбросить пароль",
+        Name="Подключение к корпоративной Wi-Fi сети",
+        Description="Добавьте мою учётную запись в группу WLAN-WORKNET",
         StatusId=1,
         ExecutorIds="999",
         ApplicantName="Петров П.П.",
+        ServiceId=63,
         entities=ExtractedEntitiesDTO(target_user="petrov.p"),
     )
     mock_client.get_task.return_value = task
     mock_client.get_task_lifetime.return_value = []
 
-    # Configure ad_password_reset to FULL_AUTO
-    await policy_service.update_policy("ad_password_reset", AutopilotPolicyUpdateDTO(mode="FULL_AUTO"))
+    # Configure grant_wlan to FULL_AUTO
+    await policy_service.update_policy("grant_wlan", AutopilotPolicyUpdateDTO(mode="FULL_AUTO"))
 
     set_autopilot_client(mock_client)
     set_autopilot_service_auth(mock_service_auth)
@@ -360,14 +360,24 @@ async def test_autopilot_circuit_breaker_trips_on_failures(mock_client, mock_ser
     set_autopilot_policy_service(policy_service)
     set_autopilot_redis_client(mock_redis)
 
-    from worker.src.scenarios.ad_password_reset import ADPasswordResetScenario
+    from worker.src.scenarios.grant_wlan import GrantWLANScenario
     from worker.src.scenarios.registry import ScenarioRegistry
     test_reg = ScenarioRegistry()
-    test_reg.register(ADPasswordResetScenario())
+    test_reg.register(GrantWLANScenario())
     set_autopilot_registry(test_reg)
 
+    from core.scenarios.base import ScenarioExecutionResult
+
     try:
-        with patch("worker.src.tasks.ad_actions.reset_ad_password_task", side_effect=Exception("LDAP Server Down")):
+        failed_result = ScenarioExecutionResult(
+            success=False,
+            action_taken="grant_wlan",
+            resolution_comment="",
+            technical_note="⚠️ [Автопилот: Сбой] AD Connection Error",
+            target_status_id=2,
+            error="AD Connection Error",
+        )
+        with patch("core.scenarios.adapters.grant_wlan.GrantWLANScenario.execute", return_value=failed_result):
             # Failure 1
             res1 = await autopilot_task(508)
             assert res1["status"] == "failed"
@@ -378,13 +388,13 @@ async def test_autopilot_circuit_breaker_trips_on_failures(mock_client, mock_ser
             assert res2["status"] == "failed"
             assert res2["circuit_broken"] is False
 
-            # Failure 3 -> Trips Circuit Breaker!
+            # Failure 3 → Trips Circuit Breaker!
             res3 = await autopilot_task(508)
             assert res3["status"] == "failed"
             assert res3["circuit_broken"] is True
 
             # Verify policy degraded to ASSISTED
-            policy = await policy_service.get_policy("ad_password_reset")
+            policy = await policy_service.get_policy("grant_wlan")
             assert policy.mode == "ASSISTED"
             assert policy.is_circuit_broken is True
     finally:

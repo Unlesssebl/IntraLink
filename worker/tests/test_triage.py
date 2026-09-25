@@ -11,8 +11,8 @@ from core.database.base import Base
 from core.database.models import TriageAudit
 from core.intraservice.dto import TaskDTO
 from core.triage.gateway import RelevanceGateway
-from worker.src.services.anti_loop import AntiLoopGuard
-from worker.src.services.auth import (
+from core.autopilot.dialogue import AntiLoopGuard
+from core.intraservice.auth import (
     ServiceAuthBootstrap,
     ServiceAuthCredentials,
 )

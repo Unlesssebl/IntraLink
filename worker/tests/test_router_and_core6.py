@@ -60,16 +60,16 @@ def test_coherence_guard_coherent():
 
 def test_coherence_guard_divergent_collision():
     guard = CoherenceGuard()
-    # Ticket has printer candidate, but text is strictly about password reset
+    # Ticket is about Wi-Fi access, but candidate is install_printer → clear divergence
     task = TaskDTO(
         Id=11,
-        Name="Срочно сбросьте пароль",
-        Description="Я забыл пароль от Windows и не могу войти в домен!",
+        Name="Предоставьте доступ к беспроводной сети",
+        Description="Нет доступа к wi-fi в офисе, прошу добавить в группу WLAN-WORKNET",
     )
     res = guard.evaluate("install_printer", task)
     assert res.status == CoherenceStatus.DIVERGENT
     assert res.confidence_delta < 0
-    assert res.divergent_scenario == "ad_password_reset"
+    assert res.divergent_scenario == "grant_wlan"
 
 
 # -------------------------------------------------------------------
@@ -198,7 +198,7 @@ async def test_offline_host_execution_dispatches_field_engineer(monkeypatch):
     async def mock_unreachable(host, port, timeout=1.0):
         return False
 
-    monkeypatch.setattr("worker.src.scenarios.offline_host.check_tcp_port", mock_unreachable)
+    monkeypatch.setattr("core.scenarios.adapters.offline_host.check_tcp_port", mock_unreachable)
 
     res = await scenario.execute(task, policy)
     assert res.success is True

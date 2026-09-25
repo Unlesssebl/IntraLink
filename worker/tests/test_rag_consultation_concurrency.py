@@ -64,8 +64,8 @@ async def test_concurrent_tasks_solution_isolation(default_policy):
         return [0.2] * 1024
 
     with (
-        patch("worker.src.scenarios.rag_consultation.get_embedding_vector", side_effect=mock_embed),
-        patch("worker.src.scenarios.rag_consultation.search_hybrid_solutions", side_effect=mock_search),
+        patch("core.scenarios.adapters.rag_consultation.get_embedding_vector", side_effect=mock_embed),
+        patch("core.scenarios.adapters.rag_consultation.search_hybrid_solutions", side_effect=mock_search),
     ):
 
         # 1. Validate both tasks (preconditions)

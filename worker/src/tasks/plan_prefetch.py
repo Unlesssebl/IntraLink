@@ -1,22 +1,23 @@
-"""Background task pre-calculating AgentPlanDTO during ingestion for instant 0 ms UI read-through."""
+"""Background task pre-calculating AgentPlanDTO during ingestion for instant 0 ms UI read-through.
+
+Uses PlanSynthesizer (core.scenarios.engine) as the canonical synthesis engine,
+eliminating ~110 lines of duplicated plan assembly that formerly lived in this file.
+"""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import redis.asyncio as aioredis
 
-from core.autopilot.dto import AgentPlanDTO
-from core.autopilot.intent import detect_tense_tone
 from core.autopilot.policy_service import AutopilotPolicyService, get_policy_service
 from core.diagnostic.ports import FastSocketProbe
 from core.intraservice.client import IntraServiceClient
-from core.intraservice.dto import TaskDTO, TaskLifetimeEventDTO
-from core.intraservice.parser import PC_EXTRACT_REGEX
+from core.intraservice.dto import TaskDTO
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from core.redis_client import get_redis_client
+from core.scenarios.engine import PlanSynthesizer
+from core.scenarios.registry import ScenarioRegistry, get_default_scenario_registry
 from worker.src.broker import QUEUE_DEFAULT, broker
-from worker.src.scenarios.base import BaseScenario
-from worker.src.scenarios.registry import ScenarioRegistry, get_default_scenario_registry
-from worker.src.services.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 
 logger = logging.getLogger("worker.tasks.plan_prefetch")
 
@@ -96,6 +97,7 @@ async def prefetch_agent_plan_task(ticket_id: int) -> Dict[str, Any]:
     registry = _get_registry()
     policy_service = _get_policy_service()
 
+    # 1. Authenticate and fetch ticket
     try:
         auth: ServiceAuthCredentials = await service_auth.bootstrap_auth(
             client=client,
@@ -106,55 +108,9 @@ async def prefetch_agent_plan_task(ticket_id: int) -> Dict[str, Any]:
         logger.debug("Plan prefetch failed to fetch ticket #%d: %s", ticket_id, exc)
         return {"status": "failed", "ticket_id": ticket_id, "error": str(exc)}
 
-    # 1. Candidate hosts discovery & mood tagging
-    raw_text = f"{task.name} {task.description or ''}"
-    is_tense, tense_reason = detect_tense_tone(raw_text)
-    has_attachments = bool(task.attachments)
-
-    candidate_matches = PC_EXTRACT_REGEX.findall(raw_text)
-    cleaned_candidates = list(dict.fromkeys(c.strip().upper() for c in candidate_matches if len(c.strip()) >= 3))
-    if task.entities.pc_name and task.entities.pc_name.upper() not in cleaned_candidates:
-        cleaned_candidates.insert(0, task.entities.pc_name.upper())
-
-    # 2. Scenario routing
-    scenario: Optional[BaseScenario] = await registry.find_scenario(task)
-    scenario_key = scenario.scenario_key if scenario else "unmatched"
-    scenario_name = scenario.name if scenario else "Ручной разбор (сценарий не определен)"
-    description = scenario.description if scenario else "Заявка передана на ручную классификацию оператору"
-
-    # 3. Policy & circuit breaker
-    policy = await policy_service.get_policy(scenario_key)
-    is_circuit_broken = policy.is_circuit_broken
-    mode = policy.mode
-
-    # 4. Evaluation match and preconditions
-    confidence = 0.0
-    factor_breakdown: Dict[str, float] = {}
-    preconditions_dict: Dict[str, Any] = {"is_valid": False, "missing_facts": [], "environment_barriers": []}
-    suggested_comment = ""
-    target_status_id = 3
-
-    if scenario:
-        match_res = await scenario.evaluate_match(task)
-        confidence = match_res.confidence
-        factor_breakdown = {"confidence": confidence}
-        precond_res = await scenario.validate_preconditions(task)
-        preconditions_dict = precond_res.model_dump()
-
-        if scenario_key == "install_printer":
-            suggested_comment = f"Здравствуйте! Сетевой принтер настроен на вашем рабочем месте {task.entities.pc_name or ''}."
-        elif scenario_key == "grant_wlan":
-            suggested_comment = "Здравствуйте! Доступ к сети WLAN-WORKNET предоставлен для вашей учетной записи."
-        elif scenario_key == "service_redirect":
-            suggested_comment = "Заявка отменена, т. к. создана не в подходящем разделе каталога."
-            target_status_id = 30
-        elif scenario_key == "offline_host":
-            suggested_comment = f"Здравствуйте! Компьютер {task.entities.pc_name or ''} недоступен в корпоративной сети."
-            target_status_id = 6
-
-    # 5. Fast network diagnostic probe
+    # 2. Fast network diagnostic probe (worker-context: bare port check, no caching)
     host_diag_dto = None
-    target_host = task.entities.pc_name or (cleaned_candidates[0] if cleaned_candidates else None)
+    target_host = task.entities.pc_name
     if target_host:
         try:
             smb_ok = await FastSocketProbe.probe(target_host, 445, timeout=1.0)
@@ -167,13 +123,11 @@ async def prefetch_agent_plan_task(ticket_id: int) -> Dict[str, Any]:
         except Exception as exc:
             logger.debug("Diagnostics probe failed for %s: %s", target_host, exc)
 
-    # 6. Dialogue state
+    # 3. Dialogue state (lightweight: counts only, no full lifetime fetch)
     dialogue_state = None
     last_event_id = None
     try:
-        lifetimes: List[TaskLifetimeEventDTO] = await client.get_task_lifetime(
-            task_id=ticket_id, auth_b64=auth.auth_b64
-        )
+        lifetimes = await client.get_task_lifetime(task_id=ticket_id, auth_b64=auth.auth_b64)
         rounds = sum(1 for e in lifetimes if e.status_id == 6)
         last_event_id = lifetimes[-1].id if lifetimes else None
         dialogue_state = {
@@ -184,39 +138,19 @@ async def prefetch_agent_plan_task(ticket_id: int) -> Dict[str, Any]:
     except Exception:
         pass
 
-    plan = AgentPlanDTO(
-        task_id=task.id,
-        scenario_key=scenario_key,
-        scenario_name=scenario_name,
-        description=description,
-        confidence=confidence,
-        matched=scenario is not None and confidence >= policy.min_confidence,
-        factor_breakdown=factor_breakdown,
-        preconditions=preconditions_dict,
-        host_diagnostic=host_diag_dto,
-        extracted_entities=task.entities.model_dump(),
-        candidate_hosts=cleaned_candidates,
-        proposed_action=scenario_key,
-        proposed_params=task.entities.model_dump(),
-        suggested_comment=suggested_comment,
-        target_status_id=target_status_id,
+    # 4. Synthesize plan via PlanSynthesizer and cache
+    synthesizer = PlanSynthesizer(registry=registry, policy_service=policy_service)
+    plan = await synthesizer.synthesize_and_cache(
+        task,
+        redis_conn,
+        host_diag=host_diag_dto,
         dialogue_state=dialogue_state,
-        command_id=None,
         last_event_id=last_event_id,
-        is_circuit_broken=is_circuit_broken,
-        mode=mode,
-        is_tense=is_tense,
-        tense_reason=tense_reason,
-        has_attachments=has_attachments,
     )
 
-    # Cache in Redis with 300s TTL (True 0 ms Delivery for UI)
-    if redis_conn is not None:
-        try:
-            cache_key = f"cache:autopilot:plan:{ticket_id}"
-            await redis_conn.set(cache_key, plan.model_dump_json(), ex=300)
-            logger.info("Prefetched and cached agent plan for ticket #%d in Redis (TTL 300s)", ticket_id)
-        except Exception as exc:
-            logger.debug("Failed to cache prefetched plan in Redis: %s", exc)
-
-    return {"status": "prefetched", "ticket_id": ticket_id, "scenario": scenario_key}
+    logger.info(
+        "Prefetched and cached agent plan for ticket #%d in Redis (TTL 300s, scenario: %s)",
+        ticket_id,
+        plan.scenario_key,
+    )
+    return {"status": "prefetched", "ticket_id": ticket_id, "scenario": plan.scenario_key}

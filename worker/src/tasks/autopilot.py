@@ -36,11 +36,11 @@ from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO, TaskLifetimeEventDTO
 from core.redis_client import get_redis_client
 from worker.src.broker import QUEUE_DEFAULT, broker
-from worker.src.scenarios.base import BaseScenario
-from worker.src.scenarios.registry import ScenarioRegistry, get_default_scenario_registry
-from worker.src.services.anti_loop import AntiLoopGuard
-from worker.src.services.auth import ServiceAuthBootstrap, ServiceAuthCredentials
-from worker.src.services.intent_analyzer import UserReplyIntent, UserReplyIntentAnalyzer
+from core.scenarios.base import BaseScenario
+from core.scenarios.orchestrator import ScenarioLifecycleOrchestrator
+from core.scenarios.registry import ScenarioRegistry, get_default_scenario_registry
+from core.autopilot.dialogue import AntiLoopGuard, UserReplyIntent, UserReplyIntentAnalyzer
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 
 logger = logging.getLogger("worker.tasks.autopilot")
 
@@ -483,38 +483,24 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
             return {"status": "escalated_low_confidence", "task_id": task.id, "scenario": scenario.scenario_key}
 
         # -------------------------------------------------------------
-        # 9. Scenario Execution
+        # 9. Scenario Execution & Lifecycle Orchestration
         # -------------------------------------------------------------
-        exec_result = await scenario.execute(task, policy)
+        orchestrator = ScenarioLifecycleOrchestrator(
+            client=client,
+            redis_conn=redis_conn,
+            policy_service=policy_service,
+        )
+        exec_result = await orchestrator.execute_and_audit(
+            scenario=scenario,
+            task=task,
+            policy=policy,
+            auth_b64=auth.auth_b64,
+            initiator="autopilot",
+            update_circuit_breaker=True,
+        )
 
         if exec_result.success:
             logger.info("Scenario '%s' succeeded for ticket #%d. Closing ticket with status %d.", scenario.scenario_key, task.id, exec_result.target_status_id)
-
-            # Step 9.1: Direct transition to target status with public resolution comment
-            await client.update_task(
-                task_id=task.id,
-                status_id=exec_result.target_status_id,
-                comment=exec_result.resolution_comment,
-                is_private=False,
-                auth_b64=auth.auth_b64,
-            )
-            # Step 9.2: Post hidden internal technical audit note
-            await client.update_task(
-                task_id=task.id,
-                comment=exec_result.technical_note,
-                is_private=True,
-                auth_b64=auth.auth_b64,
-            )
-            # Step 9.3: Reset Circuit Breaker failures counter
-            await policy_service.record_success(scenario.scenario_key)
-
-            # Step 9.4: Invalidate plan cache in Redis
-            if redis_conn is not None:
-                try:
-                    await redis_conn.delete(f"cache:autopilot:plan:{task.id}")
-                except Exception:
-                    pass
-
             return {
                 "status": "resolved",
                 "task_id": task.id,
@@ -522,37 +508,12 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
                 "target_status_id": exec_result.target_status_id,
             }
 
-        # -------------------------------------------------------------
-        # 10. Execution Failure & Circuit Breaker Tripwire
-        # -------------------------------------------------------------
-        logger.error("Scenario '%s' failed for ticket #%d: %s", scenario.scenario_key, task.id, exec_result.error)
-        updated_policy = await policy_service.record_failure(scenario.scenario_key, error=exec_result.error)
-
-        trip_alert = (
-            "\n🚨 ПРЕДОХРАНИТЕЛЬ (Circuit Breaker): СРАБОТАЛ! Режим сценария понижен до ASSISTED."
-            if updated_policy.is_circuit_broken
-            else f"\nПоследовательных сбоев: {updated_policy.consecutive_failures}/3"
-        )
-
-        await client.update_task(
-            task_id=task.id,
-            status_id=2,  # Escalated to human in progress
-            comment=(
-                f"⚠️ [Автопилот: Сбой исполнения сценария '{scenario.name}']\n"
-                f"Ошибка: {exec_result.error}"
-                f"{trip_alert}\n"
-                "Заявка передана на ручное исполнение инженеру 1-й линии."
-            ),
-            is_private=True,
-            auth_b64=auth.auth_b64,
-        )
-
         return {
             "status": "failed",
             "task_id": task.id,
             "scenario": scenario.scenario_key,
             "error": exec_result.error,
-            "circuit_broken": updated_policy.is_circuit_broken,
+            "circuit_broken": exec_result.metadata.get("circuit_broken", False),
         }
     finally:
         if redis_conn is not None and lock_acquired:

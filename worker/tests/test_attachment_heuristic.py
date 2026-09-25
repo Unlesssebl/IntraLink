@@ -10,7 +10,7 @@ from core.autopilot.policy_service import AutopilotPolicyService
 from core.database.base import Base
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
-from worker.src.services.auth import ServiceAuthBootstrap, ServiceAuthCredentials
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from worker.src.tasks.autopilot import (
     autopilot_task,
     set_autopilot_client,

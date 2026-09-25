@@ -9,10 +9,10 @@ import redis.asyncio as aioredis
 
 from api.src.core.config import settings
 from core.diagnostic import fast_ping, probe_diagnostic_ports, probe_tcp_port, resolve_dns_fast
+from core.diagnostic.service import HostDiagnosticDTO, HostDiagnosticsService
 from core.intraservice import IntraServiceClient
 
 from .schemas import (
-    HostDiagnosticDTO,
     PortProbeResponse,
     TicketDiagnosticDTO,
 )
@@ -21,7 +21,7 @@ logger = logging.getLogger("api.features.diagnostics")
 DIAG_CACHE_TTL = 600  # 10 minutes
 
 
-class DiagnosticsService:
+class DiagnosticsService(HostDiagnosticsService):
     """Service providing fast host reachability checks and port diagnostics."""
 
     def __init__(self, intraservice_client: Optional[IntraServiceClient] = None) -> None:
