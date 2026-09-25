@@ -257,6 +257,7 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
                 <AgentPlanCard
                   ticketId={ticket.id}
                   currentStatusId={ticket.status_id}
+                  attachments={ticket.attachments}
                   onExecutionStarted={(cmdId) => setActiveCommandId(cmdId)}
                   onClose={onClose}
                 />

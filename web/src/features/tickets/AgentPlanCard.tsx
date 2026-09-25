@@ -13,10 +13,14 @@ import {
   Send,
   Zap,
   Paperclip,
+  FileText,
+  Download,
+  Eye,
 } from "lucide-react";
-import { Button, Badge, KbdBadge, useToast } from "@/shared/ui";
+import { Button, Badge, KbdBadge, Lightbox, useToast } from "@/shared/ui";
 import { HostBadge } from "@/features/diagnostics/HostBadge";
-import { useAgentPlan } from "./queries";
+import { TicketAttachment, ticketsApi } from "@/shared/api";
+import { useAgentPlan, useTicketDetail } from "./queries";
 import { autopilotApi } from "@/features/autopilot/api";
 import { AgentPlan, ApprovePlanRequest, CorrectPlanRequest } from "@/features/autopilot/types";
 import { useQueryClient } from "@tanstack/react-query";
@@ -25,6 +29,7 @@ import { ticketKeys } from "./queries";
 export interface AgentPlanCardProps {
   ticketId: number;
   currentStatusId: number;
+  attachments?: TicketAttachment[];
   onExecutionStarted: (commandId: string) => void;
   onClose?: () => void;
 }
@@ -53,12 +58,49 @@ const CORRECTION_TAGS = [
 export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
   ticketId,
   currentStatusId,
+  attachments,
   onExecutionStarted,
   onClose,
 }) => {
   const queryClient = useQueryClient();
   const toast = useToast();
   const { data: plan, isLoading, error, refetch } = useAgentPlan(ticketId);
+  const { data: ticketDetail } = useTicketDetail(ticketId);
+
+  const effectiveAttachments: TicketAttachment[] = attachments ?? ticketDetail?.attachments ?? [];
+
+  // Lightbox preview for images
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [lightboxAlt, setLightboxAlt] = useState<string>("");
+
+  const isImageAttachment = (filename: string) => {
+    const ext = filename.split(".").pop()?.toLowerCase() || "";
+    return ["png", "jpg", "jpeg", "gif", "bmp", "webp"].includes(ext);
+  };
+
+  const isPdfAttachment = (filename: string) => {
+    const ext = filename.split(".").pop()?.toLowerCase() || "";
+    return ext === "pdf";
+  };
+
+  const formatFileSize = (bytes?: number) => {
+    if (!bytes) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const handleAttachmentClick = (att: TicketAttachment) => {
+    const attId = att.id || att.Id;
+    const url = ticketsApi.getAttachmentUrl(ticketId, attId);
+    const name = att.name || att.Name || "Вложение заявки";
+    if (isImageAttachment(name)) {
+      setLightboxSrc(url);
+      setLightboxAlt(name);
+    } else {
+      window.open(url, "_blank");
+    }
+  };
 
   // Form states
   const [scenarioKey, setScenarioKey] = useState<string>("");
@@ -355,6 +397,91 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
         )}
       </div>
 
+      {/* Attachment Viewer: direct preview of attached scans, photos and documents in supervisor console */}
+      {effectiveAttachments.length > 0 && (
+        <div className="p-2.5 bg-[#121418] border border-neutral-800/90 rounded text-xs space-y-2">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="text-neutral-300 font-semibold flex items-center gap-1.5 uppercase tracking-wider">
+              <Paperclip className="w-3.5 h-3.5 text-blue-400" />
+              Прикрепленные файлы ({effectiveAttachments.length})
+            </span>
+            <span className="text-[10px] text-neutral-500 font-normal">
+              Кликните для просмотра в Lightbox или скачивания
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {effectiveAttachments.map((att) => {
+              const attId = att.id || att.Id;
+              const name = att.name || att.Name || "Файл";
+              const isImg = isImageAttachment(name);
+              const isPdf = isPdfAttachment(name);
+              const downloadUrl = ticketsApi.getAttachmentUrl(ticketId, attId);
+
+              return (
+                <div
+                  key={attId}
+                  className="group relative p-2 bg-[#181a20] border border-neutral-800 hover:border-neutral-600 rounded transition-all flex items-center gap-2"
+                >
+                  <div
+                    onClick={() => handleAttachmentClick(att)}
+                    className="w-10 h-10 rounded bg-[#101216] flex items-center justify-center shrink-0 overflow-hidden border border-neutral-800 cursor-pointer relative"
+                    title={isImg ? "Нажмите для увеличения (Lightbox)" : "Открыть документ"}
+                  >
+                    {isImg ? (
+                      <>
+                        <img
+                          src={downloadUrl}
+                          alt={name}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                          onError={(e) => {
+                            (e.target as HTMLElement).style.display = "none";
+                          }}
+                        />
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                          <Eye className="w-3.5 h-3.5 text-white" />
+                        </div>
+                      </>
+                    ) : isPdf ? (
+                      <span className="text-[10px] font-bold text-rose-400 tracking-tighter">
+                        PDF
+                      </span>
+                    ) : (
+                      <FileText className="w-4 h-4 text-neutral-400" />
+                    )}
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <div
+                      onClick={() => handleAttachmentClick(att)}
+                      className="text-xs text-neutral-200 truncate group-hover:text-white font-medium cursor-pointer"
+                      title={name}
+                    >
+                      {name}
+                    </div>
+                    <div className="text-[10px] text-neutral-500 flex items-center gap-2">
+                      <span>{isImg ? "Изображение" : isPdf ? "PDF документ" : "Документ"}</span>
+                      {att.size && <span>• {formatFileSize(att.size)}</span>}
+                    </div>
+                  </div>
+
+                  <a
+                    href={downloadUrl}
+                    download={name}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-1 text-neutral-400 hover:text-white hover:bg-neutral-800 rounded transition-colors shrink-0"
+                    title="Скачать файл"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Editable Scenario & Parameters Form */}
       <div className="space-y-2.5 pt-1">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
@@ -534,6 +661,14 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
           )}
         </div>
       </div>
+
+      {/* Lightbox Modal for previewing images without leaving supervisor console */}
+      <Lightbox
+        src={lightboxSrc}
+        alt={lightboxAlt}
+        isOpen={Boolean(lightboxSrc)}
+        onClose={() => setLightboxSrc(null)}
+      />
     </div>
   );
 };

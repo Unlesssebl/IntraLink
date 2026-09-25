@@ -28,7 +28,7 @@ from core.autopilot.dto import AutopilotPolicyDTO
 from core.autopilot.policy_service import AutopilotPolicyService
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
-from core.scenarios.base import BaseScenario, ScenarioExecutionResult
+from core.scenarios.base import BaseScenario, ExecutionAbortedException, ScenarioExecutionResult
 from core.scenarios.engine import PlanSynthesizer
 
 logger = logging.getLogger("core.scenarios.orchestrator")
@@ -109,8 +109,27 @@ class ScenarioLifecycleOrchestrator:
         Returns:
             ScenarioExecutionResult with success/failure details.
         """
+        # Step 0: Cooperative Interruption (Reclaim) check
+        if self._redis is not None:
+            abort_key = f"autopilot:abort:{task.id}"
+            try:
+                if await self._redis.exists(abort_key):
+                    logger.info(
+                        "Orchestrator: execution cooperatively aborted for ticket #%d (abort flag active)",
+                        task.id,
+                    )
+                    raise ExecutionAbortedException(
+                        f"Execution aborted for ticket #{task.id}: reclaimed by operator"
+                    )
+            except ExecutionAbortedException:
+                raise
+            except Exception as exc:
+                logger.debug("Redis abort check error in orchestrator for ticket #%d: %s", task.id, exc)
+
         try:
             exec_result: ScenarioExecutionResult = await scenario.execute(task, policy)
+        except ExecutionAbortedException:
+            raise
         except Exception as exc:
             logger.exception(
                 "Scenario '%s' raised an unexpected exception for ticket #%d: %s",

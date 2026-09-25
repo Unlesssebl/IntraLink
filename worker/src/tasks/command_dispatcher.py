@@ -24,7 +24,7 @@ from core.database.session import get_engine, get_session_factory
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
 from core.redis_client import get_redis_client
-from core.scenarios.base import BaseScenario
+from core.scenarios.base import BaseScenario, ExecutionAbortedException
 from core.scenarios.orchestrator import ScenarioLifecycleOrchestrator
 from core.scenarios.registry import ScenarioRegistry, get_default_scenario_registry
 from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
@@ -292,6 +292,21 @@ async def _execute_scenario_for_ticket(
             )
             raise RuntimeError(err_msg)
 
+        # 4.3. Pre-Execution Optimistic Lock (human engineer preemption)
+        executor_ids = task.get_executor_ids()
+        if auth.bot_user_id is not None and executor_ids and auth.bot_user_id not in executor_ids:
+            logger.info(
+                "Ticket #%d is reassigned to human engineer(s): %s. Skipping command.",
+                ticket_id,
+                executor_ids,
+            )
+            return {
+                "status": "skipped",
+                "reason": "assigned_to_human",
+                "ticket_id": ticket_id,
+                "executor_ids": task.executor_ids,
+            }
+
         # 5. Hydrate task entities with operator-provided parameters from CommandRecord
         cmd_params = cmd.params_json or {}
         for k, v in cmd_params.items():
@@ -307,15 +322,24 @@ async def _execute_scenario_for_ticket(
             redis_conn=redis_conn,
             policy_service=policy_service,
         )
-        exec_result = await orchestrator.execute_and_audit(
-            scenario=scenario,
-            task=task,
-            policy=policy,
-            auth_b64=auth.auth_b64,
-            initiator=cmd.initiator or "operator",
-            override_comment=cmd_params.get("override_comment"),
-            update_circuit_breaker=False,
-        )
+        try:
+            exec_result = await orchestrator.execute_and_audit(
+                scenario=scenario,
+                task=task,
+                policy=policy,
+                auth_b64=auth.auth_b64,
+                initiator=cmd.initiator or "operator",
+                override_comment=cmd_params.get("override_comment"),
+                update_circuit_breaker=False,
+            )
+        except ExecutionAbortedException as exc:
+            logger.info("Command aborted for ticket #%d: %s", ticket_id, exc)
+            return {
+                "status": "aborted",
+                "reason": "reclaimed_by_operator",
+                "ticket_id": ticket_id,
+                "error": str(exc),
+            }
 
         if not exec_result.success:
             err_msg = exec_result.error or f"Scenario '{scenario.scenario_key}' execution failed."

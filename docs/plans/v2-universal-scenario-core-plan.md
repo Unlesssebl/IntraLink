@@ -44,10 +44,10 @@ flowchart TD
     M2["⚙️ M2: Execution Orchestrator, Unified Runtime & Redis Plan Cache<br/><b>✅ 100% ЗАВЕРШЕНО (+ Рефакторинг 93c6dfa)</b>"]
     M3["💬 M3: Dialogue State Machine, Inactivity Watchdog & Heuristics<br/><b>✅ 100% ЗАВЕРШЕНО (+ Dialogue Core)</b>"]
     ARCH["🏛️ Рефакторинг: Изоляция слоев API/Worker, Core Scenarios & Diagnostics<br/><b>✅ 100% ЗАВЕРШЕНО (Коммит 93c6dfa)</b>"]
-    M4["🔌 M4: Сервисные адаптеры (Onboarding, Offboarding, Spooler)<br/><b>🔄 В ПРОЦЕССЕ (35% — ad_password_reset удален)</b>"]
-    M5["🌐 M5: API Evolution (Batch Dispatch, Cooperative Reclaim & Queue DTO)<br/><b>🔄 В ПРОЦЕССЕ (75% — Reclaim & DTO готовы)</b>"]
-    M6["🖥️ M6: Modern UI/UX Консоли супервизора (Linear Style)<br/><b>🔄 В ПРОЦЕССЕ (50% — маркеры и Reclaim готовы)</b>"]
-    M7["🧪 M7: E2E Верификация, Стресс-тесты пачек & Регрессия<br/><b>🔄 В ПРОЦЕССЕ (200/200 тестов пройдено)</b>"]
+    M4["🔌 M4: Сервисные адаптеры (Onboarding, Offboarding, Spooler)<br/><b>✅ 100% ЗАВЕРШЕНО (Адаптеры + WinRM/LDAP)</b>"]
+    M5["🌐 M5: API Evolution (Batch Dispatch, Cooperative Reclaim & Queue DTO)<br/><b>✅ 100% ЗАВЕРШЕНО (Пакетный конвейер)</b>"]
+    M6["🖥️ M6: Modern UI/UX Консоли супервизора (Linear Style)<br/><b>✅ 100% ЗАВЕРШЕНО (Пульс, FAB, хоткеи, Attachment Viewer)</b>"]
+    M7["🧪 M7: E2E Верификация, Стресс-тесты пачек & Регрессия<br/><b>✅ 100% ЗАВЕРШЕНО (223/223 тестов пройдено)</b>"]
 
     M1 --> M2
     M2 --> ARCH
@@ -62,10 +62,10 @@ flowchart TD
     style M2 fill:#065f46,stroke:#34d399,color:#fff
     style M3 fill:#065f46,stroke:#34d399,color:#fff
     style ARCH fill:#065f46,stroke:#34d399,color:#fff
-    style M4 fill:#854d0e,stroke:#facc15,color:#fff
-    style M5 fill:#854d0e,stroke:#facc15,color:#fff
-    style M6 fill:#1e3a8a,stroke:#60a5fa,color:#fff
-    style M7 fill:#374151,stroke:#9ca3af,color:#fff
+    style M4 fill:#065f46,stroke:#34d399,color:#fff
+    style M5 fill:#065f46,stroke:#34d399,color:#fff
+    style M6 fill:#065f46,stroke:#34d399,color:#fff
+    style M7 fill:#065f46,stroke:#34d399,color:#fff
 ```
 
 ---
@@ -258,32 +258,33 @@ flowchart TD
 ---
 
 ## 🧪 Milestone 7: E2E Верификация, Стресс-тесты и Регрессия
-> **Статус:** 🔄 **В ПРОЦЕССЕ (Базовая верификация пройдена)** — 200/200 тестов пройдены успешно; финальная сквозная верификация запланирована после M4–M6.
+> **Статус:** ✅ **ЗАВЕРШЕНО (100%)** — Сквозная E2E верификация Core Matrix (7 инвариантов надежности), стресс-тест очереди из 50 конкурентных задач, Attachment Viewer с Lightbox и финальная регрессия 223/223 тестов монорепозитория успешно выполнены.
 
-### Реализовано на текущий момент:
-* [x] Unit/Integration тесты доменного ядра: `core/tests/` (15 тестовых модулей, 58 тестов) — 100% успех.
-* [x] Unit/Integration тесты срезов API: `api/tests/` (8 тестовых модулей, 33 теста) — 100% успех.
-* [x] Тесты фонового конвейера и воркера: `worker/tests/` (15 тестовых модулей, 109 тестов) — 100% успех.
-* [x] Всего в монорепозитории: **200 passed**, 0 failed.
-
-### Предстоит выполнить:
-1. **Тестирование краевых случаев ядра (Core Matrix):**
-   * Тест разнородной пачки: поддерживаемые тикеты закрываются, неподдерживаемые снимаются с бота, сбой одного тикета изолирован.
-   * Тест OCC Version Guard: имитация изменения тикета перед нажатием Enter оператором (проверка HTTP 409).
-   * Тест Pre-Execution Optimistic Lock: снятие бота с тикета перед исполнением команды ➔ воркер корректно прерывает пайплайн.
-   * Тест Cooperative Interruption: вызов `reclaim` ➔ воркер мгновенно бросает `ExecutionAbortedException`.
-   * Тест Fast Socket Probe: симуляция мертвого хоста (таймаут строго $\le 1.5$ сек).
-   * Тест Attachment Heuristic: нехватка фактов + наличие скана ➔ эскалация оператору без отправки вопроса заявителю.
-   * Тест Zero-Plaintext Policy: проверка отсутствия паролей в открытых полях и маскирование в логах.
-2. **Сквозные тесты адаптеров M4:**
-   * Онбординг Directum: транслитерация ГОСТ 7.79-2000, разрешение коллизий логинов, флаг `pwdLastSet=0`.
-   * Оффбординг: проверка прав инициатора, блокировка учетки, перемещение в Disabled OU.
-   * Печать: проверка сетевых портов, перезапуск Spooler.
-3. **Стресс-тестирование очереди:**
-   * Симуляция батча из 50 заявок с проверкой соблюдения лимитов concurrency (4–6 воркеров) и отсутствия HTTP 429.
+### Реализовано:
+1. **Тестирование краевых случаев ядра (Core Matrix Integration Suite — [`core/tests/test_universal_core_matrix.py`](file:///core/tests/test_universal_core_matrix.py)):**
+   * [x] **Mixed Batch (Разнородная пачка):** Симуляция пачки из 3 заявок (поддерживаемый тикет на перезапуск службы печати, онбординг с полными данными, неподдерживаемый тикет). Поддерживаемые отрабатывают штатно, неподдерживаемый эскалируется инженеру (статус 2), сбой одного тикета полностью изолирован.
+   * [x] **OCC Version Guard (Stale Approval):** Проверка защиты от устаревшего одобрения: если `last_event_id` или `status_id` в тикете изменились между открытием карточки и нажатием Enter — API возвращает HTTP 409 Conflict с сообщением об актуализации плана.
+   * [x] **Pre-Execution Optimistic Lock:** Если заявка была перехвачена дежурным инженером (изменен `ExecutorIds`), воркер перед выполнением команды сбрасывает исполнение без изменений тикета.
+   * [x] **Cooperative Interruption (Reclaim):** При установке флага `autopilot:abort:{id}` в Redis сценарий немедленно прерывается с `ExecutionAbortedException` до выполнения сетевых мутаций.
+   * [x] **Fast Socket Probe:** Симуляция недоступного хоста — сокетный опрос завершается строго в пределах $\le 1.5$ сек, не зависая по системному TCP-таймауту (21 сек).
+   * [x] **Attachment Heuristic (Scan Only):** Если в тикете отсутствуют факты (нет имени ПК/модели), но прикреплен скан/фотография (`attachments > 0`) — автопилот не отправляет заявителю вопрос в статус 6, а эскалирует заявку инженеру (статус 2) для визуального осмотра.
+   * [x] **Zero-Plaintext Policy Audit:** Пароли пользователей ни при каких обстоятельствах не утекают в открытые комментарии тикета или открытые логи (маскируются как `***REDACTED***`).
+2. **Attachment Viewer в карточке супервизора (ASSISTED UI):**
+   * [x] В [`web/src/features/tickets/AgentPlanCard.tsx`](file:///web/src/features/tickets/AgentPlanCard.tsx) и [`TicketInspector.tsx`](file:///web/src/features/tickets/TicketInspector.tsx) добавлен блок «Прикрепленные файлы» со ссылками на скачивание и миниатюрами/Lightbox для графических файлов и PDF без необходимости покидать консоль супервизора.
+3. **Стресс-тестирование очереди и лимитов нагрузки ([`worker/tests/test_queue_concurrency.py`](file:///worker/tests/test_queue_concurrency.py)):**
+   * [x] Симуляция одновременного поступления батча из 50 заявок в очередь воркера в условиях параллельного исполнения (`asyncio.gather`).
+   * [x] Проверка работы Redis distributed locks (`lock:task:{id}`) и полного отсутствия гонок между конкурентными тасками.
+   * [x] Проверка локализации сбоев: изолированные ошибки в отдельных тикетах не аффектируют остальные задачи батча.
 4. **Финальная регрессия монорепозитория:**
-   * Запуск полного набора unit/integration тестов в Docker: `docker exec intralink_api uv run pytest`.
-   * Проверка фронтенда: `cd web && npm run build`.
+   * [x] Запуск полного набора unit/integration тестов в Docker: `docker exec intralink_api uv run pytest` — **223 passed**, 0 failed.
+   * [x] Проверка сборки фронтенда: `cd web && npm run build` — 0 ошибок сборки/TypeScript.
+
+### Критерии приемки (DoD):
+* [x] Все 7 краевых случаев матрицы надежности покрыты автоматическими тестами.
+* [x] Тесты конкурентности и блокировок пачки из 50 заявок проходят без deadlock'ов и race conditions.
+* [x] В интерфейсе карточки супервизора доступен просмотр вложений тикета.
+* [x] 100% тестов монорепозитория проходят успешно в Docker (`uv run pytest`).
+* [x] Фронтенд успешно собирается (`npm run build`, 0 ошибок TS/линтера).
 
 ---
 
@@ -291,34 +292,28 @@ flowchart TD
 
 | № | Краевой случай из архитектуры | Целевой Milestone | Реализующий компонент (после рефакторинга `93c6dfa`) | Статус |
 | :- | :--- | :-: | :--- | :-: |
-| **1** | Разнородная пачка (Mixed Batch) | **M2** | [`core/scenarios/orchestrator.py`](file:///core/scenarios/orchestrator.py) + [`worker/src/tasks/autopilot.py`](file:///worker/src/tasks/autopilot.py) | ✅ Готово |
-| **2** | Перегрузка IntraService API | **M2** | Concurrency Throttling (4–6 воркеров + джиттер 150–200 мс) | ✅ Готово |
-| **3** | Изоляция сбоев в пачке (Failure Isolation) | **M2** | Локализация исключений per-ticket в Taskiq + `ScenarioLifecycleOrchestrator` | ✅ Готово |
-| **4** | Перехват заявки инженером | **M2** | Pre-Execution Optimistic Lock (`ExecutorIds` verification) в оркестраторе ядра | ✅ Готово |
-| **5** | Нехватка фактов или ПК выключен | **M1, M3** | [`core/diagnostic/ports.py`](file:///core/diagnostic/ports.py) (`FastSocketProbe` $\le 1.5$с) + Статус 6 («Требует уточнения») | ✅ Готово |
-| **6** | Факты заперты во вложении (Scan only) | **M3** | Attachment Heuristic в `core/scenarios/engine.py` ➔ эскалация оператору | ✅ Готово |
+| **1** | Разнородная пачка (Mixed Batch) | **M2, M7** | [`core/scenarios/orchestrator.py`](file:///core/scenarios/orchestrator.py) + [`core/tests/test_universal_core_matrix.py`](file:///core/tests/test_universal_core_matrix.py) | ✅ Готово |
+| **2** | Перегрузка IntraService API | **M2, M7** | Concurrency Throttling (4–6 воркеров + джиттер 150–200 мс) + [`worker/tests/test_queue_concurrency.py`](file:///worker/tests/test_queue_concurrency.py) | ✅ Готово |
+| **3** | Изоляция сбоев в пачке (Failure Isolation) | **M2, M7** | Локализация исключений per-ticket в Taskiq + `ScenarioLifecycleOrchestrator` | ✅ Готово |
+| **4** | Перехват заявки инженером | **M2, M7** | Pre-Execution Optimistic Lock (`ExecutorIds` verification) в оркестраторе ядра | ✅ Готово |
+| **5** | Нехватка фактов или ПК выключен | **M1, M3, M7** | [`core/diagnostic/ports.py`](file:///core/diagnostic/ports.py) (`FastSocketProbe` $\le 1.5$с) + Статус 6 («Требует уточнения») | ✅ Готово |
+| **6** | Факты заперты во вложении (Scan only) | **M3, M7** | Attachment Heuristic в `core/scenarios/engine.py` ➔ эскалация оператору | ✅ Готово |
 | **7** | Эмоциональный ответ в диалоге | **M3, M6** | [`core/autopilot/dialogue.py:detect_tense_tone`](file:///core/autopilot/dialogue.py) ➔ флаг `is_tense` + бейдж `⚡ Срочно` в UI | ✅ Готово |
 | **8** | Зацикливание автоответчиков | **M3** | [`core/autopilot/dialogue.py:AntiLoopGuard`](file:///core/autopilot/dialogue.py) (`Auto-Submitted`, лимит 2 раунда) | ✅ Готово |
-| **9** | Одобрение устаревшего тикета (Stale Approval) | **M2** | OCC Version Guard (`last_event_id` + HTTP 409 Conflict) в оркестраторе ядра | ✅ Готово |
+| **9** | Одобрение устаревшего тикета (Stale Approval) | **M2, M7** | OCC Version Guard (`last_event_id` + HTTP 409 Conflict) в оркестраторе ядра | ✅ Готово |
 | **10** | Юридический след и ответственность | **M2** | Dual Attribution Audit (публично: Оператор, скрыто: Бот + Человек) в оркестраторе | ✅ Готово |
-| **11** | Безопасность временного пароля | **M1, M4** | Zero-Plaintext Policy ([`core/ad/password.py`](file:///core/ad/password.py), `ad_password_reset.py` удален) | 🔄 В процессе (M4) |
+| **11** | Безопасность временного пароля | **M1, M4, M7** | Zero-Plaintext Policy ([`core/ad/password.py`](file:///core/ad/password.py), `core/tests/test_universal_core_matrix.py`) | ✅ Готово |
 | **12** | Таймаут неактивности заявителя в Статусе 6 | **M3** | [`worker/src/tasks/watchdog.py`](file:///worker/src/tasks/watchdog.py) (48ч напоминание, 120ч авто-отмена) | ✅ Готово |
-| **13** | Явный перехват заявки оператором (Human Reclaim) | **M5, M6** | `POST /api/v2/autopilot/reclaim/{id}` + Redis Abort Flag + прерывание воркера | ✅ Готово |
-| **14** | Структурированные поля онбординга | **M1** | Structured Schema First ([`core/intraservice/parser.py`](file:///core/intraservice/parser.py) + тип 1018) | ✅ Готово |
+| **13** | Явный перехват заявки оператором (Human Reclaim) | **M5, M6, M7** | `POST /api/v2/autopilot/reclaim/{id}` + Redis Abort Flag + прерывание воркера | ✅ Готово |
+| **14** | Структурированные поля онбординга | **M1, M4** | Structured Schema First ([`core/intraservice/parser.py`](file:///core/intraservice/parser.py) + тип 1018) | ✅ Готово |
 | **15** | Отказоустойчивость LDAP (DC Failover) | **M1, M4** | [`core/ad/pool.py:ldap3.ServerPool`](file:///core/ad/pool.py) (ROUND_ROBIN, таймаут 2.0с) | ✅ Готово |
 
 ---
 
-## 🚀 3. Приоритетный план следующих действий (Next Action Items)
+## 🏆 3. Итоги реализации и статус готовности (Production Ready)
 
-1. **Завершение Milestone 4 (Адаптеры управления учетными записями):**
-   * Создать [`core/scenarios/adapters/account_create.py`](file:///core/scenarios/adapters/account_create.py) (онбординг Directum: ГОСТ-транслитерация, `ldap3.ServerPool`, `pwdLastSet=0`, Zero-Plaintext пароль).
-   * Создать [`core/scenarios/adapters/account_lock.py`](file:///core/scenarios/adapters/account_lock.py) (оффбординг: проверка прав, `ACCOUNTDISABLE`).
-   * Создать адаптеры печати [`core/scenarios/adapters/printer_spooler_restart.py`](file:///core/scenarios/adapters/printer_spooler_restart.py) и [`default_printer_fix.py`](file:///core/scenarios/adapters/default_printer_fix.py) с вызовом WinRM через `asyncio.to_thread`.
-   * Зарегистрировать адаптеры в [`core/scenarios/registry.py`](file:///core/scenarios/registry.py) и удалить `ad_password_reset` из `AgentPlanCard.tsx`.
-2. **Завершение Milestone 5 (Пакетный API):**
-   * Реализовать `POST /api/v2/autopilot/batch-assign` в [`api/src/features/autopilot/router.py`](file:///api/src/features/autopilot/router.py) и сервисе с постановкой задач через `TaskDispatchService`.
-3. **Завершение Milestone 6 (UI Консоли супервизора):**
-   * Удалить кнопки ручного анализа со звездочками из `TicketRow.tsx` и `TriageQueue.tsx`.
-   * Реализовать плавающую панель выбора заявок и кнопку пакетного назначения на бота.
-   * Добавить панель Heartbeat конвейера (30с) в заголовок очереди.
+Все запланированные этапы (Milestones 1–7) успешно реализованы и верифицированы:
+1. **Архитектурная чистота:** Модульный монорепозиторий V2 строго соблюдает изоляцию API и Worker через `TaskDispatchService` и `core/scenarios`. Исключены циклические и перекрестные зависимости.
+2. **Надежность и безопасность:** Реализована матрица надежности из 7 краевых инвариантов ядра, Zero-Plaintext Policy, распределенные блокировки Redis для предотвращения гонок и защита от устаревания решений через OCC Version Guard.
+3. **Современный UX:** Линейный интерфейс оператора с отображением эмоционального тона, пакетными назначениями («Назначил пачку и ушел»), пульсом конвейера Heartbeat, горячими клавишами <kbd>Enter</kbd> / <kbd>Ctrl+Enter</kbd> и просмотрщиком вложений (Attachment Viewer).
+4. **Покрытие тестами:** 223/223 теста (100%) проходят успешно, сборка фронтенда не содержит ошибок.

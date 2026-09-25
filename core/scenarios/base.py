@@ -10,6 +10,12 @@ from core.intraservice.dto import TaskDTO
 from core.intraservice.service_definition import ServiceDefinition
 
 
+class ExecutionAbortedException(Exception):
+    """Raised when scenario execution is cooperatively aborted (e.g. human reclaim flag active)."""
+
+    pass
+
+
 class PreconditionResult(BaseModel):
     """Result of validating scenario prerequisites (data completeness and environment readiness)."""
 
