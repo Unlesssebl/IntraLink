@@ -23,8 +23,8 @@ from .schemas import (
     AutopilotStatsResponse,
     BatchAssignRequest,
     BatchAssignResponse,
-    CorrectPlanRequest,
     CorrectionsListResponse,
+    CorrectPlanRequest,
     UpdateAutopilotPolicyRequest,
 )
 from .service import AutopilotService
@@ -34,9 +34,10 @@ logger = logging.getLogger("api.features.autopilot")
 router = APIRouter(prefix="/autopilot", tags=["Autopilot Governance"])
 
 
-def get_policy_service_dep() -> AutopilotPolicyService:
+def get_policy_service_dep(
+    redis: aioredis.Redis = Depends(get_redis),
+) -> AutopilotPolicyService:
     """Dependency provider for AutopilotPolicyService."""
-    redis = get_redis()
     return AutopilotPolicyService(redis_client=redis)
 
 

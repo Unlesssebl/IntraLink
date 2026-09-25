@@ -106,13 +106,13 @@ class OfflineHostScenario(BaseScenario):
             res_comment = (
                 f"Здравствуйте! Автоматическая система диагностики выявила, что компьютер **{pc_name}** "
                 "полностью недоступен по корпоративной сети (нет отклика сетевого адаптера и порта управления).\n\n"
-                "Оформлен выезд дежурного инженера Helpdesk (каб. 112) для проверки кабеля питания, розетки "
-                "и коммутационного патч-корда на вашем рабочем месте."
+                "Требуется выезд дежурного инженера Helpdesk для проверки кабеля питания, розетки "
+                "и коммутационного патч-корда на вашем рабочем месте. Назначение выездной группы выполняет оператор."
             )
             tech_note = (
                 f"🤖 [Автопилот: Диагностика хоста - Хост OFFLINE]\n"
                 f"Хост: {pc_name} не отвечает (SMB: Unreachable, WinRM: Unreachable).\n"
-                f"Наряд: Выезд дежурного инженера второй линии (каб. 112).\n"
+                f"Рекомендация: требуется выезд инженера; автоматическое назначение выездной группы не выполнялось.\n"
                 f"Статус тикета оставлен В работе (2)."
             )
             return ScenarioExecutionResult(
@@ -121,5 +121,5 @@ class OfflineHostScenario(BaseScenario):
                 resolution_comment=res_comment,
                 technical_note=tech_note,
                 target_status_id=2,  # В работе у человека
-                metadata={"pc_name": pc_name, "status": "offline", "assigned_group": "field_engineers_112"},
+                metadata={"pc_name": pc_name, "status": "offline", "field_visit_required": True},
             )

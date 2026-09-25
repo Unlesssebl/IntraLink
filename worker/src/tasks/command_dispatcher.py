@@ -21,13 +21,13 @@ from core.autopilot.dto import AutopilotPolicyDTO
 from core.autopilot.policy_service import AutopilotPolicyService, get_policy_service
 from core.database.models import CommandRecord
 from core.database.session import get_engine, get_session_factory
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
 from core.redis_client import get_redis_client
 from core.scenarios.base import BaseScenario, ExecutionAbortedException
 from core.scenarios.orchestrator import ScenarioLifecycleOrchestrator
 from core.scenarios.registry import ScenarioRegistry, get_default_scenario_registry
-from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from worker.src.broker import broker
 from worker.src.tasks.ad_actions import reset_ad_password_task, unlock_ad_account_task
 from worker.src.tasks.printers import install_printer_task
@@ -294,7 +294,7 @@ async def _execute_scenario_for_ticket(
 
         # 4.3. Pre-Execution Optimistic Lock (human engineer preemption)
         executor_ids = task.get_executor_ids()
-        if auth.bot_user_id is not None and executor_ids and auth.bot_user_id not in executor_ids:
+        if auth.bot_user_id is not None and auth.bot_user_id not in executor_ids:
             logger.info(
                 "Ticket #%d is reassigned to human engineer(s): %s. Skipping command.",
                 ticket_id,
@@ -312,6 +312,42 @@ async def _execute_scenario_for_ticket(
         for k, v in cmd_params.items():
             if v and hasattr(task.entities, k):
                 setattr(task.entities, k, v)
+
+        # Operator approval is the business validation boundary. Only verify
+        # technical inputs required by the already selected scenario here.
+        required_facts = list(getattr(getattr(scenario, "definition", None), "required_facts", []) or [])
+        missing_facts: list[str] = []
+        for fact in required_facts:
+            value = getattr(task.entities, fact, None)
+            if fact == "target_user" and not value:
+                value = task.applicant_name or task.creator_name
+            if fact in ("first_name", "last_name") and not value and task.entities.user_name:
+                value = task.entities.user_name
+            if fact == "printer_address" and scenario.scenario_key == "install_printer":
+                value = value or task.entities.printer_model
+            if not str(value or "").strip():
+                missing_facts.append(fact)
+
+        if missing_facts:
+            error_code = "missing_technical_parameters"
+            await client.update_task(
+                task_id=ticket_id,
+                status_id=2,
+                comment=(
+                    f"[Команда не выполнена: {scenario.scenario_key}]\n"
+                    f"Отсутствуют обязательные технические параметры: {', '.join(missing_facts)}.\n"
+                    "Заявка оставлена в статусе «В работе» для проверки оператором."
+                ),
+                is_private=True,
+                auth_b64=auth.auth_b64,
+            )
+            return {
+                "status": "failed",
+                "reason": error_code,
+                "error": error_code,
+                "missing_facts": missing_facts,
+                "ticket_id": ticket_id,
+            }
 
         # 6. Execute Scenario via ScenarioLifecycleOrchestrator
         # Handles: execute() → IntraService update → dual audit → cache invalidation.
@@ -377,7 +413,7 @@ async def dispatch_command_task(command_id: Union[uuid.UUID, str]) -> Dict[str, 
             return {"command_id": str(target_uuid), "status": "failed", "error": "Command not found"}
 
         # Idempotency check: if already completed, do not re-run
-        if cmd.status in ("succeeded", "failed"):
+        if cmd.status in ("succeeded", "failed", "cancelled", "canceled", "aborted", "skipped"):
             logger.info("CommandRecord %s is already terminal (%s). Skipping.", target_uuid, cmd.status)
             return {
                 "command_id": str(target_uuid),

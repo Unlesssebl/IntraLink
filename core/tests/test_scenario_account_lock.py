@@ -94,7 +94,16 @@ async def test_account_lock_execution(default_policy):
     user_entry.userAccountControl.value = 512  # NORMAL_ACCOUNT
     user_entry.cn.value = "Петров Петр"
 
-    mock_conn.entries = [user_entry]
+    verified_entry = MagicMock()
+    verified_entry.userAccountControl.value = 514
+
+    def search_side_effect(*args, **kwargs):
+        if kwargs.get("search_scope") == "BASE":
+            mock_conn.entries = [verified_entry]
+        else:
+            mock_conn.entries = [user_entry]
+
+    mock_conn.search.side_effect = search_side_effect
     mock_conn.result = {"result": 0, "description": "success"}
 
     mock_ad_pool.connection_scope.return_value.__enter__.return_value = mock_conn
@@ -114,7 +123,7 @@ async def test_account_lock_execution(default_policy):
     assert res.action_taken == "account_lock"
 
     # Verify search was performed
-    mock_conn.search.assert_called_once()
+    assert mock_conn.search.call_count == 2
 
     # Verify userAccountControl was updated: 512 | 0x0002 = 514 (ACCOUNTDISABLE)
     mock_conn.modify.assert_called_once()
@@ -127,3 +136,21 @@ async def test_account_lock_execution(default_policy):
     assert "petrov.p" in res.resolution_comment
     assert "заблокирована в Active Directory" in res.resolution_comment
     assert "ACCOUNTDISABLE 0x0002 установлен" in res.technical_note
+
+
+@pytest.mark.asyncio
+async def test_account_lock_escapes_filter_and_rejects_ambiguous_target(default_policy):
+    mock_ad_pool = MagicMock()
+    mock_ad_pool.config.domain = "corporate.loc"
+    mock_conn = MagicMock()
+    mock_conn.entries = [MagicMock(), MagicMock()]
+    mock_ad_pool.connection_scope.return_value.__enter__.return_value = mock_conn
+
+    scenario = AccountLockScenario(ad_pool=mock_ad_pool)
+    task = TaskDTO(Id=503, Entities=ExtractedEntitiesDTO(target_user="*)(cn=*)"))
+    result = await scenario.execute(task, default_policy)
+
+    assert result.success is False
+    assert "неоднозначно" in (result.error or "")
+    search_filter = mock_conn.search.call_args.kwargs["search_filter"]
+    assert "\\2a\\29\\28cn=\\2a\\29" in search_filter

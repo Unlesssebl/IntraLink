@@ -193,6 +193,7 @@ class ScenarioLifecycleOrchestrator:
                 exec_result.error,
             )
 
+            trip_alert = ""
             if update_circuit_breaker:
                 updated_policy = await self._policy_service.record_failure(
                     scenario.scenario_key,
@@ -205,19 +206,22 @@ class ScenarioLifecycleOrchestrator:
                     if updated_policy.is_circuit_broken
                     else f"\nПоследовательных сбоев: {updated_policy.consecutive_failures}/3"
                 )
-                failure_note = (
-                    f"⚠️ [Автопилот: Сбой исполнения сценария '{scenario.name}']\n"
-                    f"Ошибка: {exec_result.error}"
-                    f"{trip_alert}\n"
-                    "Заявка передана на ручное исполнение инженеру 1-й линии."
-                )
-                await self._client.update_task(
-                    task_id=task.id,
-                    status_id=2,  # В работе → escalate to human engineer
-                    comment=failure_note,
-                    is_private=True,
-                    auth_b64=auth_b64,
-                )
+            failure_note = (
+                f"[Сбой исполнения сценария '{scenario.name}']\n"
+                f"Машинная причина: {exec_result.error or 'unknown_error'}"
+                f"{trip_alert}\n"
+                "Заявка оставлена в статусе «В работе» для ручного исполнения инженером 1-й линии."
+            )
+            if exec_result.technical_note:
+                failure_note += f"\nТехнические детали:\n{exec_result.technical_note}"
+            await self._client.update_task(
+                task_id=task.id,
+                status_id=2,
+                comment=failure_note,
+                is_private=True,
+                auth_b64=auth_b64,
+            )
+            await PlanSynthesizer.invalidate(task.id, self._redis)
 
         return exec_result
 

@@ -184,7 +184,7 @@ class InstallPrinterScenario(BaseScenario):
         return PreconditionResult(is_valid=True)
 
     async def execute(self, task: TaskDTO, policy: AutopilotPolicyDTO) -> ScenarioExecutionResult:
-        """Execute autonomous printer setup."""
+        """Refuse to report success until a real Windows executor is available."""
         pc_name = (task.entities.pc_name or "").strip()
         printer_addr = (task.entities.printer_address or "").strip()
         full_text = f"{task.name} {task.description or ''}".lower()
@@ -199,55 +199,27 @@ class InstallPrinterScenario(BaseScenario):
             "USB" if is_usb else "Network",
             printer_target,
         )
-        try:
-            dispatch_res = {
-                "status": "succeeded",
+        connection = "usb" if is_usb else "network"
+        error_code = "printer_executor_unavailable"
+        return ScenarioExecutionResult(
+            success=False,
+            action_taken="install_printer",
+            resolution_comment="",
+            technical_note=(
+                "[Установка принтера: действие не выполнено]\n"
+                f"Рабочая станция: {pc_name}\n"
+                f"Тип подключения: {connection}\n"
+                f"Принтер: {printer_target}\n"
+                "Причина: Windows-исполнитель и подтверждённая карта драйверов пока недоступны.\n"
+                "Заявка оставлена в статусе «В работе» для ручного исполнения."
+            ),
+            target_status_id=2,
+            error=error_code,
+            metadata={
+                "failure_code": error_code,
                 "host": pc_name,
-                "connection": "usb" if is_usb else "network",
                 "printer": printer_target,
-            }
-
-            if is_usb:
-                res_comment = (
-                    f"Здравствуйте! Драйвер принтера {task.entities.printer_model or ''} успешно установлен на вашем компьютере {pc_name}. "
-                    "Пожалуйста, выполните пробную печать документа. При возникновении вопросов ответьте на это сообщение."
-                ).replace("  ", " ")
-                tech_note = (
-                    f"🤖 [Автопилот: Установка принтера]\n"
-                    f"Рабочая станция: {pc_name} (онлайн, порты SMB/WinRM доступны)\n"
-                    f"Тип подключения: USB\n"
-                    f"Результат: {dispatch_res.get('status', 'succeeded')}\n"
-                    f"Статус: Выполнена (Status 3)"
-                )
-            else:
-                res_comment = (
-                    f"Здравствуйте! Сетевой принтер {printer_target} успешно настроен и подключен к вашему компьютеру {pc_name}. "
-                    "Пожалуйста, выполните пробную печать документа. При возникновении вопросов ответьте на это сообщение."
-                )
-                tech_note = (
-                    f"🤖 [Автопилот: Установка принтера]\n"
-                    f"Рабочая станция: {pc_name} (онлайн, порты SMB/WinRM доступны)\n"
-                    f"Тип подключения: сетевой\n"
-                    f"Сетевое устройство: {printer_target}\n"
-                    f"Результат: {dispatch_res.get('status', 'succeeded')}\n"
-                    f"Статус: Выполнена (Status 3)"
-                )
-
-            return ScenarioExecutionResult(
-                success=True,
-                action_taken="install_printer",
-                resolution_comment=res_comment,
-                technical_note=tech_note,
-                target_status_id=3,
-                metadata={"host": pc_name, "printer": printer_target, "dispatch": dispatch_res},
-            )
-        except Exception as exc:
-            logger.error("Failed to execute printer installation on %s: %s", pc_name, exc, exc_info=True)
-            return ScenarioExecutionResult(
-                success=False,
-                action_taken="install_printer",
-                resolution_comment="",
-                technical_note=f"⚠️ [Автопилот: Сбой установки принтера]\nХост: {pc_name}\nПринтер: {printer_target}\nОшибка: {exc}",
-                target_status_id=2,
-                error=str(exc),
-            )
+                "connection": connection,
+                "safe_to_retry": False,
+            },
+        )

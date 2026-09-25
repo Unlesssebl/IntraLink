@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 from typing import Optional
 
-import ldap3
-
-from core.ad.password import generate_secure_password, mask_password
 from core.ad.pool import ActiveDirectoryPool
-from core.ad.transliteration import generate_sam_account_name
+from core.ad.provisioning import (
+    AccountProvisioningError,
+    AccountProvisioningService,
+)
 from core.autopilot.dto import AutopilotPolicyDTO
 from core.intraservice.dto import TaskDTO
 from core.intraservice.service_definition import ServiceDefinition
@@ -85,8 +83,12 @@ class AccountCreateScenario(BaseScenario):
         min_confidence=0.85,
     )
 
-    def __init__(self, ad_pool: Optional[ActiveDirectoryPool] = None) -> None:
-        self.ad_pool = ad_pool or ActiveDirectoryPool()
+    def __init__(
+        self,
+        ad_pool: Optional[ActiveDirectoryPool] = None,
+        provisioner: Optional[AccountProvisioningService] = None,
+    ) -> None:
+        self.provisioner = provisioner or AccountProvisioningService(ad_pool=ad_pool)
 
     async def can_handle(self, task: TaskDTO) -> bool:
         """Check if ticket describes an employee onboarding or account creation request."""
@@ -141,91 +143,8 @@ class AccountCreateScenario(BaseScenario):
 
         return PreconditionResult(is_valid=True)
 
-    def _create_ad_user_sync(
-        self,
-        last_name: str,
-        first_name: str,
-        middle_name: str,
-        department: str,
-        title: str,
-        phone: str,
-        company: str,
-        secret_password_value: str,
-    ) -> dict[str, str]:
-        """Synchronous LDAP operations for creating Active Directory user with collision resolution.
-
-        Strictly executed in asyncio.to_thread.
-        """
-        full_name = f"{last_name} {first_name} {middle_name}".strip()
-        domain = self.ad_pool.config.domain
-        base_dn = ",".join([f"DC={p}" for p in domain.split(".") if p])
-
-        with self.ad_pool.connection_scope(auto_bind=True) as conn:
-            # 1. Resolve login collision using GOST 7.79-2000 System B
-            collision_index = 1
-            sam = generate_sam_account_name(last_name, first_name, middle_name, collision_index)
-            while True:
-                conn.search(
-                    search_base=base_dn,
-                    search_filter=f"(&(objectClass=user)(sAMAccountName={sam}))",
-                    search_scope=ldap3.SUBTREE,
-                    attributes=["sAMAccountName"],
-                )
-                if not conn.entries:
-                    break
-                collision_index += 1
-                sam = generate_sam_account_name(last_name, first_name, middle_name, collision_index)
-                if collision_index > 50:
-                    raise RuntimeError("Превышен лимит разрешения коллизий логинов в Active Directory (>50)")
-
-            upn = f"{sam}@{domain}"
-            target_ou = os.getenv("AD_USERS_OU") or f"CN=Users,{base_dn}"
-            user_dn = f"CN={full_name},{target_ou}"
-
-            # 2. Add User object
-            attributes = {
-                "sAMAccountName": sam,
-                "userPrincipalName": upn,
-                "givenName": first_name,
-                "sn": last_name,
-                "displayName": full_name,
-                "department": department,
-                "title": title,
-            }
-            if phone:
-                attributes["telephoneNumber"] = phone
-            if company:
-                attributes["company"] = company
-
-            conn.add(
-                dn=user_dn,
-                object_class=["top", "person", "organizationalPerson", "user"],
-                attributes=attributes,
-            )
-            if conn.result.get("result") != 0 and conn.result.get("description") != "success":
-                raise RuntimeError(
-                    f"Ошибка LDAP при создании пользователя '{user_dn}': {conn.result.get('description')} ({conn.result.get('message')})"
-                )
-
-            # 3. Set password (Zero-Plaintext, utf-16-le quoted)
-            unicode_pwd = f'"{secret_password_value}"'.encode("utf-16-le")
-            conn.modify(user_dn, {"unicodePwd": [(ldap3.MODIFY_REPLACE, [unicode_pwd])]})
-
-            # 4. Set pwdLastSet = 0 (Force password change on first logon)
-            conn.modify(user_dn, {"pwdLastSet": [(ldap3.MODIFY_REPLACE, [0])]})
-
-            # 5. Enable account: userAccountControl = 512 (NORMAL_ACCOUNT)
-            conn.modify(user_dn, {"userAccountControl": [(ldap3.MODIFY_REPLACE, [512])]})
-
-            return {
-                "sam_account_name": sam,
-                "upn": upn,
-                "user_dn": user_dn,
-                "full_name": full_name,
-            }
-
     async def execute(self, task: TaskDTO, policy: AutopilotPolicyDTO) -> ScenarioExecutionResult:
-        """Autonomous execution of user creation in Active Directory conforming to Zero-Plaintext Policy."""
+        """Provision AD account and expose only a secret-free receipt."""
         ent = task.entities
         last_name = (ent.last_name or "").strip()
         first_name = (ent.first_name or "").strip()
@@ -243,20 +162,11 @@ class AccountCreateScenario(BaseScenario):
 
         full_name = f"{last_name} {first_name} {middle_name}".strip()
 
-        # Generate cryptographically secure temporary password (Zero-Plaintext Policy)
-        secret_pwd = generate_secure_password(length=14)
-        masked_pwd = mask_password(secret_pwd.get_secret_value())
-
-        logger.info(
-            "Executing AccountCreateScenario for ticket #%s: %s (password: %s)",
-            task.id,
-            full_name,
-            masked_pwd,
-        )
+        logger.info("Executing AccountCreateScenario for ticket #%s: %s", task.id, full_name)
 
         try:
-            ad_res = await asyncio.to_thread(
-                self._create_ad_user_sync,
+            receipt = await self.provisioner.provision(
+                task_id=task.id,
                 last_name=last_name,
                 first_name=first_name,
                 middle_name=middle_name,
@@ -264,12 +174,11 @@ class AccountCreateScenario(BaseScenario):
                 title=title,
                 phone=phone,
                 company=company,
-                secret_password_value=secret_pwd.get_secret_value(),
             )
 
-            sam = ad_res["sam_account_name"]
-            upn = ad_res["upn"]
-            user_dn = ad_res["user_dn"]
+            sam = receipt.sam_account_name
+            upn = receipt.upn
+            user_dn = receipt.user_dn
 
             # Public comment NEVER contains plaintext password (Zero-Plaintext Policy)
             resolution_comment = (
@@ -278,20 +187,19 @@ class AccountCreateScenario(BaseScenario):
                 f"• UPN: {upn}\n"
                 f"• Подразделение: {department}\n"
                 f"• Должность: {title}\n\n"
-                "Временный пароль передан руководителю/HR по защищенному регламентному каналу. "
+                "Логин и временный пароль записаны в соответствующие защищённые поля заявки. "
                 "При первом входе в систему потребуется обязательная смена пароля (флаг pwdLastSet=0 установлен)."
             )
 
-            # Hidden internal note with temporary password for authenticated Helpdesk operators
             technical_note = (
-                f"🤖 [Автопилот: Создание учетной записи]\n"
+                f"[Создание учетной записи]\n"
                 f"Сотрудник: {full_name}\n"
                 f"Логин (sAMAccountName): {sam}\n"
                 f"UPN: {upn}\n"
                 f"DN: {user_dn}\n"
                 f"Подразделение: {department}\n"
                 f"Должность: {title}\n"
-                f"Временный пароль: {secret_pwd.get_secret_value()} (передан по регламентному закрытому каналу, pwdLastSet=0)\n"
+                "Учётные данные записаны в Field1488/Field1489; пароль не включён в журналы и комментарии.\n"
                 f"Статус: Выполнена (Status 3)"
             )
 
@@ -306,6 +214,29 @@ class AccountCreateScenario(BaseScenario):
                     "upn": upn,
                     "user_dn": user_dn,
                     "full_name": full_name,
+                    "credentials_written": receipt.credentials_written,
+                },
+            )
+        except AccountProvisioningError as exc:
+            logger.error("Account provisioning failed for ticket #%s: %s", task.id, exc.code)
+            return ScenarioExecutionResult(
+                success=False,
+                action_taken="account_create",
+                resolution_comment="",
+                technical_note=(
+                    "[Ошибка создания учетной записи]\n"
+                    f"Сотрудник: {full_name}\n"
+                    f"Подразделение: {department}\n"
+                    f"Машинная причина: {exc.code}\n"
+                    f"Объект AD создан: {exc.ad_object_created}\n"
+                    "Автоматический повтор запрещён; требуется ручная проверка инженером."
+                ),
+                target_status_id=2,
+                error=exc.code,
+                metadata={
+                    "failure_code": exc.code,
+                    "ad_object_created": exc.ad_object_created,
+                    "safe_to_retry": False,
                 },
             )
         except Exception as exc:

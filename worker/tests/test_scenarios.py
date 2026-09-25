@@ -1,6 +1,6 @@
 """Unit and integration tests for Core-3 autopilot scenarios."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -90,7 +90,7 @@ async def test_install_printer_preconditions_host_offline():
 
 
 @pytest.mark.asyncio
-async def test_install_printer_execute_success(default_policy):
+async def test_install_printer_executor_unavailable(default_policy):
     scenario = InstallPrinterScenario()
     task = TaskDTO(
         Id=106,
@@ -100,10 +100,10 @@ async def test_install_printer_execute_success(default_policy):
 
     exec_res = await scenario.execute(task, default_policy)
 
-    assert exec_res.success is True
-    assert exec_res.target_status_id == 3
-    assert "успешно настроен" in exec_res.resolution_comment
-    assert "🤖 [Автопилот: Установка принтера]" in exec_res.technical_note
+    assert exec_res.success is False
+    assert exec_res.target_status_id == 2
+    assert exec_res.error == "printer_executor_unavailable"
+    assert exec_res.metadata["safe_to_retry"] is False
 
 
 # -------------------------------------------------------------
@@ -142,7 +142,17 @@ async def test_grant_wlan_execute_success(default_policy):
         entities=ExtractedEntitiesDTO(target_user="ivanov.i"),
     )
 
-    exec_res = await scenario.execute(task, default_policy)
+    with patch.object(
+        scenario,
+        "_grant_wlan_sync",
+        return_value={
+            "sam_account_name": "ivanov.i",
+            "user_dn": "CN=Иванов,DC=corporate,DC=loc",
+            "group_dn": "CN=WLAN-WORKNET-ALLOW,DC=corporate,DC=loc",
+            "already_member": False,
+        },
+    ):
+        exec_res = await scenario.execute(task, default_policy)
     assert exec_res.success is True
     assert exec_res.target_status_id == 3
     assert "ivanov.i" in exec_res.resolution_comment or "Иванов" in exec_res.resolution_comment

@@ -11,9 +11,9 @@ from core.autopilot.dto import AutopilotPolicyUpdateDTO
 from core.autopilot.policy_service import AutopilotPolicyService
 from core.database.base import Base
 from core.database.models import CommandRecord
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO, TaskLifetimeEventDTO
-from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from worker.src.tasks.autopilot import (
     autopilot_task,
     set_autopilot_client,
@@ -252,7 +252,9 @@ async def test_autopilot_dialogue_missing_facts_suspends_ticket(mock_client, moc
 
 
 @pytest.mark.asyncio
-async def test_autopilot_dialogue_resume_loop_enriches_and_resolves(mock_client, mock_service_auth, test_session_factory, policy_service):
+async def test_autopilot_dialogue_resume_enriches_but_printer_install_fails_closed(
+    mock_client, mock_service_auth, test_session_factory, policy_service
+):
     # Initial ticket state was missing PC name
     task = TaskDTO(
         Id=506,
@@ -283,16 +285,17 @@ async def test_autopilot_dialogue_resume_loop_enriches_and_resolves(mock_client,
     ):
         res = await autopilot_task(506)
 
-        assert res["status"] == "resolved"
-        assert res["target_status_id"] == 3
+        assert res["status"] == "failed"
+        assert res["error"] == "printer_executor_unavailable"
 
-        # Verify task completed (Direct 6 -> 3 transition without intermediate 2)
-        assert mock_client.update_task.call_count == 2
+        # The dialogue was enriched with the PC, but no Windows executor exists,
+        # so the ticket remains in progress with a hidden technical report.
+        assert task.entities.pc_name == "WKS-7777"
+        assert mock_client.update_task.call_count == 1
         res_call = mock_client.update_task.call_args_list[0].kwargs
-        assert res_call["status_id"] == 3  # Direct completion
-        assert "успешно настроен" in res_call["comment"]
-        audit_call = mock_client.update_task.call_args_list[1].kwargs
-        assert audit_call["is_private"] is True
+        assert res_call["status_id"] == 2
+        assert res_call["is_private"] is True
+        assert "printer_executor_unavailable" in res_call["comment"]
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,9 @@ class MockRedis:
         self.store[key] = value
         return True
 
+    async def delete(self, key: str):
+        return int(self.store.pop(key, None) is not None)
+
 
 @pytest.fixture
 async def test_db_session() -> AsyncGenerator[AsyncSession, None]:
@@ -46,6 +49,13 @@ def mock_redis() -> MockRedis:
 @pytest.fixture
 def override_policy_service(mock_redis) -> AutopilotPolicyService:
     return AutopilotPolicyService(redis_client=mock_redis)
+
+
+def test_policy_dependency_uses_resolved_redis_client(mock_redis):
+    from api.src.features.autopilot.router import get_policy_service_dep
+
+    service = get_policy_service_dep(redis=mock_redis)
+    assert service.redis_client is mock_redis
 
 
 @pytest.mark.asyncio
@@ -171,8 +181,12 @@ async def test_list_commands_and_stats_endpoints(test_db_session, override_polic
 
 
 @pytest.mark.asyncio
-async def test_supervisor_plan_approve_and_correct_endpoints(test_db_session, override_policy_service):
+async def test_supervisor_plan_approve_and_correct_endpoints(
+    test_db_session, override_policy_service, mock_redis
+):
     from unittest.mock import AsyncMock, patch
+
+    from api.src.core.redis import get_redis
     from api.src.features.autopilot.router import get_autopilot_service_dep
     from api.src.features.autopilot.service import AutopilotService
     from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
@@ -203,7 +217,11 @@ async def test_supervisor_plan_approve_and_correct_endpoints(test_db_session, ov
     async def override_db():
         yield test_db_session
 
+    async def override_redis():
+        yield mock_redis
+
     app.dependency_overrides[get_db_session] = override_db
+    app.dependency_overrides[get_redis] = override_redis
     app.dependency_overrides[get_policy_service_dep] = lambda: override_policy_service
     app.dependency_overrides[get_autopilot_service_dep] = lambda: service
 
@@ -276,4 +294,3 @@ async def test_supervisor_plan_approve_and_correct_endpoints(test_db_session, ov
         assert mock_client.update_task.await_count >= 1
 
     app.dependency_overrides.clear()
-

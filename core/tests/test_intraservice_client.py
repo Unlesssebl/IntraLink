@@ -104,3 +104,30 @@ async def test_get_task_lifetime_maps_date_and_editor():
         assert events[0].created == "2026-09-23T16:55:00"
         assert events[0].new_status_name == "Открыта"
         assert events[0].comment == "Работы начаты"
+
+
+@pytest.mark.asyncio
+async def test_update_task_serializes_custom_fields():
+    from unittest.mock import AsyncMock, patch
+
+    client = IntraServiceClient(base_url="https://servicedesk.local/api")
+    with patch.object(client, "_request", new_callable=AsyncMock) as mock_req:
+        await client.update_task(
+            task_id=501,
+            custom_fields={1488: "ivanov.i", 1489: "temporary-secret"},
+            auth_b64="auth-token",
+        )
+
+    payload = mock_req.await_args.kwargs["json_data"]
+    assert payload == {
+        "Id": 501,
+        "Field1488": "ivanov.i",
+        "Field1489": "temporary-secret",
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_task_rejects_invalid_custom_field_id():
+    client = IntraServiceClient(base_url="https://servicedesk.local/api")
+    with pytest.raises(ValueError):
+        await client.update_task(task_id=501, custom_fields={0: "invalid"})

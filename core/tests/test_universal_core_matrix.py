@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from api.src.features.autopilot.schemas import ApprovePlanRequest
 from api.src.features.autopilot.service import AutopilotService
 from core.ad.password import SecretPassword, generate_secure_password, mask_password
+from core.ad.provisioning import AccountProvisioningReceipt, AccountProvisioningService
 from core.autopilot.dto import AutopilotPolicyDTO, AutopilotPolicyUpdateDTO
 from core.autopilot.policy_service import AutopilotPolicyService
 from core.database.base import Base
@@ -213,15 +214,17 @@ async def test_mixed_batch_execution(
         with (
             patch("core.scenarios.adapters.printer_spooler_restart.FastSocketProbe.probe", new_callable=AsyncMock) as mock_probe,
             patch("core.scenarios.adapters.printer_spooler_restart.WinRMExecutor.run_powershell", new_callable=AsyncMock) as mock_winrm,
-            patch.object(AccountCreateScenario, "_create_ad_user_sync") as mock_ad_create,
+            patch.object(AccountProvisioningService, "provision", new_callable=AsyncMock) as mock_ad_create,
         ):
             mock_probe.return_value = AsyncMock(is_online=True, ports={5985: True})
             mock_winrm.return_value = (0, "CLEARED:2;STATUS:Running", "")
-            mock_ad_create.return_value = {
-                "sam_account_name": "smirnov.a",
-                "upn": "smirnov.a@corp.loc",
-                "user_dn": "CN=Смирнов Алексей,OU=Accounting,DC=corp,DC=loc",
-            }
+            mock_ad_create.return_value = AccountProvisioningReceipt(
+                sam_account_name="smirnov.a",
+                upn="smirnov.a@corp.loc",
+                user_dn="CN=Смирнов Алексей,OU=Accounting,DC=corp,DC=loc",
+                full_name="Смирнов Алексей",
+                credentials_written=True,
+            )
 
             # Process mixed batch concurrently
             results = await asyncio.gather(
@@ -420,6 +423,42 @@ async def test_cooperative_interruption_reclaim(
     dummy_scenario.execute.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_assisted_failure_keeps_ticket_in_progress_and_writes_hidden_report(
+    mock_client, policy_service, mock_redis
+):
+    task = TaskDTO(Id=4002, StatusId=2, StatusName="В работе")
+    scenario = AsyncMock()
+    scenario.scenario_key = "install_printer"
+    scenario.name = "Установка принтера"
+    scenario.execute.return_value = ScenarioExecutionResult(
+        success=False,
+        action_taken="install_printer",
+        resolution_comment="",
+        technical_note="Windows executor unavailable; preflight completed.",
+        target_status_id=2,
+        error="printer_executor_unavailable",
+        metadata={"failure_code": "printer_executor_unavailable"},
+    )
+    orchestrator = ScenarioLifecycleOrchestrator(mock_client, mock_redis, policy_service)
+
+    result = await orchestrator.execute_and_audit(
+        scenario=scenario,
+        task=task,
+        policy=AutopilotPolicyDTO(scenario_key="install_printer", mode="ASSISTED"),
+        auth_b64="auth",
+        initiator="supervisor:ivanov",
+        update_circuit_breaker=False,
+    )
+
+    assert result.success is False
+    update = mock_client.update_task.await_args.kwargs
+    assert update["status_id"] == 2
+    assert update["is_private"] is True
+    assert "printer_executor_unavailable" in update["comment"]
+    assert "preflight completed" in update["comment"]
+
+
 # ==============================================================================
 # Invariant 5: Fast Socket Probe (Socket Timeout Boundary <= 1.5s)
 # ==============================================================================
@@ -542,12 +581,14 @@ async def test_zero_plaintext_policy_audit(mock_client, policy_service):
         ),
     )
 
-    with patch.object(scenario, "_create_ad_user_sync") as mock_ad_sync:
-        mock_ad_sync.return_value = {
-            "sam_account_name": "kuznetsova.e",
-            "upn": "kuznetsova.e@corp.loc",
-            "user_dn": "CN=Кузнецова Елена,OU=HR,DC=corp,DC=loc",
-        }
+    with patch.object(scenario.provisioner, "provision", new_callable=AsyncMock) as mock_ad_sync:
+        mock_ad_sync.return_value = AccountProvisioningReceipt(
+            sam_account_name="kuznetsova.e",
+            upn="kuznetsova.e@corp.loc",
+            user_dn="CN=Кузнецова Елена,OU=HR,DC=corp,DC=loc",
+            full_name="Кузнецова Елена",
+            credentials_written=True,
+        )
         res: ScenarioExecutionResult = await scenario.execute(
             task,
             AutopilotPolicyDTO(scenario_key="account_create", mode="FULL_AUTO"),
@@ -558,5 +599,6 @@ async def test_zero_plaintext_policy_audit(mock_client, policy_service):
     assert raw_val not in res.resolution_comment
     assert "kuznetsova.e" in res.resolution_comment
     assert "pwdLastSet=0" in res.resolution_comment
-    # Password can only be provided via internal note / secure closed channel
-    assert "Временный пароль передан руководителю/HR по защищенному регламентному каналу" in res.resolution_comment
+    assert "защищённые поля заявки" in res.resolution_comment
+    assert "Временный пароль:" not in res.technical_note
+    assert "password" not in res.model_dump_json().lower()

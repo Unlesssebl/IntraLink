@@ -65,8 +65,15 @@ class AutopilotPolicyService:
             logger.warning("Baseline config not found at %s. Using hardcoded fallback.", self.config_path)
             return {
                 "install_printer": {"mode": "ASSISTED", "min_confidence": 0.85, "description": "Установка принтеров"},
-                "ad_password_reset": {"mode": "ASSISTED", "min_confidence": 0.90, "description": "Сброс паролей AD"},
-                "rag_consultation": {"mode": "FULL_AUTO", "min_confidence": 0.85, "description": "RAG консультации"},
+                "printer_spooler_restart": {"mode": "ASSISTED", "min_confidence": 0.65, "description": "Перезапуск Spooler"},
+                "default_printer_fix": {"mode": "ASSISTED", "min_confidence": 0.65, "description": "Принтер по умолчанию"},
+                "grant_wlan": {"mode": "ASSISTED", "min_confidence": 0.80, "description": "Доступ WLAN"},
+                "account_lock": {"mode": "ASSISTED", "min_confidence": 0.80, "description": "Блокировка учетной записи"},
+                "ad_password_reset": {"mode": "DISABLED", "min_confidence": 0.90, "description": "Сброс паролей AD"},
+                "account_create": {"mode": "ASSISTED", "min_confidence": 0.90, "description": "Создание учетной записи"},
+                "service_redirect": {"mode": "ASSISTED", "min_confidence": 0.80, "description": "Перенаправление обращения"},
+                "offline_host": {"mode": "ASSISTED", "min_confidence": 0.80, "description": "Диагностика недоступного ПК"},
+                "rag_consultation": {"mode": "ASSISTED", "min_confidence": 0.85, "description": "RAG консультации"},
             }
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:

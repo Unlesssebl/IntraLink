@@ -9,11 +9,10 @@ from typing import Optional
 from core.autopilot.dto import AutopilotPolicyDTO
 from core.diagnostic.ports import FastSocketProbe
 from core.diagnostic.winrm import WinRMExecutor, default_winrm_executor
+from core.intraservice.catalog import SERVICE_IDS_PRINTER_SUPPORT
 from core.intraservice.dto import TaskDTO
 from core.intraservice.service_definition import ServiceDefinition
 from core.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
-
-from core.intraservice.catalog import SERVICE_IDS_PRINTER_SUPPORT
 
 logger = logging.getLogger("core.scenarios.adapters.default_printer_fix")
 

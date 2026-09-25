@@ -1,5 +1,7 @@
 """Tests for Multi-Factor Scenario Router, Coherence Guard, and Core-6 scenarios."""
 
+from unittest.mock import patch
+
 import pytest
 
 from core.autopilot.dto import AutopilotPolicyDTO
@@ -134,7 +136,17 @@ async def test_grant_wlan_scenario_execution():
     precond = await scenario.validate_preconditions(task)
     assert precond.is_valid is True
 
-    res = await scenario.execute(task, policy)
+    with patch.object(
+        scenario,
+        "_grant_wlan_sync",
+        return_value={
+            "sam_account_name": "sidorov.s",
+            "user_dn": "CN=Сидоров,DC=corporate,DC=loc",
+            "group_dn": "CN=WLAN-WORKNET-ALLOW,DC=corporate,DC=loc",
+            "already_member": False,
+        },
+    ):
+        res = await scenario.execute(task, policy)
     assert res.success is True
     assert res.action_taken == "grant_wlan_access"
     assert res.target_status_id == 3
@@ -203,5 +215,7 @@ async def test_offline_host_execution_dispatches_field_engineer(monkeypatch):
     res = await scenario.execute(task, policy)
     assert res.success is True
     assert res.target_status_id == 2  # In progress with field team
-    assert "112" in res.resolution_comment
+    assert "Требуется выезд" in res.resolution_comment
+    assert res.metadata["field_visit_required"] is True
+    assert "assigned_group" not in res.metadata
     assert "dispatch_field_engineer" == res.action_taken

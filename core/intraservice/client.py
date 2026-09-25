@@ -6,7 +6,7 @@ import enum
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import httpx
 
@@ -565,8 +565,9 @@ class IntraServiceClient:
         executor_ids: Optional[str] = None,
         is_private: bool = False,
         auth_b64: Optional[str] = None,
+        custom_fields: Optional[Mapping[int, str]] = None,
     ) -> bool:
-        """Atomically update ticket status, comment, or assignees."""
+        """Atomically update ticket status, comment, assignees, or custom fields."""
         payload: Dict[str, Any] = {"Id": task_id}
         if status_id is not None:
             payload["StatusId"] = status_id
@@ -575,6 +576,11 @@ class IntraServiceClient:
             payload["IsPrivateComment"] = is_private
         if executor_ids:
             payload["ExecutorIds"] = str(executor_ids)
+        if custom_fields:
+            for field_id, value in custom_fields.items():
+                if not isinstance(field_id, int) or isinstance(field_id, bool) or field_id <= 0:
+                    raise ValueError(f"custom field id must be a positive integer: {field_id!r}")
+                payload[f"Field{field_id}"] = str(value)
 
         try:
             await self._request(
@@ -593,6 +599,9 @@ class IntraServiceClient:
                 if comment:
                     fb_payload["Comment"] = comment
                     fb_payload["IsPrivateComment"] = is_private
+                if custom_fields:
+                    for field_id, value in custom_fields.items():
+                        fb_payload[f"Field{field_id}"] = str(value)
                 await self._request(
                     method="PUT",
                     endpoint=f"task/{task_id}",

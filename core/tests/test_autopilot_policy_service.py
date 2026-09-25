@@ -15,6 +15,24 @@ from core.database.base import Base
 from core.database.models import AutopilotPolicy
 
 
+def test_live_baseline_has_no_full_auto_working_scenarios():
+    policies = AutopilotPolicyService().load_baseline_yaml()
+    assisted = {
+        "install_printer",
+        "account_lock",
+        "offline_host",
+        "printer_spooler_restart",
+        "default_printer_fix",
+        "rag_consultation",
+        "account_create",
+        "grant_wlan",
+        "service_redirect",
+    }
+
+    assert {policies[key]["mode"] for key in assisted} == {"ASSISTED"}
+    assert policies["ad_password_reset"]["mode"] == "DISABLED"
+
+
 class MockRedis:
     """In-memory mock for Redis."""
 

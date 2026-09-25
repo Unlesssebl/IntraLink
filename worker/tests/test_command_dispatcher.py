@@ -9,8 +9,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from core.database.base import Base
 from core.database.models import CommandRecord
+from core.intraservice.auth import ServiceAuthCredentials
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
-from worker.tests.test_autopilot_task import MockRedis
+from core.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
+from core.scenarios.registry import ScenarioRegistry
 from worker.src.broker import (
     QUEUE_DEFAULT,
     QUEUE_RAG_COMPUTE,
@@ -19,9 +21,6 @@ from worker.src.broker import (
     broker,
     get_broker_for_queue,
 )
-from core.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
-from core.scenarios.registry import ScenarioRegistry
-from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from worker.src.tasks.command_dispatcher import (
     dispatch_command_task,
     set_dispatcher_client,
@@ -31,6 +30,7 @@ from worker.src.tasks.command_dispatcher import (
     set_dispatcher_service_auth,
     set_session_factory,
 )
+from worker.tests.test_autopilot_task import MockRedis
 
 
 @pytest.fixture
@@ -367,6 +367,7 @@ async def test_dispatch_canonical_scenario_execution_with_dual_audit(async_db, m
         name="Настройка принтера",
         status_id=1,
         status_name="Новая",
+        executor_ids="999",
         entities=ExtractedEntitiesDTO(pc_name="WKS-999"),
     )
 

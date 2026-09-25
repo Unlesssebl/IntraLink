@@ -2,7 +2,6 @@
 
 import json
 import logging
-import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -15,14 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.src.core.ai import get_ai_client
 from api.src.core.config import settings
 from api.src.core.task_dispatch import TaskDispatchService
-from core.diagnostic.service import HostDiagnosticsService
 from core.autopilot.policy_service import AutopilotPolicyService
 from core.database.models import AutopilotCorrection, CommandRecord
+from core.diagnostic.service import HostDiagnosticsService
 from core.intraservice.auth import ServiceAuthBootstrap
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO, TaskLifetimeEventDTO
 from core.intraservice.exceptions import IntraServiceNotFoundError
-from core.scenarios.base import BaseScenario
+from core.intraservice.parser import extract_pc_names_from_text
 from core.scenarios.engine import PlanSynthesizer
 from core.scenarios.registry import get_default_scenario_registry
 
@@ -33,8 +32,6 @@ from .schemas import (
     BatchAssignResponse,
     CorrectPlanRequest,
 )
-
-from core.intraservice.parser import extract_pc_names_from_text
 
 logger = logging.getLogger("api.features.autopilot.service")
 
@@ -173,10 +170,25 @@ class AutopilotService:
                     ),
                 )
 
-        # 2. Find matching scenario
-        registry = get_default_scenario_registry(ai_client=get_ai_client())
-        scenario: Optional[BaseScenario] = await registry.find_scenario(task)
-        action_name = scenario.scenario_key if scenario else "generic_action"
+        # 2. Execute the exact plan reviewed by the operator. Approval is a
+        # business decision boundary: do not classify or route the task again.
+        if redis_client is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Одобренный план недоступен. Обновите план и подтвердите его повторно.",
+            )
+        approved_plan = await PlanSynthesizer.get_cached(ticket_id, redis_client)
+        if approved_plan is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="План устарел или истёк. Обновите план и подтвердите его повторно.",
+            )
+        action_name = approved_plan.scenario_key
+        if action_name == "unmatched":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="План не содержит исполнимого сценария. Выберите сценарий вручную.",
+            )
 
         # 3. Create or reuse CommandRecord
         idempotency_key = f"approved_{ticket_id}_{action_name}_{uuid.uuid4().hex[:6]}"
@@ -187,9 +199,10 @@ class AutopilotService:
             executor="api",
             target_json={"ticket_id": ticket_id, "pc_name": task.entities.pc_name},
             params_json={
-                **task.entities.model_dump(),
+                **approved_plan.proposed_params,
                 "override_comment": req.override_comment,
                 "expected_status_id": req.expected_status_id,
+                "approved_scenario": action_name,
             },
             status="pending",
             initiator=f"supervisor:{operator_username}",
@@ -480,4 +493,3 @@ class AutopilotService:
             failed_ids=failed_ids,
             details=details,
         )
-

@@ -8,6 +8,8 @@ import os
 from typing import Optional
 
 import ldap3
+from ldap3.utils.conv import escape_filter_chars
+from ldap3.utils.dn import escape_rdn
 
 from core.ad.pool import ActiveDirectoryPool
 from core.autopilot.dto import AutopilotPolicyDTO
@@ -136,10 +138,12 @@ class AccountLockScenario(BaseScenario):
         base_dn = ",".join([f"DC={p}" for p in domain.split(".") if p])
 
         with self.ad_pool.connection_scope(auto_bind=True) as conn:
-            # Search by sAMAccountName, displayName or CN
+            # Search by sAMAccountName, displayName or CN. User input must
+            # never be interpolated into an LDAP filter without escaping.
+            escaped_target = escape_filter_chars(target_user)
             search_filter = (
-                f"(&(objectClass=user)(|(sAMAccountName={target_user})"
-                f"(displayName={target_user})(cn={target_user})))"
+                f"(&(objectClass=user)(|(sAMAccountName={escaped_target})"
+                f"(displayName={escaped_target})(cn={escaped_target})))"
             )
             conn.search(
                 search_base=base_dn,
@@ -148,8 +152,12 @@ class AccountLockScenario(BaseScenario):
                 attributes=["sAMAccountName", "distinguishedName", "userAccountControl", "displayName", "cn"],
             )
 
-            if not conn.entries:
+            if len(conn.entries) == 0:
                 raise RuntimeError(f"Пользователь '{target_user}' не найден в Active Directory ({domain})")
+            if len(conn.entries) != 1:
+                raise RuntimeError(
+                    f"Пользователь '{target_user}' найден неоднозначно: совпадений {len(conn.entries)}"
+                )
 
             entry = conn.entries[0]
             user_dn = str(entry.distinguishedName.value)
@@ -168,18 +176,38 @@ class AccountLockScenario(BaseScenario):
             disabled_ou = os.getenv("AD_DISABLED_OU")
             moved = False
             if disabled_ou:
-                rdn = f"CN={entry.cn.value or entry.sAMAccountName.value}"
+                rdn = f"CN={escape_rdn(str(entry.cn.value or entry.sAMAccountName.value))}"
                 try:
                     conn.modify_dn(user_dn, rdn, new_superior=disabled_ou)
-                    moved = True
+                    if conn.result.get("result") == 0 or conn.result.get("description") == "success":
+                        moved = True
+                        user_dn = f"{rdn},{disabled_ou}"
+                    else:
+                        logger.warning(
+                            "Failed to move disabled user to '%s': %s",
+                            disabled_ou,
+                            conn.result.get("description"),
+                        )
                 except Exception as exc:
                     logger.warning("Failed to move disabled user to '%s': %s", disabled_ou, exc)
+
+            conn.search(
+                search_base=user_dn,
+                search_filter="(objectClass=user)",
+                search_scope=ldap3.BASE,
+                attributes=["userAccountControl", "sAMAccountName", "distinguishedName"],
+            )
+            if len(conn.entries) != 1:
+                raise RuntimeError("Не удалось повторно прочитать учетную запись после блокировки")
+            verified_uac = int(conn.entries[0].userAccountControl.value)
+            if not verified_uac & 0x0002:
+                raise RuntimeError("Повторное чтение не подтвердило флаг ACCOUNTDISABLE")
 
             return {
                 "sam_account_name": str(entry.sAMAccountName.value),
                 "user_dn": user_dn,
                 "current_uac": current_uac,
-                "new_uac": new_uac,
+                "new_uac": verified_uac,
                 "moved_to_disabled_ou": moved,
             }
 

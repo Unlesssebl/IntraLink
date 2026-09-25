@@ -1,9 +1,10 @@
 """Unit tests for AccountCreateScenario (Onboarding in Active Directory)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
+from core.ad.provisioning import AccountProvisioningError, AccountProvisioningReceipt
 from core.autopilot.dto import AutopilotPolicyDTO
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
 from core.scenarios.adapters.account_create import AccountCreateScenario
@@ -107,27 +108,15 @@ async def test_account_create_preconditions_validation():
 
 @pytest.mark.asyncio
 async def test_account_create_execution_and_zero_plaintext_policy(default_policy):
-    mock_ad_pool = MagicMock()
-    mock_ad_pool.config.domain = "corporate.loc"
-
-    mock_conn = MagicMock()
-    # 1st search returns existing user (collision), 2nd search returns empty (available)
-    existing_entry = MagicMock()
-    existing_entry.sAMAccountName.value = "ivanov.i"
-    mock_conn.entries = [existing_entry]
-
-    def search_side_effect(*args, **kwargs):
-        if "ivanov.i)" in kwargs.get("search_filter", ""):
-            mock_conn.entries = [existing_entry]
-        else:
-            mock_conn.entries = []
-
-    mock_conn.search.side_effect = search_side_effect
-    mock_conn.result = {"result": 0, "description": "success"}
-
-    mock_ad_pool.connection_scope.return_value.__enter__.return_value = mock_conn
-
-    scenario = AccountCreateScenario(ad_pool=mock_ad_pool)
+    provisioner = AsyncMock()
+    provisioner.provision.return_value = AccountProvisioningReceipt(
+        sam_account_name="ivanov.i2",
+        upn="ivanov.i2@corporate.loc",
+        user_dn="CN=Иванов Иван Иванович,CN=Users,DC=corporate,DC=loc",
+        full_name="Иванов Иван Иванович",
+        credentials_written=True,
+    )
+    scenario = AccountCreateScenario(provisioner=provisioner)
 
     task = TaskDTO(
         Id=501,
@@ -152,30 +141,49 @@ async def test_account_create_execution_and_zero_plaintext_policy(default_policy
     assert res.metadata["sam_account_name"] == "ivanov.i2"
     assert res.metadata["upn"] == "ivanov.i2@corporate.loc"
 
-    # Verify LDAP add was called with user details
-    mock_conn.add.assert_called_once()
-    add_args = mock_conn.add.call_args.kwargs
-    assert add_args["attributes"]["sAMAccountName"] == "ivanov.i2"
-    assert add_args["attributes"]["givenName"] == "Иван"
-    assert add_args["attributes"]["sn"] == "Иванов"
-    assert add_args["attributes"]["displayName"] == "Иванов Иван Иванович"
-    assert add_args["attributes"]["department"] == "Бухгалтерия"
-
-    # Verify pwdLastSet = 0 was applied (Force password change on first logon)
-    modify_calls = mock_conn.modify.call_args_list
-    pwd_last_set_call = [c for c in modify_calls if "pwdLastSet" in c.args[1]]
-    assert len(pwd_last_set_call) == 1
-    assert pwd_last_set_call[0].args[1]["pwdLastSet"][0][1] == [0]
+    provisioner.provision.assert_awaited_once()
 
     # Zero-Plaintext Policy:
     # 1. resolution_comment (public for applicant) NEVER contains password
     assert "пароль" in res.resolution_comment.lower()
-    # It must mention that temporary password was sent via private channel
-    assert "Временный пароль передан руководителю/HR по защищенному регламентному каналу" in res.resolution_comment
+    assert "защищённые поля заявки" in res.resolution_comment
     # No plaintext generated password string should leak into resolution_comment
     assert "Временный пароль: " not in res.resolution_comment
 
-    # 2. technical_note (internal note) has the password and audit trail
-    assert "🤖 [Автопилот: Создание учетной записи]" in res.technical_note
-    assert "Временный пароль:" in res.technical_note
+    # 2. technical_note contains only a delivery receipt, never the password
+    assert "[Создание учетной записи]" in res.technical_note
+    assert "Field1488/Field1489" in res.technical_note
+    assert "Временный пароль:" not in res.technical_note
     assert "ivanov.i2" in res.technical_note
+    assert "password" not in res.model_dump_json().lower()
+
+
+@pytest.mark.asyncio
+async def test_account_create_partial_result_forbids_automatic_retry(default_policy):
+    provisioner = AsyncMock()
+    provisioner.provision.side_effect = AccountProvisioningError(
+        "credentials_delivery_failed_after_ad_create",
+        "sanitized",
+        ad_object_created=True,
+    )
+    scenario = AccountCreateScenario(provisioner=provisioner)
+    task = TaskDTO(
+        Id=502,
+        Entities=ExtractedEntitiesDTO(
+            last_name="Иванов",
+            first_name="Иван",
+            department="ИТ",
+            title="Инженер",
+        ),
+    )
+
+    result = await scenario.execute(task, default_policy)
+
+    assert result.success is False
+    assert result.target_status_id == 2
+    assert result.metadata == {
+        "failure_code": "credentials_delivery_failed_after_ad_create",
+        "ad_object_created": True,
+        "safe_to_retry": False,
+    }
+    assert "password" not in result.model_dump_json().lower()
