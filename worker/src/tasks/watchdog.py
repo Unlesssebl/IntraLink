@@ -10,26 +10,32 @@ Invariants (Edge Case 12):
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Optional
 
 import redis.asyncio as aioredis
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from core.database.models import CommandRecord
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
 from core.redis_client import get_redis_client
 from worker.src.broker import QUEUE_DEFAULT, broker
-from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 
 logger = logging.getLogger("worker.tasks.watchdog")
 
 REMINDER_HOURS = 48.0
 CANCEL_HOURS = 120.0
 REMINDER_FLAG_TTL_SEC = 864000  # 10 days
+STUCK_TICKET_THRESHOLD_SEC = 180.0  # 3 minutes
 
 # Test override hooks
 _override_client: IntraServiceClient | None = None
 _override_service_auth: ServiceAuthBootstrap | None = None
 _override_redis_client: aioredis.Redis | None = None
+_override_session_factory: Optional[async_sessionmaker[AsyncSession]] = None
+_override_autopilot_task: Any = None
 
 
 def set_watchdog_client(client: IntraServiceClient | None) -> None:
@@ -47,6 +53,16 @@ def set_watchdog_redis_client(redis_conn: aioredis.Redis | None) -> None:
     _override_redis_client = redis_conn
 
 
+def set_watchdog_session_factory(factory: Optional[async_sessionmaker[AsyncSession]]) -> None:
+    global _override_session_factory
+    _override_session_factory = factory
+
+
+def set_watchdog_autopilot_task(task_obj: Any) -> None:
+    global _override_autopilot_task
+    _override_autopilot_task = task_obj
+
+
 def _get_client() -> IntraServiceClient:
     if _override_client is not None:
         return _override_client
@@ -57,6 +73,23 @@ def _get_service_auth() -> ServiceAuthBootstrap:
     if _override_service_auth is not None:
         return _override_service_auth
     return ServiceAuthBootstrap()
+
+
+def _get_session_factory() -> Optional[async_sessionmaker[AsyncSession]]:
+    if _override_session_factory is not None:
+        return _override_session_factory
+    try:
+        from core.database.system_state import _get_active_session_factory
+        return _get_active_session_factory()
+    except Exception:
+        return None
+
+
+def _get_autopilot_task() -> Any:
+    if _override_autopilot_task is not None:
+        return _override_autopilot_task
+    from worker.src.tasks.autopilot import autopilot_task
+    return autopilot_task
 
 
 def _get_redis() -> aioredis.Redis | None:
@@ -226,14 +259,149 @@ class InactivityWatchdog:
             "elapsed_hours": round(elapsed_hours, 1),
         }
 
+    async def reconcile_stuck_in_progress_tickets(
+        self,
+        auth: ServiceAuthCredentials,
+        client: IntraServiceClient,
+        redis_conn: aioredis.Redis | None = None,
+        session_factory: Optional[async_sessionmaker[AsyncSession]] = None,
+        now: datetime | None = None,
+        stuck_threshold_sec: float = STUCK_TICKET_THRESHOLD_SEC,
+    ) -> list[dict[str, Any]]:
+        """Identify and revive orphaned tickets stuck in Status 2 (In Progress) without active worker process."""
+        current_time = now or datetime.now(UTC)
+        results: list[dict[str, Any]] = []
+
+        try:
+            tasks_in_progress: list[TaskDTO] = await client.get_tasks(
+                filters={"statusid": 2},
+                page_size=200,
+                auth_b64=auth.auth_b64,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to fetch in-progress tickets for reconciliation: %s", exc)
+            return results
+
+        # Filter only tickets assigned to service bot
+        bot_tasks = [
+            t for t in tasks_in_progress
+            if auth.bot_user_id is not None and auth.bot_user_id in t.get_executor_ids()
+        ]
+
+        for task in bot_tasks:
+            try:
+                last_active = parse_ticket_last_activity(task)
+                elapsed_sec = max(0.0, (current_time - last_active).total_seconds())
+
+                if elapsed_sec < stuck_threshold_sec:
+                    # Still within normal execution grace window (< 3 min)
+                    continue
+
+                # Check Redis in-flight concurrency locks
+                if redis_conn is not None:
+                    lock_canonical = await redis_conn.exists(f"lock:task:{task.id}")
+                    lock_legacy = await redis_conn.exists(f"lock:autopilot:{task.id}")
+                    if lock_canonical or lock_legacy:
+                        # Ticket is actively being processed by a running worker
+                        continue
+
+                # Check database for pending or running command records
+                if session_factory is not None:
+                    try:
+                        async with session_factory() as db_session:
+                            stmt = select(CommandRecord.id).where(
+                                CommandRecord.task_id == task.id,
+                                CommandRecord.status.in_(["pending", "running"]),
+                            ).limit(1)
+                            db_res = await db_session.execute(stmt)
+                            if db_res.scalar_one_or_none() is not None:
+                                # External command (e.g. ActionDock/WMI) is still executing
+                                continue
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("DB check for active commands in ticket #%d failed: %s", task.id, exc)
+
+                # Check anti-storm reconciliation retry counter
+                recon_retry_key = f"watchdog:reconcile_retry:{task.id}"
+                retries = 0
+                if redis_conn is not None:
+                    try:
+                        val = await redis_conn.get(recon_retry_key)
+                        retries = int(val) if val else 0
+                    except Exception:
+                        retries = 0
+
+                if retries >= 3:
+                    logger.warning(
+                        "Ticket #%d exceeded max self-healing reconciliation attempts (%d). Escalating to human.",
+                        task.id,
+                        retries,
+                    )
+                    await client.update_task(
+                        task_id=task.id,
+                        comment=(
+                            "🤖 [Inactivity Watchdog: Превышен лимит самоисцеления]\n"
+                            "Заявка неоднократно зависала в статусе 'В работе' без активного процесса (3 попытки). "
+                            "Автопилот остановлен для предотвращения зацикливания. Требуется ручной разбор дежурным инженером."
+                        ),
+                        is_private=True,
+                        auth_b64=auth.auth_b64,
+                    )
+                    results.append({"task_id": task.id, "action": "escalated_max_retries", "retries": retries})
+                    continue
+
+                # Perform Self-Healing revival
+                logger.info(
+                    "Ticket #%d stuck in Status 2 for %.1fs (>= %.1fs) without active worker lock. Reviving autopilot.",
+                    task.id,
+                    elapsed_sec,
+                    stuck_threshold_sec,
+                )
+
+                if redis_conn is not None:
+                    try:
+                        await redis_conn.incr(recon_retry_key)
+                        await redis_conn.expire(recon_retry_key, 600)  # 10 min TTL
+                        await redis_conn.delete(f"autopilot:abort:{task.id}")
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("Redis error updating retry counter for #%d: %s", task.id, exc)
+
+                # Post internal technical audit entry
+                await client.update_task(
+                    task_id=task.id,
+                    comment=(
+                        "🤖 [Inactivity Watchdog: Self-Healing Reconciliation]\n"
+                        f"Обнаружено зависание заявки в статусе 'В работе' без активного процесса ({int(elapsed_sec)} сек). "
+                        "Автопилот перезапущен автоматически."
+                    ),
+                    is_private=True,
+                    auth_b64=auth.auth_b64,
+                )
+
+                # Retrigger autopilot task in Taskiq
+                task_fn = _get_autopilot_task()
+                if task_fn is not None:
+                    await task_fn.kiq(task_id=task.id)
+
+                results.append({
+                    "task_id": task.id,
+                    "action": "reconciled_autopilot_retriggered",
+                    "elapsed_sec": round(elapsed_sec, 1),
+                })
+            except Exception:
+                logger.exception("Error reconciling in-progress ticket #%d", task.id)
+                results.append({"task_id": task.id, "action": "error"})
+
+        return results
+
 
 @broker.task(task_name="inactivity_watchdog_task", queue_name=QUEUE_DEFAULT)
 async def inactivity_watchdog_task() -> dict[str, Any]:
-    """Periodic Taskiq task inspecting all tickets currently in Status 6."""
-    logger.info("Executing Inactivity Watchdog inspection...")
+    """Periodic Taskiq task inspecting suspended tickets (Status 6) and reconciling stuck in-progress tickets (Status 2)."""
+    logger.info("Executing Inactivity Watchdog inspection & reconciliation...")
     client = _get_client()
     service_auth = _get_service_auth()
     redis_conn = _get_redis()
+    session_factory = _get_session_factory()
     watchdog = InactivityWatchdog()
 
     try:
@@ -245,7 +413,7 @@ async def inactivity_watchdog_task() -> dict[str, Any]:
         logger.error("Watchdog authentication failed: %s", exc)
         return {"status": "failed", "error": f"auth_error: {exc}"}
 
-    # Fetch tickets in Status 6 (Suspended)
+    # 1. Fetch and process tickets in Status 6 (Suspended)
     try:
         suspended_tasks: list[TaskDTO] = await client.get_tasks(
             filters={"statusid": 6},
@@ -254,7 +422,7 @@ async def inactivity_watchdog_task() -> dict[str, Any]:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to fetch suspended tickets: %s", exc)
-        return {"status": "failed", "error": str(exc)}
+        suspended_tasks = []
 
     results = []
     processed_count = 0
@@ -281,16 +449,29 @@ async def inactivity_watchdog_task() -> dict[str, Any]:
             logger.exception("Error processing ticket #%d in watchdog", task.id)
             results.append({"task_id": task.id, "action": "error"})
 
+    # 2. Self-Healing Reconciliation for stuck in-progress tickets (Status 2)
+    reconciled_results = await watchdog.reconcile_stuck_in_progress_tickets(
+        auth=auth,
+        client=client,
+        redis_conn=redis_conn,
+        session_factory=session_factory,
+        now=now,
+    )
+    reconciled_count = sum(1 for r in reconciled_results if r.get("action") == "reconciled_autopilot_retriggered")
+    results.extend(reconciled_results)
+
     logger.info(
-        "Watchdog finished: inspected %d tickets, %d reminders sent, %d auto-cancelled.",
+        "Watchdog finished: inspected %d suspended (%d reminders, %d auto-cancelled), reconciled %d stuck tickets.",
         processed_count,
         reminders_count,
         cancelled_count,
+        reconciled_count,
     )
     return {
         "status": "completed",
         "inspected": processed_count,
         "reminders_sent": reminders_count,
         "auto_cancelled": cancelled_count,
+        "reconciled_stuck_tickets": reconciled_count,
         "details": results,
     }

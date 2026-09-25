@@ -5,12 +5,15 @@ import logging
 from core.autopilot.dto import AutopilotPolicyDTO
 from core.diagnostic.ping import fast_ping
 from core.diagnostic.ports import probe_diagnostic_ports, probe_tcp_port
+from core.diagnostic.printer_probe import PrinterNetworkIdentifier
+from core.intraservice.catalog import SERVICE_IDS_PRINTER_INSTALL
 from core.intraservice.dto import TaskDTO
+from core.intraservice.service_definition import ServiceDefinition
 from core.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
 
 logger = logging.getLogger("core.scenarios.adapters.install_printer")
 
-PRINTER_INSTALL_SERVICE_IDS = {82, 83}
+PRINTER_INSTALL_SERVICE_IDS = SERVICE_IDS_PRINTER_INSTALL
 
 
 class InstallPrinterScenario(BaseScenario):
@@ -27,6 +30,21 @@ class InstallPrinterScenario(BaseScenario):
         "принтер недоступен, не отображается в сети",
     ]
 
+    definition = ServiceDefinition(
+        service_ids=[62, 82, 83, 183],
+        name="Установка принтера",
+        required_facts=["pc_name", "printer_address"],
+        requires_online_host=True,
+        probe_ports=[5985, 9100],
+        clarification_template=(
+            "Здравствуйте! Для автоматической настройки принтера, пожалуйста, "
+            "укажите сетевое имя вашего компьютера (наклейка на системном блоке, например: WKS-042) "
+            "и IP-адрес принтера/МФУ."
+        ),
+        adapter_key="install_printer",
+        min_confidence=0.85,
+    )
+
     async def can_handle(self, task: TaskDTO) -> bool:
         """Check if ticket describes a printer installation request."""
         text = f"{task.name} {task.description}".lower()
@@ -37,16 +55,31 @@ class InstallPrinterScenario(BaseScenario):
         if any(tok in text for tok in audio_tokens) and not any(tok in text for tok in printer_tokens):
             return False
 
-        if task.service_id is not None and task.service_id in PRINTER_INSTALL_SERVICE_IDS:
+        # Dedicated printer installation service IDs
+        if task.service_id is not None and task.service_id in (62, 82, 83):
             return True
 
         install_tokens = ("установ", "подключ", "добав", "настроить", "переустанов")
         has_device = any(tok in text for tok in printer_tokens) or bool(task.entities.printer_model)
         has_intent = any(tok in text for tok in install_tokens)
 
+        # Spooler restart tokens take precedence over installation
+        spooler_tokens = (
+            "очередь печати",
+            "зависла печать",
+            "сбросить очередь",
+            "очистить очередь",
+            "перезапустить спулер",
+            "перезапустить spooler",
+            "висят документы",
+            "висит печать",
+        )
+        if any(tok in text for tok in spooler_tokens) and not any(tok in text for tok in install_tokens):
+            return False
+
         # Ignore troubleshooting breakdowns if it's not a fresh install
         failure_tokens = ("замяло", "полосит", "грязно печатает", "скрипит", "трещит")
-        if any(tok in text for tok in failure_tokens) and "установ" not in text:
+        if any(tok in text for tok in failure_tokens) and not any(tok in text for tok in install_tokens):
             return False
 
         return has_device and has_intent
@@ -98,11 +131,21 @@ class InstallPrinterScenario(BaseScenario):
                 ),
             )
 
-        # Preflight printer port 9100 if IPv4 address is present
+        # Preflight printer port 9100 and identify hardware model
         if printer_addr:
             port_9100 = await probe_tcp_port(printer_addr, 9100)
             if not port_9100:
                 logger.debug("Port 9100 on printer %s unreachable during preflight", printer_addr)
+
+            # Ground-truth network identification of printer model
+            if not task.entities.printer_model:
+                try:
+                    identified_model = await PrinterNetworkIdentifier.identify(printer_addr, timeout_sec=1.5)
+                    if identified_model:
+                        task.entities.printer_model = identified_model
+                        logger.info("Identified printer hardware model for %s: '%s'", printer_addr, identified_model)
+                except Exception as exc:
+                    logger.debug("Printer network identification error for %s: %s", printer_addr, exc)
         else:
             missing.append("printer_address")
             return PreconditionResult(

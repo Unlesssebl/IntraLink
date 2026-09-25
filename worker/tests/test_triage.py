@@ -1,7 +1,7 @@
 """Comprehensive unit and integration tests for Triage, Relevance Gateway, Anti-Loop Guard, and Optimistic Lock."""
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -18,7 +18,9 @@ from core.intraservice.auth import (
 )
 from worker.src.tasks.triage import (
     set_triage_client,
+    set_triage_policy_service,
     set_triage_redis_client,
+    set_triage_registry,
     set_triage_service_auth,
     set_triage_session_factory,
     triage_task,
@@ -63,6 +65,8 @@ def cleanup_triage_hooks():
     set_triage_session_factory(None)
     set_triage_service_auth(None)
     set_triage_redis_client(None)
+    set_triage_registry(None)
+    set_triage_policy_service(None)
 
 
 # ==============================================================================
@@ -164,6 +168,24 @@ def test_relevance_gateway_eds_detection():
         ServiceId=24,
     )
     assert gateway.evaluate(task_eds_in_proper_root).is_irrelevant is False
+
+    # Case 4: SBIS mentioned alongside printer problem (Exception: Helpdesk 1st line)
+    task_sbis_printer = TaskDTO(
+        Id=104,
+        Name="Не печатает накладные из СБИС",
+        Description="Принтер HP LaserJet не реагирует, зависла очередь печати",
+        ServiceId=19,
+    )
+    assert gateway.evaluate(task_sbis_printer).is_irrelevant is False
+
+    # Case 5: Kontur mentioned alongside network outage (Exception: Helpdesk 1st line)
+    task_kontur_network = TaskDTO(
+        Id=105,
+        Name="Нет сети для входа в Контур",
+        Description="Пинг до роутера отсутствует, нет интернета",
+        ServiceId=20,
+    )
+    assert gateway.evaluate(task_kontur_network).is_irrelevant is False
 
 
 def test_relevance_gateway_1c_detection():
@@ -327,7 +349,7 @@ async def test_triage_task_cancels_irrelevant_1c(test_db, mock_service_auth, cle
 
 
 @pytest.mark.asyncio
-async def test_triage_task_passes_relevant_ticket(test_db, mock_service_auth, cleanup_triage_hooks):
+async def test_triage_task_full_auto_assignment(test_db, mock_service_auth, cleanup_triage_hooks):
     session_factory = test_db
 
     mock_client = AsyncMock()
@@ -341,21 +363,73 @@ async def test_triage_task_passes_relevant_ticket(test_db, mock_service_auth, cl
     )
     mock_client.get_task.return_value = task_dto
     set_triage_client(mock_client)
+    set_triage_session_factory(session_factory)
 
-    result = await triage_task(task_id=7003)
+    with patch("worker.src.tasks.autopilot.autopilot_task.kiq", new_callable=AsyncMock) as mock_autopilot:
+        result = await triage_task(task_id=7003)
 
-    assert result["status"] == "passed_gateway"
-    assert result["task_id"] == 7003
-    # No status updates or cancellations should occur
-    mock_client.update_task.assert_not_called()
+        assert result["status"] == "auto_assigned_full_auto"
+        assert result["scenario"] == "install_printer"
+        assert result["confidence"] >= 0.70
+        assert result["task_id"] == 7003
 
-    # Audit record exists with action "passed_gateway"
-    async with session_factory() as session:
-        stmt = select(TriageAudit).where(TriageAudit.task_id == 7003)
-        record = (await session.execute(stmt)).scalar_one_or_none()
-        assert record is not None
-        assert record.action == "passed_gateway"
-        assert record.applied is False
+        # IntraService task update: assigned to bot, status 2 (In work)
+        mock_client.update_task.assert_called_once()
+        call_kwargs = mock_client.update_task.call_args.kwargs
+        assert call_kwargs["task_id"] == 7003
+        assert call_kwargs["status_id"] == 2
+        assert call_kwargs["executor_ids"] == "9999"
+        assert "🤖 [Автопилот]" in call_kwargs["comment"]
+
+        # Enqueued in Taskiq autopilot_task
+        mock_autopilot.assert_called_once_with(task_id=7003)
+
+        # Audit record exists with action "auto_assigned_full_auto"
+        async with session_factory() as session:
+            stmt = select(TriageAudit).where(TriageAudit.task_id == 7003)
+            record = (await session.execute(stmt)).scalar_one_or_none()
+            assert record is not None
+            assert record.action == "auto_assigned_full_auto"
+            assert record.applied is True
+
+
+@pytest.mark.asyncio
+async def test_triage_task_assisted_mode_prefetches_plan(test_db, mock_service_auth, cleanup_triage_hooks):
+    session_factory = test_db
+
+    mock_client = AsyncMock()
+    # General question / low confidence ticket remains in ASSISTED
+    task_dto = TaskDTO(
+        Id=7007,
+        Name="Уточнение регламента командировок",
+        Description="Подскажите, какие документы нужны для согласования авансового отчета",
+        ServiceId=16,
+        StatusId=1,
+        ExecutorIds="",
+    )
+    mock_client.get_task.return_value = task_dto
+    set_triage_client(mock_client)
+    set_triage_session_factory(session_factory)
+
+    with patch("worker.src.tasks.plan_prefetch.prefetch_agent_plan_task.kiq", new_callable=AsyncMock) as mock_prefetch:
+        result = await triage_task(task_id=7007)
+
+        assert result["status"] == "passed_gateway"
+        assert result["task_id"] == 7007
+
+        # No status updates or bot assignments for ASSISTED ticket
+        mock_client.update_task.assert_not_called()
+
+        # Prefetched for Copilot UI
+        mock_prefetch.assert_called_once_with(ticket_id=7007)
+
+        # Audit record exists with action "passed_gateway"
+        async with session_factory() as session:
+            stmt = select(TriageAudit).where(TriageAudit.task_id == 7007)
+            record = (await session.execute(stmt)).scalar_one_or_none()
+            assert record is not None
+            assert record.action == "passed_gateway"
+            assert record.applied is False
 
 
 @pytest.mark.asyncio

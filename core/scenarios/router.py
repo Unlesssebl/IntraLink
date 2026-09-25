@@ -28,10 +28,10 @@ from core.scenarios.semantic_index import SemanticPrototypeIndex
 logger = logging.getLogger("core.scenarios.router")
 
 # Factor weights
-WEIGHT_A_DIRECT: float = 0.50       # Domain rules / keyword heuristics
+WEIGHT_A_DIRECT: float = 0.70       # Domain rules / keyword heuristics (deterministic core)
 WEIGHT_B_CATALOG: float = 0.20      # Catalog-First Prior (ServiceId / TaskType)
 WEIGHT_C_ENTITIES: float = 0.08     # Extracted entities bonus
-WEIGHT_E_SEMANTIC: float = 0.20     # RAG semantic prototype similarity
+WEIGHT_E_SEMANTIC: float = 0.15     # RAG semantic prototype similarity
 
 
 class ScenarioRouter:
@@ -55,19 +55,14 @@ class ScenarioRouter:
         self,
         task: TaskDTO,
         scenarios: Dict[str, BaseScenario],
-        threshold: float = 0.55,
+        threshold: float = 0.50,
     ) -> Optional[Tuple[BaseScenario, ScenarioMatch]]:
         """Score each registered scenario and return the winning (scenario, match) pair."""
         if not scenarios:
             return None
 
-        # Factor B: Catalog Prior
-        prior_res = self.catalog_prior.get_prior(task)
-        prior_key: Optional[str] = None
-        prior_conf: float = 0.0
-        prior_reason: str = ""
-        if prior_res:
-            prior_key, prior_conf, prior_reason = prior_res
+        # Factor B: Catalog Domain Priors
+        catalog_priors = self.catalog_prior.get_priors(task)
 
         # Factor E: Semantic prototype scores
         query_text = f"{task.name or ''} {task.description or ''}".strip()
@@ -99,7 +94,9 @@ class ScenarioRouter:
                 barriers.extend(direct_match.barriers)
 
             # Factor B: Catalog Prior
-            if key == prior_key:
+            prior_match = catalog_priors.get(key)
+            if prior_match:
+                prior_conf, prior_reason = prior_match
                 b_contrib = prior_conf * WEIGHT_B_CATALOG
                 base_score += b_contrib
                 reasons.append(f"Factor B (Catalog Prior): +{b_contrib:.2f} ({prior_reason})")
@@ -186,17 +183,19 @@ class ScenarioRouter:
             )
             return best_scenario, best_match
 
-        # Fallback: RAG consultation if no deterministic scenario matched
-        rag_scenario = scenarios.get("rag_consultation")
-        if rag_scenario:
-            rag_match = await rag_scenario.evaluate_match(task)
-            if rag_match.matched:
-                logger.info(
-                    "Router fallback to 'rag_consultation' for ticket #%s (no deterministic match, best=%.3f)",
-                    task.id,
-                    best_match.confidence,
-                )
-                return rag_scenario, rag_match
+        # Fallback: RAG consultation ONLY if ticket has genuine consultative intent
+        # and no deterministic scenario detected intent (best candidate conf < 0.35)
+        if best_match.confidence < 0.35:
+            rag_scenario = scenarios.get("rag_consultation")
+            if rag_scenario:
+                rag_match = await rag_scenario.evaluate_match(task)
+                if rag_match.matched:
+                    logger.info(
+                        "Router fallback to 'rag_consultation' for ticket #%s (no action intent, best=%.3f)",
+                        task.id,
+                        best_match.confidence,
+                    )
+                    return rag_scenario, rag_match
 
         logger.info(
             "Router: no scenario matched ticket #%s (best candidate: '%s' @ %.3f < %.2f threshold)",

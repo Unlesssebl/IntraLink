@@ -3,31 +3,51 @@
 
 policies:
   install_printer:
-    mode: "ASSISTED"
-    min_confidence: 0.85
+    mode: "FULL_AUTO"
+    min_confidence: 0.70
     description: "Автономная установка и настройка принтеров и МФУ на рабочих станциях"
+
+  printer_spooler_restart:
+    mode: "FULL_AUTO"
+    min_confidence: 0.65
+    description: "Автономная очистка очереди и перезапуск диспетчера печати Spooler при зависании"
+
+  default_printer_fix:
+    mode: "FULL_AUTO"
+    min_confidence: 0.65
+    description: "Назначение принтера по умолчанию и устранение сбоев выбора устройства"
+
+  grant_wlan:
+    mode: "FULL_AUTO"
+    min_confidence: 0.80
+    description: "Предоставление доступа к корпоративной сети Wi-Fi (WLAN-WORKNET) через Active Directory"
+
+  account_lock:
+    mode: "FULL_AUTO"
+    min_confidence: 0.80
+    description: "Блокировка учетных записей сотрудников в Active Directory по регламенту"
 
   ad_password_reset:
     mode: "ASSISTED"
-    min_confidence: 0.90
+    min_confidence: 0.85
     description: "Безопасный сброс паролей учетных записей пользователей Active Directory"
 
-  grant_wlan:
+  account_create:
     mode: "ASSISTED"
-    min_confidence: 0.90
-    description: "Предоставление доступа к корпоративной сети Wi-Fi (WLAN-WORKNET) через Active Directory"
+    min_confidence: 0.85
+    description: "Создание новых учетных записей в Active Directory и Directum"
 
   service_redirect:
     mode: "FULL_AUTO"
-    min_confidence: 0.85
+    min_confidence: 0.80
     description: "Регламентная отмена нецелевых обращений со статусом 30 и перенаправление заявителя"
 
   offline_host:
     mode: "FULL_AUTO"
-    min_confidence: 0.85
+    min_confidence: 0.80
     description: "Сокетная диагностика и наряд на выезд инженера при физической недоступности рабочего места"
 
   rag_consultation:
     mode: "FULL_AUTO"
-    min_confidence: 0.85
+    min_confidence: 0.75
     description: "Автоматические консультации по типовым вопросам на базе базы знаний"

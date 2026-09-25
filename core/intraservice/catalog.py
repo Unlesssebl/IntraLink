@@ -27,6 +27,15 @@ EDS_SECTION_ID = 9
 # Section 06: 1C ERP & Enterprise Questions
 SECTION_1C_ID = 6
 
+# Canonical Service ID clusters for first-line autopilot scenarios
+SERVICE_IDS_PRINTER_INSTALL = {62, 82, 83, 183}
+SERVICE_IDS_PRINTER_SUPPORT = {12, 19, 62, 82, 83, 183}
+SERVICE_IDS_ACCOUNT_CREATE = {55, 232}
+SERVICE_IDS_ACCOUNT_LOCK = {8}
+SERVICE_IDS_WLAN = {63}
+SERVICE_IDS_OFFLINE_HOST = {112, 71}
+
+
 
 class ServiceCatalog:
     """In-memory service catalog representation with fast lookups."""

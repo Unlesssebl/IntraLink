@@ -9,7 +9,7 @@ the API container can operate without mounting the worker/ directory.
 import logging
 from uuid import UUID
 
-from core.broker import broker
+from core.broker import QUEUE_DEFAULT, broker
 
 logger = logging.getLogger("api.core.task_dispatch")
 
@@ -20,11 +20,13 @@ AUTOPILOT_TASK = "autopilot_task"
 dispatch_command_task = broker.register_task(
     lambda command_id: None,
     task_name=DISPATCH_COMMAND_TASK,
+    queue_name=QUEUE_DEFAULT,
 )
 
 dispatch_autopilot_task_proxy = broker.register_task(
     lambda task_id: None,
     task_name=AUTOPILOT_TASK,
+    queue_name=QUEUE_DEFAULT,
 )
 
 

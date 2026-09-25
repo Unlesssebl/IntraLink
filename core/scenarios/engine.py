@@ -23,7 +23,7 @@ from core.autopilot.dto import AgentPlanDTO, AutopilotPolicyDTO
 from core.autopilot.intent import detect_tense_tone
 from core.autopilot.policy_service import AutopilotPolicyService
 from core.intraservice.dto import TaskDTO
-from core.intraservice.parser import PC_EXTRACT_REGEX
+from core.intraservice.parser import PC_EXTRACT_REGEX, extract_pc_names_from_text
 from core.scenarios.base import BaseScenario
 from core.scenarios.registry import ScenarioRegistry
 
@@ -119,10 +119,7 @@ class PlanSynthesizer:
         is_tense, tense_reason = detect_tense_tone(raw_text)
         has_attachments = bool(task.attachments)
 
-        candidate_matches = PC_EXTRACT_REGEX.findall(raw_text)
-        cleaned_candidates: List[str] = list(
-            dict.fromkeys(c.strip().upper() for c in candidate_matches if len(c.strip()) >= 3)
-        )
+        cleaned_candidates: List[str] = extract_pc_names_from_text(raw_text)
         if task.entities.pc_name and task.entities.pc_name.upper() not in cleaned_candidates:
             cleaned_candidates.insert(0, task.entities.pc_name.upper())
 

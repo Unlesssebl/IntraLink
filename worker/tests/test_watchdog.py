@@ -228,3 +228,128 @@ async def test_watchdog_taskiq_task_batch_execution(mock_client, mock_redis):
     set_watchdog_client(None)
     set_watchdog_service_auth(None)
     set_watchdog_redis_client(None)
+
+
+@pytest.mark.asyncio
+async def test_watchdog_reconciliation_skips_recent_in_progress_ticket(mock_client, mock_redis, auth):
+    """Ticket in Status 2 changed 30 seconds ago is within active grace window and skipped."""
+    now = datetime(2026, 9, 25, 12, 0, 0, tzinfo=UTC)
+    task = TaskDTO(
+        Id=801,
+        StatusId=2,
+        StatusName="В работе",
+        ExecutorIds="999",
+        Changed=(now - timedelta(seconds=30)).isoformat(),
+    )
+    mock_client.get_tasks.return_value = [task]
+
+    watchdog = InactivityWatchdog()
+    res = await watchdog.reconcile_stuck_in_progress_tickets(
+        auth=auth,
+        client=mock_client,
+        redis_conn=mock_redis,
+        now=now,
+        stuck_threshold_sec=180.0,
+    )
+    assert res == []
+    mock_client.update_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_reconciliation_skips_active_redis_lock(mock_client, mock_redis, auth):
+    """Ticket in Status 2 changed 10 minutes ago but actively locked in Redis is skipped."""
+    now = datetime(2026, 9, 25, 12, 0, 0, tzinfo=UTC)
+    task = TaskDTO(
+        Id=802,
+        StatusId=2,
+        StatusName="В работе",
+        ExecutorIds="999",
+        Changed=(now - timedelta(minutes=10)).isoformat(),
+    )
+    mock_client.get_tasks.return_value = [task]
+    await mock_redis.set("lock:task:802", "locked", ex=60)
+
+    watchdog = InactivityWatchdog()
+    res = await watchdog.reconcile_stuck_in_progress_tickets(
+        auth=auth,
+        client=mock_client,
+        redis_conn=mock_redis,
+        now=now,
+    )
+    assert res == []
+    mock_client.update_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_reconciliation_revives_stuck_ticket(mock_client, mock_redis, auth):
+    """Ticket in Status 2 orphaned for 10 minutes without active lock is revived via autopilot retrigger."""
+    now = datetime(2026, 9, 25, 12, 0, 0, tzinfo=UTC)
+    task = TaskDTO(
+        Id=803,
+        StatusId=2,
+        StatusName="В работе",
+        ExecutorIds="999",
+        Changed=(now - timedelta(minutes=10)).isoformat(),
+    )
+    mock_client.get_tasks.return_value = [task]
+
+    mock_autopilot = AsyncMock()
+    mock_autopilot.kiq = AsyncMock(return_value=True)
+
+    from worker.src.tasks.watchdog import set_watchdog_autopilot_task
+    set_watchdog_autopilot_task(mock_autopilot)
+
+    watchdog = InactivityWatchdog()
+    res = await watchdog.reconcile_stuck_in_progress_tickets(
+        auth=auth,
+        client=mock_client,
+        redis_conn=mock_redis,
+        now=now,
+    )
+
+    assert len(res) == 1
+    assert res[0]["action"] == "reconciled_autopilot_retriggered"
+    assert res[0]["task_id"] == 803
+    mock_autopilot.kiq.assert_awaited_once_with(task_id=803)
+    mock_client.update_task.assert_awaited_once()
+    assert "Self-Healing Reconciliation" in mock_client.update_task.call_args.kwargs["comment"]
+
+    set_watchdog_autopilot_task(None)
+
+
+@pytest.mark.asyncio
+async def test_watchdog_reconciliation_escalates_on_exceeded_retries(mock_client, mock_redis, auth):
+    """Ticket failing and getting stuck 3 times is escalated to human engineers with circuit breaker."""
+    now = datetime(2026, 9, 25, 12, 0, 0, tzinfo=UTC)
+    task = TaskDTO(
+        Id=804,
+        StatusId=2,
+        StatusName="В работе",
+        ExecutorIds="999",
+        Changed=(now - timedelta(minutes=10)).isoformat(),
+    )
+    mock_client.get_tasks.return_value = [task]
+    await mock_redis.set("watchdog:reconcile_retry:804", "3")
+
+    mock_autopilot = AsyncMock()
+    mock_autopilot.kiq = AsyncMock(return_value=True)
+
+    from worker.src.tasks.watchdog import set_watchdog_autopilot_task
+    set_watchdog_autopilot_task(mock_autopilot)
+
+    watchdog = InactivityWatchdog()
+    res = await watchdog.reconcile_stuck_in_progress_tickets(
+        auth=auth,
+        client=mock_client,
+        redis_conn=mock_redis,
+        now=now,
+    )
+
+    assert len(res) == 1
+    assert res[0]["action"] == "escalated_max_retries"
+    mock_autopilot.kiq.assert_not_called()
+    mock_client.update_task.assert_awaited_once()
+    assert "Превышен лимит самоисцеления" in mock_client.update_task.call_args.kwargs["comment"]
+
+    set_watchdog_autopilot_task(None)
+

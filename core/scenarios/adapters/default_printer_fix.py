@@ -13,9 +13,11 @@ from core.intraservice.dto import TaskDTO
 from core.intraservice.service_definition import ServiceDefinition
 from core.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
 
+from core.intraservice.catalog import SERVICE_IDS_PRINTER_SUPPORT
+
 logger = logging.getLogger("core.scenarios.adapters.default_printer_fix")
 
-DEFAULT_PRINTER_SERVICE_IDS = {12, 40}
+DEFAULT_PRINTER_SERVICE_IDS = SERVICE_IDS_PRINTER_SUPPORT
 
 DEFAULT_PRINTER_PHRASES = (
     "по умолчанию",
@@ -55,7 +57,7 @@ class DefaultPrinterFixScenario(BaseScenario):
     ]
 
     definition = ServiceDefinition(
-        service_ids=[12, 40],
+        service_ids=[12, 62, 82, 83, 183],
         name="Установка принтера по умолчанию",
         required_facts=["pc_name", "printer_address"],
         requires_online_host=True,

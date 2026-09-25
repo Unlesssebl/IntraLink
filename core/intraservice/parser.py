@@ -71,10 +71,39 @@ FIELD_NAME_MAP: Dict[str, str] = {
     "1509": "Доп. информация",
 }
 
-# Matches multi-segment PC hostnames like PC-BUHG-05, WS-SALES-10, PC-12345, NTEMW1020
-PC_EXTRACT_REGEX = re.compile(
-    r"\b(?:[a-zA-Z]{2,10}(?:[-_][a-zA-Z0-9]{1,12})+|[a-zA-Z]{2,6}[\s\-_]?[0-9]{2,6})\b",
+# Whitelist of corporate workstation prefixes and suffixes
+CORP_HOST_PREFIXES = (
+    "WKS-", "WKS", "NTEMW", "ARM-", "ARM", "АРМ-", "АРМ",
+    "PC-", "PC", "WS-", "WS", "NB-", "NB",
+    "LAPTOP-", "DESKTOP-", "SRV-", "RDS-"
+)
+
+# Strict corporate hostname whitelist (e.g. WKS-1020, NTEMW1020, PC-BUHG-05, WS-SALES-10, LAPTOP-ABC1234, BUHG-PC)
+CORP_PC_WHITELIST_REGEX = re.compile(
+    r"\b(?:"
+    r"(?:WKS|NTEMW|ARM|АРМ|PC|WS|NB|LAPTOP|DESKTOP|SRV|RDS)[\-_]?[0-9A-Za-z]+(?:[\-_][0-9A-Za-z]+)*|"
+    r"[0-9A-Za-z]{2,12}[\-_](?:WKS|PC|WS|NB|ARM)"
+    r")\b",
     re.IGNORECASE,
+)
+# Backwards compatibility alias
+PC_EXTRACT_REGEX = CORP_PC_WHITELIST_REGEX
+
+
+# Explicit context marker where text preceding the token indicates a computer/workstation
+PC_CONTEXT_REGEX = re.compile(
+    r"(?i)\b(?:пк|компьютер(?:а|у|ом)?|ноутбук(?:а|у|ом)?|хост(?:а|у|ом)?|комп(?:а|у|ом)?|"
+    r"рабоч(?:ая|ей|ую)\s+станци(?:я|и|ю|ей)|workstation|host|laptop|desktop|арм)\s*[:#№\-–—]?\s*([a-zA-Z0-9\-_]{2,25})\b"
+)
+
+# Blacklist of hardware models, OS names, printer models and protocols that must NEVER be treated as PC hostnames
+NON_PC_PATTERNS = re.compile(
+    r"(?i)^(?:mf\d+|lbp\d+|fs[\-_]?\d+|dcp[\-_]?\w*|hl[\-_]?\w*|mfc[\-_]?\w*|sp[\-_]?\w*|"
+    r"p[\-_]?\d{3,4}|m\d{3,4}|b\d{3}|c\d{3}|"
+    r"win\d+|windows\d*|crypto\w*|usb\d*|tcp\d*|udp\d*|vlan\d*|port\d*|"
+    r"spooler\w*|directum\w*|1c\w*|office\d*|excel\d*|word\d*|ip\d*|"
+    r"taskalfa\w*|ecosys\w*|laserjet\w*|deskjet\w*|phaser\w*|workcentre\w*|"
+    r"kyocera\w*|canon\w*|xerox\w*|brother\w*|pantum\w*|lexmark\w*|epson\w*)$"
 )
 
 
@@ -83,6 +112,7 @@ def normalize_pc_name(raw_pc: str) -> str:
 
     Strips FQDN domain suffixes, spaces, special symbols, and converts pure digits or
     wks variations into canonical WKS-XXXX notation. Preserves standard PC/WS/NTEMW prefixes.
+    Rejects printer models (e.g. MF3010, FS4200, DCP-L2500) and OS tokens.
     """
     if not raw_pc:
         return ""
@@ -107,32 +137,99 @@ def normalize_pc_name(raw_pc: str) -> str:
     if not cleaned:
         return ""
 
+    # Rejection of hardware models and software tokens
+    if NON_PC_PATTERNS.match(cleaned):
+        return ""
+
     # Check if purely digits (e.g. "1020" or "0102") -> canonical WKS-XXXX
     if cleaned.isdigit():
         return f"WKS-{cleaned}"
+
+    # Handle Russian homoglyph "АРМ" -> ARM
+    if cleaned.upper().startswith("АРМ"):
+        cleaned = "ARM" + cleaned[3:]
 
     # Handle WKS variants: wks_1020, wks-1020, wks1020, wks 1020 -> WKS-1020
     m_wks = re.fullmatch(r"(?i)wks[\s\-_]*(\d+)", cleaned)
     if m_wks:
         return f"WKS-{m_wks.group(1)}"
 
+    # Handle PC variants: pc_1020, pc 1020 -> PC-1020
+    m_pc = re.fullmatch(r"(?i)pc[\s\-_]+(\d+)", cleaned)
+    if m_pc:
+        return f"PC-{m_pc.group(1)}"
+
+    # Handle ARM variants: arm_1020, arm 1020 -> ARM-1020
+    m_arm = re.fullmatch(r"(?i)arm[\s\-_]+(\d+)", cleaned)
+    if m_arm:
+        return f"ARM-{m_arm.group(1)}"
+
+    # Handle NB variants: nb_1020, nb 1020 -> NB-1020
+    m_nb = re.fullmatch(r"(?i)nb[\s\-_]+(\d+)", cleaned)
+    if m_nb:
+        return f"NB-{m_nb.group(1)}"
+
     return cleaned.upper()
 
 
 def extract_pc_names_from_text(text: str) -> List[str]:
-    """Find potential PC hostnames embedded within text/descriptions."""
+    """Find potential PC hostnames embedded within text/descriptions.
+
+    Uses strict corporate whitelist patterns (WKS-, NTEMW, ARM-, NB-, PC-, WS-, LAPTOP-, DESKTOP-)
+    and explicit contextual cues ('ПК 1234', 'компьютер: user-pc'). Rejects all printer models
+    (DCP, HL, MF, LBP, FS, Pantum, Xerox, etc.).
+    """
     if not text:
         return []
-    matches = PC_EXTRACT_REGEX.findall(text)
     results: List[str] = []
-    for m in matches:
-        # A valid computer hostname must contain at least one digit (avoids 'user_test', 'log_level')
-        if not any(ch.isdigit() for ch in m):
+
+    # 1. First pass: explicit context markers ('на ПК 1020', 'компьютер: buh-01')
+    for m in PC_CONTEXT_REGEX.finditer(text):
+        token = m.group(1).strip()
+        if NON_PC_PATTERNS.match(token):
             continue
-        norm = normalize_pc_name(m)
+        norm = normalize_pc_name(token)
         if norm and len(norm) >= 3 and norm not in results:
             results.append(norm)
+
+    # 2. Second pass: strict corporate whitelist pattern matches
+    for m in CORP_PC_WHITELIST_REGEX.finditer(text):
+        token = m.group(0).strip()
+        if NON_PC_PATTERNS.match(token):
+            continue
+        # Hostname must contain at least one digit or match explicit server/RDS pattern
+        if not (any(ch.isdigit() for ch in token) or token.upper().startswith(("SRV-", "RDS-"))):
+            continue
+        norm = normalize_pc_name(token)
+        if norm and len(norm) >= 3 and norm not in results:
+            results.append(norm)
+
+    # Prioritize corporate standard hostnames (WKS-, NTEMW, ARM-, NB-, PC-) over arbitrary tokens
+    def _host_priority(host: str) -> int:
+        h_upper = host.upper()
+        for idx, pref in enumerate(CORP_HOST_PREFIXES):
+            if h_upper.startswith(pref):
+                return idx
+        return 999
+
+    results.sort(key=_host_priority)
     return results
+
+
+async def filter_valid_pcs_async(
+    pc_candidates: List[str],
+    redis_client: Optional[Any] = None,
+    ad_pool: Optional[Any] = None,
+) -> List[str]:
+    """Filter extracted PC candidate names using fast AD/DNS ground-truth verification."""
+    from core.ad.pool import is_valid_domain_computer
+
+    valid: List[str] = []
+    for cand in pc_candidates:
+        if await is_valid_domain_computer(cand, redis_client=redis_client, ad_pool=ad_pool):
+            valid.append(cand)
+    return valid
+
 
 
 def normalize_printer_address(raw_address: str) -> str:
@@ -413,17 +510,39 @@ def enrich_task_dict(task: Dict[str, Any]) -> Dict[str, Any]:
     if not task["entities"]["pc_name"]:
         candidates = extract_pc_names_from_text(full_text)
         if candidates:
-            task["entities"]["pc_name"] = ", ".join(candidates)
+            # Single best corporate candidate (never comma-join multiple items)
+            task["entities"]["pc_name"] = candidates[0]
 
-    # 2. Fallback Printer Address search in name/description
-    if not task["entities"]["printer_address"]:
-        addrs = extract_printer_addresses_from_text(full_text)
-        if addrs:
-            task["entities"]["printer_address"] = addrs[0]
+    # 2. Contextual Printer Address vs PC IP search
+    addrs = extract_printer_addresses_from_text(full_text)
+    # Filter out home/loopback subnets (192.168.x.x, 127.0.0.1, 169.254.x.x)
+    corp_addrs = [
+        a for a in addrs
+        if not (a.startswith("192.168.") or a.startswith("127.") or a.startswith("169.254."))
+    ]
+
+    has_print_context = any(
+        kw in full_text.lower()
+        for kw in ("принтер", "мфу", "печать", "печата", "сканер", "scsp", "ittp", "kmkp", "kzmp", "kyocera", "canon", "hp ")
+    )
+
+    if corp_addrs:
+        first_addr = corp_addrs[0]
+        # Check if address is explicitly qualified as PC host IP (e.g. "на ПК 10.244.1.20", "компьютер 10.x")
+        pc_ip_match = re.search(r"(?i)(?:пк|хост|компьютер|arm|арм|на)\s+(" + re.escape(first_addr) + r")", full_text)
+        if pc_ip_match and not task["entities"]["pc_name"]:
+            task["entities"]["pc_name"] = first_addr
+        elif has_print_context and not task["entities"]["printer_address"]:
+            task["entities"]["printer_address"] = first_addr
 
     # 3. Fallback Printer Model search in name/description
     if not task["entities"]["printer_model"]:
         model = extract_printer_model_from_text(full_text)
+        if not model:
+            # Catch standalone model tokens like MF3010, FS4200, P2500, M402
+            m_token = re.search(r"(?i)\b(?:mf[\s\-_]?\d{3,4}|fs[\-_]?\d{3,4}|p[\-_]?\d{4}|m\d{3,4})\b", full_text)
+            if m_token:
+                model = m_token.group(0).upper().replace(" ", "")
         if model:
             task["entities"]["printer_model"] = model
 

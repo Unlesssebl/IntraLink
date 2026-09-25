@@ -8,6 +8,7 @@ from core.ad import (
     SecretPassword,
     generate_sam_account_name,
     generate_secure_password,
+    is_valid_domain_computer,
     mask_password,
     transliterate_to_latin,
 )
@@ -76,3 +77,84 @@ def test_ad_pool_configuration():
     pool = ActiveDirectoryPool(config=config)
     assert len(pool._servers) == 2
     assert pool.server_pool is not None
+
+
+class MockRedis:
+    def __init__(self) -> None:
+        self.store = {}
+
+    async def get(self, key: str):
+        return self.store.get(key)
+
+    async def set(self, key: str, value: str, ex: int = 0):
+        self.store[key] = value
+        return True
+
+
+@pytest.mark.asyncio
+async def test_is_valid_domain_computer_empty():
+    assert await is_valid_domain_computer("") is False
+    assert await is_valid_domain_computer("   ") is False
+
+
+@pytest.mark.asyncio
+async def test_is_valid_domain_computer_redis_cache_hit():
+    mock_redis = MockRedis()
+    await mock_redis.set("cache:ad:computer:WKS-1020", "1")
+    assert await is_valid_domain_computer("wks-1020", redis_client=mock_redis) is True
+
+    await mock_redis.set("cache:ad:computer:CANON-MF3010", "0")
+    assert await is_valid_domain_computer("CANON-MF3010", redis_client=mock_redis) is False
+
+
+@pytest.mark.asyncio
+async def test_is_valid_domain_computer_dns_success(monkeypatch):
+    mock_redis = MockRedis()
+
+    async def fake_dns(host, timeout_sec=0.4):
+        return "10.244.1.50" if host == "WKS-ONLINE" else None
+
+    monkeypatch.setattr("core.diagnostic.ping.resolve_dns_fast", fake_dns)
+
+    res = await is_valid_domain_computer("WKS-ONLINE", redis_client=mock_redis)
+    assert res is True
+    assert await mock_redis.get("cache:ad:computer:WKS-ONLINE") == "1"
+
+
+@pytest.mark.asyncio
+async def test_is_valid_domain_computer_ad_success(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_redis = MockRedis()
+
+    async def fake_dns(host, timeout_sec=0.4):
+        return None
+
+    monkeypatch.setattr("core.diagnostic.ping.resolve_dns_fast", fake_dns)
+
+    mock_pool = MagicMock(spec=ActiveDirectoryPool)
+    mock_pool.get_computer = AsyncMock(return_value={"cn": "WKS-IN-AD", "operating_system": "Windows 11"})
+
+    res = await is_valid_domain_computer("WKS-IN-AD", redis_client=mock_redis, ad_pool=mock_pool)
+    assert res is True
+    assert await mock_redis.get("cache:ad:computer:WKS-IN-AD") == "1"
+
+
+@pytest.mark.asyncio
+async def test_is_valid_domain_computer_negative_caching(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_redis = MockRedis()
+
+    async def fake_dns(host, timeout_sec=0.4):
+        return None
+
+    monkeypatch.setattr("core.diagnostic.ping.resolve_dns_fast", fake_dns)
+
+    mock_pool = MagicMock(spec=ActiveDirectoryPool)
+    mock_pool.get_computer = AsyncMock(return_value=None)
+
+    res = await is_valid_domain_computer("PANTUM-P3300", redis_client=mock_redis, ad_pool=mock_pool)
+    assert res is False
+    assert await mock_redis.get("cache:ad:computer:PANTUM-P3300") == "0"
+

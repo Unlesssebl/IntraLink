@@ -151,3 +151,128 @@ class ActiveDirectoryPool:
     async def check_liveness(self) -> Tuple[bool, str, Optional[str]]:
         """Non-blocking asynchronous health check for the AD pool."""
         return await asyncio.to_thread(self.check_liveness_sync)
+
+    def get_computer_sync(self, computer_name: str) -> Optional[dict]:
+        """Search for a computer account in Active Directory by hostname."""
+        if not computer_name or not computer_name.strip():
+            return None
+        cleaned = computer_name.strip().rstrip("$")
+        search_filter = f"(|(sAMAccountName={cleaned}$)(cn={cleaned}))"
+        search_base = f"DC={self.config.domain.replace('.', ',DC=')}"
+        try:
+            with self.connection_scope(auto_bind=True, read_only=True) as conn:
+                conn.search(
+                    search_base=search_base,
+                    search_filter=search_filter,
+                    attributes=["cn", "sAMAccountName", "dNSHostName", "operatingSystem", "distinguishedName", "lastLogonTimestamp"],
+                    size_limit=1,
+                )
+                if conn.entries:
+                    entry = conn.entries[0]
+                    return {
+                        "cn": str(entry.cn.value) if hasattr(entry, "cn") else cleaned,
+                        "sam_account_name": str(entry.sAMAccountName.value) if hasattr(entry, "sAMAccountName") else None,
+                        "dns_hostname": str(entry.dNSHostName.value) if hasattr(entry, "dNSHostName") else None,
+                        "operating_system": str(entry.operatingSystem.value) if hasattr(entry, "operatingSystem") else None,
+                        "distinguished_name": str(entry.distinguishedName.value) if hasattr(entry, "distinguishedName") else None,
+                    }
+                return None
+        except Exception as exc:
+            logger.debug("ActiveDirectoryPool.get_computer failed for %s: %s", computer_name, exc)
+            return None
+
+    async def get_computer(self, computer_name: str) -> Optional[dict]:
+        """Asynchronously search for a computer account in Active Directory."""
+        return await asyncio.to_thread(self.get_computer_sync, computer_name)
+
+
+_default_ad_pool: Optional[ActiveDirectoryPool] = None
+
+
+def get_default_ad_pool() -> ActiveDirectoryPool:
+    global _default_ad_pool
+    if _default_ad_pool is None:
+        _default_ad_pool = ActiveDirectoryPool()
+    return _default_ad_pool
+
+
+def set_default_ad_pool(pool: Optional[ActiveDirectoryPool]) -> None:
+    global _default_ad_pool
+    _default_ad_pool = pool
+
+
+async def is_valid_domain_computer(
+    hostname: str,
+    redis_client: Optional[object] = None,
+    ad_pool: Optional[ActiveDirectoryPool] = None,
+    domain: Optional[str] = None,
+) -> bool:
+    """Verify whether a hostname corresponds to a real corporate domain workstation/server.
+
+    1. Checks Redis cache `cache:ad:computer:{hostname}` (TTL 24h).
+    2. Fast DNS lookup (< 400ms) with domain suffix.
+    3. ActiveDirectoryPool.get_computer() lookup (< 2.0s).
+    4. Caches both positive and negative results in Redis to guarantee < 2ms latency on repeat calls.
+    """
+    if not hostname or not str(hostname).strip():
+        return False
+
+    clean_host = str(hostname).strip().upper()
+    cache_key = f"cache:ad:computer:{clean_host}"
+
+    # 1. Check Redis cache
+    if redis_client is not None:
+        try:
+            cached_val = await redis_client.get(cache_key)  # type: ignore[attr-defined]
+            if cached_val is not None:
+                if isinstance(cached_val, bytes):
+                    cached_val = cached_val.decode("utf-8")
+                return cached_val == "1"
+        except Exception as exc:
+            logger.debug("Redis lookup error in is_valid_domain_computer for %s: %s", clean_host, exc)
+
+    # 2. Fast DNS lookup
+    try:
+        from core.diagnostic.ping import resolve_dns_fast
+
+        ip = await resolve_dns_fast(clean_host)
+        if ip:
+            if redis_client is not None:
+                try:
+                    await redis_client.set(cache_key, "1", ex=86400)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            return True
+    except Exception as exc:
+        logger.debug("DNS check error in is_valid_domain_computer for %s: %s", clean_host, exc)
+
+    # 3. Active Directory LDAP search
+    pool = ad_pool
+    if pool is None:
+        try:
+            pool = get_default_ad_pool()
+        except Exception:
+            pool = None
+
+    if pool is not None:
+        try:
+            computer_entry = await pool.get_computer(clean_host)
+            if computer_entry:
+                if redis_client is not None:
+                    try:
+                        await redis_client.set(cache_key, "1", ex=86400)  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                return True
+        except Exception as exc:
+            logger.debug("AD lookup error in is_valid_domain_computer for %s: %s", clean_host, exc)
+
+    # 4. Neither DNS nor AD validated the host -> negative cache (TTL 24h)
+    if redis_client is not None:
+        try:
+            await redis_client.set(cache_key, "0", ex=86400)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    return False
+

@@ -59,17 +59,24 @@ class RAGConsultationScenario(BaseScenario):
         """Check if ticket can be resolved via knowledge base consultation."""
         text = f"{task.name} {task.description}".lower()
 
-        # Audio and direct printer installations/hardware tasks have specialized scenarios
-        if any(w in text for w in ("установить принтер", "подключить принтер", "сброс пароля", "забыл пароль")):
+        # Exclude deterministic action domains from RAG fallback
+        hardware_and_action_exclusions = (
+            "принтер", "мфу", "печать", "печата", "драйвер", "spooler", "спулер",
+            "создать учет", "создать учёт", "создать пользователя", "завести сотрудника", "онбординг",
+            "увольнен", "уволен", "уволить", "заблокировать", "оффбординг",
+            "wlan", "wi-fi", "wifi", "вайфай",
+            "не включается", "нет питания", "черный экран", "нет сети"
+        )
+        if any(ex in text for ex in hardware_and_action_exclusions):
             return False
 
-        # Generic consulting tokens or questions
-        consulting_tokens = (
-            "как ", "где ", "подскажите", "инструкци", "настройк", "правила",
-            "доступ", "заявк", "парол", "почт", "directum", "1с", "outlook",
-            "vpn", "wifi", "wlan", "печать", "сканир"
+        # Require genuine consultative / instructional inquiries
+        genuine_consulting_tokens = (
+            "как ", "где ", "подскажите", "инструкци", "правила",
+            "регламент", "консультац", "памятк", "образец", "образца", "порядок действий"
         )
-        return any(tok in text for tok in consulting_tokens) or len(text) > 10
+        has_consulting_intent = any(tok in text for tok in genuine_consulting_tokens) or "?" in text
+        return has_consulting_intent
 
     async def validate_preconditions(self, task: TaskDTO) -> PreconditionResult:
         """Validate if a high-confidence semantic match exists in TaskKnowledgeBase."""

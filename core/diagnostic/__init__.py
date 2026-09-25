@@ -2,6 +2,7 @@
 
 from core.diagnostic.ping import fast_ping, resolve_dns_fast
 from core.diagnostic.ports import probe_diagnostic_ports, probe_tcp_port
+from core.diagnostic.printer_probe import PrinterNetworkIdentifier
 from core.diagnostic.service import HostDiagnosticDTO, HostDiagnosticsService
 
 __all__ = [
@@ -11,4 +12,6 @@ __all__ = [
     "probe_diagnostic_ports",
     "HostDiagnosticDTO",
     "HostDiagnosticsService",
+    "PrinterNetworkIdentifier",
 ]
+

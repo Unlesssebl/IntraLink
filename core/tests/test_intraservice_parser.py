@@ -1,5 +1,7 @@
 """Test IntraService custom field XML parsing and normalization."""
 
+import pytest
+
 from core.intraservice.parser import (
     enrich_task_dict,
     extract_pc_names_from_text,
@@ -105,4 +107,47 @@ def test_extract_printer_queue_name():
     }
     enriched = enrich_task_dict(task_raw)
     assert enriched["entities"]["printer_address"] == "scsp0001"
+
+
+def test_printer_models_not_treated_as_pc_hostname():
+    """Verify that printer models (Brother, Pantum, Kyocera, Canon, HP, Ricoh) are never parsed as PC hostname."""
+    printer_texts = [
+        "Подключить DCP-L2500 в бухгалтерию",
+        "Установить принтер Brother HL-1110",
+        "Купили Pantum P3300dn для отдела кадров",
+        "Купили Pantum P3300 для отдела кадров",
+        "Заправка Kyocera FS-1040",
+        "Настройка Lexmark C3326",
+        "МФУ Canon MF3010 не сканирует",
+        "Принтер HP LaserJet M404dn замял бумагу",
+        "Настроить МФУ Ricoh SP210 в приемной",
+    ]
+    for text in printer_texts:
+        pcs = extract_pc_names_from_text(text)
+        assert not pcs, f"Failed for '{text}': parsed {pcs} as PC"
+
+
+def test_strict_corporate_and_context_pc_extraction():
+    """Verify standard corporate prefixes (WKS, NTEMW, ARM, PC, WS, NB) and contextual labels."""
+    assert extract_pc_names_from_text("Настроить на WKS-1020 и NTEMW5540") == ["WKS-1020", "NTEMW5540"]
+    assert extract_pc_names_from_text("Компьютер: buh-01") == ["BUH-01"]
+    assert extract_pc_names_from_text("Печать на ПК 4521") == ["WKS-4521"]
+    assert extract_pc_names_from_text("Рабочая станция PC-SALES-10") == ["PC-SALES-10"]
+    assert extract_pc_names_from_text("Ноутбук NB-CHIEF-01") == ["NB-CHIEF-01"]
+
+
+@pytest.mark.asyncio
+async def test_filter_valid_pcs_async(monkeypatch):
+    from core.intraservice.parser import filter_valid_pcs_async
+
+    async def fake_validator(name, redis_client=None, ad_pool=None):
+        return name in ("WKS-1020", "NTEMW5540")
+
+    monkeypatch.setattr("core.ad.pool.is_valid_domain_computer", fake_validator)
+
+    candidates = ["WKS-1020", "P3300", "NTEMW5540", "MF3010"]
+    valid = await filter_valid_pcs_async(candidates)
+    assert valid == ["WKS-1020", "NTEMW5540"]
+
+
 

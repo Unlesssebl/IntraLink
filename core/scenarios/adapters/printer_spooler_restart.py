@@ -13,11 +13,17 @@ from core.intraservice.dto import TaskDTO
 from core.intraservice.service_definition import ServiceDefinition
 from core.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
 
+from core.intraservice.catalog import SERVICE_IDS_PRINTER_SUPPORT
+
 logger = logging.getLogger("core.scenarios.adapters.printer_spooler_restart")
 
-PRINTER_SERVICE_IDS = {12, 40}
+PRINTER_SERVICE_IDS = SERVICE_IDS_PRINTER_SUPPORT
 
 SPOOLER_PHRASES = (
+    "не печатает принтер",
+    "принтер не печатает",
+    "не могу распечатать",
+    "ошибка печати",
     "зависла печать",
     "завис документ",
     "зависли документы",
@@ -33,6 +39,8 @@ SPOOLER_PHRASES = (
     "перезапуск службы печати",
     "диспетчер печати остановлен",
     "служба печати остановлена",
+    "печать заблокирована",
+    "документ не печатается",
 )
 
 SPOOLER_EXCLUSIONS = (
@@ -70,7 +78,7 @@ class PrinterSpoolerRestartScenario(BaseScenario):
     ]
 
     definition = ServiceDefinition(
-        service_ids=[12, 40],
+        service_ids=[12, 62, 82, 83, 183],
         name="Перезапуск очереди печати (Spooler)",
         required_facts=["pc_name"],
         requires_online_host=True,

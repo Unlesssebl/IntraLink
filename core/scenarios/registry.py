@@ -18,7 +18,7 @@ from core.scenarios.adapters.printer_spooler_restart import PrinterSpoolerRestar
 from core.scenarios.adapters.rag_consultation import RAGConsultationScenario
 from core.scenarios.adapters.service_redirect import ServiceRedirectScenario
 from core.scenarios.base import BaseScenario
-from core.scenarios.router import ScenarioRouter
+from core.scenarios.router import ScenarioMatch, ScenarioRouter
 
 logger = logging.getLogger("core.scenarios.registry")
 
@@ -59,9 +59,11 @@ class ScenarioRegistry:
         """List all registered scenarios."""
         return list(self._scenarios.values())
 
-    async def find_scenario(self, task: TaskDTO) -> Optional[BaseScenario]:
-        """Find matching scenario using multi-factor Bayesian-like routing (A+B+C+D+E)."""
-        routed = await self._router.route_task(task, self._scenarios)
+    async def match_scenario(
+        self, task: TaskDTO, threshold: float = 0.50
+    ) -> Optional[tuple[BaseScenario, ScenarioMatch]]:
+        """Find matching scenario with full score metadata using multi-factor Bayesian-like routing."""
+        routed = await self._router.route_task(task, self._scenarios, threshold=threshold)
         if routed:
             scenario, match = routed
             logger.info(
@@ -70,7 +72,14 @@ class ScenarioRegistry:
                 match.confidence,
                 task.id,
             )
-            return scenario
+            return routed
+        return None
+
+    async def find_scenario(self, task: TaskDTO) -> Optional[BaseScenario]:
+        """Find matching scenario using multi-factor Bayesian-like routing (A+B+C+D+E)."""
+        routed = await self.match_scenario(task)
+        if routed:
+            return routed[0]
         return None
 
 

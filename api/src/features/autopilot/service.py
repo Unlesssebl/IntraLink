@@ -448,10 +448,10 @@ class AutopilotService:
                 # Fetch ticket state to check current status
                 task: TaskDTO = await self.client.get_task(task_id=tid, auth_b64=effective_auth)
 
-                # If status is 1 (New), transition to 2 (In work)
+                # If status is 1 (New) or 31 (Open), transition to 2 (In work)
                 new_status_id: Optional[int] = None
                 comment_text = "🤖 [Автопилот] Заявка передана на автоматическую обработку автопилоту (alen_assistant)."
-                if task.status_id == 1:
+                if task.status_id in (1, 31):
                     new_status_id = 2
 
                 # Update executor and status

@@ -41,6 +41,25 @@ EDS_PATTERNS = [
     re.compile(r"\b(?:сбис|госуслуг[иа]|диадок|контур|мчд)\b", re.IGNORECASE),
 ]
 
+# Exceptions where EDS/SBIS/Kontur mention does NOT mean Section 09 problem (1st-line hardware/printer/network issues)
+SECTION_EDS_EXCEPTIONS = [
+    # Peripheral / Printer issues
+    re.compile(
+        r"\b(?:принтер|мфу|сканер|картридж|тонер|замяти[ея]\s+бумаги|не\s+печатает|печать|очеред[ьи]\s+печати)\b",
+        re.IGNORECASE,
+    ),
+    # Network infra issues
+    re.compile(
+        r"\b(?:коммутатор|свитч|switch|роутер|пинг|ping|потер[яи]\s+пакетов|нет\s+сети|обрыв\s+сети|сетевой\s+кабель|патч-корд|нет\s+интернета|вайфай|wi-?fi)\b",
+        re.IGNORECASE,
+    ),
+    # General PC freeze / OS issues / Power
+    re.compile(
+        r"\b(?:компьютер\s+работает\s+медленно|тормозит\s+компьютер|зависает\s+компьютер|зависает\s+пк|переустановка\s+(?:windows|ос|виндовс)|не\s+включается|синий\s+экран|bsod)\b",
+        re.IGNORECASE,
+    ),
+]
+
 # 2. 1C Enterprise database patterns
 SECTION_1C_PATTERNS = [
     re.compile(r"\b1[сc]:\s*предприяти[ея]\b", re.IGNORECASE),
@@ -117,40 +136,43 @@ class RelevanceGateway:
         # Rule 1: Electronic Digital Signature (EDS) & Bank Clients
         # ---------------------------------------------------------
         if not self.is_eds_service(service_id):
-            eds_markers = []
-            for pat in EDS_PATTERNS:
-                m = pat.search(full_text)
-                if m:
-                    eds_markers.append(m.group(0))
+            has_eds_exception = any(pat.search(full_text) for pat in SECTION_EDS_EXCEPTIONS)
 
-            if eds_markers:
-                markers_str = ", ".join(list(dict.fromkeys(eds_markers)))
-                public_comment = (
-                    "Заявка отменена, так как вопросы выпуска, продления и настройки "
-                    "сертификатов ЭЦП, КриптоПро и систем банк-клиент сопровождаются профильной "
-                    "службой в разделе «09. Электронная цифровая подпись (ЭЦП)».\n\n"
-                    "Пожалуйста, создайте обращение в соответствующем разделе каталога:\n"
-                    "https://servicedesk-pub.corporate.loc/Task/Create?serviceid=24"
-                )
-                internal_note = (
-                    f"[ТРИАЖ: ШЛЮЗ РЕЛЕВАНТНОСТИ] Обращение определено как нецелевое (Личные ЭЦП / Сертификаты). "
-                    f"Сработавшие маркеры: [{markers_str}]. "
-                    f"Заявка автоматически отменена (Статус 30) с регламентным комментарием перенаправления в раздел 09."
-                )
-                logger.info(
-                    "Ticket #%d matched EDS relevance gateway rule (markers: %s). Rejecting.",
-                    task.id,
-                    markers_str,
-                )
-                return RelevanceDecision(
-                    is_irrelevant=True,
-                    reason=f"Нецелевое обращение: ЭЦП / Сертификаты / Банк-клиент ({markers_str})",
-                    target_service_id=24,
-                    target_service_name="09. Электронная цифровая подпись (ЭЦП)",
-                    public_comment=public_comment,
-                    internal_note=internal_note,
-                    matched_markers=eds_markers,
-                )
+            if not has_eds_exception:
+                eds_markers = []
+                for pat in EDS_PATTERNS:
+                    m = pat.search(full_text)
+                    if m:
+                        eds_markers.append(m.group(0))
+
+                if eds_markers:
+                    markers_str = ", ".join(list(dict.fromkeys(eds_markers)))
+                    public_comment = (
+                        "Заявка отменена, так как вопросы выпуска, продления и настройки "
+                        "сертификатов ЭЦП, КриптоПро и систем банк-клиент сопровождаются профильной "
+                        "службой в разделе «09. Электронная цифровая подпись (ЭЦП)».\n\n"
+                        "Пожалуйста, создайте обращение в соответствующем разделе каталога:\n"
+                        "https://servicedesk-pub.corporate.loc/Task/Create?serviceid=24"
+                    )
+                    internal_note = (
+                        f"[ТРИАЖ: ШЛЮЗ РЕЛЕВАНТНОСТИ] Обращение определено как нецелевое (Личные ЭЦП / Сертификаты). "
+                        f"Сработавшие маркеры: [{markers_str}]. "
+                        f"Заявка автоматически отменена (Статус 30) с регламентным комментарием перенаправления в раздел 09."
+                    )
+                    logger.info(
+                        "Ticket #%d matched EDS relevance gateway rule (markers: %s). Rejecting.",
+                        task.id,
+                        markers_str,
+                    )
+                    return RelevanceDecision(
+                        is_irrelevant=True,
+                        reason=f"Нецелевое обращение: ЭЦП / Сертификаты / Банк-клиент ({markers_str})",
+                        target_service_id=24,
+                        target_service_name="09. Электронная цифровая подпись (ЭЦП)",
+                        public_comment=public_comment,
+                        internal_note=internal_note,
+                        matched_markers=eds_markers,
+                    )
 
         # ---------------------------------------------------------
         # Rule 2: 1C Enterprise Databases & Accounting
