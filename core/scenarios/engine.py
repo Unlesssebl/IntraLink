@@ -154,11 +154,24 @@ class PlanSynthesizer:
             precond_res = await scenario.validate_preconditions(task)
             preconditions_dict = precond_res.model_dump()
 
-            # 5. Derive suggested comment from canonical matrix
-            suggested_comment, target_status_id = self._resolve_suggested_comment(
-                scenario_key=scenario_key,
-                pc_name=task.entities.pc_name,
-            )
+            # 5. Derive suggested comment & target status:
+            # FUNDAMENTAL RULE: If preconditions failed, the agent MUST NOT generate
+            # a completion comment (Status 3). Instead, it MUST prompt the applicant
+            # for missing facts / environmental actions and suggest Status 6 (Suspended).
+            if not precond_res.is_valid:
+                target_status_id = 6  # Приостановлена (Ожидание ответа заявителя)
+                suggested_comment = precond_res.clarification_prompt
+                if not suggested_comment and scenario.definition and scenario.definition.clarification_template:
+                    suggested_comment = scenario.definition.clarification_template
+                if not suggested_comment:
+                    target_status_id = 2  # В работе (Передано инженеру)
+                    suggested_comment = "Заявка передана на ручную обработку дежурному инженеру."
+            else:
+                suggested_comment, target_status_id = self._resolve_success_comment(
+                    scenario_key=scenario_key,
+                    pc_name=task.entities.pc_name,
+                    task=task,
+                )
 
         return AgentPlanDTO(
             task_id=task.id,
@@ -272,13 +285,15 @@ class PlanSynthesizer:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _resolve_suggested_comment(
+    def _resolve_success_comment(
         scenario_key: str,
         pc_name: Optional[str],
+        task: Optional[TaskDTO] = None,
     ) -> tuple[str, int]:
-        """Return (suggested_comment, target_status_id) from the canonical matrix.
+        """Return (suggested_comment, target_status_id) upon successful execution.
 
         Handles pc_name interpolation for install_printer and offline_host.
+        Differentiates USB vs Network printer resolution message.
         """
         entry = _SCENARIO_DEFAULTS.get(scenario_key)
         if entry is None:
@@ -287,17 +302,39 @@ class PlanSynthesizer:
         comment_template, target_status_id = entry
 
         if comment_template == "__install_printer__":
+            full_text = f"{task.name if task else ''} {task.description if task else ''}".lower()
+            is_usb = any(kw in full_text for kw in ("usb", "юсб", "шнур", "кабел", "провод", "локальн"))
+            if is_usb:
+                return (
+                    (
+                        f"Здравствуйте! Драйвер принтера успешно установлен на вашем компьютере {pc_name or ''}. "
+                        "Пожалуйста, выполните пробную печать документа. При возникновении вопросов ответьте на это сообщение."
+                    ),
+                    target_status_id,
+                )
             return (
-                f"Здравствуйте! Сетевой принтер настроен на вашем рабочем месте {pc_name or ''}. "
-                "Отправлена тестовая страница.",
+                (
+                    f"Здравствуйте! Сетевой принтер настроен на вашем рабочем месте {pc_name or ''}. "
+                    "Отправлена тестовая страница."
+                ),
                 target_status_id,
             )
 
         if comment_template == "__offline_host__":
             return (
-                f"Здравствуйте! Компьютер {pc_name or ''} недоступен в корпоративной сети. "
-                "Пожалуйста, включите ПК и оставьте ответный комментарий — настройка продолжится автоматически.",
+                (
+                    f"Здравствуйте! Компьютер {pc_name or ''} недоступен в корпоративной сети. "
+                    "Пожалуйста, включите ПК и оставьте ответный комментарий — настройка продолжится автоматически."
+                ),
                 target_status_id,
             )
 
         return comment_template, target_status_id
+
+    @staticmethod
+    def _resolve_suggested_comment(
+        scenario_key: str,
+        pc_name: Optional[str],
+    ) -> tuple[str, int]:
+        """Backwards compatibility alias for _resolve_success_comment."""
+        return PlanSynthesizer._resolve_success_comment(scenario_key, pc_name)

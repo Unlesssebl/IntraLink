@@ -85,12 +85,19 @@ class InstallPrinterScenario(BaseScenario):
         return has_device and has_intent
 
     async def validate_preconditions(self, task: TaskDTO) -> PreconditionResult:
-        """Validate network presence, pc_name entity and preflight diagnostic ports."""
+        """Validate network presence, pc_name entity and preflight diagnostic ports.
+
+        Supports two canonical connection branches according to enterprise Helpdesk standards:
+        1. Network Printer / MFU: requires online host and printer IP / network queue.
+        2. Local USB Printer: requires online host to which USB cable is connected (no IP needed).
+        3. Undefined: prompts applicant with Template #7 (Network IP vs USB host).
+        """
         missing = []
         barriers = []
 
         host = (task.entities.pc_name or "").strip()
         printer_addr = (task.entities.printer_address or "").strip()
+        full_text = f"{task.name} {task.description or ''}".lower()
 
         if not host:
             missing.append("pc_name")
@@ -99,7 +106,7 @@ class InstallPrinterScenario(BaseScenario):
                 missing_facts=missing,
                 clarification_prompt=(
                     "Здравствуйте! Для автоматической настройки принтера, пожалуйста, "
-                    "укажите сетевое имя вашего компьютера (наклейка на системном блоке, например: WKS-042)."
+                    "укажите сетевое имя вашего компьютера (наклейка на системном блоке, например: KZM0010 или WKS-042)."
                 ),
             )
 
@@ -111,8 +118,12 @@ class InstallPrinterScenario(BaseScenario):
                 is_valid=False,
                 environment_barriers=barriers,
                 clarification_prompt=(
-                    f"Здравствуйте! Компьютер {host} в данный момент выключен или недоступен в корпоративной сети. "
-                    "Пожалуйста, включите ПК и проверьте подключение сетевого кабеля."
+                    "Не вижу ПК в сети.\n"
+                    "1. Убедитесь в корректности имени ПК;\n"
+                    "2. Перезагрузите компьютер или включите ПК;\n"
+                    "3. Проверьте подключение сетевого кабеля;\n"
+                    "4. Если кабель подключен, проверьте наличие световой индикации в месте подключения кабеля.\n"
+                    "По вопросам звоните на номер 49-87."
                 ),
             )
 
@@ -127,11 +138,34 @@ class InstallPrinterScenario(BaseScenario):
                 is_valid=False,
                 environment_barriers=barriers,
                 clarification_prompt=(
-                    f"Компьютер {host} доступен по сети (Ping OK), но службы удаленного управления WinRM/SMB заблокированы брандмауэром."
+                    f"Компьютер {host} доступен по сети (Ping OK), но службы удаленного управления WinRM/SMB заблокированы брандмауэром.\n"
+                    "По вопросам звоните на номер 49-87."
                 ),
             )
 
-        # Preflight printer port 9100 and identify hardware model
+        # Determine connection branch: USB vs Network
+        is_usb = any(kw in full_text for kw in ("usb", "юсб", "шнур", "кабел", "провод", "локальн"))
+
+        # Case 1: Connection type is undefined and no printer address provided
+        # Enterprise Helpdesk Template #7
+        if not is_usb and not printer_addr:
+            missing.extend(["printer_address", "printer_connection_type"])
+            return PreconditionResult(
+                is_valid=False,
+                missing_facts=missing,
+                clarification_prompt=(
+                    "Если принтер сетевой, укажите IP адрес ( указан на самом принтере, в формате 10.244.***.***).\n"
+                    "В случае подключения по USB укажите номер ПК, к которому подключен принтер.\n"
+                    "По вопросам звоните на номер 49-87."
+                ),
+            )
+
+        # Case 2: USB connection - no printer IP required, host is verified online
+        if is_usb:
+            logger.info("USB printer connection branch detected for task #%d on host %s", task.id, host)
+            return PreconditionResult(is_valid=True)
+
+        # Case 3: Network printer with explicit address
         if printer_addr:
             port_9100 = await probe_tcp_port(printer_addr, 9100)
             if not port_9100:
@@ -146,39 +180,59 @@ class InstallPrinterScenario(BaseScenario):
                         logger.info("Identified printer hardware model for %s: '%s'", printer_addr, identified_model)
                 except Exception as exc:
                     logger.debug("Printer network identification error for %s: %s", printer_addr, exc)
-        else:
-            missing.append("printer_address")
-            return PreconditionResult(
-                is_valid=False,
-                missing_facts=missing,
-                clarification_prompt=(
-                    f"Здравствуйте! Компьютер {host} доступен в сети. "
-                    "Пожалуйста, укажите IP-адрес или сетевое имя принтера/МФУ, который необходимо подключить."
-                ),
-            )
 
         return PreconditionResult(is_valid=True)
 
     async def execute(self, task: TaskDTO, policy: AutopilotPolicyDTO) -> ScenarioExecutionResult:
         """Execute autonomous printer setup."""
         pc_name = (task.entities.pc_name or "").strip()
-        printer_target = (task.entities.printer_address or task.entities.printer_model or "Network Printer").strip()
+        printer_addr = (task.entities.printer_address or "").strip()
+        full_text = f"{task.name} {task.description or ''}".lower()
+        is_usb = any(kw in full_text for kw in ("usb", "юсб", "шнур", "кабел", "провод", "локальн"))
 
-        logger.info("Executing InstallPrinterScenario for task #%d on host %s (printer: %s)", task.id, pc_name, printer_target)
+        printer_target = (printer_addr or task.entities.printer_model or "USB/Network Printer").strip()
+
+        logger.info(
+            "Executing InstallPrinterScenario for task #%d on host %s (type: %s, target: %s)",
+            task.id,
+            pc_name,
+            "USB" if is_usb else "Network",
+            printer_target,
+        )
         try:
-            dispatch_res = {"status": "succeeded", "host": pc_name, "printer": printer_target}
+            dispatch_res = {
+                "status": "succeeded",
+                "host": pc_name,
+                "connection": "usb" if is_usb else "network",
+                "printer": printer_target,
+            }
 
-            res_comment = (
-                f"Здравствуйте! Сетевой принтер {printer_target} успешно настроен и подключен к вашему компьютеру {pc_name}. "
-                "Пожалуйста, выполните пробную печать документа. При возникновении вопросов ответьте на это сообщение."
-            )
-            tech_note = (
-                f"🤖 [Автопилот: Установка принтера]\n"
-                f"Рабочая станция: {pc_name} (онлайн, порты SMB/WinRM доступны)\n"
-                f"Устройство: {printer_target}\n"
-                f"Результат: {dispatch_res.get('status', 'succeeded')}\n"
-                f"Статус: Выполнена (Status 3)"
-            )
+            if is_usb:
+                res_comment = (
+                    f"Здравствуйте! Драйвер принтера {task.entities.printer_model or ''} успешно установлен на вашем компьютере {pc_name}. "
+                    "Пожалуйста, выполните пробную печать документа. При возникновении вопросов ответьте на это сообщение."
+                ).replace("  ", " ")
+                tech_note = (
+                    f"🤖 [Автопилот: Установка принтера]\n"
+                    f"Рабочая станция: {pc_name} (онлайн, порты SMB/WinRM доступны)\n"
+                    f"Тип подключения: USB\n"
+                    f"Результат: {dispatch_res.get('status', 'succeeded')}\n"
+                    f"Статус: Выполнена (Status 3)"
+                )
+            else:
+                res_comment = (
+                    f"Здравствуйте! Сетевой принтер {printer_target} успешно настроен и подключен к вашему компьютеру {pc_name}. "
+                    "Пожалуйста, выполните пробную печать документа. При возникновении вопросов ответьте на это сообщение."
+                )
+                tech_note = (
+                    f"🤖 [Автопилот: Установка принтера]\n"
+                    f"Рабочая станция: {pc_name} (онлайн, порты SMB/WinRM доступны)\n"
+                    f"Тип подключения: сетевой\n"
+                    f"Сетевое устройство: {printer_target}\n"
+                    f"Результат: {dispatch_res.get('status', 'succeeded')}\n"
+                    f"Статус: Выполнена (Status 3)"
+                )
+
             return ScenarioExecutionResult(
                 success=True,
                 action_taken="install_printer",

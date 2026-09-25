@@ -47,6 +47,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from core.database.base import Base
 
         async with engine.begin() as conn:
+            if conn.dialect.name == "postgresql":
+                await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
             await conn.run_sync(Base.metadata.create_all)
             if conn.dialect.name == "postgresql":
                 await conn.execute(

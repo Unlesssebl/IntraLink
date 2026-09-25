@@ -150,4 +150,21 @@ async def test_filter_valid_pcs_async(monkeypatch):
     assert valid == ["WKS-1020", "NTEMW5540"]
 
 
+def test_enterprise_pc_prefixes_kzm_tnt_cyrillic():
+    """Verify that enterprise prefixes (KZM, TNT, ZTE, KMK, etc.) are accurately parsed and normalized."""
+    assert extract_pc_names_from_text("принтер подключен ПК kzm0010") == ["KZM0010"]
+    assert extract_pc_names_from_text("принтер подключен к пк кзм0010") == ["KZM0010"]
+    assert extract_pc_names_from_text("на ПК КЗМ 0010") == ["KZM0010"]
+    assert extract_pc_names_from_text("установить принтер на тнт0088") == ["TNT0088"]
+    assert extract_pc_names_from_text("компьютер ТНТ 0088") == ["TNT0088"]
+    assert extract_pc_names_from_text("kzm0010") == ["KZM0010"]
+
+
+def test_printer_queue_vs_pc_differentiation():
+    """Verify that printer queues with suffix 'P' (KZMP, SCSP, ITTP) are not parsed as workstations."""
+    assert extract_pc_names_from_text("принтер KZMP0010") == []
+    assert extract_pc_names_from_text("настроить МФУ SCSP 0001") == []
+
+
+
 

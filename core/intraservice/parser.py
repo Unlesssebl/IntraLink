@@ -71,29 +71,85 @@ FIELD_NAME_MAP: Dict[str, str] = {
     "1509": "Доп. информация",
 }
 
-# Whitelist of corporate workstation prefixes and suffixes
+# ==============================================================================
+# Enterprise Network Hardware Classifier & Normalizer (Domain SSOT)
+# ==============================================================================
+
+# 1. Homoglyphs, keyboard layout translation and transliteration tables (from v1 SSOT)
+_HOMOGLYPHS_CYR = "ОСАЕРХМТКВУ"
+_HOMOGLYPHS_LAT = "OCAEPXMTKWU"
+_HOMOGLYPH_MAP = str.maketrans(_HOMOGLYPHS_CYR + _HOMOGLYPHS_CYR.lower(), _HOMOGLYPHS_LAT + _HOMOGLYPHS_LAT.lower())
+
+_KEYBOARD_RU = "йцукенгшщзхъфывапролджэячсмитьбю.ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,"
+_KEYBOARD_EN = "qwertyuiop[]asdfghjkl;'zxcvbnm,./QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>?"
+_KEYBOARD_RU_TO_EN = str.maketrans(_KEYBOARD_RU, _KEYBOARD_EN)
+
+_TRANSLIT_MAP = {
+    "Н": "N", "Т": "T", "Е": "E", "М": "M", "В": "W", "W": "W",
+    "К": "K", "З": "Z", "П": "P", "Л": "L", "Д": "D", "Р": "R",
+    "С": "S", "О": "O", "А": "A", "Х": "H", "У": "U", "И": "I",
+    "Б": "B", "Г": "G", "Ц": "C", "Ч": "CH", "Ш": "SH", "Щ": "SCH",
+    "Ф": "F", "Э": "E", "Ю": "YU", "Я": "YA", "Ж": "ZH", "Й": "Y",
+}
+
+# Direct mapping of Cyrillic enterprise prefixes to canonical Latin codes
+CYRILLIC_PREFIX_ALIASES: Dict[str, str] = {
+    # Main corporate entities
+    "ЗТЕ": "ZTE", "ЗТЭ": "ZTE", "ЗТЕО": "ZTEO", "ЗТЭО": "ZTEO",
+    "КЗМ": "KZM", "КЗМК": "KZMK", "КМК": "KMK", "ТЛК": "TLK",
+    "ТКТ": "TKT", "ТНТ": "TNT", "ИТТ": "ITT", "ТНМ": "TNM",
+    "ГКТ": "GKT", "СКС": "SCS", "СЦС": "SCS",
+    # Branches
+    "ЗТ": "ZT", "КЗ": "KZ", "КМ": "KM", "ТЛ": "TL",
+    "НТ": "NT", "ТТ": "TT", "ТМ": "TM", "ГК": "GK",
+    # Printers / MFUs (Suffix 'P')
+    "ЗТЕП": "ZTEP", "ЗТЭП": "ZTEP", "КЗМП": "KZMP", "КМКП": "KMKP",
+    "ТЛКП": "TLKP", "ТКТП": "TKTP", "ТНТП": "TNTP", "ИТТП": "ITTP",
+    "ИТП": "ITTP", "ТНМП": "TNMP", "ГКТП": "GKTP", "СКСП": "SCSP", "СЦСП": "SCSP",
+    "ЗТП": "ZTP", "КЗП": "KZP", "КМП": "KMP", "ТЛП": "TLP",
+    "НТП": "NTP", "ТТП": "TTP", "ТМП": "TMP", "ГКП": "GKP",
+    # Domain aliases
+    "НТЕМВ": "NTEMW", "НТЕМW": "NTEMW", "НТЕМ": "NTEMW", "НТЕНВ": "NTEMW",
+    "КПК": "KPK", "НТЗ": "TKT",
+}
+
+# Official Workstation prefixes
+MAIN_PC_PREFIXES = ["ZTE", "KZM", "KMK", "TLK", "TKT", "TNT", "ITT", "TNM", "GKT", "SCS"]
+BRANCH_PC_PREFIXES = ["ZT", "KZ", "KM", "TL", "NT", "TT", "TM", "GK"]
+DOMAIN_PC_PREFIXES = [
+    "NTEMW", "KZMK", "ZTEO", "KPK", "NTZ", "TEMPO", "WKS", "PC", "WS",
+    "ARM", "NB", "SRV", "RDS", "LAPTOP", "DESKTOP"
+]
+KNOWN_PC_PREFIXES = MAIN_PC_PREFIXES + BRANCH_PC_PREFIXES + DOMAIN_PC_PREFIXES
+
+# Official Network Printer / MFU prefixes (Suffix 'P')
+MAIN_PRINTER_PREFIXES = ["ZTEP", "KZMP", "KMKP", "TLKP", "TKTP", "TNTP", "ITTP", "TNMP", "GKTP", "SCSP"]
+BRANCH_PRINTER_PREFIXES = ["ZTP", "KZP", "KMP", "TLP", "NTP", "TTP", "TMP", "GKP"]
+KNOWN_PRINTER_PREFIXES = MAIN_PRINTER_PREFIXES + BRANCH_PRINTER_PREFIXES
+
+# Whitelist of corporate workstation prefixes for sorting priority
 CORP_HOST_PREFIXES = (
     "WKS-", "WKS", "NTEMW", "ARM-", "ARM", "АРМ-", "АРМ",
     "PC-", "PC", "WS-", "WS", "NB-", "NB",
-    "LAPTOP-", "DESKTOP-", "SRV-", "RDS-"
-)
+    "LAPTOP-", "DESKTOP-", "SRV-", "RDS-",
+) + tuple(MAIN_PC_PREFIXES) + tuple(BRANCH_PC_PREFIXES)
 
-# Strict corporate hostname whitelist (e.g. WKS-1020, NTEMW1020, PC-BUHG-05, WS-SALES-10, LAPTOP-ABC1234, BUHG-PC)
+# Regex capturing PC tokens across Latin and Cyrillic with optional hyphens or spaces
 CORP_PC_WHITELIST_REGEX = re.compile(
     r"\b(?:"
-    r"(?:WKS|NTEMW|ARM|АРМ|PC|WS|NB|LAPTOP|DESKTOP|SRV|RDS)[\-_]?[0-9A-Za-z]+(?:[\-_][0-9A-Za-z]+)*|"
+    r"(?:" + "|".join(KNOWN_PC_PREFIXES) + r")[\-_]?[0-9A-Za-z]+(?:[\-_][0-9A-Za-z]+)*|"
     r"[0-9A-Za-z]{2,12}[\-_](?:WKS|PC|WS|NB|ARM)"
     r")\b",
     re.IGNORECASE,
 )
-# Backwards compatibility alias
 PC_EXTRACT_REGEX = CORP_PC_WHITELIST_REGEX
 
-
-# Explicit context marker where text preceding the token indicates a computer/workstation
+# Explicit context marker where preceding text indicates a workstation/computer
+# Note: Supports Cyrillic and spaces between letters and digits (e.g. "ПК кзм0010", "на компе кзм 0010")
 PC_CONTEXT_REGEX = re.compile(
     r"(?i)\b(?:пк|компьютер(?:а|у|ом)?|ноутбук(?:а|у|ом)?|хост(?:а|у|ом)?|комп(?:а|у|ом)?|"
-    r"рабоч(?:ая|ей|ую)\s+станци(?:я|и|ю|ей)|workstation|host|laptop|desktop|арм)\s*[:#№\-–—]?\s*([a-zA-Z0-9\-_]{2,25})\b"
+    r"рабоч(?:ая|ей|ую)\s+станци(?:я|и|ю|ей)|workstation|host|laptop|desktop|арм)\s*[:#№\-–—]?\s*"
+    r"([a-zA-Zа-яА-ЯёЁ0-9\-_]{2,25}(?:[\s\-_]+[0-9]{1,6})?)\b"
 )
 
 # Blacklist of hardware models, OS names, printer models and protocols that must NEVER be treated as PC hostnames
@@ -107,11 +163,79 @@ NON_PC_PATTERNS = re.compile(
 )
 
 
+def _split_prefix_and_number(name: str) -> tuple[str, str]:
+    """Split alphanumeric device token into prefix and numeric part."""
+    cleaned = name.strip()
+    m = re.fullmatch(r"([A-Za-zА-Яа-яёЁ\-_]+)[\s\-_]*(\d+)", cleaned)
+    if m:
+        prefix = re.sub(r"[\s\-_]+", "", m.group(1))
+        return prefix, m.group(2)
+    m_num = re.fullmatch(r"\d+", cleaned)
+    if m_num:
+        return "", m_num.group(0)
+    return cleaned, ""
+
+
+def _transliterate_prefix(prefix: str) -> str:
+    """Normalize and transliterate prefix via homoglyphs, keyboard layout and enterprise dictionary."""
+    p_upper = prefix.upper().strip()
+    if p_upper in CYRILLIC_PREFIX_ALIASES:
+        return CYRILLIC_PREFIX_ALIASES[p_upper]
+
+    switched = p_upper.translate(_KEYBOARD_RU_TO_EN).upper()
+    if switched in KNOWN_PC_PREFIXES or switched in KNOWN_PRINTER_PREFIXES:
+        return switched
+
+    res = []
+    for ch in p_upper:
+        if ch in _TRANSLIT_MAP:
+            res.append(_TRANSLIT_MAP[ch])
+        else:
+            res.append(ch.translate(_HOMOGLYPH_MAP))
+    translit_str = "".join(res)
+
+    if translit_str in CYRILLIC_PREFIX_ALIASES:
+        return CYRILLIC_PREFIX_ALIASES[translit_str]
+    return translit_str
+
+
+def is_valid_pc_name(name: str | None) -> bool:
+    """Validate whether token is a corporate workstation hostname."""
+    if not name:
+        return False
+    norm = normalize_pc_name(name)
+    if not norm or len(norm) < 4:
+        return False
+    if norm.isdigit() or not any(ch.isdigit() for ch in norm):
+        return False
+    if norm in ("NTZ-TEMPO", "TEMPO", "KZMK-TEMPO", "ZTE-TEMPO", "ZTEO-TEMPO"):
+        return False
+    # Reject printer prefixes (suffix 'P')
+    if any(norm.upper().startswith(p) for p in KNOWN_PRINTER_PREFIXES):
+        return False
+    # Check known PC prefixes
+    return any(norm.upper().startswith(p) for p in KNOWN_PC_PREFIXES)
+
+
+def is_valid_printer_name(name: str | None) -> bool:
+    """Validate whether token is a corporate network printer/MFU hostname (with suffix 'P')."""
+    if not name:
+        return False
+    cleaned = name.strip().strip(" #№.,;:()")
+    prefix, number = _split_prefix_and_number(cleaned)
+    if not prefix or not number:
+        return False
+    translit_prefix = _transliterate_prefix(prefix).upper()
+    if translit_prefix in KNOWN_PC_PREFIXES and not translit_prefix.endswith("P"):
+        return False
+    return translit_prefix in KNOWN_PRINTER_PREFIXES
+
+
 def normalize_pc_name(raw_pc: str) -> str:
-    """Normalize workstation hostname to clean uppercase format (e.g. WKS-XXXX or NTEMW1020).
+    """Normalize workstation hostname to clean uppercase format (e.g. KZM0010, WKS-XXXX or NTEMW1020).
 
     Strips FQDN domain suffixes, spaces, special symbols, and converts pure digits or
-    wks variations into canonical WKS-XXXX notation. Preserves standard PC/WS/NTEMW prefixes.
+    wks variations into canonical WKS-XXXX notation. Handles Cyrillic prefixes (КЗМ -> KZM).
     Rejects printer models (e.g. MF3010, FS4200, DCP-L2500) and OS tokens.
     """
     if not raw_pc:
@@ -119,17 +243,10 @@ def normalize_pc_name(raw_pc: str) -> str:
     cleaned = raw_pc.strip()
     # Strip FQDN domain suffix
     cleaned = cleaned.split(".")[0].strip()
-    # Remove leading descriptive labels like "ПК: 1234", "хост #1234", "компьютер: "
+    # Remove leading descriptive labels like "ПК: 1234", "хост #1234", "компьютер: ", "ПК kzm0010"
     cleaned = re.sub(
-        r"^(?:пк|хост|ноут|компьютер|arm|арм|host)\s*[:#№]\s*",
+        r"^(?:пк|хост|ноут|компьютер|комп|arm|арм|host|рабочая\s+станция|workstation)\s*[:#№\s\-–—]*",
         "",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    # Remove standalone labels before pure digits like "ПК 1020"
-    cleaned = re.sub(
-        r"^(?:пк|хост|ноут|компьютер|arm|арм)\s+(\d+)$",
-        r"\1",
         cleaned,
         flags=re.IGNORECASE,
     )
@@ -169,42 +286,75 @@ def normalize_pc_name(raw_pc: str) -> str:
     if m_nb:
         return f"NB-{m_nb.group(1)}"
 
+    # Preserve compound hostnames with hyphens/underscores (e.g. PC-BUHG-05, WS_FIN_04, BUH-01, WS-ACC-01, PC-SALES-10)
+    if re.fullmatch(r"(?i)[A-Za-z0-9]{2,10}[\-_][A-Za-z0-9\-_]+", cleaned):
+        return cleaned.upper()
+
+    # Split into prefix and number
+    prefix, number = _split_prefix_and_number(cleaned)
+    if prefix and number:
+        norm_prefix = _transliterate_prefix(prefix)
+        # Reject printer prefix
+        if norm_prefix.upper() in KNOWN_PRINTER_PREFIXES:
+            return ""
+        if norm_prefix.upper() in ("WKS", "PC", "ARM", "NB", "WS"):
+            return f"{norm_prefix.upper()}-{number}"
+        if norm_prefix.upper() in KNOWN_PC_PREFIXES:
+            return f"{norm_prefix.upper()}{number}"
+
+    # Fallback to transliterated prefix or uppercase
+    if prefix:
+        norm_prefix = _transliterate_prefix(prefix)
+        if norm_prefix.upper() in KNOWN_PRINTER_PREFIXES:
+            return ""
+        if number:
+            return f"{norm_prefix.upper()}{number}"
+
     return cleaned.upper()
 
 
 def extract_pc_names_from_text(text: str) -> List[str]:
     """Find potential PC hostnames embedded within text/descriptions.
 
-    Uses strict corporate whitelist patterns (WKS-, NTEMW, ARM-, NB-, PC-, WS-, LAPTOP-, DESKTOP-)
-    and explicit contextual cues ('ПК 1234', 'компьютер: user-pc'). Rejects all printer models
-    (DCP, HL, MF, LBP, FS, Pantum, Xerox, etc.).
+    Uses full enterprise classifier patterns (KZM, TNT, ZTE, KMK, TLK, NTEMW, WKS-, PC-),
+    explicit contextual cues ('ПК kzm0010', 'компьютер: user-pc'). Rejects all printer models
+    (DCP, HL, MF, LBP, FS, Pantum, Xerox, etc.) and printer queue names (KZMP, SCSP).
     """
     if not text:
         return []
     results: List[str] = []
 
-    # 1. First pass: explicit context markers ('на ПК 1020', 'компьютер: buh-01')
+    # 1. First pass: explicit context markers ('на ПК 1020', 'компьютер: buh-01', 'ПК kzm0010', 'к пк кзм 0010')
     for m in PC_CONTEXT_REGEX.finditer(text):
         token = m.group(1).strip()
         if NON_PC_PATTERNS.match(token):
             continue
         norm = normalize_pc_name(token)
-        if norm and len(norm) >= 3 and norm not in results:
+        if norm and len(norm) >= 3 and not is_valid_printer_name(norm) and norm not in results:
             results.append(norm)
 
-    # 2. Second pass: strict corporate whitelist pattern matches
+    # 2. Second pass: search for tokens with alphanumeric prefix + digits (KZM0010, TNT0088, SCSP0001)
+    token_pattern = re.compile(r"(?i)\b([a-zA-Zа-яА-ЯёЁ]{2,6})[\s\-_]?([0-9]{2,6})\b")
+    for m in token_pattern.finditer(text):
+        raw_token = f"{m.group(1)}{m.group(2)}"
+        if NON_PC_PATTERNS.match(raw_token):
+            continue
+        norm = normalize_pc_name(raw_token)
+        if norm and is_valid_pc_name(norm) and not is_valid_printer_name(norm) and norm not in results:
+            results.append(norm)
+
+    # 3. Third pass: corporate whitelist pattern matches
     for m in CORP_PC_WHITELIST_REGEX.finditer(text):
         token = m.group(0).strip()
         if NON_PC_PATTERNS.match(token):
             continue
-        # Hostname must contain at least one digit or match explicit server/RDS pattern
         if not (any(ch.isdigit() for ch in token) or token.upper().startswith(("SRV-", "RDS-"))):
             continue
         norm = normalize_pc_name(token)
-        if norm and len(norm) >= 3 and norm not in results:
+        if norm and len(norm) >= 3 and not is_valid_printer_name(norm) and norm not in results:
             results.append(norm)
 
-    # Prioritize corporate standard hostnames (WKS-, NTEMW, ARM-, NB-, PC-) over arbitrary tokens
+    # Prioritize corporate standard hostnames over arbitrary tokens
     def _host_priority(host: str) -> int:
         h_upper = host.upper()
         for idx, pref in enumerate(CORP_HOST_PREFIXES):

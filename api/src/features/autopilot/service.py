@@ -34,9 +34,9 @@ from .schemas import (
     CorrectPlanRequest,
 )
 
-logger = logging.getLogger("api.features.autopilot.service")
+from core.intraservice.parser import extract_pc_names_from_text
 
-PC_REGEX = re.compile(r"\b([A-Za-z0-9_-]*(?:wks|pc|ws|desktop|laptop)[A-Za-z0-9_-]*)\b", re.IGNORECASE)
+logger = logging.getLogger("api.features.autopilot.service")
 
 
 class AutopilotService:
@@ -82,9 +82,9 @@ class AutopilotService:
         target_host = task.entities.pc_name
         if not target_host:
             raw_text = f"{task.name} {task.description or ''}"
-            matches = PC_REGEX.findall(raw_text)
-            if matches:
-                target_host = matches[0].strip().upper()
+            candidates = extract_pc_names_from_text(raw_text)
+            if candidates:
+                target_host = candidates[0]
         if target_host:
             try:
                 diag = await self.diagnostics_service.diagnose_host(hostname=target_host, redis_client=redis_client)
