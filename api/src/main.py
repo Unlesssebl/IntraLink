@@ -42,12 +42,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION} [{settings.APP_ENV}]")
     try:
         import core.database.models  # noqa: F401
+        from sqlalchemy import text
         from api.src.core.db import engine
         from core.database.base import Base
 
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database schema verified (Base.metadata.create_all)")
+            if conn.dialect.name == "postgresql":
+                await conn.execute(
+                    text(
+                        """
+                        ALTER TABLE task_knowledge_base
+                        ADD COLUMN IF NOT EXISTS search_vector tsvector GENERATED ALWAYS AS (
+                            setweight(to_tsvector('russian', coalesce(original_name, '')), 'A') ||
+                            setweight(to_tsvector('russian', coalesce(problem, '')), 'B') ||
+                            setweight(to_tsvector('russian', coalesce(solution, '')), 'C')
+                        ) STORED;
+                        """
+                    )
+                )
+                await conn.execute(
+                    text(
+                        """
+                        CREATE INDEX IF NOT EXISTS ix_task_kb_search_vector
+                        ON task_knowledge_base
+                        USING gin (search_vector);
+                        """
+                    )
+                )
+        logger.info("Database schema verified (Base.metadata.create_all + search_vector)")
     except Exception as exc:
         logger.warning(f"Database schema auto-creation check: {exc}")
     yield

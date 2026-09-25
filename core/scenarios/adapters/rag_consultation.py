@@ -85,28 +85,35 @@ class RAGConsultationScenario(BaseScenario):
                 missing_facts=["embedding_unavailable"],
             )
 
-        async with factory() as session:
-            matches = await search_hybrid_solutions(
-                session=session,
-                query_text=query_text,
-                query_vector=vector,
-                limit=1,
-                min_similarity=0.80,
-                service_id=task.service_id,
-                validate_quality=True,
-            )
-
-            if not matches:
-                # Fallback to unrestricted search across all services
+        try:
+            async with factory() as session:
                 matches = await search_hybrid_solutions(
                     session=session,
                     query_text=query_text,
                     query_vector=vector,
                     limit=1,
                     min_similarity=0.80,
-                    service_id=None,
+                    service_id=task.service_id,
                     validate_quality=True,
                 )
+
+                if not matches:
+                    # Fallback to unrestricted search across all services
+                    matches = await search_hybrid_solutions(
+                        session=session,
+                        query_text=query_text,
+                        query_vector=vector,
+                        limit=1,
+                        min_similarity=0.80,
+                        service_id=None,
+                        validate_quality=True,
+                    )
+        except Exception as exc:
+            logger.warning("RAG hybrid search failed during precondition check: %s", exc)
+            return PreconditionResult(
+                is_valid=False,
+                missing_facts=["rag_unavailable"],
+            )
 
         if not matches:
             return PreconditionResult(

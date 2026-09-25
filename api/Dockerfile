@@ -10,6 +10,7 @@ COPY pyproject.toml uv.lock ./
 COPY core/ ./core/
 COPY api/ ./api/
 COPY worker/ ./worker/
+COPY config/ ./config/
 
 RUN uv sync --frozen --no-dev --package intralink-api
 
