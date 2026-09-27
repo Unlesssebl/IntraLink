@@ -15,11 +15,11 @@ from api.src.core.db import check_db_health, dispose_db
 from api.src.core.redis import check_redis_health, close_redis
 from api.src.features.autopilot.router import router as autopilot_router
 from api.src.features.diagnostics.router import router as diagnostics_router
-from api.src.features.knowledge_base.router import router as kb_router
-from api.src.features.reports.router import router as reports_router
 
 # Vertical feature slices
 from api.src.features.events import events_router
+from api.src.features.knowledge_base.router import router as kb_router
+from api.src.features.reports.router import router as reports_router
 from api.src.features.tickets.router import router as tickets_router
 from api.src.features.tickets.router import tasks_router
 from api.src.features.triage.router import router as triage_router
@@ -42,8 +42,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application startup and shutdown lifecycle manager."""
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION} [{settings.APP_ENV}]")
     try:
-        import core.database.models  # noqa: F401
         from sqlalchemy import text
+
+        import core.database.models  # noqa: F401
         from api.src.core.db import engine
         from core.database.base import Base
 

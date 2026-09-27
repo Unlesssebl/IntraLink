@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.crypto import decrypt_token, encrypt_token
 from core.database.models import SystemState
-from core.database.system_state import _get_active_session_factory
 from core.intraservice.client import IntraServiceClient
 
 logger = logging.getLogger("core.intraservice.auth")

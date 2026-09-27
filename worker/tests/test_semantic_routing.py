@@ -283,8 +283,6 @@ class TestRouterFactorE:
     @pytest.mark.asyncio
     async def test_factor_e_disabled_falls_back_gracefully(self, router_no_semantic):
         """When semantic index not ready, router must still route via A+B+C+D factors."""
-        from worker.src.scenarios.grant_wlan import GrantWLANScenario
-        from worker.src.scenarios.install_printer import InstallPrinterScenario
         from worker.src.scenarios.registry import get_default_scenario_registry, reset_registry
         reset_registry()
         registry = get_default_scenario_registry()

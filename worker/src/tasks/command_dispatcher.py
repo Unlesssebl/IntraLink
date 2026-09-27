@@ -14,17 +14,18 @@ import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional, Union
 
 import redis.asyncio as aioredis
-from sqlalchemy import select
+from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.autopilot.dto import AutopilotPolicyDTO
 from core.autopilot.policy_service import AutopilotPolicyService, get_policy_service
-from core.database.models import CommandRecord
+from core.database.models import CommandRecord, RoutingFeedbackRecord, sanitize_secrets
 from core.database.session import get_engine, get_session_factory
 from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
 from core.redis_client import get_redis_client
+from core.redis_lock import DistributedTaskLock, DistributedTaskLockOwnershipLost
 from core.scenarios.base import BaseScenario, ExecutionAbortedException
 from core.scenarios.orchestrator import ScenarioLifecycleOrchestrator
 from core.scenarios.registry import ScenarioRegistry, get_default_scenario_registry
@@ -52,6 +53,9 @@ def set_session_factory(factory: Optional[async_sessionmaker[AsyncSession]]) -> 
     """Override session factory for testing environments."""
     global _override_session_factory
     _override_session_factory = factory
+
+
+set_dispatcher_session_factory = set_session_factory
 
 
 def set_dispatcher_client(client: Optional[IntraServiceClient]) -> None:
@@ -237,7 +241,7 @@ async def _execute_scenario_for_ticket(
     redis_conn = _get_redis()
     policy_service = _get_policy_service()
 
-    # 1. Cooperative Cancellation check
+    # 1. Cooperative Cancellation check (Redis abort key and durable PostgreSQL feedback)
     abort_key = f"autopilot:abort:{ticket_id}"
     if redis_conn is not None:
         try:
@@ -252,17 +256,31 @@ async def _execute_scenario_for_ticket(
         except Exception as exc:
             logger.debug("Redis abort check error for ticket #%d: %s", ticket_id, exc)
 
-    # 2. Distributed Concurrency Lock
-    lock_key = f"lock:task:{ticket_id}"
-    lock_acquired = False
-    if redis_conn is not None:
-        try:
-            lock_acquired = bool(await redis_conn.set(lock_key, "locked", nx=True, ex=60))
-            if not lock_acquired:
-                logger.warning("Ticket #%d is already in-flight by another worker. Skipping command.", ticket_id)
-                return {"status": "skipped", "reason": "concurrent_lock_active", "ticket_id": ticket_id}
-        except Exception as exc:
-            logger.debug("Redis lock error for ticket #%d: %s", ticket_id, exc)
+    stmt_fb_term = (
+        select(RoutingFeedbackRecord)
+        .where(
+            RoutingFeedbackRecord.task_id == ticket_id,
+            RoutingFeedbackRecord.verdict.in_(["rejected", "manual_takeover"]),
+        )
+        .order_by(desc(RoutingFeedbackRecord.created_at))
+        .limit(1)
+    )
+    fb_term = (await session.execute(stmt_fb_term)).scalar_one_or_none()
+    if fb_term is not None:
+        logger.info("CommandRecord %s aborted: ticket #%d has terminal feedback '%s'", cmd.id, ticket_id, fb_term.verdict)
+        return {
+            "status": "aborted",
+            "reason": "reclaimed_by_operator",
+            "ticket_id": ticket_id,
+            "error": f"Команда отменена: заявка перехвачена оператором ({fb_term.verdict})",
+        }
+
+    # 2. Distributed Concurrency Lock (fail-closed tokenized lease)
+    lock = DistributedTaskLock(redis_conn, f"lock:task:{ticket_id}", ttl_seconds=60)
+    lock_acquired = await lock.acquire()
+    if not lock_acquired:
+        logger.warning("Ticket #%d is already in-flight or lock unavailable (fail-closed). Skipping command.", ticket_id)
+        return {"status": "skipped", "reason": "concurrent_lock_active_or_unavailable", "ticket_id": ticket_id}
 
     try:
         # 3. Bootstrap bot auth and fetch fresh ticket state
@@ -330,6 +348,7 @@ async def _execute_scenario_for_ticket(
 
         if missing_facts:
             error_code = "missing_technical_parameters"
+            await lock.ensure_owned()
             await client.update_task(
                 task_id=ticket_id,
                 status_id=2,
@@ -352,13 +371,14 @@ async def _execute_scenario_for_ticket(
         # 6. Execute Scenario via ScenarioLifecycleOrchestrator
         # Handles: execute() → IntraService update → dual audit → cache invalidation.
         # Circuit Breaker updates are NOT used here: cmd.status manages failure tracking.
-        policy: AutopilotPolicyDTO = await policy_service.get_policy(scenario.scenario_key)
+        policy: AutopilotPolicyDTO = await policy_service.get_policy(scenario.scenario_key, session=session)
         orchestrator = ScenarioLifecycleOrchestrator(
             client=client,
             redis_conn=redis_conn,
             policy_service=policy_service,
         )
         try:
+            await lock.ensure_owned()
             exec_result = await orchestrator.execute_and_audit(
                 scenario=scenario,
                 task=task,
@@ -368,6 +388,9 @@ async def _execute_scenario_for_ticket(
                 override_comment=cmd_params.get("override_comment"),
                 update_circuit_breaker=False,
             )
+            # A lost lease during a remote mutation makes the outcome uncertain.
+            # Surface it as needs_review instead of allowing an automatic retry.
+            await lock.ensure_owned()
         except ExecutionAbortedException as exc:
             logger.info("Command aborted for ticket #%d: %s", ticket_id, exc)
             return {
@@ -384,11 +407,8 @@ async def _execute_scenario_for_ticket(
         return exec_result.model_dump()
 
     finally:
-        if redis_conn is not None and lock_acquired:
-            try:
-                await redis_conn.delete(lock_key)
-            except Exception:
-                pass
+        if lock_acquired:
+            await lock.release()
 
 
 # --- Taskiq Dispatcher Task ---
@@ -412,8 +432,19 @@ async def dispatch_command_task(command_id: Union[uuid.UUID, str]) -> Dict[str, 
             logger.error("CommandRecord %s not found in database.", target_uuid)
             return {"command_id": str(target_uuid), "status": "failed", "error": "Command not found"}
 
-        # Idempotency check: if already completed, do not re-run
-        if cmd.status in ("succeeded", "failed", "cancelled", "canceled", "aborted", "skipped"):
+        # Atomically claim pending work. Only one delivery may transition the
+        # command into running; all other deliveries observe the durable state.
+        claim_stmt = (
+            update(CommandRecord)
+            .where(CommandRecord.id == target_uuid, CommandRecord.status == "pending")
+            .values(status="running")
+        )
+        claim_result = await session.execute(claim_stmt)
+        if claim_result.rowcount != 1:
+            await session.rollback()
+            cmd = (await session.execute(stmt)).scalar_one_or_none()
+            if cmd is None:
+                return {"command_id": str(target_uuid), "status": "failed", "error": "Command not found"}
             logger.info("CommandRecord %s is already terminal (%s). Skipping.", target_uuid, cmd.status)
             return {
                 "command_id": str(target_uuid),
@@ -422,13 +453,12 @@ async def dispatch_command_task(command_id: Union[uuid.UUID, str]) -> Dict[str, 
                 "error_message": cmd.error_message,
             }
 
-        # Transition: pending -> running
-        cmd.status = "running"
         await session.commit()
-        await session.refresh(cmd)
+        cmd = (await session.execute(stmt)).scalar_one()
         logger.info("Executing CommandRecord %s (action: %s, initiator: %s)", cmd.id, cmd.action, cmd.initiator)
 
-        # Check if this command targets a ticket and maps to a registered scenario
+        # Check if this command has routing decision / plan binding
+        is_routed_plan = bool(cmd.decision_id or cmd.plan_id or cmd.plan_hash)
         target_dict = cmd.target_json or {}
         ticket_id = cmd.task_id or target_dict.get("ticket_id") or target_dict.get("task_id")
         registry = _get_registry()
@@ -437,26 +467,24 @@ async def dispatch_command_task(command_id: Union[uuid.UUID, str]) -> Dict[str, 
         result: Optional[Dict[str, Any]] = None
 
         try:
-            if ticket_id is not None and scenario is not None:
-                try:
-                    result = await _execute_scenario_for_ticket(
-                        cmd=cmd,
-                        scenario=scenario,
-                        ticket_id=int(ticket_id),
-                        session=session,
-                    )
-                except Exception as exc:
-                    # In test environments without live IntraService, fallback to registered action if present
-                    handler = _ACTION_REGISTRY.get(cmd.action)
-                    if handler is not None and _override_client is None:
-                        logger.warning(
-                            "Ticket scenario execution failed (%s), falling back to registered handler for '%s'",
-                            exc,
-                            cmd.action,
-                        )
-                        result = await handler(cmd.params_json or {}, cmd.target_json or {}, session)
-                    else:
-                        raise
+            if is_routed_plan:
+                if ticket_id is None:
+                    raise ValueError(f"Routed CommandRecord {cmd.id} is missing ticket_id.")
+                if scenario is None:
+                    raise ValueError(f"Scenario '{cmd.action}' is not registered in ScenarioRegistry for routed command {cmd.id}.")
+                result = await _execute_scenario_for_ticket(
+                    cmd=cmd,
+                    scenario=scenario,
+                    ticket_id=int(ticket_id),
+                    session=session,
+                )
+            elif ticket_id is not None and scenario is not None:
+                result = await _execute_scenario_for_ticket(
+                    cmd=cmd,
+                    scenario=scenario,
+                    ticket_id=int(ticket_id),
+                    session=session,
+                )
             else:
                 handler = _ACTION_REGISTRY.get(cmd.action)
                 if handler is None:
@@ -466,21 +494,29 @@ async def dispatch_command_task(command_id: Union[uuid.UUID, str]) -> Dict[str, 
 
             if isinstance(result, dict) and result.get("status") in ("skipped", "aborted", "failed"):
                 cmd.status = result.get("status")
-                cmd.result_json = result
+                cmd.result_json = sanitize_secrets(result)
                 cmd.error_message = result.get("error") or result.get("reason")
                 logger.info("CommandRecord %s finished with status '%s'.", cmd.id, cmd.status)
             else:
                 cmd.status = "succeeded"
-                cmd.result_json = result
+                cmd.result_json = sanitize_secrets(result) if isinstance(result, dict) else result
                 cmd.error_message = None
                 logger.info("CommandRecord %s succeeded.", cmd.id)
 
+        except DistributedTaskLockOwnershipLost as exc:
+            logger.error("CommandRecord %s lost execution ownership: %s", cmd.id, exc)
+            cmd.status = "needs_review"
+            cmd.error_message = "execution_ownership_lost"
+            cmd.result_json = {
+                "error": "execution_ownership_lost",
+                "failure_kind": "execution_ownership_lost",
+            }
         except Exception as exc:
             logger.exception("CommandRecord %s execution failed: %s", cmd.id, exc)
             cmd.status = "failed"
             cmd.error_message = str(exc)
             failure_kind = "unknown_action" if "Unknown action" in str(exc) else "execution_error"
-            cmd.result_json = {"error": str(exc), "failure_kind": failure_kind}
+            cmd.result_json = sanitize_secrets({"error": str(exc), "failure_kind": failure_kind})
 
         await session.commit()
         await session.refresh(cmd)

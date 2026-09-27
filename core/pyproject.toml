@@ -13,6 +13,7 @@ dependencies = [
     "cryptography>=42.0.0",
     "redis>=5.0.0",
     "PyYAML>=6.0.0",
+    "alembic>=1.13.0",
 ]
 
 [build-system]

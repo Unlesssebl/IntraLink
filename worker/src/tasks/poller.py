@@ -37,13 +37,14 @@ from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
 from core.intraservice.poller import (
     PollerStepResult,
-    PollStepResult,
     get_executor_ids_list,
 )
 from core.redis_client import get_redis_client
 from worker.src.broker import QUEUE_DEFAULT, broker
 from worker.src.tasks.autopilot import autopilot_task
 from worker.src.tasks.triage import triage_task
+
+PollStepResult = PollerStepResult
 
 logger = logging.getLogger("worker.tasks.poller")
 

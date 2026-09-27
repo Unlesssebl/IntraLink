@@ -23,7 +23,7 @@ from core.autopilot.dto import AgentPlanDTO, AutopilotPolicyDTO
 from core.autopilot.intent import detect_tense_tone
 from core.autopilot.policy_service import AutopilotPolicyService
 from core.intraservice.dto import TaskDTO
-from core.intraservice.parser import PC_EXTRACT_REGEX, extract_pc_names_from_text
+from core.intraservice.parser import extract_pc_names_from_text
 from core.scenarios.base import BaseScenario
 from core.scenarios.registry import ScenarioRegistry
 
@@ -36,8 +36,7 @@ _PLAN_CACHE_TTL_SEC = 300  # 5 minutes
 # Canonical source of truth for default public resolution comments per scenario.
 _SCENARIO_DEFAULTS: Dict[str, tuple[str, int]] = {
     "ad_password_reset": (
-        "Здравствуйте! Ваш временный пароль для входа в домен: TempPass123! "
-        "При первом входе система попросит сменить его.",
+        "Данные для входа размещены в защищённых полях заявки.",
         3,
     ),
     "install_printer": (

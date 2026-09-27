@@ -70,7 +70,7 @@ class TicketService:
             try:
                 plan_keys = [f"cache:autopilot:plan:{t.id}" for t in tasks]
                 cached_plans = await redis.mget(plan_keys)
-                for t, raw_plan in zip(tasks, cached_plans):
+                for t, raw_plan in zip(tasks, cached_plans, strict=False):
                     if raw_plan:
                         try:
                             plans_by_id[t.id] = json.loads(raw_plan)

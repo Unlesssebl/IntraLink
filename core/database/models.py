@@ -8,6 +8,7 @@ Only 5 active entities are maintained:
 5. SystemState (System watermarks, poller cursors and settings)
 """
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -18,11 +19,14 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
     Text,
+    event,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
@@ -135,6 +139,25 @@ class CommandRecord(Base, TimestampMixin):
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
     initiator: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     task_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    decision_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID,
+        ForeignKey("routing_decisions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    plan_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID,
+        ForeignKey("prepared_plans.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    preflight_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID,
+        ForeignKey("routing_preflights.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    plan_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     result_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(
         JSONB().with_variant(JSON(), "sqlite"),
         nullable=True,
@@ -217,7 +240,6 @@ class AutopilotPolicy(Base, TimestampMixin):
 
     scenario_key: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
     mode: Mapped[str] = mapped_column(String(32), nullable=False, default="ASSISTED", server_default="ASSISTED")
-    min_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.85, server_default="0.85")
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     last_failure_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     is_circuit_broken: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
@@ -225,37 +247,138 @@ class AutopilotPolicy(Base, TimestampMixin):
 
     def __init__(self, **kwargs: Any) -> None:
         kwargs.setdefault("mode", "ASSISTED")
-        kwargs.setdefault("min_confidence", 0.85)
         kwargs.setdefault("consecutive_failures", 0)
         kwargs.setdefault("is_circuit_broken", False)
         super().__init__(**kwargs)
 
 
+_SECRET_STRING_PATTERNS = [
+    re.compile(r"(?i)(password|пароль|secret|token|auth_b64|field1489|1489)[\s:=]+([^\s,;]+)"),
+]
+
+
+def sanitize_secret_text(text: str) -> str:
+    """Mask password and credential patterns inside arbitrary strings."""
+    if not text:
+        return text
+    sanitized = text
+    for pattern in _SECRET_STRING_PATTERNS:
+        sanitized = pattern.sub(r"\1: ***REDACTED***", sanitized)
+    return sanitized
+
+
 def sanitize_secrets(data: Any) -> Any:
-    """Recursively mask sensitive values (passwords, tokens, credentials)."""
+    """Recursively mask sensitive values (passwords, tokens, credentials) in dicts, lists, and strings."""
     if isinstance(data, dict):
         sanitized = {}
         for k, v in data.items():
             k_lower = str(k).lower()
-            if any(secret_kw in k_lower for secret_kw in ("password", "token", "secret", "auth_b64", "pass")):
+            if any(secret_kw in k_lower for secret_kw in ("password", "token", "secret", "auth_b64", "pass", "field1489", "1489")):
                 sanitized[k] = "***REDACTED***"
             else:
                 sanitized[k] = sanitize_secrets(v)
         return sanitized
     elif isinstance(data, list):
         return [sanitize_secrets(item) for item in data]
+    elif isinstance(data, str):
+        return sanitize_secret_text(data)
     return data
 
 
-class AutopilotCorrection(Base, TimestampMixin):
-    """Ground-truth training dataset capturing differences between agent plans and human supervisor corrections."""
+class RoutingDecisionRecord(Base, TimestampMixin):
+    """Immutable audit log and persistent record of an Evidence-Based Routing Cascade decision."""
 
-    __tablename__ = "autopilot_corrections"
+    __tablename__ = "routing_decisions"
 
     id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
     task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    original_scenario: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    corrected_scenario: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    router_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    selected_scenario: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    selected_scenario_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
+    snapshot_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=dict,
+    )
+    candidates_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+    )
+    evidence_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+    )
+    verifier_result_json: Mapped[Optional[List[Any]]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=True,
+    )
+    missing_facts_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+    )
+    degradation_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    decision_reason_codes_json: Mapped[List[str]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+    )
+    degraded_components_json: Mapped[Dict[str, str]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=dict,
+    )
+    verifier_trace_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=True,
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("snapshot_json", {})
+        kwargs.setdefault("candidates_json", [])
+        kwargs.setdefault("evidence_json", [])
+        kwargs.setdefault("missing_facts_json", [])
+        kwargs.setdefault("decision_reason_codes_json", [])
+        kwargs.setdefault("degraded_components_json", {})
+        super().__init__(**kwargs)
+
+
+class RoutingFeedbackRecord(Base, TimestampMixin):
+    """Operator supervisor feedback and corrections on routing cascade decisions."""
+
+    __tablename__ = "routing_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    decision_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID,
+        ForeignKey("routing_decisions.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    prepared_plan_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID,
+        ForeignKey("prepared_plans.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    command_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID,
+        ForeignKey("commands.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    snapshot_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    operator_username: Mapped[str] = mapped_column(String(100), nullable=False, default="operator")
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # approved, corrected, rejected, manual_takeover
+    original_scenario: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    corrected_scenario: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     original_params: Mapped[Dict[str, Any]] = mapped_column(
         JSONB().with_variant(JSON(), "sqlite"),
         nullable=False,
@@ -266,25 +389,139 @@ class AutopilotCorrection(Base, TimestampMixin):
         nullable=False,
         default=dict,
     )
-    original_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    corrected_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    factors_snapshot: Mapped[Dict[str, Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=dict,
-    )
-    correction_tag: Mapped[str] = mapped_column(String(64), nullable=False, default="general", index=True)
+    reason_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     operator_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    operator_username: Mapped[str] = mapped_column(String(100), nullable=False, default="operator")
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    router_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    prompt_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    verifier_used: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="runtime", index=True)
+
+    __table_args__ = (
+        Index(
+            "uq_routing_feedback_terminal_plan",
+            "prepared_plan_id",
+            unique=True,
+            postgresql_where=text(
+                "verdict IN ('approved', 'corrected', 'rejected', 'manual_takeover') "
+                "AND prepared_plan_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "verdict IN ('approved', 'corrected', 'rejected', 'manual_takeover') "
+                "AND prepared_plan_id IS NOT NULL"
+            ),
+        ),
+    )
 
     def __init__(self, **kwargs: Any) -> None:
         if "original_params" in kwargs and kwargs["original_params"]:
             kwargs["original_params"] = sanitize_secrets(kwargs["original_params"])
         if "corrected_params" in kwargs and kwargs["corrected_params"]:
             kwargs["corrected_params"] = sanitize_secrets(kwargs["corrected_params"])
-        kwargs.setdefault("correction_tag", "general")
+        if "operator_notes" in kwargs and kwargs["operator_notes"] and not kwargs.get("notes"):
+            kwargs["notes"] = sanitize_secrets(kwargs["operator_notes"])
+            kwargs["operator_notes"] = kwargs["notes"]
+        elif "notes" in kwargs and kwargs["notes"] and not kwargs.get("operator_notes"):
+            kwargs["operator_notes"] = sanitize_secrets(kwargs["notes"])
+            kwargs["notes"] = kwargs["operator_notes"]
         kwargs.setdefault("operator_username", "operator")
-        kwargs.setdefault("factors_snapshot", {})
+        kwargs.setdefault("original_params", {})
+        kwargs.setdefault("corrected_params", {})
+        kwargs.setdefault("source", "runtime")
+        kwargs.setdefault("verifier_used", False)
         super().__init__(**kwargs)
 
+
+@event.listens_for(RoutingFeedbackRecord, "before_insert")
+@event.listens_for(RoutingFeedbackRecord, "before_update")
+def _sanitize_routing_feedback_listener(mapper: Any, connection: Any, target: RoutingFeedbackRecord) -> None:
+    if target.original_params:
+        target.original_params = sanitize_secrets(target.original_params)
+    if target.corrected_params:
+        target.corrected_params = sanitize_secrets(target.corrected_params)
+    if target.operator_notes:
+        target.operator_notes = sanitize_secrets(target.operator_notes)
+    if target.notes:
+        target.notes = sanitize_secrets(target.notes)
+
+
+@event.listens_for(CommandRecord, "before_insert")
+@event.listens_for(CommandRecord, "before_update")
+def _sanitize_command_record_listener(mapper: Any, connection: Any, target: CommandRecord) -> None:
+    if target.params_json:
+        target.params_json = sanitize_secrets(target.params_json)
+
+
+class RoutingPreflightRecord(Base, TimestampMixin):
+    """Append-only audit record and short-lived state of read-only preflight verification."""
+
+    __tablename__ = "routing_preflights"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        GUID,
+        ForeignKey("routing_decisions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    scenario_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    params_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # passed, failed, degraded, not_applicable
+    checks_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+    )
+    details_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=dict,
+    )
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+    def __init__(self, **kwargs: Any) -> None:
+        if "details_json" in kwargs and kwargs["details_json"]:
+            kwargs["details_json"] = sanitize_secrets(kwargs["details_json"])
+        kwargs.setdefault("checks_json", [])
+        kwargs.setdefault("details_json", {})
+        super().__init__(**kwargs)
+
+
+class PreparedPlanRecord(Base, TimestampMixin):
+    """Persistent prepared operator action plan derived from evidence decision and preflight."""
+
+    __tablename__ = "prepared_plans"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        GUID,
+        ForeignKey("routing_decisions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    scenario_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    preflight_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID,
+        ForeignKey("routing_preflights.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    plan_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=dict,
+    )
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+
+    def __init__(self, **kwargs: Any) -> None:
+        if "plan_json" in kwargs and kwargs["plan_json"]:
+            kwargs["plan_json"] = sanitize_secrets(kwargs["plan_json"])
+        kwargs.setdefault("plan_json", {})
+        kwargs.setdefault("state", "ready")
+        super().__init__(**kwargs)

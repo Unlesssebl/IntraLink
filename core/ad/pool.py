@@ -6,8 +6,7 @@ import os
 from contextlib import contextmanager
 from typing import Generator, List, Optional, Tuple
 
-import ldap3
-from ldap3 import ALL, Connection, ROUND_ROBIN, Server, ServerPool
+from ldap3 import ALL, ROUND_ROBIN, Connection, Server, ServerPool
 from ldap3.core.exceptions import LDAPException
 from pydantic import BaseModel, Field
 

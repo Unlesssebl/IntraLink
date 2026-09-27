@@ -1,7 +1,7 @@
 """Unit tests for UI Mood Tagging (detect_tense_tone) and intent analyzer tone integration."""
 
-from core.autopilot.intent import detect_tense_tone
 from core.autopilot.dialogue import AntiLoopGuard, UserReplyIntent, UserReplyIntentAnalyzer
+from core.autopilot.intent import detect_tense_tone
 
 
 def test_detect_tense_tone_urgent_keywords():

@@ -1,9 +1,10 @@
 """Tests for FastSocketProbe non-blocking network probe."""
 
 import socket
+
 import pytest
 
-from core.diagnostic.ports import FastSocketProbe, FastProbeResult
+from core.diagnostic.ports import FastProbeResult, FastSocketProbe
 
 
 @pytest.mark.asyncio

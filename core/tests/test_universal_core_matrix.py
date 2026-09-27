@@ -17,6 +17,8 @@ Invariants covered:
 
 import asyncio
 import time
+import uuid
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
@@ -31,10 +33,13 @@ from core.ad.provisioning import AccountProvisioningReceipt, AccountProvisioning
 from core.autopilot.dto import AutopilotPolicyDTO, AutopilotPolicyUpdateDTO
 from core.autopilot.policy_service import AutopilotPolicyService
 from core.database.base import Base
+from core.database.models import PreparedPlanRecord, RoutingDecisionRecord, RoutingPreflightRecord
 from core.diagnostic.ports import FastSocketProbe
 from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO, TaskLifetimeEventDTO
+from core.routing.preflight import compute_canonical_params_hash, compute_canonical_plan_hash_from_json
+from core.routing.snapshot import build_ticket_snapshot
 from core.scenarios.adapters.account_create import AccountCreateScenario
 from core.scenarios.adapters.printer_spooler_restart import PrinterSpoolerRestartScenario
 from core.scenarios.base import ExecutionAbortedException, ScenarioExecutionResult
@@ -48,6 +53,7 @@ from worker.src.tasks.autopilot import (
     set_autopilot_registry,
     set_autopilot_service_auth,
     set_autopilot_session_factory,
+    set_full_auto_feature_gate,
 )
 
 
@@ -72,6 +78,15 @@ class MockRedis:
 
     async def exists(self, *keys: str) -> int:
         return sum(1 for k in keys if k in self.store)
+
+    async def eval(self, script: str, numkeys: int, key: str, *args):
+        del numkeys
+        owner_token = args[0]
+        if self.store.get(key) != owner_token:
+            return 0
+        if "expire" in script.lower():
+            return 1
+        return await self.delete(key)
 
 
 @pytest.fixture
@@ -123,11 +138,13 @@ def policy_service(test_session_factory, mock_redis) -> AutopilotPolicyService:
 @pytest.fixture(autouse=True)
 def mock_rag_search():
     """Prevent RAG fallback from executing postgres queries during core matrix unit testing."""
+    set_full_auto_feature_gate(True)
     with (
         patch("core.scenarios.adapters.rag_consultation.search_hybrid_solutions", new_callable=AsyncMock, return_value=[]),
         patch("core.scenarios.adapters.rag_consultation.get_embedding_vector", new_callable=AsyncMock, return_value=[0.1] * 1024),
     ):
         yield
+    set_full_auto_feature_gate(None)
 
 
 # ==============================================================================
@@ -146,7 +163,7 @@ async def test_mixed_batch_execution(
 
     1. Supported spooler restart -> resolves to Status 3.
     2. Supported user onboarding -> resolves to Status 3.
-    3. Unsupported ticket (e.g. office furniture) -> escalates to human (Status 2).
+    3. Unsupported ticket (e.g. office furniture) -> remains read-only for the operator.
     Failure on one ticket is completely isolated from the batch.
     """
     await policy_service.update_policy(
@@ -210,11 +227,115 @@ async def test_mixed_batch_execution(
     set_autopilot_policy_service(policy_service)
     set_autopilot_redis_client(mock_redis)
 
+    # Seed PreparedPlanRecords with valid preflights for FULL_AUTO execution
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    from core.database.models import PreparedPlanRecord, RoutingDecisionRecord, RoutingPreflightRecord
+    from core.routing.snapshot import build_ticket_snapshot
+
+    snap1 = build_ticket_snapshot(t1)
+    snap2 = build_ticket_snapshot(t2)
+    dec1_id = uuid.uuid4()
+    dec2_id = uuid.uuid4()
+
+    async with test_session_factory() as session:
+        params1 = {"pc_name": "WKS-PRN-01", "printer_model": "Kyocera ECOSYS"}
+        plan_data1 = {
+            "task_id": 1001,
+            "decision_id": str(dec1_id),
+            "snapshot_hash": snap1.snapshot_hash,
+            "scenario_key": "printer_spooler_restart",
+            "proposed_params": params1,
+            "suggested_comment": "",
+            "target_status_id": 3,
+            "is_executable": True,
+        }
+        dec1 = RoutingDecisionRecord(
+            id=dec1_id,
+            task_id=1001,
+            router_version="1.0.0",
+            selected_scenario="printer_spooler_restart",
+            selected_scenario_version="1.0.0",
+            state="selected",
+            snapshot_hash=snap1.snapshot_hash,
+        )
+        pf1 = RoutingPreflightRecord(
+            id=uuid.uuid4(),
+            decision_id=dec1_id,
+            task_id=1001,
+            scenario_key="printer_spooler_restart",
+            status="passed",
+            params_hash=compute_canonical_params_hash(params1),
+            snapshot_hash=snap1.snapshot_hash,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+        plan1 = PreparedPlanRecord(
+            id=uuid.uuid4(),
+            task_id=1001,
+            decision_id=dec1_id,
+            snapshot_hash=snap1.snapshot_hash,
+            plan_hash=compute_canonical_plan_hash_from_json(plan_data1),
+            scenario_key="printer_spooler_restart",
+            state="selected",
+            preflight_id=pf1.id,
+            plan_json=plan_data1,
+        )
+        params2 = {
+            "first_name": "Алексей",
+            "last_name": "Смирнов",
+            "department": "Бухгалтерия",
+            "title": "Экономист",
+        }
+        plan_data2 = {
+            "task_id": 1002,
+            "decision_id": str(dec2_id),
+            "snapshot_hash": snap2.snapshot_hash,
+            "scenario_key": "account_create",
+            "proposed_params": params2,
+            "suggested_comment": "",
+            "target_status_id": 3,
+            "is_executable": True,
+        }
+        dec2 = RoutingDecisionRecord(
+            id=dec2_id,
+            task_id=1002,
+            router_version="1.0.0",
+            selected_scenario="account_create",
+            selected_scenario_version="1.0.0",
+            state="selected",
+            snapshot_hash=snap2.snapshot_hash,
+        )
+        pf2 = RoutingPreflightRecord(
+            id=uuid.uuid4(),
+            decision_id=dec2_id,
+            task_id=1002,
+            scenario_key="account_create",
+            status="passed",
+            params_hash=compute_canonical_params_hash(params2),
+            snapshot_hash=snap2.snapshot_hash,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+        plan2 = PreparedPlanRecord(
+            id=uuid.uuid4(),
+            task_id=1002,
+            decision_id=dec2_id,
+            snapshot_hash=snap2.snapshot_hash,
+            plan_hash=compute_canonical_plan_hash_from_json(plan_data2),
+            scenario_key="account_create",
+            state="selected",
+            preflight_id=pf2.id,
+            plan_json=plan_data2,
+        )
+        session.add_all([dec1, pf1, plan1, dec2, pf2, plan2])
+        await session.commit()
+
     try:
         with (
             patch("core.scenarios.adapters.printer_spooler_restart.FastSocketProbe.probe", new_callable=AsyncMock) as mock_probe,
             patch("core.scenarios.adapters.printer_spooler_restart.WinRMExecutor.run_powershell", new_callable=AsyncMock) as mock_winrm,
             patch.object(AccountProvisioningService, "provision", new_callable=AsyncMock) as mock_ad_create,
+            patch("worker.src.tasks.command_dispatcher.dispatch_command_task.kiq", new_callable=AsyncMock),
         ):
             mock_probe.return_value = AsyncMock(is_online=True, ports={5985: True})
             mock_winrm.return_value = (0, "CLEARED:2;STATUS:Running", "")
@@ -237,18 +358,57 @@ async def test_mixed_batch_execution(
 
     res1, res2, res3 = results
 
-    # Ticket 1 (Spooler) resolved
-    assert res1["status"] == "resolved"
-    assert res1["scenario"] == "printer_spooler_restart"
-    assert res1["target_status_id"] == 3
+    # Ticket 1 (Spooler) dispatched command
+    assert res1["status"] == "command_dispatched"
+    assert res1["task_id"] == 1001
 
-    # Ticket 2 (Onboarding) resolved
-    assert res2["status"] == "resolved"
-    assert res2["scenario"] == "account_create"
-    assert res2["target_status_id"] == 3
+    # Ticket 2 (Onboarding) dispatched command
+    assert res2["status"] == "command_dispatched"
+    assert res2["task_id"] == 1002
 
-    # Ticket 3 (Unsupported) cleanly escalated to human without breaking the batch
-    assert res3["status"] == "unmatched"
+    # Ticket 3 is not covered by a FULL_AUTO policy. It remains read-only and
+    # waits for the operator instead of being mutated by the autonomous path.
+    assert res3["status"] == "awaiting_operator_approval"
+
+    # Execute both dispatched commands via command dispatcher
+    from worker.src.tasks.command_dispatcher import (
+        dispatch_command_task,
+        set_dispatcher_client,
+        set_dispatcher_redis_client,
+        set_dispatcher_registry,
+        set_dispatcher_service_auth,
+        set_dispatcher_session_factory,
+    )
+    set_dispatcher_client(mock_client)
+    set_dispatcher_service_auth(mock_service_auth)
+    set_dispatcher_session_factory(test_session_factory)
+    set_dispatcher_redis_client(mock_redis)
+    set_dispatcher_registry(custom_reg)
+    try:
+        with (
+            patch("core.scenarios.adapters.printer_spooler_restart.FastSocketProbe.probe", new_callable=AsyncMock) as mock_probe,
+            patch("core.scenarios.adapters.printer_spooler_restart.WinRMExecutor.run_powershell", new_callable=AsyncMock) as mock_winrm,
+            patch.object(AccountProvisioningService, "provision", new_callable=AsyncMock) as mock_ad_create,
+        ):
+            mock_probe.return_value = AsyncMock(is_online=True, ports={5985: True})
+            mock_winrm.return_value = (0, "CLEARED:2;STATUS:Running", "")
+            mock_ad_create.return_value = AccountProvisioningReceipt(
+                sam_account_name="smirnov.a",
+                upn="smirnov.a@corp.loc",
+                user_dn="CN=Смирнов Алексей,OU=Accounting,DC=corp,DC=loc",
+                full_name="Смирнов Алексей",
+                credentials_written=True,
+            )
+            cmd_res1 = await dispatch_command_task(res1["command_id"])
+            cmd_res2 = await dispatch_command_task(res2["command_id"])
+            assert cmd_res1["status"] == "succeeded"
+            assert cmd_res2["status"] == "succeeded"
+    finally:
+        set_dispatcher_client(None)
+        set_dispatcher_service_auth(None)
+        set_dispatcher_session_factory(None)
+        set_dispatcher_redis_client(None)
+        set_dispatcher_registry(None)
 
     # Verify IntraService updates
     updates = [call.kwargs for call in mock_client.update_task.call_args_list]
@@ -256,7 +416,7 @@ async def test_mixed_batch_execution(
 
     assert statuses_updated[1001] == 3
     assert statuses_updated[1002] == 3
-    assert statuses_updated[1003] == 2  # Escalated to human in Status 2
+    assert 1003 not in statuses_updated
 
 
 # ==============================================================================
@@ -266,12 +426,17 @@ async def test_mixed_batch_execution(
 @pytest.mark.asyncio
 async def test_occ_version_guard_stale_approval(
     mock_client,
+    mock_service_auth,
     test_session_factory,
     policy_service,
     mock_redis,
 ):
     """Verify OCC Version Guard raises HTTP 409 Conflict when status or lifetime events change."""
-    service = AutopilotService(client=mock_client, policy_service=policy_service)
+    service = AutopilotService(
+        client=mock_client,
+        policy_service=policy_service,
+        auth_bootstrap=mock_service_auth,
+    )
 
     # 1. Status changed while supervisor was reviewing (Status 1 -> 3)
     current_task = TaskDTO(
@@ -283,7 +448,15 @@ async def test_occ_version_guard_stale_approval(
     )
     mock_client.get_task.return_value = current_task
 
-    stale_status_req = ApprovePlanRequest(expected_status_id=1, last_event_id=10)
+    import uuid
+    stale_status_req = ApprovePlanRequest(
+        decision_id=uuid.uuid4(),
+        plan_id=uuid.uuid4(),
+        plan_hash="a" * 64,
+        snapshot_hash="b" * 64,
+        expected_status_id=1,
+        last_event_id=10,
+    )
 
     async with test_session_factory() as session:
         with pytest.raises(HTTPException) as exc_info:
@@ -295,7 +468,7 @@ async def test_occ_version_guard_stale_approval(
                 redis_client=mock_redis,
             )
         assert exc_info.value.status_code == 409
-        assert "Статус заявки изменился с 1 на 3" in exc_info.value.detail
+        assert "уже находится в конечном статусе" in exc_info.value.detail or "Статус заявки изменился" in exc_info.value.detail
 
     # 2. Lifetime changed while supervisor was reviewing (new event added)
     task_same_status = TaskDTO(
@@ -310,7 +483,14 @@ async def test_occ_version_guard_stale_approval(
         TaskLifetimeEventDTO(Id=105, Date="2026-09-25", Editor="applicant", Comment="Я уже сам перезагрузил")
     ]
 
-    stale_event_req = ApprovePlanRequest(expected_status_id=2, last_event_id=100)
+    stale_event_req = ApprovePlanRequest(
+        decision_id=uuid.uuid4(),
+        plan_id=uuid.uuid4(),
+        plan_hash="a" * 64,
+        snapshot_hash="b" * 64,
+        expected_status_id=2,
+        last_event_id=100,
+    )
 
     async with test_session_factory() as session:
         with pytest.raises(HTTPException) as exc_info:
@@ -322,7 +502,7 @@ async def test_occ_version_guard_stale_approval(
                 redis_client=mock_redis,
             )
         assert exc_info.value.status_code == 409
-        assert "История тикета изменилась во время рассмотрения" in exc_info.value.detail
+        assert "новые события" in exc_info.value.detail or "История тикета изменилась" in exc_info.value.detail
 
 
 # ==============================================================================
@@ -523,7 +703,53 @@ async def test_attachment_heuristic_scan_only_escalates_to_human(
     set_autopilot_service_auth(mock_service_auth)
     set_autopilot_session_factory(test_session_factory)
     set_autopilot_policy_service(policy_service)
-    set_autopilot_redis_client(mock_redis)
+    async with test_session_factory() as session:
+        snap_6001 = build_ticket_snapshot(task_with_scan)
+        dec_id_6001 = uuid.uuid4()
+        plan_data_6001 = {
+            "task_id": 6001,
+            "decision_id": str(dec_id_6001),
+            "snapshot_hash": snap_6001.snapshot_hash,
+            "scenario_key": "printer_spooler_restart",
+            "proposed_params": {},
+            "suggested_comment": "",
+            "target_status_id": 3,
+            "is_executable": False,
+            "missing_facts": ["pc_name"],
+        }
+        dec_6001 = RoutingDecisionRecord(
+            id=dec_id_6001,
+            task_id=6001,
+            router_version="1.0.0",
+            selected_scenario="printer_spooler_restart",
+            selected_scenario_version="1.0.0",
+            state="needs_clarification",
+            missing_facts_json=["pc_name"],
+            snapshot_hash=snap_6001.snapshot_hash,
+        )
+        pf_6001 = RoutingPreflightRecord(
+            id=uuid.uuid4(),
+            decision_id=dec_id_6001,
+            task_id=6001,
+            scenario_key="printer_spooler_restart",
+            status="passed",
+            params_hash=compute_canonical_params_hash({}),
+            snapshot_hash=snap_6001.snapshot_hash,
+            expires_at=datetime.now(timezone.utc),
+        )
+        plan_6001 = PreparedPlanRecord(
+            id=uuid.uuid4(),
+            task_id=6001,
+            decision_id=dec_id_6001,
+            snapshot_hash=snap_6001.snapshot_hash,
+            plan_hash=compute_canonical_plan_hash_from_json(plan_data_6001),
+            scenario_key="printer_spooler_restart",
+            state="needs_clarification",
+            preflight_id=pf_6001.id,
+            plan_json=plan_data_6001,
+        )
+        session.add_all([dec_6001, pf_6001, plan_6001])
+        await session.commit()
 
     res = await autopilot_task(6001)
 

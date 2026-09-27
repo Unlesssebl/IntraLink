@@ -94,6 +94,33 @@ class TaskCommentDTO(BaseModel):
     created_at: Optional[datetime] = Field(default=None, alias="Created")
     author_name: str = Field(alias="AuthorName", default="")
     is_private: bool = Field(alias="IsPrivate", default=False)
+    security_group_ids: Optional[Any] = Field(default=None, alias="TaskCommentSecurityGroupIDs")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_privacy(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        is_priv = bool(
+            data.get("is_private")
+            or data.get("IsPrivate")
+            or data.get("IsPrivateComment")
+        )
+        sec_groups = data.get("TaskCommentSecurityGroupIDs")
+        if sec_groups is None:
+            sec_groups = data.get("security_group_ids")
+        if sec_groups is not None:
+            if isinstance(sec_groups, (int, float)) and sec_groups != 0:
+                is_priv = True
+            elif isinstance(sec_groups, str):
+                cleaned = [s.strip() for s in sec_groups.split(",") if s.strip()]
+                if cleaned:
+                    is_priv = True
+            elif isinstance(sec_groups, (list, tuple, set)) and len(sec_groups) > 0:
+                is_priv = True
+        data["is_private"] = is_priv
+        data["IsPrivate"] = is_priv
+        return data
 
     @field_validator("text", "author_name", mode="before")
     @classmethod
@@ -180,9 +207,35 @@ class TaskLifetimeEventDTO(BaseModel):
     old_status_name: Optional[str] = Field(default=None, alias="OldStatusName")
     new_status_name: Optional[str] = Field(default=None, alias="NewStatusName")
     is_private: bool = Field(default=False, alias="IsPrivateComment")
+    security_group_ids: Optional[Any] = Field(default=None, alias="TaskCommentSecurityGroupIDs")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_privacy(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        is_priv = bool(
+            data.get("is_private")
+            or data.get("IsPrivate")
+            or data.get("IsPrivateComment")
+        )
+        sec_groups = data.get("TaskCommentSecurityGroupIDs")
+        if sec_groups is None:
+            sec_groups = data.get("security_group_ids")
+        if sec_groups is not None:
+            if isinstance(sec_groups, (int, float)) and sec_groups != 0:
+                is_priv = True
+            elif isinstance(sec_groups, str):
+                cleaned = [s.strip() for s in sec_groups.split(",") if s.strip()]
+                if cleaned:
+                    is_priv = True
+            elif isinstance(sec_groups, (list, tuple, set)) and len(sec_groups) > 0:
+                is_priv = True
+        data["is_private"] = is_priv
+        data["IsPrivateComment"] = is_priv
+        return data
 
     @field_validator("created", "user_name", "editor", "comment", "old_status_name", "new_status_name", mode="before")
-
     @classmethod
     def coerce_lifetime_str(cls, v: Any) -> str:
         return "" if v is None else str(v)

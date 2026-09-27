@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.intraservice.ai_extractor import AIExtractor, HELPDESK_NER_SYSTEM_PROMPT
+from core.intraservice.ai_extractor import AIExtractor
 from core.intraservice.dto import ExtractedEntitiesDTO
-from core.intraservice.parser import enrich_task_dict_async, parse_custom_fields
+from core.intraservice.parser import enrich_task_dict_async
 
 
 @pytest.mark.asyncio

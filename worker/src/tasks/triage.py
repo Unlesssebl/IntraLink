@@ -14,21 +14,21 @@ from typing import Any, Dict, Optional
 import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from core.autopilot.dialogue import AntiLoopGuard
+from core.autopilot.policy_service import AutopilotPolicyService
 from core.database.models import TriageAudit
 from core.database.session import get_engine, get_session_factory
 from core.database.system_state import _get_active_session_factory
-from core.intraservice.client import IntraServiceClient
-from core.intraservice.dto import TaskDTO
-from core.redis_client import get_redis_client
-from core.triage.gateway import RelevanceDecision, RelevanceGateway
-from worker.src.broker import QUEUE_DEFAULT, broker
-from core.autopilot.dialogue import AntiLoopGuard
-from core.autopilot.policy_service import AutopilotPolicyService
 from core.intraservice.auth import (
     ServiceAuthBootstrap,
     ServiceAuthCredentials,
 )
+from core.intraservice.client import IntraServiceClient
+from core.intraservice.dto import TaskDTO
+from core.redis_client import get_redis_client
 from core.scenarios.registry import ScenarioRegistry, get_default_scenario_registry
+from core.triage.gateway import RelevanceDecision, RelevanceGateway
+from worker.src.broker import QUEUE_DEFAULT, broker
 
 logger = logging.getLogger("worker.tasks.triage")
 
@@ -268,109 +268,20 @@ async def triage_task(task_id: int) -> Dict[str, Any]:
         }
 
     # -------------------------------------------------------------
-    # 6. Eligible ticket passed Filter #1: Scenario Routing & Dispatch
+    # 6. Eligible ticket passed Filter #1: Audit and Background Prefetch
     # -------------------------------------------------------------
-    registry = _get_registry()
-    policy_service = _get_policy_service()
-
-    routed = await registry.match_scenario(task)
-    scenario = routed[0] if routed else None
-    match = routed[1] if routed else None
-    confidence = match.confidence if match else 0.0
-    scenario_key = scenario.scenario_key if scenario else None
-
-    # Check policy if scenario was matched
-    policy = None
-    if scenario_key:
-        policy = await policy_service.get_policy(scenario_key)
-
-    is_full_auto = (
-        policy is not None
-        and policy.mode == "FULL_AUTO"
-        and confidence >= policy.min_confidence
-    )
-
-    if is_full_auto:
-        # Step 6.1: Transition ticket to Bot in FULL_AUTO
-        # New (1) or Open (31) -> In Work (2)
-        new_status_id = 2 if task.status_id in (1, 31) else None
-        bot_executor = str(auth.bot_user_id) if auth.bot_user_id is not None else None
-
-        comment_text = (
-            f"🤖 [Автопилот] Заявка принята в автоматическую обработку сценарием «{scenario.name}» "
-            f"(уверенность: {confidence:.2f})."
-        )
-        try:
-            await client.update_task(
-                task_id=task.id,
-                status_id=new_status_id,
-                executor_ids=bot_executor,
-                comment=comment_text,
-                is_private=True,
-                auth_b64=auth.auth_b64,
-            )
-        except Exception as exc:
-            logger.warning("Failed to assign ticket #%d to bot in IntraService: %s", task.id, exc)
-
-        # Step 6.2: Record auto_assigned_full_auto audit in PostgreSQL
-        async with session_factory() as session:
-            audit = TriageAudit(
-                task_id=task.id,
-                action="auto_assigned_full_auto",
-                model_used="scenario_router",
-                confidence=confidence,
-                prompt_tokens=0,
-                completion_tokens=0,
-                context_snapshot=context_snapshot,
-                decision_json={
-                    "scenario": scenario_key,
-                    "confidence": confidence,
-                    "mode": policy.mode,
-                    "reasons": match.reasons if match else [],
-                },
-                applied=True,
-                applied_by="autopilot",
-            )
-            session.add(audit)
-            await session.commit()
-
-        logger.info(
-            "Ticket #%d auto-assigned to bot in FULL_AUTO mode (scenario: %s, confidence: %.2f)",
-            task.id,
-            scenario_key,
-            confidence,
-        )
-
-        # Step 6.3: Dispatch to autopilot_task for execution
-        try:
-            from worker.src.tasks.autopilot import autopilot_task
-
-            await autopilot_task.kiq(task_id=task.id)
-        except Exception as exc:
-            logger.error("Failed to enqueue ticket #%d in autopilot_task: %s", task.id, exc)
-
-        return {
-            "status": "auto_assigned_full_auto",
-            "scenario": scenario_key,
-            "confidence": confidence,
-            "task_id": task.id,
-        }
-
-    # Step 6.4: Fallback for ASSISTED / DISABLED / Low Confidence tickets
     async with session_factory() as session:
         audit = TriageAudit(
             task_id=task.id,
             action="passed_gateway",
-            model_used="scenario_router" if scenario else "deterministic_gateway",
-            confidence=confidence if scenario else 1.0,
+            model_used="deterministic_gateway",
+            confidence=1.0,
             prompt_tokens=0,
             completion_tokens=0,
             context_snapshot=context_snapshot,
             decision_json={
-                "scenario": scenario_key,
-                "confidence": confidence,
-                "mode": policy.mode if policy else "ASSISTED",
-                "reasons": match.reasons if match else [],
+                "action": "passed_gateway",
+                "reason": decision.reason,
             },
             applied=False,
             applied_by="gateway",
@@ -379,9 +290,8 @@ async def triage_task(task_id: int) -> Dict[str, Any]:
         await session.commit()
 
     logger.info(
-        "Ticket #%d passed Filter #1 (Relevance Gateway). Mode: %s. Prepared for Copilot / Engineer review.",
+        "Ticket #%d passed Filter #1 (Relevance Gateway). Prepared for Evidence Routing prefetch.",
         task.id,
-        policy.mode if policy else "ASSISTED",
     )
 
     # Enqueue background plan prefetch for 0 ms delivery in UI (Copilot)
@@ -395,7 +305,5 @@ async def triage_task(task_id: int) -> Dict[str, Any]:
     return {
         "status": "passed_gateway",
         "reason": decision.reason,
-        "scenario": scenario_key,
-        "confidence": confidence,
         "task_id": task.id,
     }

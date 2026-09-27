@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Mapping, Optional, Union
 
 from core.diagnostic.ports import FastProbeResult
 from core.intraservice.client import IntraServiceClient
-from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
+from core.intraservice.dto import ExtractedEntitiesDTO
 
 logger = logging.getLogger("core.scenarios.reporter")
 

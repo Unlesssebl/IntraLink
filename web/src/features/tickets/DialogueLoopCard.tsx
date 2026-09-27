@@ -1,5 +1,5 @@
 import React from "react";
-import { MessageSquare, Clock, AlertCircle, Play, Eye } from "lucide-react";
+import { MessageSquare, Clock, AlertCircle, Play } from "lucide-react";
 import { Button, Badge } from "@/shared/ui";
 import { AgentPlan } from "@/features/autopilot/types";
 
@@ -14,9 +14,7 @@ export const DialogueLoopCard: React.FC<DialogueLoopCardProps> = ({
   onForceResume,
   isResuming = false,
 }) => {
-  const dialogue = plan.dialogue_state;
-  const rounds = dialogue?.rounds || 1;
-  const isLimitReached = rounds >= 2;
+  const rounds = 1;
 
   return (
     <div className="p-3.5 bg-blue-950/20 border border-blue-800/60 rounded-lg space-y-2.5">
@@ -56,7 +54,7 @@ export const DialogueLoopCard: React.FC<DialogueLoopCardProps> = ({
           Запрос на уточнение заявителю
         </div>
         <p className="text-[11px] text-neutral-300 leading-relaxed italic">
-          "{plan.preconditions?.clarification_prompt || plan.suggested_comment || "Уточните, пожалуйста, имя компьютера или модель устройства."}"
+          "{plan.suggested_comment || "Уточните, пожалуйста, имя компьютера или модель устройства."}"
         </p>
       </div>
 
@@ -64,12 +62,6 @@ export const DialogueLoopCard: React.FC<DialogueLoopCardProps> = ({
         <span>
           При поступлении ответа заявителя автопилот возобновит исполнение в течение 30 секунд.
         </span>
-        {isLimitReached && (
-          <span className="text-amber-400 font-medium flex items-center gap-1 text-[10px]">
-            <AlertCircle className="w-3 h-3 shrink-0" />
-            Лимит раундов исчерпан
-          </span>
-        )}
       </div>
     </div>
   );

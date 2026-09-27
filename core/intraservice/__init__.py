@@ -1,5 +1,6 @@
 """IntraService API typed client and domain DTOs."""
 
+from core.intraservice.ai_extractor import AIExtractor, get_ai_extractor
 from core.intraservice.catalog import ServiceCatalog
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import (
@@ -19,7 +20,6 @@ from core.intraservice.exceptions import (
     IntraServiceServerError,
     IntraServiceValidationError,
 )
-from core.intraservice.ai_extractor import AIExtractor, get_ai_extractor
 from core.intraservice.parser import (
     enrich_task_dict,
     enrich_task_dict_async,

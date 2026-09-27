@@ -13,7 +13,6 @@ Concurrency & Idempotency:
   - Event Lock: suppresses redundant enqueuing for unmodified ticket events within 300s window.
 """
 
-import asyncio
 import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
@@ -25,7 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.database.system_state import (
     WatermarkService,
-    _get_active_session_factory,
 )
 from core.intraservice.auth import (
     ServiceAuthBootstrap,
@@ -33,7 +31,6 @@ from core.intraservice.auth import (
 )
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
-from core.redis_client import get_redis_client
 
 logger = logging.getLogger("core.intraservice.poller")
 

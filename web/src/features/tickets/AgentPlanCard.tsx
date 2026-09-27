@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Sparkles,
   Bot,
@@ -14,45 +14,50 @@ import {
   Zap,
   Paperclip,
   FileText,
-  Download,
   Eye,
+  Check,
+  X,
+  Clock,
+  HelpCircle,
+  ChevronDown,
+  ChevronUp,
+  UserCheck,
+  Info,
+  Layers,
+  CheckSquare,
+  ShieldCheck,
 } from "lucide-react";
-import { Button, Badge, KbdBadge, Lightbox, useToast } from "@/shared/ui";
-import { HostBadge } from "@/features/diagnostics/HostBadge";
+import { Button, Badge, KbdBadge, Lightbox, useToast, Modal } from "@/shared/ui";
 import { TicketAttachment, ticketsApi } from "@/shared/api";
 import { useAgentPlan, useTicketDetail } from "./queries";
 import { autopilotApi } from "@/features/autopilot/api";
-import { AgentPlan, ApprovePlanRequest, CorrectPlanRequest } from "@/features/autopilot/types";
-import { useQueryClient } from "@tanstack/react-query";
+import {
+  AgentPlan,
+  ApprovePlanRequest,
+  CorrectPlanRequest,
+  EvidenceSummary,
+  PreflightCheckItem,
+  RejectPlanRequest,
+  ScenarioCatalogItem,
+} from "@/features/autopilot/types";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ticketKeys } from "./queries";
 
 export interface AgentPlanCardProps {
   ticketId: number;
   currentStatusId: number;
   attachments?: TicketAttachment[];
-  onExecutionStarted: (commandId: string) => void;
+  onExecutionStarted?: (commandId: string) => void;
   onClose?: () => void;
 }
 
-const SCENARIO_OPTIONS = [
-  { key: "account_create", name: "Создание учетной записи Directum / AD" },
-  { key: "account_lock", name: "Блокировка учетной записи (Увольнение)" },
-  { key: "printer_spooler_restart", name: "Перезапуск очереди печати (Spooler)" },
-  { key: "default_printer_fix", name: "Установка принтера по умолчанию" },
-  { key: "ad_account_unlock", name: "Разблокировка учетной записи AD" },
-  { key: "shared_folder_access", name: "Проверка доступа к сетевой папке (SMB)" },
-  { key: "vpn_diagnostic", name: "Диагностика VPN подключения" },
-  { key: "directum_cache_clear", name: "Очистка локального кэша Directum" },
-  { key: "rag_consultation", name: "RAG Консультация / Регламент" },
-  { key: "cancel_irrelevant", name: "Отмена нецелевой заявки (Статус 30)" },
-];
-
-const CORRECTION_TAGS = [
+const CORRECTION_TAG_OPTIONS = [
   { key: "typo", label: "Опечатка в тексте / имени ПК" },
-  { key: "wrong_printer_model", label: "Неверная модель МФУ / принтера" },
-  { key: "slang", label: "Жаргон / сленг заявителя" },
-  { key: "false_duplicate", label: "Ложный дубликат" },
+  { key: "wrong_scenario", label: "Неверно определен сценарий" },
+  { key: "missing_parameters", label: "Уточнение недостающих параметров" },
+  { key: "applicant_changed_request", label: "Заявитель изменил запрос в диалоге" },
   { key: "policy_override", label: "Ручное переопределение регламента" },
+  { key: "other", label: "Другая причина" },
 ];
 
 export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
@@ -67,608 +72,834 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({
   const { data: plan, isLoading, error, refetch } = useAgentPlan(ticketId);
   const { data: ticketDetail } = useTicketDetail(ticketId);
 
+  // Fetch server scenario catalog for correction
+  const { data: catalogData } = useQuery({
+    queryKey: ["autopilot", "scenario-catalog"],
+    queryFn: () => autopilotApi.getScenarioCatalog(),
+    staleTime: 60_000,
+  });
+
+  const scenarioCatalog: ScenarioCatalogItem[] = catalogData?.scenarios || [];
+
   const effectiveAttachments: TicketAttachment[] = attachments ?? ticketDetail?.attachments ?? [];
 
   // Lightbox preview for images
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const [lightboxAlt, setLightboxAlt] = useState<string>("");
 
-  const isImageAttachment = (filename: string) => {
-    const ext = filename.split(".").pop()?.toLowerCase() || "";
-    return ["png", "jpg", "jpeg", "gif", "bmp", "webp"].includes(ext);
-  };
+  // Progressive disclosure accordion state
+  const [openSection, setOpenSection] = useState<string | null>(null);
 
-  const isPdfAttachment = (filename: string) => {
-    const ext = filename.split(".").pop()?.toLowerCase() || "";
-    return ext === "pdf";
-  };
-
-  const formatFileSize = (bytes?: number) => {
-    if (!bytes) return "";
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
-
-  const handleAttachmentClick = (att: TicketAttachment) => {
-    const attId = att.id || att.Id;
-    const url = ticketsApi.getAttachmentUrl(ticketId, attId);
-    const name = att.name || att.Name || "Вложение заявки";
-    if (isImageAttachment(name)) {
-      setLightboxSrc(url);
-      setLightboxAlt(name);
-    } else {
-      window.open(url, "_blank");
-    }
-  };
-
-  // Form states
-  const [scenarioKey, setScenarioKey] = useState<string>("");
-  const [params, setParams] = useState<Record<string, any>>({});
-  const [comment, setComment] = useState<string>("");
+  // Correction Modal State
+  const [isCorrectModalOpen, setIsCorrectModalOpen] = useState(false);
+  const [selectedScenarioKey, setSelectedScenarioKey] = useState<string>("");
+  const [formParams, setFormParams] = useState<Record<string, any>>({});
+  const [formComment, setFormComment] = useState<string>("");
   const [correctionTag, setCorrectionTag] = useState<string>("typo");
   const [operatorNotes, setOperatorNotes] = useState<string>("");
+  const [formValidationErrors, setFormValidationErrors] = useState<Record<string, string>>({});
+
+  // Reject / Takeover State
+  const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState<string>("rejected");
+  const [rejectNotes, setRejectNotes] = useState<string>("");
+
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [conflictError, setConflictError] = useState<string | null>(null);
 
-  // Sync state when new plan arrives
-  useEffect(() => {
-    if (plan) {
-      setScenarioKey(plan.scenario_key);
-      setParams(plan.proposed_params ? { ...plan.proposed_params } : {});
-      setComment(plan.suggested_comment || "");
-      setCorrectionTag("typo");
-      setOperatorNotes("");
+  const toggleSection = (section: string) => {
+    setOpenSection((prev) => (prev === section ? null : section));
+  };
+
+  const handleOpenCorrection = () => {
+    if (!plan) return;
+    setSelectedScenarioKey(plan.scenario_key || "install_printer");
+    setFormParams(plan.proposed_params ? { ...plan.proposed_params } : {});
+    setFormComment(plan.suggested_comment || "");
+    setCorrectionTag("typo");
+    setOperatorNotes("");
+    setFormValidationErrors({});
+    setConflictError(null);
+    setIsCorrectModalOpen(true);
+  };
+
+  const activeScenarioMeta = scenarioCatalog.find((s) => s.scenario_key === selectedScenarioKey);
+
+  const handleFormParamChange = (fieldKey: string, value: any) => {
+    setFormParams((prev) => ({ ...prev, [fieldKey]: value }));
+    if (formValidationErrors[fieldKey]) {
+      setFormValidationErrors((prev) => {
+        const copy = { ...prev };
+        delete copy[fieldKey];
+        return copy;
+      });
     }
-  }, [plan?.scenario_key, plan?.task_id]);
+  };
 
-  // Compute if modified by human supervisor
-  const isDirty = useMemo(() => {
-    if (!plan) return false;
-    if (scenarioKey !== plan.scenario_key) return true;
-    if (comment.trim() !== (plan.suggested_comment || "").trim()) return true;
-
-    // Compare params shallowly
-    const originalParams = plan.proposed_params || {};
-    const keysA = Object.keys(params);
-    const keysB = Object.keys(originalParams);
-    if (keysA.length !== keysB.length) return true;
-    for (const k of keysA) {
-      if (String(params[k] ?? "").trim() !== String(originalParams[k] ?? "").trim()) {
-        return true;
+  // 1. Analyze / Reanalyze
+  const handleAnalyze = async (force: boolean) => {
+    setIsAnalyzing(true);
+    setConflictError(null);
+    try {
+      if (force) {
+        await autopilotApi.reanalyzePlan(ticketId);
+        toast.success("План успешно переанализирован");
+      } else {
+        await autopilotApi.analyzePlan(ticketId);
+        toast.success("Анализ доказательного каскада завершен");
       }
+      queryClient.invalidateQueries({ queryKey: ticketKeys.detail(ticketId) });
+      queryClient.invalidateQueries({ queryKey: ["agentPlan", ticketId] });
+      refetch();
+    } catch (err: any) {
+      toast.error(err.message || "Ошибка при выполнении анализа");
+    } finally {
+      setIsAnalyzing(false);
     }
-    return false;
-  }, [plan, scenarioKey, params, comment]);
-
-  const handleParamChange = (key: string, val: string) => {
-    setParams((prev) => ({ ...prev, [key]: val }));
   };
 
-  const handleHostChipClick = (candidate: string) => {
-    setParams((prev) => ({ ...prev, pc_name: candidate }));
-    toast.success(`Хост переключен на: ${candidate}`);
-  };
-
-  // 1. APPROVE (Unchanged Plan)
+  // 2. Approve Plan
   const handleApprove = async () => {
-    if (!plan || isSubmitting) return;
-    try {
-      setIsSubmitting(true);
-      const req: ApprovePlanRequest = {
-        expected_status_id: currentStatusId,
-        last_event_id: plan.last_event_id ?? undefined,
-        override_comment: comment !== plan.suggested_comment ? comment : undefined,
-      };
-      const res = await autopilotApi.approvePlan(ticketId, req);
-      toast.success("План агента одобрен. Команда запущена!");
-      queryClient.invalidateQueries({ queryKey: ticketKeys.all });
-      queryClient.invalidateQueries({ queryKey: ["autopilot", "plan", ticketId] });
-      if (res.command_id) {
-        onExecutionStarted(res.command_id);
-      }
-    } catch (err: any) {
-      toast.error(`Ошибка одобрения: ${err?.message || "Сбой запроса"}`);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+    if (!plan || !plan.plan_id || !plan.decision_id) return;
+    setIsSubmitting(true);
+    setConflictError(null);
 
-  // 2. CORRECT (Human in the Loop Feedback)
-  const handleCorrect = async () => {
-    if (!plan || isSubmitting) return;
-    try {
-      setIsSubmitting(true);
-      const req: CorrectPlanRequest = {
-        expected_status_id: currentStatusId,
-        last_event_id: plan.last_event_id ?? undefined,
-        corrected_scenario: scenarioKey,
-        corrected_params: params,
-        corrected_comment: comment,
-        correction_tag: correctionTag,
-        operator_notes: operatorNotes || undefined,
-      };
-      const res = await autopilotApi.correctPlan(ticketId, req);
-      toast.success("Корректировка зафиксирована в Harness и запущена!");
-      queryClient.invalidateQueries({ queryKey: ticketKeys.all });
-      queryClient.invalidateQueries({ queryKey: ["autopilot", "plan", ticketId] });
-      if (res.command_id) {
-        onExecutionStarted(res.command_id);
-      }
-    } catch (err: any) {
-      toast.error(`Ошибка отправки корректировки: ${err?.message || "Сбой запроса"}`);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // Keyboard shortcut handler (Enter = approve plan, Ctrl+Enter / Cmd+Enter = correct or approve plan)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const isInputFocused =
-        e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
-
-      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        if (isDirty) {
-          handleCorrect();
-        } else {
-          handleApprove();
-        }
-      } else if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
-        if (!isInputFocused) {
-          e.preventDefault();
-          handleApprove();
-        }
-      }
+    const payload: ApprovePlanRequest = {
+      decision_id: plan.decision_id,
+      plan_id: plan.plan_id,
+      plan_hash: plan.plan_hash,
+      snapshot_hash: plan.snapshot_hash,
+      expected_status_id: currentStatusId,
+      last_event_id: plan.last_event_id ?? null,
     };
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isDirty, plan, currentStatusId, scenarioKey, params, comment, correctionTag, operatorNotes, isSubmitting]);
+    try {
+      const res = await autopilotApi.approvePlan(ticketId, payload);
+      toast.success(res.is_duplicate ? "План уже утвержден" : "План утвержден! Команда отправлена на исполнение.");
+      queryClient.invalidateQueries({ queryKey: ticketKeys.detail(ticketId) });
+      queryClient.invalidateQueries({ queryKey: ["agentPlan", ticketId] });
+      if (onExecutionStarted && res.command_id) {
+        onExecutionStarted(res.command_id);
+      }
+    } catch (err: any) {
+      if (err.status === 409) {
+        setConflictError(err.message || "План устарел или контекст заявки изменился.");
+        refetch();
+      }
+      toast.error(err.message || "Не удалось утвердить план");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
+  // 3. Submit Correction
+  const handleCorrectSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!plan || !plan.plan_id || !plan.decision_id) return;
+
+    // Validate required editable fields
+    if (activeScenarioMeta) {
+      const errors: Record<string, string> = {};
+      for (const field of activeScenarioMeta.editable_fields) {
+        if (field.required && (!formParams[field.field_key] || !String(formParams[field.field_key]).trim())) {
+          errors[field.field_key] = `Поле «${field.label}» обязательно для заполнения`;
+        }
+      }
+      if (Object.keys(errors).length > 0) {
+        setFormValidationErrors(errors);
+        return;
+      }
+    }
+
+    setIsSubmitting(true);
+    setConflictError(null);
+
+    const payload: CorrectPlanRequest = {
+      decision_id: plan.decision_id,
+      plan_id: plan.plan_id,
+      plan_hash: plan.plan_hash,
+      snapshot_hash: plan.snapshot_hash,
+      expected_status_id: currentStatusId,
+      last_event_id: plan.last_event_id ?? null,
+      corrected_scenario: selectedScenarioKey,
+      corrected_params: formParams,
+      corrected_comment: formComment,
+      correction_tag: correctionTag,
+      operator_notes: operatorNotes.trim() || undefined,
+    };
+
+    try {
+      const res = await autopilotApi.correctPlan(ticketId, payload);
+      toast.success("Корректировка зафиксирована! Команда отправлена на исполнение.");
+      setIsCorrectModalOpen(false);
+      queryClient.invalidateQueries({ queryKey: ticketKeys.detail(ticketId) });
+      queryClient.invalidateQueries({ queryKey: ["agentPlan", ticketId] });
+      if (onExecutionStarted && res.command_id) {
+        onExecutionStarted(res.command_id);
+      }
+    } catch (err: any) {
+      if (err.status === 409) {
+        setConflictError(err.message || "План устарел или проверка параметров не прошла.");
+        refetch();
+      }
+      toast.error(err.message || "Не удалось скорректировать план");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // 4. Reject Plan
+  const handleReject = async () => {
+    if (!plan || !plan.plan_id || !plan.decision_id) return;
+    setIsSubmitting(true);
+    try {
+      const payload: RejectPlanRequest = {
+        decision_id: plan.decision_id,
+        plan_id: plan.plan_id,
+        plan_hash: plan.plan_hash,
+        snapshot_hash: plan.snapshot_hash,
+        reason_tag: rejectReason,
+        operator_notes: rejectNotes.trim() || undefined,
+      };
+      await autopilotApi.rejectPlan(ticketId, payload);
+      toast.success("Предложение плана отклонено");
+      setIsRejectModalOpen(false);
+      queryClient.invalidateQueries({ queryKey: ticketKeys.detail(ticketId) });
+      queryClient.invalidateQueries({ queryKey: ["agentPlan", ticketId] });
+      refetch();
+    } catch (err: any) {
+      toast.error(err.message || "Не удалось отклонить план");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // 5. Manual Takeover
+  const handleManualTakeover = async () => {
+    if (!plan || !plan.plan_id || !plan.decision_id) return;
+    setIsSubmitting(true);
+    try {
+      const result = await autopilotApi.manualTakeover(ticketId, {
+        decision_id: plan.decision_id,
+        plan_id: plan.plan_id,
+        plan_hash: plan.plan_hash,
+        snapshot_hash: plan.snapshot_hash,
+        reason_tag: "manual_takeover",
+        operator_notes: "Заявка оставлена инженеру без применения автоматизации",
+      });
+      if (result.external_update_succeeded === false) {
+        toast.warning(result.warning || "Автоматизация остановлена, но состояние заявки нужно проверить вручную");
+      } else {
+        toast.success("Заявка оставлена инженеру для ручной обработки");
+      }
+      queryClient.invalidateQueries({ queryKey: ticketKeys.detail(ticketId) });
+      queryClient.invalidateQueries({ queryKey: ["agentPlan", ticketId] });
+      refetch();
+    } catch (err: any) {
+      toast.error(err.message || "Не удалось передать заявку оператору");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Helper renderers
+  const renderRoutingBadge = (state: string) => {
+    switch (state) {
+      case "selected":
+        return <Badge variant="success">Сценарий определен</Badge>;
+      case "needs_clarification":
+        return <Badge variant="warning">Требуется уточнение</Badge>;
+      case "ambiguous":
+        return <Badge variant="warning">Неоднозначный запрос</Badge>;
+      case "unmatched":
+        return <Badge variant="neutral">Сценарий не найден</Badge>;
+      case "degraded":
+        return <Badge variant="danger">Компоненты деградировали</Badge>;
+      case "refused":
+        return <Badge variant="danger">Отказ регламента</Badge>;
+      default:
+        return <Badge variant="neutral">{state}</Badge>;
+    }
+  };
+
+  const renderApprovalStateBadge = (state: string) => {
+    switch (state) {
+      case "ready_for_approval":
+        return <Badge variant="success">Готов к подтверждению</Badge>;
+      case "approved":
+        return <Badge variant="info">Утвержден оператором</Badge>;
+      case "corrected":
+        return <Badge variant="info">Скорректирован</Badge>;
+      case "rejected":
+        return <Badge variant="danger">Отклонен</Badge>;
+      case "manual_takeover":
+        return <Badge variant="neutral">Передан инженеру</Badge>;
+      case "blocked":
+        return <Badge variant="warning">Требует доработки</Badge>;
+      default:
+        return null;
+    }
+  };
 
   if (isLoading) {
     return (
-      <div className="p-4 bg-[#0e1014] border border-neutral-800 rounded-lg animate-pulse space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="h-4 bg-neutral-800 rounded w-1/3" />
-          <div className="h-4 bg-neutral-800 rounded w-1/6" />
-        </div>
-        <div className="h-8 bg-neutral-800/60 rounded" />
-        <div className="h-16 bg-neutral-800/40 rounded" />
+      <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-6 text-center animate-pulse text-slate-400">
+        <Bot className="w-8 h-8 mx-auto mb-2 text-indigo-400 animate-spin" />
+        <p className="text-sm font-medium">Загрузка контекста плана автопилота...</p>
       </div>
     );
   }
 
   if (error || !plan) {
     return (
-      <div className="p-3 bg-rose-950/20 border border-rose-800/40 rounded text-rose-300 text-xs flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-          <span>{(error as any)?.message || "Не удалось загрузить план автономного агента"}</span>
-        </div>
-        <Button size="sm" variant="ghost" onClick={() => refetch()} icon={<RefreshCw className="w-3 h-3" />}>
-          Повторить
+      <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-6 text-center text-slate-400">
+        <AlertTriangle className="w-8 h-8 mx-auto mb-2 text-amber-400" />
+        <p className="text-sm">Не удалось загрузить план решения.</p>
+        <Button variant="outline" size="sm" className="mt-3" onClick={() => refetch()}>
+          Повторить запрос
         </Button>
       </div>
     );
   }
 
-  const confidencePct = Math.round(plan.confidence * 100);
-  const confidenceColor =
-    confidencePct >= 80 ? "text-emerald-400" : confidencePct >= 60 ? "text-amber-400" : "text-rose-400";
-  const confidenceBarColor =
-    confidencePct >= 80 ? "bg-emerald-500" : confidencePct >= 60 ? "bg-amber-500" : "bg-rose-500";
+  const isNotAnalyzed = plan.analysis_state === "not_analyzed";
+  const isInProgress = plan.analysis_state === "in_progress";
 
   return (
-    <div className="p-3.5 bg-[#0d0f12] border border-neutral-800 rounded-lg shadow-xl space-y-3 relative overflow-hidden">
-      {/* Top Banner: Circuit Breaker Alert if tripped */}
-      {plan.is_circuit_broken && (
-        <div className="p-2 bg-rose-950/40 border border-rose-800/70 rounded text-[11px] text-rose-200 flex items-center gap-2">
-          <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
-          <span>Предохранитель активен (Circuit Breaker): 3 ошибки подряд. Требуется ручная валидация.</span>
-        </div>
-      )}
-
-      {/* Header: Agent Plan, Scenario Switcher, Confidence Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-neutral-800/80">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="p-1 rounded bg-purple-950/60 border border-purple-800/60 text-purple-300">
-            <Bot className="w-4 h-4" />
+    <div className="bg-slate-900/90 border border-slate-800 rounded-xl shadow-xl overflow-hidden text-slate-200">
+      {/* 1. Header with Scenario, Status and Freshness */}
+      <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/40 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+            <Sparkles className="w-4 h-4" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-neutral-100">План действий автономного агента</span>
-              <Badge variant={plan.mode === "FULL_AUTO" ? "success" : "warning"}>
-                {plan.mode === "FULL_AUTO" ? "FULL-AUTO" : "ASSISTED"}
-              </Badge>
-              {plan.is_tense && (
-                <span
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse"
-                  title={plan.tense_reason || "Срочный / обеспокоенный тон"}
-                >
-                  <Zap className="w-3 h-3 text-amber-400" />
-                  ⚡ Заявитель обеспокоен / Срочно
-                </span>
-              )}
-              {plan.has_attachments && (
-                <span
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/20 text-blue-300 border border-blue-500/40"
-                  title="В тикете есть прикрепленные файлы"
-                >
-                  <Paperclip className="w-3 h-3 text-blue-400" />
-                  Вложения
-                </span>
-              )}
+              <h3 className="text-base font-semibold text-slate-100">
+                {plan.scenario_name || "Автономный анализ заявки"}
+              </h3>
+              {renderRoutingBadge(plan.routing_state)}
+              {renderApprovalStateBadge(plan.approval_state)}
             </div>
-            <div className="text-[10px] text-neutral-400 truncate">{plan.description}</div>
+            <p className="text-xs text-slate-400 mt-0.5">{plan.description}</p>
           </div>
-        </div>
-
-        {/* Confidence Gauge */}
-        <div className="flex items-center gap-2 shrink-0 bg-[#121418] px-2.5 py-1 rounded border border-neutral-800">
-          <span className="text-[10px] text-neutral-400">Уверенность:</span>
-          <span className={`text-xs font-mono font-bold ${confidenceColor}`}>{confidencePct}%</span>
-          <div className="w-12 h-1.5 bg-neutral-800 rounded-full overflow-hidden">
-            <div className={`h-full ${confidenceBarColor}`} style={{ width: `${confidencePct}%` }} />
-          </div>
-        </div>
-      </div>
-
-      {/* Precondition Barriers Banner if invalid */}
-      {!plan.preconditions.is_valid && (
-        <div className="p-2.5 bg-amber-950/30 border border-amber-800/60 rounded text-[11px] text-amber-200 space-y-1">
-          <div className="font-semibold flex items-center gap-1.5 text-amber-300">
-            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-            <span>Требуются дополнительные данные или хост недоступен</span>
-          </div>
-          {plan.preconditions.missing_facts.length > 0 && (
-            <div className="text-[10px] text-amber-300/80">
-              Недостающие факты: {plan.preconditions.missing_facts.join(", ")}
-            </div>
-          )}
-          {plan.preconditions.environment_barriers.length > 0 && (
-            <div className="text-[10px] text-rose-300">
-              Сетевые барьеры: {plan.preconditions.environment_barriers.join(", ")}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Host Diagnostics Probe & Candidate Host Switcher */}
-      <div className="p-2.5 bg-[#121418] border border-neutral-800/90 rounded text-xs space-y-2">
-        <div className="flex items-center justify-between text-[11px]">
-          <span className="text-neutral-400 font-medium flex items-center gap-1.5">
-            <Server className="w-3.5 h-3.5 text-blue-400" />
-            Целевое рабочее место
-          </span>
-          {plan.host_diagnostic && (
-            <div className="flex items-center gap-2 font-mono text-[10px]">
-              <span
-                className={`flex items-center gap-1 ${
-                  plan.host_diagnostic.is_online ? "text-emerald-400" : "text-rose-400"
-                }`}
-              >
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ${
-                    plan.host_diagnostic.is_online ? "bg-emerald-400" : "bg-rose-400"
-                  }`}
-                />
-                {plan.host_diagnostic.is_online ? "Online" : "Offline"}
-                {plan.host_diagnostic.avg_rtt && ` (${plan.host_diagnostic.avg_rtt})`}
-              </span>
-              {plan.host_diagnostic.ports["5985"] !== undefined && (
-                <span className={plan.host_diagnostic.ports["5985"] ? "text-emerald-400" : "text-neutral-500"}>
-                  WinRM:{plan.host_diagnostic.ports["5985"] ? "OK" : "Closed"}
-                </span>
-              )}
-              {plan.host_diagnostic.ports["9100"] !== undefined && (
-                <span className={plan.host_diagnostic.ports["9100"] ? "text-emerald-400" : "text-neutral-500"}>
-                  P9100:{plan.host_diagnostic.ports["9100"] ? "OK" : "Closed"}
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Candidate Host Chips */}
-        {plan.candidate_hosts && plan.candidate_hosts.length > 0 && (
-          <div className="flex items-center gap-1.5 pt-1 text-[11px] overflow-x-auto no-scrollbar">
-            <span className="text-[10px] text-neutral-500 shrink-0">Кандидаты из заявки:</span>
-            {plan.candidate_hosts.map((host: string) => {
-              const isActive = (params.pc_name || "").toLowerCase() === host.toLowerCase();
-              return (
-                <button
-                  key={host}
-                  type="button"
-                  onClick={() => handleHostChipClick(host)}
-                  className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors shrink-0 ${
-                    isActive
-                      ? "bg-blue-600 text-white font-medium shadow-xs"
-                      : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700 hover:text-white"
-                  }`}
-                  title="Нажмите, чтобы переключить целевой ПК"
-                >
-                  {host}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Attachment Viewer: direct preview of attached scans, photos and documents in supervisor console */}
-      {effectiveAttachments.length > 0 && (
-        <div className="p-2.5 bg-[#121418] border border-neutral-800/90 rounded text-xs space-y-2">
-          <div className="flex items-center justify-between text-[11px]">
-            <span className="text-neutral-300 font-semibold flex items-center gap-1.5 uppercase tracking-wider">
-              <Paperclip className="w-3.5 h-3.5 text-blue-400" />
-              Прикрепленные файлы ({effectiveAttachments.length})
-            </span>
-            <span className="text-[10px] text-neutral-500 font-normal">
-              Кликните для просмотра в Lightbox или скачивания
-            </span>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {effectiveAttachments.map((att) => {
-              const attId = att.id || att.Id;
-              const name = att.name || att.Name || "Файл";
-              const isImg = isImageAttachment(name);
-              const isPdf = isPdfAttachment(name);
-              const downloadUrl = ticketsApi.getAttachmentUrl(ticketId, attId);
-
-              return (
-                <div
-                  key={attId}
-                  className="group relative p-2 bg-[#181a20] border border-neutral-800 hover:border-neutral-600 rounded transition-all flex items-center gap-2"
-                >
-                  <div
-                    onClick={() => handleAttachmentClick(att)}
-                    className="w-10 h-10 rounded bg-[#101216] flex items-center justify-center shrink-0 overflow-hidden border border-neutral-800 cursor-pointer relative"
-                    title={isImg ? "Нажмите для увеличения (Lightbox)" : "Открыть документ"}
-                  >
-                    {isImg ? (
-                      <>
-                        <img
-                          src={downloadUrl}
-                          alt={name}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                          onError={(e) => {
-                            (e.target as HTMLElement).style.display = "none";
-                          }}
-                        />
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                          <Eye className="w-3.5 h-3.5 text-white" />
-                        </div>
-                      </>
-                    ) : isPdf ? (
-                      <span className="text-[10px] font-bold text-rose-400 tracking-tighter">
-                        PDF
-                      </span>
-                    ) : (
-                      <FileText className="w-4 h-4 text-neutral-400" />
-                    )}
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div
-                      onClick={() => handleAttachmentClick(att)}
-                      className="text-xs text-neutral-200 truncate group-hover:text-white font-medium cursor-pointer"
-                      title={name}
-                    >
-                      {name}
-                    </div>
-                    <div className="text-[10px] text-neutral-500 flex items-center gap-2">
-                      <span>{isImg ? "Изображение" : isPdf ? "PDF документ" : "Документ"}</span>
-                      {att.size && <span>• {formatFileSize(att.size)}</span>}
-                    </div>
-                  </div>
-
-                  <a
-                    href={downloadUrl}
-                    download={name}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="p-1 text-neutral-400 hover:text-white hover:bg-neutral-800 rounded transition-colors shrink-0"
-                    title="Скачать файл"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                  </a>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Editable Scenario & Parameters Form */}
-      <div className="space-y-2.5 pt-1">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
-          {/* Scenario Selector */}
-          <div>
-            <label className="block text-[10px] font-semibold text-neutral-400 uppercase tracking-wider mb-1">
-              Сценарий решения
-            </label>
-            <select
-              value={scenarioKey}
-              onChange={(e) => setScenarioKey(e.target.value)}
-              className="w-full bg-[#121418] border border-neutral-800 rounded px-2.5 py-1.5 text-xs text-neutral-100 focus:outline-none focus:border-neutral-500"
-            >
-              {SCENARIO_OPTIONS.map((opt) => (
-                <option key={opt.key} value={opt.key}>
-                  {opt.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* PC Name parameter input */}
-          <div>
-            <label className="block text-[10px] font-semibold text-neutral-400 uppercase tracking-wider mb-1">
-              Имя ПК (Hostname)
-            </label>
-            <input
-              type="text"
-              value={params.pc_name || ""}
-              onChange={(e) => handleParamChange("pc_name", e.target.value)}
-              placeholder="WS-000..."
-              className="w-full bg-[#121418] border border-neutral-800 rounded px-2.5 py-1.5 text-xs text-neutral-100 font-mono focus:outline-none focus:border-neutral-500"
-            />
-          </div>
-        </div>
-
-        {/* Dynamic Secondary Parameters */}
-        {scenarioKey === "ad_account_unlock" && (
-          <div>
-            <label className="block text-[10px] font-semibold text-neutral-400 uppercase tracking-wider mb-1">
-              Логин Active Directory
-            </label>
-            <input
-              type="text"
-              value={params.target_user || ""}
-              onChange={(e) => handleParamChange("target_user", e.target.value)}
-              placeholder="ivanov.i"
-              className="w-full bg-[#121418] border border-neutral-800 rounded px-2.5 py-1.5 text-xs text-neutral-100 font-mono focus:outline-none focus:border-neutral-500"
-            />
-          </div>
-        )}
-
-        {(scenarioKey === "printer_spooler_restart" || scenarioKey === "default_printer_fix") && (
-          <div>
-            <label className="block text-[10px] font-semibold text-neutral-400 uppercase tracking-wider mb-1">
-              Модель / Очередь принтера
-            </label>
-            <input
-              type="text"
-              value={params.printer_model || params.printer_name || ""}
-              onChange={(e) => handleParamChange("printer_model", e.target.value)}
-              placeholder="Kyocera ECOSYS M2040dn"
-              className="w-full bg-[#121418] border border-neutral-800 rounded px-2.5 py-1.5 text-xs text-neutral-100 focus:outline-none focus:border-neutral-500"
-            />
-          </div>
-        )}
-
-        {/* Proposed Public Comment to Applicant */}
-        <div>
-          <label className="block text-[10px] font-semibold text-neutral-400 uppercase tracking-wider mb-1">
-            Текст ответа заявителю (при закрытии)
-          </label>
-          <textarea
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            rows={2}
-            className="w-full bg-[#121418] border border-neutral-800 rounded p-2 text-xs text-neutral-100 placeholder:text-neutral-500 focus:outline-none focus:border-neutral-500 resize-none leading-relaxed"
-          />
-        </div>
-
-        {/* Correction Tag & Notes (Only visible if supervisor altered the plan) */}
-        {isDirty && (
-          <div className="p-2.5 bg-amber-950/20 border border-amber-800/50 rounded space-y-2">
-            <div className="flex items-center gap-1.5 text-amber-300 text-xs font-semibold">
-              <Edit3 className="w-3.5 h-3.5" />
-              <span>Параметры изменены человеком (Ground Truth)</span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              <div>
-                <label className="block text-[10px] text-neutral-400 uppercase tracking-wider mb-1 font-semibold">
-                  Причина исправления (для датасета)
-                </label>
-                <select
-                  value={correctionTag}
-                  onChange={(e) => setCorrectionTag(e.target.value)}
-                  className="w-full bg-[#14171d] border border-neutral-700/80 rounded px-2 py-1 text-xs text-neutral-200 focus:outline-none"
-                >
-                  {CORRECTION_TAGS.map((t) => (
-                    <option key={t.key} value={t.key}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[10px] text-neutral-400 uppercase tracking-wider mb-1 font-semibold">
-                  Заметка оператора (опционально)
-                </label>
-                <input
-                  type="text"
-                  value={operatorNotes}
-                  onChange={(e) => setOperatorNotes(e.target.value)}
-                  placeholder="Заявитель указал не тот номер кабинета..."
-                  className="w-full bg-[#14171d] border border-neutral-700/80 rounded px-2 py-1 text-xs text-neutral-200 focus:outline-none"
-                />
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Footer Execution Actions */}
-      <div className="pt-2 border-t border-neutral-800/80 flex items-center justify-between gap-3">
-        <div className="text-[11px] text-neutral-500 flex items-center gap-2">
-          {isDirty ? (
-            <span className="text-amber-400 font-medium flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-              План скорректирован
-            </span>
-          ) : (
-            <span className="text-emerald-400 font-medium flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              План агента проверен
-            </span>
-          )}
         </div>
 
         <div className="flex items-center gap-2">
-          {isDirty ? (
-            <>
-              <Button
-                variant="secondary"
-                size="sm"
-                loading={isSubmitting}
-                onClick={handleApprove}
-                className="text-xs bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border-neutral-700"
-              >
-                <span>Одобрить план</span>
-                <KbdBadge>Enter</KbdBadge>
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                loading={isSubmitting}
-                onClick={handleCorrect}
-                icon={<Zap className="w-3.5 h-3.5 text-amber-400" />}
-                className="text-xs bg-amber-600 hover:bg-amber-500 text-neutral-950 font-semibold border-amber-500 shadow-md"
-              >
-                <span>Одобрить с исправлениями</span>
-                <KbdBadge>Ctrl+Enter</KbdBadge>
-              </Button>
-            </>
-          ) : (
-            <Button
-              variant="primary"
-              size="sm"
-              loading={isSubmitting}
-              onClick={handleApprove}
-              icon={<CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}
-              className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow-md"
-            >
-              <span>Одобрить план</span>
-              <KbdBadge>Enter</KbdBadge>
-            </Button>
+          {plan.is_stale && (
+            <Badge variant="warning" className="flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              План устарел
+            </Badge>
           )}
+          {plan.is_circuit_broken && (
+            <Badge variant="danger" className="flex items-center gap-1">
+              <ShieldAlert className="w-3 h-3" />
+              Circuit Breaker
+            </Badge>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => handleAnalyze(true)}
+            disabled={isAnalyzing}
+            className="text-xs text-slate-400 hover:text-slate-200"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 mr-1 ${isAnalyzing ? "animate-spin" : ""}`} />
+            Переанализировать
+          </Button>
         </div>
       </div>
 
-      {/* Lightbox Modal for previewing images without leaving supervisor console */}
-      <Lightbox
-        src={lightboxSrc}
-        alt={lightboxAlt}
-        isOpen={Boolean(lightboxSrc)}
-        onClose={() => setLightboxSrc(null)}
-      />
+      {/* 409 Conflict Alert */}
+      {conflictError && (
+        <div className="mx-5 mt-4 p-3.5 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-start justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-xs font-semibold text-amber-300">Состояние плана изменилось (409 Conflict)</p>
+              <p className="text-xs text-amber-400/90 mt-0.5">{conflictError}</p>
+            </div>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => handleAnalyze(true)} className="text-xs shrink-0">
+            Обновить анализ
+          </Button>
+        </div>
+      )}
+
+      {/* 2. Main Executive Summary */}
+      <div className="p-5 space-y-4">
+        {isNotAnalyzed ? (
+          <div className="text-center py-6">
+            <Bot className="w-10 h-10 mx-auto text-slate-600 mb-2" />
+            <p className="text-sm text-slate-300 font-medium">Анализ доказательного каскада еще не выполнялся</p>
+            <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+              Нажмите кнопку «Анализировать», чтобы извлечь параметры, сопоставить профили каталога и выполнить preflight-проверки.
+            </p>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => handleAnalyze(false)}
+              disabled={isAnalyzing}
+              className="mt-4"
+            >
+              <Sparkles className="w-4 h-4 mr-1.5" />
+              Запустить анализ заявки
+            </Button>
+          </div>
+        ) : isInProgress ? (
+          <div className="text-center py-6">
+            <RefreshCw className="w-8 h-8 mx-auto text-indigo-400 animate-spin mb-2" />
+            <p className="text-sm font-medium text-slate-200">Выполняется доказательный анализ заявки...</p>
+            <p className="text-xs text-slate-500 mt-1">Опрос источников, эмбеддингов и верификатора</p>
+          </div>
+        ) : (
+          <>
+            {/* Target & Action Summary Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 bg-slate-950/30 border border-slate-800/80 rounded-lg p-4">
+              <div>
+                <span className="text-xs font-medium text-slate-400 block mb-1">Предлагаемое действие</span>
+                <div className="flex items-center gap-2 text-sm text-slate-200 font-medium">
+                  <Terminal className="w-4 h-4 text-indigo-400" />
+                  <span>{plan.proposed_action || plan.scenario_key}</span>
+                </div>
+              </div>
+
+              <div>
+                <span className="text-xs font-medium text-slate-400 block mb-1">Целевой объект / Параметры</span>
+                <div className="text-xs text-slate-300 space-y-0.5">
+                  {Object.entries(plan.proposed_params || {}).length > 0 ? (
+                    Object.entries(plan.proposed_params).map(([k, v]) => (
+                      <div key={k} className="flex items-center gap-1.5 font-mono">
+                        <span className="text-slate-500">{k}:</span>
+                        <span className="text-indigo-300">{String(v)}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <span className="text-slate-500 italic">Параметры не требуются</span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Blockers & Missing Facts Alert */}
+            {plan.blocking_reason_codes && plan.blocking_reason_codes.length > 0 && (
+              <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-300 space-y-1">
+                <div className="flex items-center gap-1.5 font-semibold text-red-200">
+                  <AlertTriangle className="w-4 h-4 text-red-400" />
+                  <span>Обнаружены блокирующие факторы для прямого исполнения:</span>
+                </div>
+                <ul className="list-disc list-inside space-y-0.5 pl-2 text-red-300/90">
+                  {plan.missing_facts && plan.missing_facts.length > 0 && (
+                    <li>Не указаны обязательные реквизиты: <b>{plan.missing_facts.join(", ")}</b></li>
+                  )}
+                  {plan.blocking_reason_codes.map((code) => {
+                    if (code === "missing_facts") return null;
+                    if (code === "not_selected") return <li key={code}>Сценарий не выбран однозначно</li>;
+                    if (code === "scenario_disabled") return <li key={code}>Сценарий отключен политикой</li>;
+                    if (code === "circuit_breaker_tripped") return <li key={code}>Сработал защитный предохранитель</li>;
+                    if (code === "preflight_missing") return <li key={code}>Отсутствует результат preflight-проверки</li>;
+                    if (code === "preflight_expired") return <li key={code}>Preflight-проверка устарела (TTL 120с)</li>;
+                    if (code === "preflight_failed") return <li key={code}>Сетевые/доменные проверки не прошли</li>;
+                    if (code === "preflight_degraded") return <li key={code}>Компоненты проверки деградировали</li>;
+                    if (code === "plan_stale") return <li key={code}>План устарел по отношению к заявке</li>;
+                    if (code === "terminal_feedback_present") return <li key={code}>Для плана уже зафиксировано финальное решение</li>;
+                    return <li key={code}>{code}</li>;
+                  })}
+                </ul>
+              </div>
+            )}
+
+            {/* Preflight Quick Status Banner */}
+            {plan.preflight && (
+              <div className="flex items-center justify-between px-3.5 py-2.5 rounded-lg bg-slate-950/40 border border-slate-800 text-xs">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span className="font-medium text-slate-300">Preflight-проверки среды:</span>
+                  <Badge variant={plan.preflight.status === "passed" ? "success" : plan.preflight.status === "degraded" ? "warning" : "danger"}>
+                    {plan.preflight.status}
+                  </Badge>
+                </div>
+                {plan.preflight.expires_at && (
+                  <span className="text-slate-500 font-mono text-[11px]">
+                    TTL до: {new Date(plan.preflight.expires_at).toLocaleTimeString()}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Command Status if created */}
+            {plan.command_id && (
+              <div className="p-3 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-indigo-400" />
+                  <span className="text-slate-300 font-medium">Команда исполнения:</span>
+                  <Badge variant={plan.command_status === "succeeded" ? "success" : plan.command_status === "failed" ? "danger" : "info"}>
+                    {plan.command_status || "создана"}
+                  </Badge>
+                </div>
+                <span className="font-mono text-[11px] text-slate-400">{plan.command_id.slice(0, 8)}...</span>
+              </div>
+            )}
+
+            {/* 3. Action Buttons */}
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/80">
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleApprove}
+                disabled={!plan.can_approve || isSubmitting}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white"
+              >
+                <Check className="w-4 h-4 mr-1.5" />
+                Подтвердить план
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleOpenCorrection}
+                disabled={!plan.can_correct || isSubmitting}
+                className="border-slate-700 text-slate-200 hover:bg-slate-800"
+              >
+                <Edit3 className="w-3.5 h-3.5 mr-1.5 text-indigo-400" />
+                Исправить
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setIsRejectModalOpen(true)}
+                disabled={!plan.can_reject || isSubmitting}
+                className="text-slate-400 hover:text-red-300 hover:bg-red-500/10"
+              >
+                <X className="w-3.5 h-3.5 mr-1 text-red-400" />
+                Отклонить
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleManualTakeover}
+                disabled={!plan.can_reject || isSubmitting}
+                className="text-slate-400 hover:text-amber-300 hover:bg-amber-500/10 ml-auto"
+              >
+                <UserCheck className="w-3.5 h-3.5 mr-1 text-amber-400" />
+                Оставить оператору
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* 4. Progressive Disclosure Accordions */}
+      {!isNotAnalyzed && !isInProgress && (
+        <div className="border-t border-slate-800 bg-slate-950/20 divide-y divide-slate-800/60 text-xs">
+          {/* Section A: Why scenario was selected (Reason codes) */}
+          <div>
+            <button
+              onClick={() => toggleSection("reasons")}
+              className="w-full px-5 py-3 flex items-center justify-between text-left text-slate-300 hover:bg-slate-800/30 transition-colors"
+            >
+              <span className="font-medium flex items-center gap-2">
+                <Info className="w-3.5 h-3.5 text-indigo-400" />
+                Почему выбран сценарий (Обоснование)
+              </span>
+              {openSection === "reasons" ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+            </button>
+            {openSection === "reasons" && (
+              <div className="px-5 pb-4 pt-1 space-y-2 text-slate-400">
+                <div className="flex flex-wrap gap-1.5">
+                  {plan.decision_reason_codes && plan.decision_reason_codes.length > 0 ? (
+                    plan.decision_reason_codes.map((code) => (
+                      <Badge key={code} variant="neutral" className="font-mono text-[11px]">
+                        {code}
+                      </Badge>
+                    ))
+                  ) : (
+                    <span className="text-slate-500 italic">Коды решения не зафиксированы</span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Section B: Evidence Summaries */}
+          <div>
+            <button
+              onClick={() => toggleSection("evidence")}
+              className="w-full px-5 py-3 flex items-center justify-between text-left text-slate-300 hover:bg-slate-800/30 transition-colors"
+            >
+              <span className="font-medium flex items-center gap-2">
+                <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                Доказательства каскада ({plan.evidence_summaries?.length || 0})
+              </span>
+              {openSection === "evidence" ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+            </button>
+            {openSection === "evidence" && (
+              <div className="px-5 pb-4 pt-1 space-y-2">
+                {plan.evidence_summaries && plan.evidence_summaries.length > 0 ? (
+                  plan.evidence_summaries.map((ev: EvidenceSummary, idx: number) => (
+                    <div
+                      key={idx}
+                      className="p-2.5 rounded bg-slate-900/60 border border-slate-800/80 flex items-start justify-between gap-2"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="neutral" className="text-[10px] uppercase">
+                            {ev.source_type}
+                          </Badge>
+                          <span className="font-medium text-slate-200 text-xs">{ev.reason_code}</span>
+                        </div>
+                        <p className="text-slate-400 mt-1">{ev.description}</p>
+                      </div>
+                      <span className="text-slate-500 text-[10px] font-mono shrink-0">{ev.provider}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-slate-500 italic">Доказательства не сформированы</p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Section C: Preflight Checks Detail */}
+          <div>
+            <button
+              onClick={() => toggleSection("preflight")}
+              className="w-full px-5 py-3 flex items-center justify-between text-left text-slate-300 hover:bg-slate-800/30 transition-colors"
+            >
+              <span className="font-medium flex items-center gap-2">
+                <CheckSquare className="w-3.5 h-3.5 text-emerald-400" />
+                Проверки перед запуском (Preflight)
+              </span>
+              {openSection === "preflight" ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+            </button>
+            {openSection === "preflight" && (
+              <div className="px-5 pb-4 pt-1 space-y-2">
+                {plan.preflight?.checks && plan.preflight.checks.length > 0 ? (
+                  plan.preflight.checks.map((chk: PreflightCheckItem, idx: number) => (
+                    <div
+                      key={idx}
+                      className="p-2 rounded bg-slate-900/60 border border-slate-800/80 flex items-center justify-between text-xs"
+                    >
+                      <div className="flex items-center gap-2">
+                        {chk.status === "passed" ? (
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        ) : chk.status === "warning" ? (
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                        ) : (
+                          <X className="w-3.5 h-3.5 text-red-400" />
+                        )}
+                        <span className="text-slate-200 font-mono">{chk.name}</span>
+                        {chk.message && <span className="text-slate-400">— {chk.message}</span>}
+                      </div>
+                      <Badge variant={chk.status === "passed" ? "success" : chk.status === "warning" ? "warning" : "danger"}>
+                        {chk.status}
+                      </Badge>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-slate-500 italic">Preflight-проверки не выполнялись</p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Section D: Technical Provenance (UUIDs & Hashes) */}
+          <div>
+            <button
+              onClick={() => toggleSection("technical")}
+              className="w-full px-5 py-3 flex items-center justify-between text-left text-slate-300 hover:bg-slate-800/30 transition-colors"
+            >
+              <span className="font-medium flex items-center gap-2">
+                <Terminal className="w-3.5 h-3.5 text-slate-400" />
+                Технические сведения (Audit & Hashes)
+              </span>
+              {openSection === "technical" ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+            </button>
+            {openSection === "technical" && (
+              <div className="px-5 pb-4 pt-1 space-y-1.5 font-mono text-[11px] text-slate-400 bg-slate-950/60 p-3 rounded m-5">
+                <div><span className="text-slate-600">Decision ID:</span> <span className="text-slate-300">{plan.decision_id || "null"}</span></div>
+                <div><span className="text-slate-600">Plan ID:</span> <span className="text-slate-300">{plan.plan_id || "null"}</span></div>
+                <div><span className="text-slate-600">Plan Hash:</span> <span className="text-slate-300">{plan.plan_hash || "null"}</span></div>
+                <div><span className="text-slate-600">Snapshot Hash:</span> <span className="text-slate-300">{plan.snapshot_hash || "null"}</span></div>
+                <div><span className="text-slate-600">Last Event ID:</span> <span className="text-slate-300">{plan.last_event_id ?? "null"}</span></div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 5. Correction Modal with Server Catalog Schema */}
+      {isCorrectModalOpen && (
+        <Modal
+          isOpen={isCorrectModalOpen}
+          onClose={() => setIsCorrectModalOpen(false)}
+          title="Корректировка плана автопилота"
+          maxWidth="lg"
+        >
+          <form onSubmit={handleCorrectSubmit} className="space-y-4 text-slate-200">
+            {/* Scenario Selector from Server Catalog */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Выберите целевой сценарий
+              </label>
+              <select
+                value={selectedScenarioKey}
+                onChange={(e) => {
+                  const newKey = e.target.value;
+                  setSelectedScenarioKey(newKey);
+                  // Pre-seed comment from meta if available
+                  const found = scenarioCatalog.find((s) => s.scenario_key === newKey);
+                  if (found) {
+                    setFormComment("");
+                  }
+                }}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+              >
+                {scenarioCatalog.map((s) => (
+                  <option key={s.scenario_key} value={s.scenario_key} disabled={!s.is_enabled}>
+                    {s.name} {!s.is_enabled ? `(${s.disabled_reason || "Отключен"})` : ""}
+                  </option>
+                ))}
+              </select>
+              {activeScenarioMeta && (
+                <p className="text-xs text-slate-400 mt-1">{activeScenarioMeta.description}</p>
+              )}
+            </div>
+
+            {/* Dynamic Typed Editable Fields */}
+            {activeScenarioMeta && activeScenarioMeta.editable_fields.length > 0 && (
+              <div className="space-y-3 p-3.5 bg-slate-950/40 rounded-lg border border-slate-800">
+                <span className="text-xs font-semibold text-slate-300 block mb-1">
+                  Параметры выполнения сценария
+                </span>
+                {activeScenarioMeta.editable_fields.map((field) => (
+                  <div key={field.field_key}>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">
+                      {field.label} {field.required && <span className="text-red-400">*</span>}
+                    </label>
+                    <input
+                      type={field.field_type === "integer" ? "number" : "text"}
+                      value={formParams[field.field_key] || ""}
+                      onChange={(e) => handleFormParamChange(field.field_key, e.target.value)}
+                      placeholder={field.hint || ""}
+                      className={`w-full bg-slate-900 border ${
+                        formValidationErrors[field.field_key] ? "border-red-500" : "border-slate-700"
+                      } rounded-lg px-3 py-1.5 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 font-mono`}
+                    />
+                    {formValidationErrors[field.field_key] && (
+                      <p className="text-xs text-red-400 mt-0.5">{formValidationErrors[field.field_key]}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Reason Tag (Mandatory) */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Причина корректировки <span className="text-red-400">*</span>
+              </label>
+              <select
+                value={correctionTag}
+                onChange={(e) => setCorrectionTag(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+              >
+                {CORRECTION_TAG_OPTIONS.map((tag) => (
+                  <option key={tag.key} value={tag.key}>
+                    {tag.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Operator Notes */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Заметки оператора (необязательно)
+              </label>
+              <textarea
+                value={operatorNotes}
+                onChange={(e) => setOperatorNotes(e.target.value)}
+                rows={2}
+                placeholder="Пояснение для калибровки и обучения..."
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+              <Button variant="ghost" size="sm" onClick={() => setIsCorrectModalOpen(false)}>
+                Отмена
+              </Button>
+              <Button variant="primary" size="sm" type="submit" disabled={isSubmitting}>
+                <Send className="w-4 h-4 mr-1.5" />
+                Сохранить и исполнить
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* 6. Reject Confirmation Modal */}
+      {isRejectModalOpen && (
+        <Modal
+          isOpen={isRejectModalOpen}
+          onClose={() => setIsRejectModalOpen(false)}
+          title="Отклонение плана автопилота"
+          maxWidth="md"
+        >
+          <div className="space-y-4 text-slate-200">
+            <p className="text-xs text-slate-400">
+              Предложенный сценарий будет отклонен и зафиксирован в калибровочном датасете как неприменимый. Команда исполнения создана не будет.
+            </p>
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Причина отклонения</label>
+              <select
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+              >
+                <option value="rejected">Неприменимо к данной заявке</option>
+                <option value="not_it_task">Не является задачей техподдержки</option>
+                <option value="policy_prohibited">Запрещено регламентом</option>
+                <option value="requires_manual_inspection">Требуется физический выезд / осмотр</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Заметки оператора</label>
+              <textarea
+                value={rejectNotes}
+                onChange={(e) => setRejectNotes(e.target.value)}
+                rows={2}
+                placeholder="Причина отклонения..."
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+              <Button variant="ghost" size="sm" onClick={() => setIsRejectModalOpen(false)}>
+                Отмена
+              </Button>
+              <Button variant="danger" size="sm" onClick={handleReject} disabled={isSubmitting}>
+                Отклонить предложение
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Lightbox Modal for Image Attachments */}
+      {lightboxSrc && (
+        <Lightbox
+          src={lightboxSrc}
+          alt={lightboxAlt}
+          isOpen={Boolean(lightboxSrc)}
+          onClose={() => setLightboxSrc(null)}
+        />
+      )}
     </div>
   );
 };

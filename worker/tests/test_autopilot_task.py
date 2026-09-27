@@ -4,13 +4,11 @@ from typing import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from core.autopilot.dto import AutopilotPolicyUpdateDTO
 from core.autopilot.policy_service import AutopilotPolicyService
 from core.database.base import Base
-from core.database.models import CommandRecord
 from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO, TaskLifetimeEventDTO
@@ -19,9 +17,9 @@ from worker.src.tasks.autopilot import (
     set_autopilot_client,
     set_autopilot_policy_service,
     set_autopilot_redis_client,
-    set_autopilot_registry,
     set_autopilot_service_auth,
     set_autopilot_session_factory,
+    set_full_auto_feature_gate,
 )
 
 
@@ -39,11 +37,23 @@ class MockRedis:
         return True
 
     async def delete(self, *keys: str):
+        deleted = 0
         for k in keys:
-            self.store.pop(k, None)
+            if self.store.pop(k, None) is not None:
+                deleted += 1
+        return deleted
 
     async def exists(self, *keys: str) -> int:
         return sum(1 for k in keys if k in self.store)
+
+    async def eval(self, script: str, numkeys: int, key: str, *args):
+        del numkeys
+        owner_token = args[0] if args else None
+        if owner_token is not None and self.store.get(key) != owner_token:
+            return 0
+        if "expire" in script.lower():
+            return 1
+        return await self.delete(key)
 
 
 @pytest.fixture
@@ -65,8 +75,21 @@ def mock_redis() -> MockRedis:
 @pytest.fixture(autouse=True)
 def isolate_autopilot_redis(mock_redis):
     set_autopilot_redis_client(mock_redis)
-    yield
+    with patch(
+        "core.routing.providers.semantic.get_embedding_vector",
+        new_callable=AsyncMock,
+        return_value=[0.0] * 1536,
+    ), patch(
+        "worker.src.tasks.command_dispatcher.dispatch_command_task.kiq",
+        new_callable=AsyncMock,
+    ), patch(
+        "core.routing.verifier.transport.LiteLLMVerifierTransport.complete_json",
+        new_callable=AsyncMock,
+        return_value="{}",
+    ):
+        yield
     set_autopilot_redis_client(None)
+    set_full_auto_feature_gate(None)
 
 
 @pytest.fixture
@@ -188,24 +211,12 @@ async def test_autopilot_assisted_mode(mock_client, mock_service_auth, test_sess
     set_autopilot_session_factory(test_session_factory)
     set_autopilot_policy_service(policy_service)
 
+    # In ASSISTED mode, assigning the bot without an approved operator command
+    # returns awaiting_operator_approval and does not create commands or mutate ticket.
     res = await autopilot_task(504)
-    assert res["status"] == "assisted_prepared"
-    assert res["scenario"] == "install_printer"
-
-    # Verify CommandRecord is created in DB with status 'pending'
-    async with test_session_factory() as session:
-        stmt = select(CommandRecord).where(CommandRecord.task_id == 504)
-        result = await session.execute(stmt)
-        cmd = result.scalar_one_or_none()
-        assert cmd is not None
-        assert cmd.status == "pending"
-        assert cmd.action == "install_printer"
-
-    # Verify hidden note posted for engineers
-    mock_client.update_task.assert_called_once()
-    call_kwargs = mock_client.update_task.call_args.kwargs
-    assert call_kwargs["is_private"] is True
-    assert "Ко-пилота (ASSISTED)" in call_kwargs["comment"]
+    assert res["status"] == "awaiting_operator_approval"
+    assert res["task_id"] == 504
+    mock_client.update_task.assert_not_called()
 
 
 # -------------------------------------------------------------
@@ -228,6 +239,7 @@ async def test_autopilot_dialogue_missing_facts_suspends_ticket(mock_client, moc
 
     await policy_service.update_policy("install_printer", AutopilotPolicyUpdateDTO(mode="FULL_AUTO"))
 
+    set_full_auto_feature_gate(True)
     set_autopilot_client(mock_client)
     set_autopilot_service_auth(mock_service_auth)
     set_autopilot_session_factory(test_session_factory)
@@ -243,7 +255,7 @@ async def test_autopilot_dialogue_missing_facts_suspends_ticket(mock_client, moc
     first_call = mock_client.update_task.call_args_list[0].kwargs
     assert first_call["status_id"] == 6
     assert first_call["is_private"] is False
-    assert "укажите сетевое имя" in first_call["comment"]
+    assert "pc_name" in first_call["comment"]
 
     # Second call is private technical note
     second_call = mock_client.update_task.call_args_list[1].kwargs
@@ -252,7 +264,7 @@ async def test_autopilot_dialogue_missing_facts_suspends_ticket(mock_client, moc
 
 
 @pytest.mark.asyncio
-async def test_autopilot_dialogue_resume_enriches_but_printer_install_fails_closed(
+async def test_autopilot_dialogue_without_prior_plan_remains_fail_closed(
     mock_client, mock_service_auth, test_session_factory, policy_service
 ):
     # Initial ticket state was missing PC name
@@ -274,6 +286,7 @@ async def test_autopilot_dialogue_resume_enriches_but_printer_install_fails_clos
 
     await policy_service.update_policy("install_printer", AutopilotPolicyUpdateDTO(mode="FULL_AUTO"))
 
+    set_full_auto_feature_gate(True)
     set_autopilot_client(mock_client)
     set_autopilot_service_auth(mock_service_auth)
     set_autopilot_session_factory(test_session_factory)
@@ -285,17 +298,15 @@ async def test_autopilot_dialogue_resume_enriches_but_printer_install_fails_clos
     ):
         res = await autopilot_task(506)
 
-        assert res["status"] == "failed"
-        assert res["error"] == "printer_executor_unavailable"
+        assert res["status"] == "paused_waiting_applicant"
 
-        # The dialogue was enriched with the PC, but no Windows executor exists,
-        # so the ticket remains in progress with a hidden technical report.
-        assert task.entities.pc_name == "WKS-7777"
-        assert mock_client.update_task.call_count == 1
+        # Without a previously policy-validated FULL_AUTO plan, applicant text
+        # is not allowed to feed an autonomous mutation path.
+        assert task.entities.pc_name == ""
+        assert mock_client.update_task.call_count == 2
         res_call = mock_client.update_task.call_args_list[0].kwargs
-        assert res_call["status_id"] == 2
-        assert res_call["is_private"] is True
-        assert "printer_executor_unavailable" in res_call["comment"]
+        assert res_call["status_id"] == 6
+        assert res_call["is_private"] is False
 
 
 @pytest.mark.asyncio
@@ -319,6 +330,7 @@ async def test_autopilot_dialogue_limit_escalates_to_human(mock_client, mock_ser
 
     await policy_service.update_policy("install_printer", AutopilotPolicyUpdateDTO(mode="FULL_AUTO"))
 
+    set_full_auto_feature_gate(True)
     set_autopilot_client(mock_client)
     set_autopilot_service_auth(mock_service_auth)
     set_autopilot_session_factory(test_session_factory)
@@ -336,11 +348,19 @@ async def test_autopilot_dialogue_limit_escalates_to_human(mock_client, mock_ser
 
 
 # -------------------------------------------------------------
-# 4. Circuit Breaker Tripwire on Execution Failures
+# 4. Single execution owner handoff
 # -------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_autopilot_circuit_breaker_trips_on_failures(mock_client, mock_service_auth, test_session_factory, policy_service, mock_redis):
+async def test_full_auto_creates_command_without_executing_scenario_inline(
+    mock_client, mock_service_auth, test_session_factory, policy_service, mock_redis
+):
+    import uuid
+    from datetime import UTC, datetime, timedelta
+
+    from core.database.models import PreparedPlanRecord, RoutingDecisionRecord, RoutingPreflightRecord
+    from core.routing.preflight import compute_canonical_params_hash, compute_canonical_plan_hash_from_json
+    from core.routing.snapshot import TicketSnapshotFactory
     task = TaskDTO(
         Id=508,
         Name="Подключение к корпоративной Wi-Fi сети",
@@ -354,55 +374,74 @@ async def test_autopilot_circuit_breaker_trips_on_failures(mock_client, mock_ser
     mock_client.get_task.return_value = task
     mock_client.get_task_lifetime.return_value = []
 
-    # Configure grant_wlan to FULL_AUTO
     await policy_service.update_policy("grant_wlan", AutopilotPolicyUpdateDTO(mode="FULL_AUTO"))
 
+    snapshot = TicketSnapshotFactory.create(task, comments=[])
+    decision_id = uuid.uuid4()
+    preflight_id = uuid.uuid4()
+    plan_data = {
+        "task_id": task.id,
+        "decision_id": str(decision_id),
+        "snapshot_hash": snapshot.snapshot_hash,
+        "scenario_key": "grant_wlan",
+        "proposed_params": {"target_user": "petrov.p"},
+        "suggested_comment": "",
+        "target_status_id": 3,
+        "routing_state": "selected",
+        "is_executable": True,
+    }
+    plan_hash = compute_canonical_plan_hash_from_json(plan_data)
+    async with test_session_factory() as session:
+        session.add_all(
+            [
+                RoutingDecisionRecord(
+                    id=decision_id,
+                    task_id=task.id,
+                    snapshot_hash=snapshot.snapshot_hash,
+                    router_version="test",
+                    state="selected",
+                    selected_scenario="grant_wlan",
+                ),
+                RoutingPreflightRecord(
+                    id=preflight_id,
+                    decision_id=decision_id,
+                    task_id=task.id,
+                    snapshot_hash=snapshot.snapshot_hash,
+                    scenario_key="grant_wlan",
+                    params_hash=compute_canonical_params_hash(plan_data["proposed_params"]),
+                    status="passed",
+                    expires_at=datetime.now(UTC) + timedelta(minutes=2),
+                ),
+                PreparedPlanRecord(
+                    task_id=task.id,
+                    decision_id=decision_id,
+                    snapshot_hash=snapshot.snapshot_hash,
+                    plan_hash=plan_hash,
+                    scenario_key="grant_wlan",
+                    preflight_id=preflight_id,
+                    plan_json=plan_data,
+                    state="selected",
+                ),
+            ]
+        )
+        await session.commit()
+
+    set_full_auto_feature_gate(True)
     set_autopilot_client(mock_client)
     set_autopilot_service_auth(mock_service_auth)
     set_autopilot_session_factory(test_session_factory)
     set_autopilot_policy_service(policy_service)
     set_autopilot_redis_client(mock_redis)
 
-    from worker.src.scenarios.grant_wlan import GrantWLANScenario
-    from worker.src.scenarios.registry import ScenarioRegistry
-    test_reg = ScenarioRegistry()
-    test_reg.register(GrantWLANScenario())
-    set_autopilot_registry(test_reg)
+    with patch(
+        "core.scenarios.adapters.grant_wlan.GrantWLANScenario.execute",
+        new_callable=AsyncMock,
+    ) as execute_mock:
+        result = await autopilot_task(508)
 
-    from core.scenarios.base import ScenarioExecutionResult
-
-    try:
-        failed_result = ScenarioExecutionResult(
-            success=False,
-            action_taken="grant_wlan",
-            resolution_comment="",
-            technical_note="⚠️ [Автопилот: Сбой] AD Connection Error",
-            target_status_id=2,
-            error="AD Connection Error",
-        )
-        with patch("core.scenarios.adapters.grant_wlan.GrantWLANScenario.execute", return_value=failed_result):
-            # Failure 1
-            res1 = await autopilot_task(508)
-            assert res1["status"] == "failed"
-            assert res1["circuit_broken"] is False
-
-            # Failure 2
-            res2 = await autopilot_task(508)
-            assert res2["status"] == "failed"
-            assert res2["circuit_broken"] is False
-
-            # Failure 3 → Trips Circuit Breaker!
-            res3 = await autopilot_task(508)
-            assert res3["status"] == "failed"
-            assert res3["circuit_broken"] is True
-
-            # Verify policy degraded to ASSISTED
-            policy = await policy_service.get_policy("grant_wlan")
-            assert policy.mode == "ASSISTED"
-            assert policy.is_circuit_broken is True
-    finally:
-        set_autopilot_registry(None)
-        set_autopilot_redis_client(None)
+    assert result["status"] == "command_dispatched"
+    execute_mock.assert_not_awaited()
+    assert "lock:task:508" not in mock_redis.store
 
 
 # -------------------------------------------------------------
@@ -430,13 +469,8 @@ async def test_autopilot_edge_case_cancel_request(mock_client, mock_service_auth
     set_autopilot_policy_service(policy_service)
 
     res = await autopilot_task(509)
-    assert res["status"] == "canceled_by_applicant"
-
-    # Ticket automatically canceled with Status 30
-    assert mock_client.update_task.call_count >= 1
-    call_args = mock_client.update_task.call_args_list[0].kwargs
-    assert call_args["status_id"] == 30
-    assert "отменена по вашей просьбе" in call_args["comment"]
+    assert res["status"] == "awaiting_operator_approval"
+    mock_client.update_task.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -460,11 +494,8 @@ async def test_autopilot_edge_case_clarification_question(mock_client, mock_serv
     set_autopilot_policy_service(policy_service)
 
     res = await autopilot_task(510)
-    assert res["status"] == "helpful_hint_sent"
-
-    # Helpful guide posted, status remains intact
-    call_args = mock_client.update_task.call_args_list[0].kwargs
-    assert "информационной наклейке" in call_args["comment"]
+    assert res["status"] == "awaiting_operator_approval"
+    mock_client.update_task.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -488,12 +519,8 @@ async def test_autopilot_edge_case_home_subnet_rejection(mock_client, mock_servi
     set_autopilot_policy_service(policy_service)
 
     res = await autopilot_task(511)
-    assert res["status"] == "home_subnet_rejected"
-    assert res["ip"] == "192.168.1.120"
-
-    call_args = mock_client.update_task.call_args_list[0].kwargs
-    assert "относится к домашней/локальной сети" in call_args["comment"]
-    assert "10.***.***.***" in call_args["comment"]
+    assert res["status"] == "awaiting_operator_approval"
+    mock_client.update_task.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -519,18 +546,20 @@ async def test_autopilot_edge_case_attachments_only(mock_client, mock_service_au
     set_autopilot_policy_service(policy_service)
 
     res = await autopilot_task(512)
-    assert res["status"] == "escalated_attachments_only"
-
-    # Escalated to engineer (Status 2)
-    call_args = mock_client.update_task.call_args_list[0].kwargs
-    assert call_args["status_id"] == 2
-    assert "Вложение от заявителя" in call_args["comment"]
+    assert res["status"] == "awaiting_operator_approval"
+    mock_client.update_task.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_autopilot_distributed_concurrency_lock(mock_client, mock_service_auth, test_session_factory, policy_service, mock_redis):
-    # Lock is already held by another worker
-    await mock_redis.set("lock:autopilot:513", "locked", ex=60)
+    # ASSISTED mode is read-only and does not depend on the execution lease.
+    await mock_redis.set("lock:task:513", "locked", ex=60)
+    mock_client.get_task.return_value = TaskDTO(
+        Id=513,
+        Name="Заявка",
+        StatusId=1,
+        ExecutorIds="999",
+    )
 
     set_autopilot_client(mock_client)
     set_autopilot_service_auth(mock_service_auth)
@@ -539,7 +568,7 @@ async def test_autopilot_distributed_concurrency_lock(mock_client, mock_service_
     set_autopilot_redis_client(mock_redis)
 
     res = await autopilot_task(513)
-    assert res["status"] == "skipped"
-    assert res["reason"] == "concurrent_lock_active"
-    mock_client.get_task.assert_not_called()
+    assert res["status"] == "awaiting_operator_approval"
+    mock_client.update_task.assert_not_awaited()
+    assert mock_redis.store["lock:task:513"] == "locked"
     set_autopilot_redis_client(None)

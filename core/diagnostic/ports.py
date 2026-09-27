@@ -97,7 +97,7 @@ class FastSocketProbe:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         port_map: Dict[int, bool] = {}
-        for port, res in zip(target_ports, results):
+        for port, res in zip(target_ports, results, strict=False):
             if isinstance(res, bool):
                 port_map[port] = res
             else:

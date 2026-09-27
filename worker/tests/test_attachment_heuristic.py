@@ -1,5 +1,6 @@
 """Unit tests for Attachment Heuristic and Dialogue suspension in Autopilot task."""
 
+import uuid
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,9 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from core.autopilot.dto import AutopilotPolicyUpdateDTO
 from core.autopilot.policy_service import AutopilotPolicyService
 from core.database.base import Base
+from core.database.models import PreparedPlanRecord, RoutingDecisionRecord
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
-from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
+from core.routing.preflight import compute_canonical_plan_hash_from_json
+from core.routing.snapshot import build_ticket_snapshot
 from worker.src.tasks.autopilot import (
     autopilot_task,
     set_autopilot_client,
@@ -18,6 +22,7 @@ from worker.src.tasks.autopilot import (
     set_autopilot_redis_client,
     set_autopilot_service_auth,
     set_autopilot_session_factory,
+    set_full_auto_feature_gate,
 )
 
 
@@ -35,11 +40,23 @@ class MockRedis:
         return True
 
     async def delete(self, *keys: str):
+        deleted = 0
         for k in keys:
-            self.store.pop(k, None)
+            if self.store.pop(k, None) is not None:
+                deleted += 1
+        return deleted
 
     async def exists(self, *keys: str) -> int:
         return sum(1 for k in keys if k in self.store)
+
+    async def eval(self, script: str, numkeys: int, key: str, *args):
+        del numkeys
+        owner_token = args[0] if args else None
+        if owner_token is not None and self.store.get(key) != owner_token:
+            return 0
+        if "expire" in script.lower():
+            return 1
+        return await self.delete(key)
 
 
 @pytest.fixture
@@ -60,8 +77,10 @@ def mock_redis() -> MockRedis:
 @pytest.fixture(autouse=True)
 def isolate_autopilot_redis(mock_redis):
     set_autopilot_redis_client(mock_redis)
+    set_full_auto_feature_gate(True)
     yield
     set_autopilot_redis_client(None)
+    set_full_auto_feature_gate(None)
 
 
 @pytest.fixture
@@ -114,6 +133,43 @@ async def test_attachment_heuristic_escalates_to_human_when_facts_missing(
     )
     mock_client.get_task.return_value = task_with_scan
 
+    snap = build_ticket_snapshot(task_with_scan)
+    dec_id = uuid.uuid4()
+    plan_data = {
+        "task_id": 601,
+        "decision_id": str(dec_id),
+        "snapshot_hash": snap.snapshot_hash,
+        "scenario_key": "install_printer",
+        "proposed_params": {},
+        "suggested_comment": "",
+        "target_status_id": 3,
+        "is_executable": False,
+        "missing_facts": ["IP-адрес принтера"],
+        "clarification_prompt": "Здравствуйте! Для выполнения заявки по установке принтера нам требуется: IP-адрес принтера. Пожалуйста, ответьте на это сообщение.",
+    }
+    async with test_session_factory() as session:
+        dec = RoutingDecisionRecord(
+            id=dec_id,
+            task_id=601,
+            router_version="1.0.0",
+            selected_scenario="install_printer",
+            selected_scenario_version="1.0.0",
+            state="needs_clarification",
+            snapshot_hash=snap.snapshot_hash,
+        )
+        plan = PreparedPlanRecord(
+            id=uuid.uuid4(),
+            task_id=601,
+            decision_id=dec_id,
+            snapshot_hash=snap.snapshot_hash,
+            plan_hash=compute_canonical_plan_hash_from_json(plan_data),
+            scenario_key="install_printer",
+            state="needs_clarification",
+            plan_json=plan_data,
+        )
+        session.add_all([dec, plan])
+        await session.commit()
+
     set_autopilot_client(mock_client)
     set_autopilot_service_auth(mock_service_auth)
     set_autopilot_session_factory(test_session_factory)
@@ -157,6 +213,43 @@ async def test_missing_facts_without_attachments_suspends_ticket(
         Attachments=[],
     )
     mock_client.get_task.return_value = task_without_scan
+
+    snap = build_ticket_snapshot(task_without_scan)
+    dec_id = uuid.uuid4()
+    plan_data = {
+        "task_id": 602,
+        "decision_id": str(dec_id),
+        "snapshot_hash": snap.snapshot_hash,
+        "scenario_key": "install_printer",
+        "proposed_params": {},
+        "suggested_comment": "",
+        "target_status_id": 3,
+        "is_executable": False,
+        "missing_facts": ["IP-адрес принтера"],
+        "clarification_prompt": "Здравствуйте! Для выполнения заявки по установке принтера нам требуется: IP-адрес принтера. Пожалуйста, ответьте на это сообщение.",
+    }
+    async with test_session_factory() as session:
+        dec = RoutingDecisionRecord(
+            id=dec_id,
+            task_id=602,
+            router_version="1.0.0",
+            selected_scenario="install_printer",
+            selected_scenario_version="1.0.0",
+            state="needs_clarification",
+            snapshot_hash=snap.snapshot_hash,
+        )
+        plan = PreparedPlanRecord(
+            id=uuid.uuid4(),
+            task_id=602,
+            decision_id=dec_id,
+            snapshot_hash=snap.snapshot_hash,
+            plan_hash=compute_canonical_plan_hash_from_json(plan_data),
+            scenario_key="install_printer",
+            state="needs_clarification",
+            plan_json=plan_data,
+        )
+        session.add_all([dec, plan])
+        await session.commit()
 
     set_autopilot_client(mock_client)
     set_autopilot_service_auth(mock_service_auth)

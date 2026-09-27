@@ -14,13 +14,13 @@ from core.database.system_state import (
     WatermarkService,
     set_system_state_session_factory,
 )
-from core.intraservice.dto import TaskDTO
-from worker.src.broker import QUEUE_DEFAULT, broker
 from core.intraservice.auth import (
     ServiceAuthBootstrap,
     ServiceAuthCredentials,
     ServiceAuthError,
 )
+from core.intraservice.dto import TaskDTO
+from worker.src.broker import QUEUE_DEFAULT, broker
 from worker.src.tasks.poller import (
     IngestionPoller,
     get_executor_ids_list,

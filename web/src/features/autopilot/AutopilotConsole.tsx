@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bot,
@@ -15,10 +15,16 @@ import {
   Terminal,
   Download,
   FileJson,
+  Check,
+  Edit3,
+  XCircle,
+  UserCheck,
+  BarChart3,
+  Filter,
 } from "lucide-react";
 import { Badge, Button, useToast } from "@/shared/ui";
 import { autopilotApi } from "./api";
-import { AutopilotCorrection, AutopilotMode, AutopilotPolicy } from "./types";
+import { AutopilotMode, AutopilotPolicy, RoutingFeedback, RoutingQualityMetrics } from "./types";
 
 const SCENARIO_NAMES: Record<string, string> = {
   install_printer: "Установка и настройка принтеров",
@@ -29,9 +35,20 @@ const SCENARIO_NAMES: Record<string, string> = {
   rag_consultation: "База знаний RAG (Авто-ответы)",
 };
 
+const VERDICT_BADGES: Record<
+  string,
+  { label: string; variant: "success" | "warning" | "danger" | "neutral"; icon: any }
+> = {
+  approved: { label: "Approved", variant: "success", icon: Check },
+  corrected: { label: "Corrected", variant: "warning", icon: Edit3 },
+  rejected: { label: "Rejected", variant: "danger", icon: XCircle },
+  manual_takeover: { label: "Manual Takeover", variant: "neutral", icon: UserCheck },
+};
+
 export function AutopilotConsole() {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const [feedbackVerdictFilter, setFeedbackVerdictFilter] = useState<string>("");
 
   // 1. Fetch policies
   const { data: policiesData, isLoading: isLoadingPolicies } = useQuery({
@@ -54,10 +71,21 @@ export function AutopilotConsole() {
     refetchInterval: 1500,
   });
 
-  // 4. Fetch human supervisor corrections (Harness Ground Truth)
-  const { data: correctionsData } = useQuery({
-    queryKey: ["autopilot", "corrections"],
-    queryFn: () => autopilotApi.getCorrections(20),
+  // 4. Fetch canonical Routing Feedback Record stream
+  const { data: feedbackData, isLoading: isLoadingFeedback } = useQuery({
+    queryKey: ["autopilot", "feedback", feedbackVerdictFilter],
+    queryFn: () =>
+      autopilotApi.getFeedback({
+        limit: 30,
+        verdict: feedbackVerdictFilter || undefined,
+      }),
+    refetchInterval: 5000,
+  });
+
+  // 5. Fetch Routing Quality Metrics
+  const { data: qualityMetricsData } = useQuery({
+    queryKey: ["autopilot", "metrics", "quality"],
+    queryFn: () => autopilotApi.getQualityMetrics(),
     refetchInterval: 10000,
   });
 
@@ -66,12 +94,10 @@ export function AutopilotConsole() {
     mutationFn: ({
       scenarioKey,
       mode,
-      minConfidence,
     }: {
       scenarioKey: string;
       mode: AutopilotMode;
-      minConfidence?: number;
-    }) => autopilotApi.updatePolicy(scenarioKey, { mode, min_confidence: minConfidence }),
+    }) => autopilotApi.updatePolicy(scenarioKey, { mode }),
     onSuccess: (updated) => {
       queryClient.setQueryData(
         ["autopilot", "policies"],
@@ -109,6 +135,8 @@ export function AutopilotConsole() {
   });
 
   const policies = policiesData?.policies || [];
+  const metrics: RoutingQualityMetrics | undefined = qualityMetricsData?.metrics;
+  const isSampleSufficient = (metrics?.total_decisions ?? 0) >= 5;
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -120,7 +148,7 @@ export function AutopilotConsole() {
             Операторская консоль управления Автопилотом
           </h1>
           <p className="text-xs text-neutral-400 mt-1">
-            Мониторинг Core-6 сценариев, оперативное переключение матриц автономии и защита от сбоев (Circuit Breaker)
+            Мониторинг Evidence-Based Routing Cascade, управление режимами автономии и канонический Feedback-контур
           </p>
         </div>
 
@@ -197,6 +225,67 @@ export function AutopilotConsole() {
         </div>
       </div>
 
+      {/* Quality Metrics Panel */}
+      {metrics && (
+        <div className="bg-[#121418] border border-neutral-800 rounded-lg p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="w-4 h-4 text-indigo-400" />
+              <h2 className="text-xs font-semibold text-neutral-200 uppercase tracking-wider">
+                Качество маршрутизации (Routing Quality Metrics)
+              </h2>
+            </div>
+            {!isSampleSufficient && (
+              <Badge variant="warning" className="text-[10px]">
+                Малая выборка ({metrics.total_decisions} / 5)
+              </Badge>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-[#0e1013] border border-neutral-800/80 rounded p-2.5">
+              <span className="text-[11px] text-neutral-400">Routing Accuracy</span>
+              <div className="text-lg font-bold font-mono text-emerald-400 mt-1">
+                {(metrics.approve_rate * 100).toFixed(1)}%
+              </div>
+              <span className="text-[10px] text-neutral-500">
+                {Math.round(metrics.approve_rate * metrics.total_decisions)} подтверждено
+              </span>
+            </div>
+
+            <div className="bg-[#0e1013] border border-neutral-800/80 rounded p-2.5">
+              <span className="text-[11px] text-neutral-400">Correction Rate</span>
+              <div className="text-lg font-bold font-mono text-amber-400 mt-1">
+                {(metrics.correction_rate * 100).toFixed(1)}%
+              </div>
+              <span className="text-[10px] text-neutral-500">
+                {Math.round(metrics.correction_rate * metrics.total_decisions)} скорректировано
+              </span>
+            </div>
+
+            <div className="bg-[#0e1013] border border-neutral-800/80 rounded p-2.5">
+              <span className="text-[11px] text-neutral-400">Reject / Takeover Rate</span>
+              <div className="text-lg font-bold font-mono text-rose-400 mt-1">
+                {(metrics.reject_takeover_rate * 100).toFixed(1)}%
+              </div>
+              <span className="text-[10px] text-neutral-500">
+                {Math.round(metrics.reject_takeover_rate * metrics.total_decisions)} отклонено/перехвачено
+              </span>
+            </div>
+
+            <div className="bg-[#0e1013] border border-neutral-800/80 rounded p-2.5">
+              <span className="text-[11px] text-neutral-400">Ground Truth Decisions</span>
+              <div className="text-lg font-bold font-mono text-neutral-200 mt-1">
+                {metrics.total_decisions}
+              </div>
+              <span className="text-[10px] text-neutral-500">
+                Команд: {(metrics.command_success_rate * 100).toFixed(0)}% OK
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Scenarios Governance Table */}
       <div className="bg-[#121418] border border-neutral-800 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-neutral-800 flex items-center justify-between bg-[#15181d]">
@@ -242,8 +331,6 @@ export function AutopilotConsole() {
                       {p.description || "Автоматизированный сценарий Helpdesk"}
                     </p>
                     <div className="flex items-center gap-3 text-[11px] text-neutral-500 pt-0.5">
-                      <span>Порог уверенности: {(p.min_confidence * 100).toFixed(0)}%</span>
-                      <span>•</span>
                       <span>Ошибок подряд: {p.consecutive_failures}</span>
                       {p.last_failure_at && (
                         <>
@@ -416,72 +503,160 @@ export function AutopilotConsole() {
         )}
       </div>
 
-      {/* 4. Harness Ground Truth Feedback Dataset */}
+      {/* 4. Canonical Routing Feedback Loop */}
       <div className="bg-[#121418] border border-neutral-800 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-neutral-800/80 flex items-center justify-between">
+        <div className="px-4 py-3 border-b border-neutral-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#15181d]">
           <div className="flex items-center gap-2">
-            <FileJson className="w-4 h-4 text-amber-400" />
-            <h2 className="text-sm font-semibold text-neutral-100">
-              Датасет корректировок супервизора (Harness Ground Truth)
+            <FileJson className="w-4 h-4 text-indigo-400" />
+            <h2 className="text-xs font-semibold text-neutral-200 uppercase tracking-wider">
+              Единый Feedback-контур (Routing Feedback Record)
             </h2>
-            <Badge variant="warning">
-              {correctionsData?.total ?? 0} правок
+            <Badge variant="neutral" className="text-[10px] font-mono">
+              {feedbackData?.total ?? 0} записей
             </Badge>
           </div>
 
-          <a
-            href={autopilotApi.getExportCorrectionsUrl(500)}
-            download="autopilot_corrections.jsonl"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 text-neutral-950 font-semibold text-xs transition-colors shadow-xs"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Экспорт JSONL для Pytest / AI Coder</span>
-          </a>
+          <div className="flex items-center gap-2">
+            {/* Filter pills */}
+            <div className="flex items-center bg-[#0a0b0d] border border-neutral-800 rounded-md p-0.5 text-xs">
+              <button
+                onClick={() => setFeedbackVerdictFilter("")}
+                className={`px-2 py-0.5 rounded ${
+                  feedbackVerdictFilter === ""
+                    ? "bg-neutral-800 text-neutral-100"
+                    : "text-neutral-400 hover:text-neutral-200"
+                }`}
+              >
+                Все
+              </button>
+              <button
+                onClick={() => setFeedbackVerdictFilter("approved")}
+                className={`px-2 py-0.5 rounded ${
+                  feedbackVerdictFilter === "approved"
+                    ? "bg-emerald-500/20 text-emerald-300"
+                    : "text-neutral-400 hover:text-neutral-200"
+                }`}
+              >
+                Approved
+              </button>
+              <button
+                onClick={() => setFeedbackVerdictFilter("corrected")}
+                className={`px-2 py-0.5 rounded ${
+                  feedbackVerdictFilter === "corrected"
+                    ? "bg-amber-500/20 text-amber-300"
+                    : "text-neutral-400 hover:text-neutral-200"
+                }`}
+              >
+                Corrected
+              </button>
+              <button
+                onClick={() => setFeedbackVerdictFilter("rejected")}
+                className={`px-2 py-0.5 rounded ${
+                  feedbackVerdictFilter === "rejected"
+                    ? "bg-rose-500/20 text-rose-300"
+                    : "text-neutral-400 hover:text-neutral-200"
+                }`}
+              >
+                Rejected
+              </button>
+              <button
+                onClick={() => setFeedbackVerdictFilter("manual_takeover")}
+                className={`px-2 py-0.5 rounded ${
+                  feedbackVerdictFilter === "manual_takeover"
+                    ? "bg-blue-500/20 text-blue-300"
+                    : "text-neutral-400 hover:text-neutral-200"
+                }`}
+              >
+                Takeover
+              </button>
+            </div>
+
+            <button
+              onClick={() => autopilotApi.downloadFeedbackExport()}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition-colors shadow-xs cursor-pointer"
+              title="Экспорт датасета калибровки без PII и секретов"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Экспорт JSONL</span>
+            </button>
+          </div>
         </div>
 
-        {correctionsData?.corrections?.length === 0 ? (
+        {isLoadingFeedback ? (
           <div className="p-8 text-center text-xs text-neutral-500">
-            Правок пока нет. Когда оператор корректирует параметры или сценарий в карточке заявки, диф автоматически попадает в обучающий датасет.
+            Загрузка feedback-записей...
+          </div>
+        ) : feedbackData?.feedback?.length === 0 ? (
+          <div className="p-8 text-center text-xs text-neutral-500">
+            Записей обратной связи не найдено. Решения операторов в карточках заявок отображаются здесь в реальном времени.
           </div>
         ) : (
-          <div className="divide-y divide-neutral-800/60 max-h-[320px] overflow-y-auto">
-            {correctionsData?.corrections?.map((c: AutopilotCorrection) => (
-              <div
-                key={c.id}
-                className="px-4 py-2.5 flex items-center justify-between text-xs hover:bg-neutral-800/20 transition-colors"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-[11px] text-neutral-400 bg-neutral-900 border border-neutral-800 px-1.5 py-0.5 rounded font-mono shrink-0">
-                    #{c.task_id}
-                  </span>
+          <div className="divide-y divide-neutral-800/60 max-h-[360px] overflow-y-auto">
+            {feedbackData?.feedback?.map((f: RoutingFeedback) => {
+              const verdictMeta = VERDICT_BADGES[f.verdict] || {
+                label: f.verdict,
+                variant: "neutral",
+                icon: CheckCircle2,
+              };
+              const VerdictIcon = verdictMeta.icon;
 
-                  <Badge variant="warning">
-                    {c.correction_tag}
-                  </Badge>
+              return (
+                <div
+                  key={f.id}
+                  className="px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs hover:bg-neutral-800/20 transition-colors"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="text-[11px] text-neutral-400 bg-neutral-900 border border-neutral-800 px-1.5 py-0.5 rounded font-mono shrink-0">
+                      #{f.task_id}
+                    </span>
 
-                  <div className="flex items-center gap-1.5 min-w-0 font-mono text-[11px]">
-                    <span className="text-neutral-400 line-through truncate max-w-[120px]">
-                      {c.original_scenario}
-                    </span>
-                    <span className="text-neutral-500">➔</span>
-                    <span className="text-emerald-400 font-semibold truncate max-w-[140px]">
-                      {c.corrected_scenario}
-                    </span>
+                    <Badge variant={verdictMeta.variant} className="flex items-center gap-1">
+                      <VerdictIcon className="w-3 h-3" />
+                      <span>{verdictMeta.label}</span>
+                    </Badge>
+
+                    <div className="flex items-center gap-1.5 min-w-0 font-mono text-[11px]">
+                      {f.verdict === "corrected" ? (
+                        <>
+                          <span className="text-neutral-400 line-through truncate max-w-[120px]">
+                            {f.original_scenario || "none"}
+                          </span>
+                          <span className="text-neutral-500">➔</span>
+                          <span className="text-amber-400 font-semibold truncate max-w-[140px]">
+                            {f.corrected_scenario}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-neutral-200 font-semibold truncate max-w-[160px]">
+                          {f.corrected_scenario || f.original_scenario || "none"}
+                        </span>
+                      )}
+                    </div>
+
+                    {f.reason_tag && (
+                      <span className="text-[10px] text-neutral-400 bg-neutral-900 px-1.5 py-0.5 rounded border border-neutral-800">
+                        {f.reason_tag}
+                      </span>
+                    )}
+
+                    {f.operator_notes && (
+                      <span
+                        className="text-[11px] text-neutral-400 italic truncate max-w-xs"
+                        title={f.operator_notes}
+                      >
+                        "{f.operator_notes}"
+                      </span>
+                    )}
                   </div>
 
-                  {c.operator_notes && (
-                    <span className="text-[11px] text-neutral-400 italic truncate max-w-xs" title={c.operator_notes}>
-                      "{c.operator_notes}"
-                    </span>
-                  )}
+                  <div className="flex items-center gap-3 text-neutral-500 text-[10px] shrink-0 font-mono">
+                    <span>{f.operator_username || "operator"}</span>
+                    {f.router_version && <span>v{f.router_version}</span>}
+                    <span>{f.created_at ? new Date(f.created_at).toLocaleString("ru-RU") : "—"}</span>
+                  </div>
                 </div>
-
-                <div className="flex items-center gap-3 text-neutral-500 text-[10px] shrink-0 font-mono">
-                  <span>{c.operator_username}</span>
-                  <span>{new Date(c.created_at).toLocaleString("ru-RU")}</span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

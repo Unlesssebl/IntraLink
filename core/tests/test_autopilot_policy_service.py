@@ -97,18 +97,16 @@ async def test_get_policy_seeding_and_caching(policy_service, mock_redis):
 @pytest.mark.asyncio
 async def test_update_policy(policy_service, mock_redis):
     # Update policy to FULL_AUTO
-    update_req = AutopilotPolicyUpdateDTO(mode="FULL_AUTO", min_confidence=0.92)
+    update_req = AutopilotPolicyUpdateDTO(mode="FULL_AUTO")
     updated = await policy_service.update_policy("install_printer", update_req)
 
     assert updated.mode == "FULL_AUTO"
-    assert updated.min_confidence == 0.92
     assert not updated.is_circuit_broken
     assert updated.consecutive_failures == 0
 
     # Verify Redis is updated
     fetched = await policy_service.get_policy("install_printer")
     assert fetched.mode == "FULL_AUTO"
-    assert fetched.min_confidence == 0.92
 
 
 @pytest.mark.asyncio

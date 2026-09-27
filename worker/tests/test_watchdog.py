@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
-from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from worker.src.tasks.watchdog import (
     InactivityWatchdog,
     inactivity_watchdog_task,

@@ -1,6 +1,7 @@
 """Pydantic v2 declarative schema definitions for IntraService service catalog contracts."""
 
 from typing import List, Optional
+
 from pydantic import BaseModel, ConfigDict, Field
 
 

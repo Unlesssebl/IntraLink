@@ -1,8 +1,8 @@
-"""Background autopilot execution task with Autonomous Dialogue Loop and Self-Healing Circuit Breaker.
+"""Background autopilot execution task with Autonomous Dialogue Loop and Evidence-Based Routing.
 
 Enforces:
 1. Anti-Loop Guard: suppresses auto-replies, bounces and bot loops.
-2. In-Flight Task Concurrency Lock: Redis-based distributed lock preventing worker race conditions.
+2. In-Flight Task Concurrency Lock: Redis-based fail-closed distributed token lease.
 3. Optimistic Lock: verifies ticket is open and not reassigned to human engineers.
 4. Autonomous Dialogue Loop:
    - Suspends ticket (Status 6) with polite instructions if details or host are missing.
@@ -11,36 +11,45 @@ Enforces:
      and rejects non-corporate home subnets (192.168.x.x / 127.0.0.1).
    - Escalates to human engineers (Status 2) if dialogue limit is reached, home barrier persists,
      or only attachment photos are uploaded.
-5. Governance Matrix & Self-Healing Circuit Breaker:
-   - FULL_AUTO: autonomous resolution and closure (Status 3).
-   - ASSISTED: prepares ActionDock commands without direct closure.
-   - Status Transit Safeguard: safe transit 6 -> 2 -> 3 avoiding strict workflow violations.
-   - Trips from FULL_AUTO to ASSISTED on 3 consecutive failures within 10 minutes.
-6. Zero Black-Box transparency:
-   - Posts user-friendly public resolutions to applicants.
-   - Posts hidden internal audit notes (`IsPrivateComment=True`) for Helpdesk staff.
+5. Governance Matrix & Single Execution Owner:
+   - FULL_AUTO: strictly executes verified PreparedPlanRecord by dispatching CommandRecord to command dispatcher.
+   - ASSISTED: prepares ActionDock plans without autonomous dispatch.
+   - Single Execution Owner: command_dispatcher is the exclusive scenario mutation executor.
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import redis.asyncio as aioredis
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from core.autopilot.dto import AutopilotPolicyDTO
+from core.autopilot.dialogue import AntiLoopGuard, UserReplyIntent, UserReplyIntentAnalyzer
 from core.autopilot.policy_service import AutopilotPolicyService, get_policy_service
-from core.database.models import CommandRecord
+from core.database.models import (
+    CommandRecord,
+    PreparedPlanRecord,
+    RoutingFeedbackRecord,
+    RoutingPreflightRecord,
+    sanitize_secrets,
+)
 from core.database.session import get_engine, get_session_factory
 from core.database.system_state import _get_active_session_factory
+from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO, TaskLifetimeEventDTO
 from core.redis_client import get_redis_client
-from worker.src.broker import QUEUE_DEFAULT, broker
-from core.scenarios.base import BaseScenario
-from core.scenarios.orchestrator import ScenarioLifecycleOrchestrator
+from core.redis_lock import DistributedTaskLock
+from core.routing.observability import emit_routing_event
+from core.routing.preflight import (
+    compute_canonical_params_hash,
+    compute_canonical_plan_hash_from_json,
+    is_executable_preflight_status,
+)
+from core.routing.snapshot import build_ticket_snapshot, compute_snapshot_hash
 from core.scenarios.registry import ScenarioRegistry, get_default_scenario_registry
-from core.autopilot.dialogue import AntiLoopGuard, UserReplyIntent, UserReplyIntentAnalyzer
-from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
+from worker.src.broker import QUEUE_DEFAULT, broker
 
 logger = logging.getLogger("worker.tasks.autopilot")
 
@@ -51,6 +60,19 @@ _override_service_auth: Optional[ServiceAuthBootstrap] = None
 _override_redis_client: Optional[aioredis.Redis] = None
 _override_policy_service: Optional[AutopilotPolicyService] = None
 _override_registry: Optional[ScenarioRegistry] = None
+_override_full_auto_enabled: Optional[bool] = None
+
+
+def set_full_auto_feature_gate(enabled: Optional[bool]) -> None:
+    """Override FULL_AUTO feature gate (disabled by default in v2 runtime)."""
+    global _override_full_auto_enabled
+    _override_full_auto_enabled = enabled
+
+
+def _is_full_auto_enabled() -> bool:
+    if _override_full_auto_enabled is not None:
+        return _override_full_auto_enabled
+    return False
 
 
 def set_autopilot_client(client: Optional[IntraServiceClient]) -> None:
@@ -127,25 +149,6 @@ def _get_registry() -> ScenarioRegistry:
     return get_default_scenario_registry()
 
 
-def _count_clarification_rounds(
-    lifetimes: List[TaskLifetimeEventDTO],
-    bot_user_id: Optional[int],
-) -> int:
-    """Count how many times autopilot suspended the ticket or requested clarification."""
-    rounds = 0
-    for event in lifetimes:
-        # Check if ticket was suspended to Status 6
-        if event.status_id == 6:
-            rounds += 1
-            continue
-        # Check if bot posted a clarification comment
-        if bot_user_id is not None and event.editor_id == bot_user_id:
-            text = event.comment or ""
-            if "Здравствуйте! Для" in text or "Пожалуйста, включите компьютер" in text:
-                rounds += 1
-    return rounds
-
-
 @broker.task(task_name="autopilot_task", queue_name=QUEUE_DEFAULT)
 async def autopilot_task(task_id: int) -> Dict[str, Any]:
     """Execute autonomous scenario workflow for a ticket assigned to service bot."""
@@ -156,11 +159,10 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
     service_auth = _get_service_auth()
     redis_conn = _get_redis()
     policy_service = _get_policy_service()
-    registry = _get_registry()
     anti_loop = AntiLoopGuard()
     intent_analyzer = UserReplyIntentAnalyzer()
 
-    # 0. Cooperative Cancellation check
+    # 0. Cooperative Cancellation check in Redis
     abort_key = f"autopilot:abort:{task_id}"
     if redis_conn is not None:
         try:
@@ -170,55 +172,75 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
         except Exception as exc:
             logger.debug("Redis abort check error for ticket #%d: %s", task_id, exc)
 
-    # 0.1. Distributed Concurrency Lock: only one worker processes task_id at a time
-    lock_key = f"lock:task:{task_id}"
-    lock_key_legacy = f"lock:autopilot:{task_id}"
-    lock_acquired = False
-    if redis_conn is not None:
-        try:
-            acquired_canonical = bool(await redis_conn.set(lock_key, "locked", nx=True, ex=60))
-            acquired_legacy = bool(await redis_conn.set(lock_key_legacy, "locked", nx=True, ex=60))
-            if not acquired_canonical or not acquired_legacy:
-                if acquired_canonical:
-                    await redis_conn.delete(lock_key)
-                if acquired_legacy:
-                    await redis_conn.delete(lock_key_legacy)
-                logger.info("Ticket #%d is already in-flight by another worker. Skipping concurrent execution.", task_id)
-                return {"status": "skipped", "reason": "concurrent_lock_active", "task_id": task_id}
-            lock_acquired = True
-        except Exception as exc:
-            logger.debug("Redis lock error for ticket #%d: %s", task_id, exc)
+    # 0.1. Durable PostgreSQL cancellation check
+    async with session_factory() as session:
+        stmt_terminal = (
+            select(RoutingFeedbackRecord)
+            .where(
+                RoutingFeedbackRecord.task_id == task_id,
+                RoutingFeedbackRecord.verdict.in_(["rejected", "manual_takeover"]),
+            )
+            .order_by(desc(RoutingFeedbackRecord.created_at))
+            .limit(1)
+        )
+        terminal_fb = (await session.execute(stmt_terminal)).scalar_one_or_none()
+        if terminal_fb is not None:
+            logger.info("Ticket #%d has terminal feedback '%s'. Aborting autopilot.", task_id, terminal_fb.verdict)
+            return {"status": "aborted", "reason": f"terminal_feedback_{terminal_fb.verdict}", "task_id": task_id}
+
+        stmt_pending = (
+            select(CommandRecord)
+            .where(CommandRecord.task_id == task_id, CommandRecord.status == "pending")
+            .order_by(desc(CommandRecord.created_at))
+            .limit(1)
+        )
+        approved_cmd = (await session.execute(stmt_pending)).scalar_one_or_none()
+        stmt_latest_plan = (
+            select(PreparedPlanRecord)
+            .where(PreparedPlanRecord.task_id == task_id)
+            .order_by(desc(PreparedPlanRecord.created_at))
+            .limit(1)
+        )
+        latest_plan = (await session.execute(stmt_latest_plan)).scalar_one_or_none()
+
+    # Read-only guards do not require an execution lease.
+    auth: ServiceAuthCredentials = await service_auth.bootstrap_auth(
+        client=client,
+        redis_client=redis_conn,
+    )
+    task: TaskDTO = await client.get_task(task_id=task_id, auth_b64=auth.auth_b64)
+    if anti_loop.is_auto_reply(text=task.description, subject=task.name):
+        return {"status": "skipped", "reason": "auto_reply_detected", "task_id": task_id}
+    if task.status_id in (3, 4, 30):
+        return {"status": "skipped", "reason": "already_closed", "task_id": task.id, "status_id": task.status_id}
+    executor_ids = task.get_executor_ids()
+    if auth.bot_user_id is not None and auth.bot_user_id not in executor_ids and executor_ids:
+        return {"status": "skipped", "reason": "assigned_to_human", "task_id": task.id, "executor_ids": task.executor_ids}
+
+    # ASSISTED is a strict non-mutating boundary. Approved commands are owned by
+    # command_dispatcher; mere assignment to the bot must not require Redis or
+    # trigger dialogue/status changes.
+    if approved_cmd is not None:
+        return {
+            "status": "command_already_dispatched",
+            "command_id": str(approved_cmd.id),
+            "task_id": task_id,
+        }
+    if not _is_full_auto_enabled():
+        return {
+            "status": "awaiting_operator_approval",
+            "task_id": task_id,
+            "message": "Ожидает подтверждения плана оператором",
+        }
+
+    # Only autonomous planning/dialogue owns this lease. The dispatcher obtains
+    # a separate lease after the durable handoff.
+    lock = DistributedTaskLock(redis_conn, f"lock:task:{task_id}", ttl_seconds=60)
+    lock_acquired = await lock.acquire()
+    if not lock_acquired:
+        return {"status": "skipped", "reason": "concurrent_lock_active_or_unavailable", "task_id": task_id}
 
     try:
-        # 1. Authenticate service bot
-        auth: ServiceAuthCredentials = await service_auth.bootstrap_auth(
-            client=client,
-            redis_client=redis_conn,
-        )
-
-        # 2. Fetch fresh ticket state
-        task: TaskDTO = await client.get_task(task_id=task_id, auth_b64=auth.auth_b64)
-
-        # -------------------------------------------------------------
-        # 3. Anti-Loop Guard: check for auto-reply / bounce loop
-        # -------------------------------------------------------------
-        if anti_loop.is_auto_reply(text=task.description, subject=task.name):
-            logger.warning("Ticket #%d detected as automated email robot response. Skipping autopilot.", task_id)
-            return {"status": "skipped", "reason": "auto_reply_detected", "task_id": task_id}
-
-        # -------------------------------------------------------------
-        # 4. Optimistic Lock (Read-before-Write)
-        # -------------------------------------------------------------
-        # 4.1. Terminal status check (3=Выполнена, 4=Закрыта, 30=Отменена)
-        if task.status_id in (3, 4, 30):
-            logger.info("Ticket #%d is already in terminal status %d (%s). Aborting autopilot.", task.id, task.status_id, task.status_name)
-            return {"status": "skipped", "reason": "already_closed", "task_id": task.id, "status_id": task.status_id}
-
-        # 4.2. Human engineer assignment check
-        executor_ids = task.get_executor_ids()
-        if auth.bot_user_id is not None and auth.bot_user_id not in executor_ids and executor_ids:
-            logger.info("Ticket #%d is reassigned to human engineer(s): %s. Aborting autopilot.", task.id, executor_ids)
-            return {"status": "skipped", "reason": "assigned_to_human", "task_id": task.id, "executor_ids": task.executor_ids}
 
         # -------------------------------------------------------------
         # 5. Fetch lifetime history & resume dialogue loop
@@ -226,10 +248,25 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
         lifetimes: List[TaskLifetimeEventDTO] = await client.get_task_lifetime(task_id=task.id, auth_b64=auth.auth_b64)
         clarification_rounds = anti_loop.count_clarification_rounds(lifetimes, auth.bot_user_id)
 
+        # Even with the global feature gate enabled, an existing ASSISTED plan
+        # must never enter the autonomous dialogue mutation path.
+        dialogue_enabled = False
+        if latest_plan is not None:
+            async with session_factory() as session:
+                latest_policy = await policy_service.get_policy(latest_plan.scenario_key, session=session)
+            if latest_policy.mode != "FULL_AUTO" or latest_policy.is_circuit_broken:
+                return {
+                    "status": "awaiting_operator_approval",
+                    "task_id": task.id,
+                    "scenario": latest_plan.scenario_key,
+                    "policy_mode": latest_policy.mode,
+                }
+            dialogue_enabled = True
+
         applicant_comments = [
             e for e in lifetimes
             if e.comment and (auth.bot_user_id is None or e.editor_id != auth.bot_user_id) and not e.is_private
-        ]
+        ] if dialogue_enabled else []
         if applicant_comments:
             latest_reply = applicant_comments[-1].comment or ""
             # Anti-Loop check: email robot auto-reply (out of office / vacation notice)
@@ -319,205 +356,240 @@ async def autopilot_task(task_id: int) -> Dict[str, Any]:
                     task.entities.target_user = enriched.target_user
 
         # -------------------------------------------------------------
-        # 6. Scenario Resolution
+        # 7. Strict FULL_AUTO: Evidence Cascade & PreparedPlanRecord Validation
         # -------------------------------------------------------------
-        scenario: Optional[BaseScenario] = await registry.find_scenario(task)
-        if scenario is None:
-            logger.info("No matching autopilot scenario found for ticket #%d. Escalating to human.", task.id)
+        current_snapshot = build_ticket_snapshot(task, comments=lifetimes)
+        current_snapshot_hash = compute_snapshot_hash(current_snapshot)
+
+        async with session_factory() as session:
+            stmt_plan = (
+                select(PreparedPlanRecord)
+                .where(PreparedPlanRecord.task_id == task.id)
+                .order_by(desc(PreparedPlanRecord.created_at))
+                .limit(1)
+            )
+            plan_rec = (await session.execute(stmt_plan)).scalar_one_or_none()
+
+        # If no plan exists or plan is stale relative to fresh snapshot, run Evidence Cascade on-demand
+        if plan_rec is None or plan_rec.snapshot_hash != current_snapshot_hash:
+            from core.routing.analysis_service import TicketAnalysisService
+            analysis_svc = TicketAnalysisService(client=client, policy_service=policy_service, session_factory=session_factory)
+            try:
+                async with session_factory() as session:
+                    await analysis_svc.analyze_ticket(
+                        ticket_id=task.id,
+                        session=session,
+                        redis_client=redis_conn,
+                        auth_b64=auth.auth_b64,
+                    )
+                async with session_factory() as session:
+                    plan_rec = (await session.execute(stmt_plan)).scalar_one_or_none()
+            except Exception as exc:
+                logger.warning("On-demand cascade analysis failed for ticket #%d: %s", task.id, exc)
+
+        if plan_rec is None:
             await client.update_task(
                 task_id=task.id,
                 status_id=2,  # В работе
-                comment=(
-                    "🤖 [Автопилот: Сценарий не определен]\n"
-                    "Заявка не соответствует ни одному из активных сценариев автопилота.\n"
-                    "Передана на ручную обработку инженеру 1-й линии."
-                ),
+                comment="🤖 [Автопилот: Сценарий не определен]\nЗаявка не соответствует автоматическим сценариям. Передана инженеру.",
                 is_private=True,
                 auth_b64=auth.auth_b64,
             )
             return {"status": "unmatched", "task_id": task.id}
 
-        # -------------------------------------------------------------
-        # 7. Autopilot Policy Evaluation (Governance & Circuit Breaker)
-        # -------------------------------------------------------------
-        policy: AutopilotPolicyDTO = await policy_service.get_policy(scenario.scenario_key)
-
-        if policy.mode == "DISABLED":
-            logger.info("Autopilot scenario '%s' is DISABLED by policy. Skipping.", scenario.scenario_key)
-            return {"status": "disabled", "scenario": scenario.scenario_key, "task_id": task.id}
-
-        if policy.mode == "ASSISTED":
-            logger.info("Scenario '%s' running in ASSISTED mode. Preparing command record.", scenario.scenario_key)
-            precond = await scenario.validate_preconditions(task)
-            async with session_factory() as session:
-                cmd = CommandRecord(
-                    idempotency_key=f"assisted_{task.id}_{scenario.scenario_key}",
-                    action=scenario.scenario_key,
-                    executor="worker",
-                    target_json={"task_id": task.id, "pc_name": task.entities.pc_name},
-                    params_json={"entities": task.entities.model_dump(), "preconditions": precond.model_dump()},
-                    status="pending",
-                    initiator="autopilot_assisted",
-                    task_id=task.id,
-                )
-                session.add(cmd)
-                try:
-                    await session.commit()
-                except Exception as exc:
-                    logger.debug("CommandRecord already exists for assisted task #%d: %s", task.id, exc)
-
+        # Validate fresh snapshot binding
+        if plan_rec.snapshot_hash != current_snapshot_hash:
+            logger.warning("PreparedPlan %s snapshot_hash mismatch with fresh ticket #%d. Fail-closed.", plan_rec.id, task.id)
             await client.update_task(
                 task_id=task.id,
-                comment=(
-                    f"🤖 [Автопилот: Режим Ко-пилота (ASSISTED)]\n"
-                    f"Сценарий '{scenario.name}' подготовлен.\n"
-                    f"Параметры зафиксированы в ActionDock. Ожидает действия инженера."
-                ),
+                status_id=2,
+                comment="🤖 [Автопилот: Изменение заявки]\nДанные заявки изменились в процессе обработки. План аннулирован и передан инженеру.",
                 is_private=True,
                 auth_b64=auth.auth_b64,
             )
-            return {"status": "assisted_prepared", "scenario": scenario.scenario_key, "task_id": task.id}
+            return {"status": "stale_plan_snapshot_mismatch", "task_id": task.id}
 
-        # -------------------------------------------------------------
-        # 8. FULL_AUTO Execution & Dialogue Loop
-        # -------------------------------------------------------------
-        preconditions = await scenario.validate_preconditions(task)
+        plan_data = plan_rec.plan_json or {}
+        try:
+            canonical_plan_hash = compute_canonical_plan_hash_from_json(plan_data)
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning("PreparedPlan %s has invalid canonical payload: %s", plan_rec.id, exc)
+            return {"status": "invalid_plan_binding", "reason": "plan_tampered", "task_id": task.id}
+        if canonical_plan_hash != plan_rec.plan_hash:
+            logger.warning("PreparedPlan %s canonical hash mismatch. Fail-closed.", plan_rec.id)
+            return {"status": "invalid_plan_binding", "reason": "plan_hash_mismatch", "task_id": task.id}
 
-        if not preconditions.is_valid:
-            # 8.1. Attachment Heuristic (Edge Case 6):
-            # Если реквизитов не хватает, но в тикете есть прикрепленные файлы (сканы, PDF, фото стикеров) -
-            # автопилот НЕ шлет вопрос заявителю, а сразу передает заявку дежурному инженеру (статус 2)
-            if task.attachments:
-                logger.info(
-                    "Ticket #%d is missing facts (%s) but has %d attachment(s). Escalating to human for visual inspection.",
-                    task.id,
-                    preconditions.missing_facts,
-                    len(task.attachments),
-                )
-                await client.update_task(
-                    task_id=task.id,
-                    status_id=2,  # В работе
-                    comment=(
-                        f"🤖 [Автопилот: Требуется визуальный осмотр вложений]\n"
-                        f"Недостающие реквизиты: {', '.join(preconditions.missing_facts) if preconditions.missing_facts else 'Барьеры окружения'}.\n"
-                        f"В заявке обнаружены прикрепленные файлы ({len(task.attachments)} шт.). "
-                        "Заявка передана дежурному инженеру для анализа сканов/фотографий без отправки повторного вопроса заявителю."
-                    ),
-                    is_private=True,
-                    auth_b64=auth.auth_b64,
-                )
-                return {
-                    "status": "escalated_attachments_present",
-                    "task_id": task.id,
-                    "scenario": scenario.scenario_key,
-                    "attachments_count": len(task.attachments),
-                    "missing_facts": preconditions.missing_facts,
-                }
-
-            # 8.2. Dialogue turn limit
-            if clarification_rounds >= 2:
-                logger.warning("Ticket #%d exceeded clarification limit (%d rounds). Escalating to human.", task.id, clarification_rounds)
-                await client.update_task(
-                    task_id=task.id,
-                    status_id=2,  # В работе
-                    comment=(
-                        f"🤖 [Автопилот: Превышен лимит диалога]\n"
-                        f"Заявитель не предоставил необходимые данные за {clarification_rounds} раунда уточнений.\n"
-                        "Автопилот завершил попытки и передал заявку инженеру 1-й линии."
-                    ),
-                    is_private=True,
-                    auth_b64=auth.auth_b64,
-                )
-                return {
-                    "status": "escalated_dialogue_limit",
-                    "task_id": task.id,
-                    "scenario": scenario.scenario_key,
-                    "rounds": clarification_rounds,
-                }
-
-            # 8.3. Resolve clarification prompt: from preconditions or service definition
-            prompt = preconditions.clarification_prompt
-            if not prompt and scenario.definition and scenario.definition.clarification_template:
-                prompt = scenario.definition.clarification_template
-
-            if prompt:
-                logger.info("Suspending ticket #%d (Status 6) with prompt: %s", task.id, prompt)
-                await client.update_task(
-                    task_id=task.id,
-                    status_id=6,
-                    comment=prompt,
-                    is_private=False,
-                    auth_b64=auth.auth_b64,
-                )
-                await client.update_task(
-                    task_id=task.id,
-                    comment=(
-                        f"🤖 [Автопилот: Запрос уточнения (раунд {clarification_rounds + 1})]\n"
-                        f"Отсутствующие реквизиты: {', '.join(preconditions.missing_facts) if preconditions.missing_facts else 'Барьеры окружения'}\n"
-                        f"Барьеры среды: {', '.join(preconditions.environment_barriers)}\n"
-                        "Статус переведен в 6 (Приостановлена / Ожидание ответа)."
-                    ),
-                    is_private=True,
-                    auth_b64=auth.auth_b64,
-                )
-                return {
-                    "status": "paused_waiting_applicant",
-                    "task_id": task.id,
-                    "round": clarification_rounds + 1,
-                    "missing_facts": preconditions.missing_facts,
-                    "barriers": preconditions.environment_barriers,
-                }
-
-            logger.info("Preconditions failed without clarification prompt for ticket #%d. Escalating to human.", task.id)
-            await client.update_task(
-                task_id=task.id,
-                status_id=2,  # В работе
-                comment=(
-                    f"🤖 [Автопилот: Недостаточно уверенности]\n"
-                    f"Сценарий '{scenario.name}' не набрал требуемого порога уверенности ({policy.min_confidence:.1%}).\n"
-                    "Заявка передана на ручную обработку инженеру 1-й линии."
-                ),
-                is_private=True,
-                auth_b64=auth.auth_b64,
-            )
-            return {"status": "escalated_low_confidence", "task_id": task.id, "scenario": scenario.scenario_key}
-
-        # -------------------------------------------------------------
-        # 9. Scenario Execution & Lifecycle Orchestration
-        # -------------------------------------------------------------
-        orchestrator = ScenarioLifecycleOrchestrator(
-            client=client,
-            redis_conn=redis_conn,
-            policy_service=policy_service,
-        )
-        exec_result = await orchestrator.execute_and_audit(
-            scenario=scenario,
-            task=task,
-            policy=policy,
-            auth_b64=auth.auth_b64,
-            initiator="autopilot",
-            update_circuit_breaker=True,
-        )
-
-        if exec_result.success:
-            logger.info("Scenario '%s' succeeded for ticket #%d. Closing ticket with status %d.", scenario.scenario_key, task.id, exec_result.target_status_id)
+        # Policy is checked before every autonomous dialogue or ticket mutation.
+        async with session_factory() as session:
+            policy = await policy_service.get_policy(plan_rec.scenario_key, session=session)
+        if policy.mode != "FULL_AUTO" or policy.is_circuit_broken:
             return {
-                "status": "resolved",
+                "status": "awaiting_operator_approval",
                 "task_id": task.id,
-                "scenario": scenario.scenario_key,
-                "target_status_id": exec_result.target_status_id,
+                "scenario": plan_rec.scenario_key,
+                "policy_mode": policy.mode,
             }
 
+        # Check dialogue clarification state
+        if plan_rec.state == "needs_clarification":
+            # Check attachments edge case
+            if task.attachments:
+                logger.info("Ticket #%d has missing facts but attachments are present. Escalating to human.", task.id)
+                await client.update_task(
+                    task_id=task.id,
+                    status_id=2,
+                    comment="🤖 [Автопилот: Вложение от заявителя]\nЗаявитель прикрепил вложение. Требуется визуальный осмотр вложений инженером.",
+                    is_private=True,
+                    auth_b64=auth.auth_b64,
+                )
+                return {"status": "escalated_attachments_present", "task_id": task.id, "attachments_count": len(task.attachments)}
+
+            if clarification_rounds >= 2:
+                logger.warning("Ticket #%d reached max clarification limit (%d rounds). Escalating.", task.id, clarification_rounds)
+                await client.update_task(
+                    task_id=task.id,
+                    status_id=2,
+                    comment="🤖 [Автопилот: Превышен лимит диалога]\nЗаявитель не предоставил необходимые данные за 2 раунда уточнения. Передано инженеру.",
+                    is_private=True,
+                    auth_b64=auth.auth_b64,
+                )
+                return {"status": "escalated_dialogue_limit", "task_id": task.id, "rounds": clarification_rounds}
+
+            # Suspend ticket to Status 6 and prompt applicant
+            missing = plan_data.get("missing_facts", ["данные"])
+            user_msg = (
+                plan_data.get("clarification_prompt")
+                or f"Здравствуйте! Для выполнения заявки по сценарию нам требуются дополнительные сведения: {', '.join(missing)}. Пожалуйста, ответьте на это сообщение."
+            )
+            await client.update_task(
+                task_id=task.id,
+                status_id=6,  # Приостановлена
+                comment=user_msg,
+                is_private=False,
+                auth_b64=auth.auth_b64,
+            )
+            await client.update_task(
+                task_id=task.id,
+                comment=f"🤖 [Автопилот: Запрос уточнения (раунд {clarification_rounds + 1})]\nОтправлен запрос недостающих параметров: {', '.join(missing)}.\nСтатус переведен в 6 (Приостановлена).",
+                is_private=True,
+                auth_b64=auth.auth_b64,
+            )
+            return {
+                "status": "paused_waiting_applicant",
+                "task_id": task.id,
+                "round": clarification_rounds + 1,
+                "scenario": plan_rec.scenario_key,
+                "missing_facts": missing,
+            }
+
+        # Validate executable selected plan
+        if plan_rec.state != "selected" or plan_rec.preflight_id is None:
+            logger.info("Ticket #%d plan state is '%s' (not executable). Fail-closed.", task.id, plan_rec.state)
+            await client.update_task(
+                task_id=task.id,
+                status_id=2,
+                comment="🤖 [Автопилот: Сценарий не определен]\nЗаявка не соответствует условиям автоматического исполнения. Передана инженеру.",
+                is_private=True,
+                auth_b64=auth.auth_b64,
+            )
+            return {"status": "unmatched", "task_id": task.id}
+
+        # Validate Preflight status and TTL
+        async with session_factory() as session:
+            stmt_pf = select(RoutingPreflightRecord).where(RoutingPreflightRecord.id == plan_rec.preflight_id)
+            preflight_rec = (await session.execute(stmt_pf)).scalar_one_or_none()
+
+        proposed_params = sanitize_secrets(plan_data.get("proposed_params", {}))
+        expected_params_hash = compute_canonical_params_hash(proposed_params)
+        preflight_binding_valid = bool(
+            preflight_rec is not None
+            and preflight_rec.decision_id == plan_rec.decision_id
+            and preflight_rec.task_id == task.id
+            and preflight_rec.snapshot_hash == plan_rec.snapshot_hash
+            and preflight_rec.scenario_key == plan_rec.scenario_key
+            and preflight_rec.params_hash == expected_params_hash
+        )
+        if not preflight_binding_valid or not is_executable_preflight_status(preflight_rec.status):
+            pf_status = preflight_rec.status if preflight_rec else "missing"
+            logger.warning("Preflight %s validation failed (%s) for ticket #%d. Fail-closed.", plan_rec.preflight_id, pf_status, task.id)
+            await client.update_task(
+                task_id=task.id,
+                status_id=2,
+                comment=f"🤖 [Автопилот: Проверка готовности не пройдена]\nPreflight-статус: {pf_status}. Заявка передана на ручную обработку инженеру.",
+                is_private=True,
+                auth_b64=auth.auth_b64,
+            )
+            return {"status": "preflight_failed", "preflight_status": pf_status, "task_id": task.id}
+
+        # Verify preflight TTL (300 seconds default)
+        expires_at = preflight_rec.expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at and expires_at < datetime.now(timezone.utc):
+            logger.warning("Preflight %s expired for ticket #%d. Fail-closed.", plan_rec.preflight_id, task.id)
+            await client.update_task(
+                task_id=task.id,
+                status_id=2,
+                comment="🤖 [Автопилот: Preflight устарел]\nИстек срок действия предварительной проверки. Заявка передана инженеру.",
+                is_private=True,
+                auth_b64=auth.auth_b64,
+            )
+            return {"status": "preflight_expired", "task_id": task.id}
+
+        # -------------------------------------------------------------
+        # 8. Create CommandRecord and dispatch to Command Dispatcher
+        # -------------------------------------------------------------
+        # Determine executor
+        if plan_rec.scenario_key in ("install_printer", "printer_spooler_restart", "default_printer_fix"):
+            executor = "windows_exec"
+        elif plan_rec.scenario_key in ("service_redirect", "rag_consultation"):
+            executor = "api"
+        else:
+            executor = "intralink_worker"
+
+        async with session_factory() as session:
+            cmd = CommandRecord(
+                decision_id=plan_rec.decision_id,
+                plan_id=plan_rec.id,
+                plan_hash=plan_rec.plan_hash,
+                action=plan_rec.scenario_key,
+                executor=executor,
+                params_json=proposed_params,
+                target_json={"ticket_id": task.id, "task_id": task.id},
+                initiator="full_auto",
+                status="pending",
+                task_id=task.id,
+                idempotency_key=f"full_auto_{task.id}_{plan_rec.plan_hash}",
+            )
+            session.add(cmd)
+            await session.commit()
+            await session.refresh(cmd)
+
+        # End the orchestration lease before publishing. The dispatcher owns the
+        # execution lease and may start immediately after the broker accepts it.
+        await lock.release()
+        lock_acquired = False
+
+        from worker.src.tasks.command_dispatcher import dispatch_command_task
+        await dispatch_command_task.kiq(str(cmd.id))
+
+        emit_routing_event(
+            "full_auto_command_dispatched",
+            task_id=task.id,
+            decision_id=plan_rec.decision_id,
+            plan_id=plan_rec.id,
+            command_id=cmd.id,
+            scenario_key=plan_rec.scenario_key,
+            routing_state="selected",
+        )
+
         return {
-            "status": "failed",
+            "status": "command_dispatched",
             "task_id": task.id,
-            "scenario": scenario.scenario_key,
-            "error": exec_result.error,
-            "circuit_broken": exec_result.metadata.get("circuit_broken", False),
+            "command_id": str(cmd.id),
+            "scenario": plan_rec.scenario_key,
         }
+
     finally:
-        if redis_conn is not None and lock_acquired:
-            try:
-                await redis_conn.delete(lock_key, lock_key_legacy)
-            except Exception:
-                pass
+        if lock_acquired:
+            await lock.release()

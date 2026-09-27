@@ -1,6 +1,7 @@
 """Tests for POST /api/v2/autopilot/batch-assign endpoint."""
 
 from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine

@@ -166,7 +166,7 @@ class RAGConsultationScenario(BaseScenario):
             f"Прецедент: Тикет #{solution_dto.task_id} ('{solution_dto.original_name}')\n"
             f"Сервис: {solution_dto.service_name} (ID: {solution_dto.service_id})\n"
             f"Семантическое сходство: {solution_dto.similarity:.1%}\n"
-            f"Порог политики: {policy.min_confidence:.1%}\n"
+            f"Режим политики: {policy.mode}\n"
             f"Качество решения: {solution_dto.quality_score:.2f}\n"
             f"Статус: Выполнена (Status 3)"
         )

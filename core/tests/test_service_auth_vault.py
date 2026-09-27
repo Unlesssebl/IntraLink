@@ -1,7 +1,6 @@
 """Tests for ServiceAuthBootstrap 3-tier credentials vault (L1 Memory, L2 Redis, L3 PostgreSQL)."""
 
 from typing import AsyncGenerator
-from unittest.mock import AsyncMock
 
 import pytest
 from cryptography.fernet import Fernet
@@ -17,7 +16,6 @@ from core.intraservice.auth import (
     ServiceAuthError,
     set_service_auth_session_factory,
 )
-from core.intraservice.client import IntraServiceClient
 
 
 class MockRedis:

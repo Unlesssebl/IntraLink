@@ -2,8 +2,8 @@
 
 from core.ad.password import SecretPassword, generate_secure_password, mask_password
 from core.ad.pool import (
-    ADPoolConfig,
     ActiveDirectoryPool,
+    ADPoolConfig,
     get_default_ad_pool,
     is_valid_domain_computer,
     set_default_ad_pool,

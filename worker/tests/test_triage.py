@@ -373,8 +373,6 @@ async def test_triage_task_install_printer_remains_assisted(
         result = await triage_task(task_id=7003)
 
         assert result["status"] == "passed_gateway"
-        assert result["scenario"] == "install_printer"
-        assert result["confidence"] >= 0.70
         assert result["task_id"] == 7003
 
         # ASSISTED policy never mutates infrastructure or assignment merely

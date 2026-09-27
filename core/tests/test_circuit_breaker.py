@@ -12,8 +12,6 @@ from core.autopilot.circuit_breaker import (
     CIRCUIT_BREAKER_WINDOW_SEC,
     AutopilotCircuitBreaker,
 )
-from core.autopilot.dto import AutopilotPolicyUpdateDTO
-from core.autopilot.policy_service import AutopilotPolicyService
 from core.database.base import Base
 from core.database.models import AutopilotPolicy, SystemState
 
@@ -98,7 +96,6 @@ async def test_circuit_breaker_trips_to_assisted_on_3_failures(
         pol = AutopilotPolicy(
             scenario_key=scenario_key,
             mode="FULL_AUTO",
-            min_confidence=0.85,
             consecutive_failures=0,
             is_circuit_broken=False,
         )
@@ -190,7 +187,6 @@ async def test_circuit_breaker_sliding_window_expiration(circuit_breaker, async_
         pol = AutopilotPolicy(
             scenario_key=scenario_key,
             mode="FULL_AUTO",
-            min_confidence=0.85,
         )
         session.add(pol)
         await session.commit()

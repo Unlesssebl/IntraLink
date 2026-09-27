@@ -1,6 +1,5 @@
 """Integration tests for IngestionPoller dual-slice querying, Watermark persistence and Event Lock idempotency."""
 
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -90,6 +89,8 @@ async def test_poller_watermark_dual_tier_persistence(test_db):
         assert result.unique_tasks_count == 2
         assert result.triaged_tasks_count == 1
         assert result.autopilot_tasks_count == 1
+        assert mock_triage.call_count == 1
+        assert mock_autopilot.call_count == 1
 
         # Verify Redis keys
         assert await mock_redis.get("autopilot:watermark:task_id") == "505"

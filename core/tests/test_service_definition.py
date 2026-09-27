@@ -1,7 +1,5 @@
 """Tests for ServiceDefinition contract and validation."""
 
-import pytest
-from pydantic import ValidationError
 
 from core.intraservice.service_definition import ServiceDefinition
 

@@ -1,7 +1,9 @@
 """Unit and integration tests for Taskiq broker and Command Dispatcher."""
 
+import asyncio
 import uuid
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
@@ -152,7 +154,7 @@ async def test_dispatch_command_install_printer(async_db):
             idempotency_key="test-printer-001",
             action="install_printer",
             executor="worker",
-            target_json={"ticket_id": 3003},
+            target_json={"host": "WKS-100"},
             params_json={"pc_name": "WKS-100", "printer_name": "HP LaserJet M402"},
             status="pending",
             initiator="autopilot",
@@ -181,7 +183,7 @@ async def test_dispatch_command_missing_params_failure(async_db):
             idempotency_key="test-fail-001",
             action="install_printer",
             executor="worker",
-            target_json={"ticket_id": 4004},
+            target_json={"host": "WKS-100"},
             params_json={"pc_name": "WKS-100"},
             status="pending",
             initiator="autopilot",
@@ -407,6 +409,60 @@ async def test_dispatch_canonical_scenario_execution_with_dual_audit(async_db, m
     assert call2["is_private"] is True
     assert "Одобрил: supervisor:petrov" in call2["comment"]
     assert "Исполнил: alen_assistant" in call2["comment"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_command_is_claimed_once_under_concurrent_delivery(
+    async_db,
+    mock_dispatcher_intraservice,
+):
+    mock_client, _, registry = mock_dispatcher_intraservice
+    mock_client.get_task.return_value = TaskDTO(
+        id=7788,
+        name="Заявка",
+        status_id=1,
+        executor_ids="999",
+        entities=ExtractedEntitiesDTO(),
+    )
+    command_id = uuid.uuid4()
+    async with async_db() as session:
+        session.add(
+            CommandRecord(
+                id=command_id,
+                idempotency_key="concurrent-claim-001",
+                action="dummy_scenario",
+                executor="worker",
+                target_json={"ticket_id": 7788},
+                params_json={"expected_status_id": 1},
+                status="pending",
+                initiator="supervisor:test",
+                task_id=7788,
+            )
+        )
+        await session.commit()
+
+    scenario = registry.get_scenario("dummy_scenario")
+    assert scenario is not None
+    original_execute = scenario.execute
+    execution_count = 0
+
+    async def delayed_execute(task, policy):
+        nonlocal execution_count
+        execution_count += 1
+        await asyncio.sleep(0.05)
+        return await original_execute(task, policy)
+
+    with patch.object(scenario, "execute", side_effect=delayed_execute):
+        results = await asyncio.gather(
+            dispatch_command_task(command_id),
+            dispatch_command_task(command_id),
+        )
+
+    assert execution_count == 1
+    assert "succeeded" in {result["status"] for result in results}
+    async with async_db() as session:
+        saved = (await session.execute(select(CommandRecord).where(CommandRecord.id == command_id))).scalar_one()
+        assert saved.status == "succeeded"
 
 
 @pytest.mark.asyncio

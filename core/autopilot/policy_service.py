@@ -125,7 +125,6 @@ class AutopilotPolicyService:
             record = AutopilotPolicy(
                 scenario_key=scenario_key,
                 mode=baseline.get("mode", "ASSISTED"),
-                min_confidence=float(baseline.get("min_confidence", 0.85)),
                 consecutive_failures=0,
                 is_circuit_broken=False,
                 description=baseline.get("description"),
@@ -161,7 +160,6 @@ class AutopilotPolicyService:
                     new_rec = AutopilotPolicy(
                         scenario_key=key,
                         mode=meta.get("mode", "ASSISTED"),
-                        min_confidence=float(meta.get("min_confidence", 0.85)),
                         consecutive_failures=0,
                         is_circuit_broken=False,
                         description=meta.get("description"),
@@ -220,7 +218,6 @@ class AutopilotPolicyService:
                 record = AutopilotPolicy(
                     scenario_key=scenario_key,
                     mode=update_dto.mode,
-                    min_confidence=update_dto.min_confidence or float(baseline.get("min_confidence", 0.85)),
                     consecutive_failures=0,
                     is_circuit_broken=False,
                     description=baseline.get("description"),
@@ -228,8 +225,6 @@ class AutopilotPolicyService:
                 db_sess.add(record)
             else:
                 record.mode = update_dto.mode
-                if update_dto.min_confidence is not None:
-                    record.min_confidence = update_dto.min_confidence
                 # Reset circuit breaker on deliberate operator update
                 record.is_circuit_broken = False
                 record.consecutive_failures = 0
@@ -244,7 +239,7 @@ class AutopilotPolicyService:
                 except Exception as exc:
                     logger.warning("Failed to update Redis cache for %s: %s", cache_key, exc)
 
-            logger.info("Updated AutopilotPolicy for '%s': mode=%s, min_confidence=%.2f", scenario_key, dto.mode, dto.min_confidence)
+            logger.info("Updated AutopilotPolicy for '%s': mode=%s", scenario_key, dto.mode)
             return dto
 
         if session is not None:

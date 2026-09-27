@@ -73,6 +73,7 @@ async def test_embedder_uses_cache():
     """Verify get_embedding_vector transparently checks and updates cache."""
     import uuid
     from unittest.mock import MagicMock
+
     from core.rag.embed_cache import set_embedding_cache
 
     mock_ai = AsyncMock()

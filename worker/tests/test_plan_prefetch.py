@@ -1,45 +1,19 @@
-"""Tests for background plan prefetch task and Redis cache delivery."""
-
-import json
-from typing import Any
+import uuid
 from unittest.mock import AsyncMock
 
 import pytest
 
 from core.autopilot.dto import AgentPlanDTO, AutopilotPolicyDTO
-from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
-from core.scenarios.base import BaseScenario, PreconditionResult, ScenarioExecutionResult
-from core.scenarios.registry import ScenarioRegistry
 from core.intraservice.auth import ServiceAuthCredentials
 from worker.src.tasks.plan_prefetch import (
     prefetch_agent_plan_task,
+    set_prefetch_analysis_service,
     set_prefetch_client,
     set_prefetch_policy_service,
     set_prefetch_redis_client,
-    set_prefetch_registry,
     set_prefetch_service_auth,
 )
 from worker.tests.test_autopilot_task import MockRedis
-
-
-class DummyPrinterScenario(BaseScenario):
-    scenario_key = "install_printer"
-    name = "Установка принтера"
-    description = "Настройка сетевого принтера"
-
-    async def can_handle(self, task: TaskDTO) -> bool:
-        return True
-
-    async def validate_preconditions(self, task: TaskDTO) -> PreconditionResult:
-        return PreconditionResult(is_valid=True)
-
-    async def execute(self, task: TaskDTO, policy: Any = None) -> ScenarioExecutionResult:
-        return ScenarioExecutionResult(
-            success=True,
-            action_taken="install_printer",
-            resolution_comment="Принтер настроен.",
-            technical_note="OK",
-        )
 
 
 @pytest.fixture
@@ -53,9 +27,6 @@ def mock_prefetch_env():
     )
     mock_redis = MockRedis()
 
-    registry = ScenarioRegistry()
-    registry.register(DummyPrinterScenario())
-
     mock_policy_service = AsyncMock()
     mock_policy_service.get_policy.return_value = AutopilotPolicyDTO(
         scenario_key="install_printer",
@@ -63,47 +34,56 @@ def mock_prefetch_env():
         min_confidence=0.85,
     )
 
+    mock_analysis_service = AsyncMock()
+
     set_prefetch_client(mock_client)
     set_prefetch_service_auth(mock_auth)
     set_prefetch_redis_client(mock_redis)
-    set_prefetch_registry(registry)
     set_prefetch_policy_service(mock_policy_service)
+    set_prefetch_analysis_service(mock_analysis_service)
 
-    yield mock_client, mock_auth, mock_redis, registry
+    yield mock_client, mock_auth, mock_redis, mock_analysis_service
 
     set_prefetch_client(None)
     set_prefetch_service_auth(None)
     set_prefetch_redis_client(None)
-    set_prefetch_registry(None)
     set_prefetch_policy_service(None)
+    set_prefetch_analysis_service(None)
 
 
 @pytest.mark.asyncio
-async def test_prefetch_agent_plan_caches_in_redis(mock_prefetch_env):
-    mock_client, _, mock_redis, _ = mock_prefetch_env
+async def test_prefetch_agent_plan_calls_analysis_service(mock_prefetch_env):
+    mock_client, _, mock_redis, mock_analysis_service = mock_prefetch_env
 
-    mock_client.get_task.return_value = TaskDTO(
-        id=8888,
-        name="Установить принтер",
-        description="Подключите принтер на ПК WKS-404",
-        status_id=1,
-        status_name="Новая",
-        entities=ExtractedEntitiesDTO(pc_name="WKS-404", printer_model="HP LaserJet"),
+    plan_id = uuid.uuid4()
+    mock_plan = AgentPlanDTO(
+        task_id=8888,
+        scenario_key="install_printer",
+        scenario_name="Установка принтера",
+        matched=True,
+        target_status_id=3,
+        suggested_comment="Принтер настроен на WKS-404",
+        technical_note="OK",
+        policy_mode="ASSISTED",
+        is_executable=True,
+        plan_id=plan_id,
+        plan_hash="hash_8888_test",
+        routing_state="selected",
+        decision_reason_codes=["exact_catalog_match"],
+        analysis_state="ready",
     )
-    mock_client.get_task_lifetime.return_value = []
+    mock_analysis_service.analyze_ticket.return_value = mock_plan
 
     res = await prefetch_agent_plan_task(8888)
     assert res["status"] == "prefetched"
     assert res["ticket_id"] == 8888
     assert res["scenario"] == "install_printer"
+    assert res["routing_state"] == "selected"
+    assert res["plan_hash"] == "hash_8888_test"
 
-    # Verify Redis cache has the serialized AgentPlanDTO
-    cache_key = "cache:autopilot:plan:8888"
-    cached_val = await mock_redis.get(cache_key)
-    assert cached_val is not None
-
-    plan_dto = AgentPlanDTO.model_validate_json(cached_val)
-    assert plan_dto.task_id == 8888
-    assert plan_dto.scenario_key == "install_printer"
-    assert plan_dto.target_status_id == 3
-    assert "WKS-404" in plan_dto.suggested_comment
+    mock_analysis_service.analyze_ticket.assert_awaited_once_with(
+        ticket_id=8888,
+        force=False,
+        auth_b64="bW9jazp0b2tlbg==",
+        redis_client=mock_redis,
+    )

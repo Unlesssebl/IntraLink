@@ -1,4 +1,7 @@
+"""Autopilot API Router for Evidence-Based Routing Cascade and Operator Supervision."""
+
 import base64
+import json
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -18,13 +21,21 @@ from core.database.models import CommandRecord
 from .schemas import (
     AgentPlanDTO,
     ApprovePlanRequest,
+    ApprovePlanResponse,
     AutopilotCommandDTO,
     AutopilotPoliciesListResponse,
     AutopilotStatsResponse,
     BatchAssignRequest,
     BatchAssignResponse,
-    CorrectionsListResponse,
     CorrectPlanRequest,
+    CorrectPlanResponse,
+    FeedbackListResponse,
+    ManualTakeoverRequest,
+    ManualTakeoverResponse,
+    RejectPlanRequest,
+    RejectPlanResponse,
+    RoutingQualityMetricsResponse,
+    ScenarioCatalogResponse,
     UpdateAutopilotPolicyRequest,
 )
 from .service import AutopilotService
@@ -77,10 +88,10 @@ async def update_policy(
     db: AsyncSession = Depends(get_db_session),
     policy_service: AutopilotPolicyService = Depends(get_policy_service_dep),
 ) -> AutopilotPolicyDTO:
-    """Update scenario autonomy mode and confidence threshold (resets circuit breaker)."""
+    """Update scenario autonomy mode (resets circuit breaker)."""
     clean_key = scenario_key.strip().lower()
     try:
-        dto = AutopilotPolicyUpdateDTO(mode=req.mode, min_confidence=req.min_confidence)
+        dto = AutopilotPolicyUpdateDTO(mode=req.mode)
         updated = await policy_service.update_policy(
             scenario_key=clean_key,
             update_dto=dto,
@@ -103,10 +114,19 @@ async def reset_circuit_breaker(
 ) -> AutopilotPolicyDTO:
     """Manually reset circuit breaker tripwire and restore scenario autonomy."""
     clean_key = scenario_key.strip().lower()
-    # Reset failure counter
     await policy_service.record_success(scenario_key=clean_key, session=db)
-    # Fetch updated state
     return await policy_service.get_policy(scenario_key=clean_key, session=db)
+
+
+@router.get("/scenarios/catalog", response_model=ScenarioCatalogResponse)
+async def get_scenario_catalog(
+    _auth: Optional[str] = Depends(get_intraservice_auth),
+    service: AutopilotService = Depends(get_autopilot_service_dep),
+    db: AsyncSession = Depends(get_db_session),
+) -> ScenarioCatalogResponse:
+    """Server-side catalog of executable scenarios available for operator correction."""
+    catalog = await service.catalog_service.get_catalog(session=db)
+    return ScenarioCatalogResponse(scenarios=catalog, total=len(catalog))
 
 
 @router.get("/commands", response_model=List[AutopilotCommandDTO])
@@ -146,7 +166,6 @@ async def get_autopilot_stats(
     policy_service: AutopilotPolicyService = Depends(get_policy_service_dep),
 ) -> AutopilotStatsResponse:
     """Calculate aggregate efficiency and circuit breaker telemetry."""
-    # Count succeeded commands
     stmt = select(func.count(CommandRecord.id)).where(CommandRecord.status == "succeeded")
     res = await db.execute(stmt)
     succeeded_count = res.scalar() or 0
@@ -155,7 +174,6 @@ async def get_autopilot_stats(
     active_count = sum(1 for p in policies if p.mode != "DISABLED")
     tripped_count = sum(1 for p in policies if p.is_circuit_broken)
 
-    # Average 0.25 hours (15 mins) saved per automated command
     hours_saved = round(succeeded_count * 0.25, 1)
 
     return AutopilotStatsResponse(
@@ -174,7 +192,7 @@ async def get_agent_plan(
     redis: aioredis.Redis = Depends(get_redis),
     service: AutopilotService = Depends(get_autopilot_service_dep),
 ) -> AgentPlanDTO:
-    """Synthesize complete agent evaluation plan for a ticket for supervisor inspection."""
+    """Strictly read-only plan query from cache or database for supervisor inspection."""
     return await service.get_agent_plan(
         ticket_id=ticket_id,
         session=db,
@@ -183,7 +201,43 @@ async def get_agent_plan(
     )
 
 
-@router.post("/plan/{ticket_id}/approve")
+@router.post("/plan/{ticket_id}/analyze", response_model=AgentPlanDTO)
+async def analyze_ticket_plan(
+    ticket_id: int,
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
+    db: AsyncSession = Depends(get_db_session),
+    redis: aioredis.Redis = Depends(get_redis),
+    service: AutopilotService = Depends(get_autopilot_service_dep),
+) -> AgentPlanDTO:
+    """Execute Evidence Routing Cascade analysis for a ticket if not already computed."""
+    return await service.analyze_ticket_plan(
+        ticket_id=ticket_id,
+        force=False,
+        auth_b64=auth_b64,
+        session=db,
+        redis_client=redis,
+    )
+
+
+@router.post("/plan/{ticket_id}/reanalyze", response_model=AgentPlanDTO)
+async def reanalyze_ticket_plan(
+    ticket_id: int,
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
+    db: AsyncSession = Depends(get_db_session),
+    redis: aioredis.Redis = Depends(get_redis),
+    service: AutopilotService = Depends(get_autopilot_service_dep),
+) -> AgentPlanDTO:
+    """Force re-run Evidence Routing Cascade analysis for a ticket with fresh snapshot."""
+    return await service.analyze_ticket_plan(
+        ticket_id=ticket_id,
+        force=True,
+        auth_b64=auth_b64,
+        session=db,
+        redis_client=redis,
+    )
+
+
+@router.post("/plan/{ticket_id}/approve", response_model=ApprovePlanResponse)
 async def approve_agent_plan(
     ticket_id: int,
     req: ApprovePlanRequest,
@@ -191,8 +245,8 @@ async def approve_agent_plan(
     db: AsyncSession = Depends(get_db_session),
     redis: aioredis.Redis = Depends(get_redis),
     service: AutopilotService = Depends(get_autopilot_service_dep),
-) -> dict:
-    """1-Click approve agent plan: verify optimistic lock, dispatch Taskiq command, log positive feedback."""
+) -> ApprovePlanResponse:
+    """1-Click approve agent plan: verify OCC and preflight, create CommandRecord, log positive feedback."""
     operator = _extract_username(auth_b64)
     return await service.approve_plan(
         ticket_id=ticket_id,
@@ -204,7 +258,7 @@ async def approve_agent_plan(
     )
 
 
-@router.post("/plan/{ticket_id}/correct")
+@router.post("/plan/{ticket_id}/correct", response_model=CorrectPlanResponse)
 async def correct_agent_plan(
     ticket_id: int,
     req: CorrectPlanRequest,
@@ -212,14 +266,144 @@ async def correct_agent_plan(
     db: AsyncSession = Depends(get_db_session),
     redis: aioredis.Redis = Depends(get_redis),
     service: AutopilotService = Depends(get_autopilot_service_dep),
-) -> dict:
-    """Correct agent plan: record Ground-Truth delta in AutopilotCorrection and dispatch corrected Taskiq task."""
+) -> CorrectPlanResponse:
+    """Correct agent plan: preflight validation, record RoutingFeedbackRecord and create CommandRecord."""
     operator = _extract_username(auth_b64)
     return await service.correct_plan(
         ticket_id=ticket_id,
         req=req,
         operator_username=operator,
         session=db,
+        redis_client=redis,
+        auth_b64=auth_b64,
+    )
+
+
+@router.post("/plan/{ticket_id}/reject", response_model=RejectPlanResponse)
+async def reject_agent_plan(
+    ticket_id: int,
+    req: RejectPlanRequest,
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
+    db: AsyncSession = Depends(get_db_session),
+    redis: aioredis.Redis = Depends(get_redis),
+    service: AutopilotService = Depends(get_autopilot_service_dep),
+) -> RejectPlanResponse:
+    """Reject proposal: log negative feedback without creating execution commands."""
+    operator = _extract_username(auth_b64)
+    return await service.reject_plan(
+        ticket_id=ticket_id,
+        req=req,
+        operator_username=operator,
+        session=db,
+        redis_client=redis,
+    )
+
+
+@router.post("/plan/{ticket_id}/manual-takeover", response_model=ManualTakeoverResponse)
+async def manual_takeover_agent_plan(
+    ticket_id: int,
+    req: ManualTakeoverRequest,
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
+    db: AsyncSession = Depends(get_db_session),
+    redis: aioredis.Redis = Depends(get_redis),
+    service: AutopilotService = Depends(get_autopilot_service_dep),
+) -> ManualTakeoverResponse:
+    """Leave ticket for human engineer takeover without running automation."""
+    operator = _extract_username(auth_b64)
+    return await service.manual_takeover_plan(
+        ticket_id=ticket_id,
+        req=req,
+        operator_username=operator,
+        session=db,
+        redis_client=redis,
+    )
+
+
+@router.get("/feedback", response_model=FeedbackListResponse)
+async def list_feedback(
+    task_id: Optional[int] = Query(default=None),
+    verdict: Optional[str] = Query(default=None),
+    scenario_key: Optional[str] = Query(default=None),
+    reason_tag: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    _auth: Optional[str] = Depends(get_intraservice_auth),
+    db: AsyncSession = Depends(get_db_session),
+    service: AutopilotService = Depends(get_autopilot_service_dep),
+) -> FeedbackListResponse:
+    """Retrieve historical supervisor feedback and correction records."""
+    return await service.get_feedback_list(
+        session=db,
+        task_id=task_id,
+        verdict=verdict,
+        scenario_key=scenario_key,
+        reason_tag=reason_tag,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/feedback/export")
+async def export_feedback_dataset(
+    scenario_key: Optional[str] = Query(default=None),
+    min_samples: Optional[int] = Query(default=None, ge=1),
+    format: str = Query(default="jsonl", pattern="^(jsonl|json)$"),
+    _auth: Optional[str] = Depends(get_intraservice_auth),
+    db: AsyncSession = Depends(get_db_session),
+    service: AutopilotService = Depends(get_autopilot_service_dep),
+) -> Response:
+    """Export sanitized Ground-Truth feedback calibration dataset."""
+    dataset = await service.export_feedback(session=db, scenario_key=scenario_key, min_samples=min_samples)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+    if format == "json":
+        content = json.dumps(dataset, ensure_ascii=False, indent=2)
+        media_type = "application/json; charset=utf-8"
+        filename = f"routing_feedback_{timestamp}.json"
+    else:
+        lines = [json.dumps(row, ensure_ascii=False) for row in dataset]
+        content = "\n".join(lines) + ("\n" if lines else "")
+        media_type = "application/x-ndjson; charset=utf-8"
+        filename = f"routing_feedback_{timestamp}.jsonl"
+
+    return Response(
+        content=content.encode("utf-8"),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/metrics/quality", response_model=RoutingQualityMetricsResponse)
+async def get_quality_metrics(
+    scenario_key: Optional[str] = Query(default=None),
+    router_version: Optional[str] = Query(default=None),
+    prompt_version: Optional[str] = Query(default=None),
+    routing_state: Optional[str] = Query(default=None),
+    _auth: Optional[str] = Depends(get_intraservice_auth),
+    db: AsyncSession = Depends(get_db_session),
+    service: AutopilotService = Depends(get_autopilot_service_dep),
+) -> RoutingQualityMetricsResponse:
+    """Retrieve aggregated routing quality, agreement and calibration metrics."""
+    metrics = await service.get_quality_metrics(
+        session=db,
+        scenario_key=scenario_key,
+        router_version=router_version,
+        prompt_version=prompt_version,
+        routing_state=routing_state,
+    )
+    return RoutingQualityMetricsResponse(metrics=metrics)
+
+
+@router.post("/batch-assign", response_model=BatchAssignResponse)
+async def batch_assign(
+    req: BatchAssignRequest,
+    auth_b64: Optional[str] = Depends(get_intraservice_auth),
+    redis: aioredis.Redis = Depends(get_redis),
+    service: AutopilotService = Depends(get_autopilot_service_dep),
+) -> BatchAssignResponse:
+    """Batch assign tickets to service bot and dispatch background autopilot tasks."""
+    return await service.batch_assign(
+        ticket_ids=req.ticket_ids,
         redis_client=redis,
         auth_b64=auth_b64,
     )
@@ -239,50 +423,4 @@ async def reclaim_ticket(
         operator_username=operator,
         redis_client=redis,
         auth_b64=auth_b64,
-    )
-
-
-@router.post("/batch-assign", response_model=BatchAssignResponse)
-async def batch_assign(
-    req: BatchAssignRequest,
-    auth_b64: Optional[str] = Depends(get_intraservice_auth),
-    redis: aioredis.Redis = Depends(get_redis),
-    service: AutopilotService = Depends(get_autopilot_service_dep),
-) -> BatchAssignResponse:
-    """Batch assign tickets to service bot and dispatch background autopilot tasks."""
-    return await service.batch_assign(
-        ticket_ids=req.ticket_ids,
-        redis_client=redis,
-        auth_b64=auth_b64,
-    )
-
-
-
-@router.get("/corrections", response_model=CorrectionsListResponse)
-async def list_corrections(
-    limit: int = Query(default=100, ge=1, le=500),
-    tag: Optional[str] = Query(default=None),
-    _auth: Optional[str] = Depends(get_intraservice_auth),
-    db: AsyncSession = Depends(get_db_session),
-    service: AutopilotService = Depends(get_autopilot_service_dep),
-) -> CorrectionsListResponse:
-    """Retrieve historical supervisor corrections dataset for inspection."""
-    records = await service.list_corrections(limit=limit, tag=tag, session=db)
-    return CorrectionsListResponse(corrections=records, total=len(records))
-
-
-@router.get("/corrections/export")
-async def export_corrections_jsonl(
-    limit: int = Query(default=500, ge=1, le=2000),
-    _auth: Optional[str] = Depends(get_intraservice_auth),
-    db: AsyncSession = Depends(get_db_session),
-    service: AutopilotService = Depends(get_autopilot_service_dep),
-) -> Response:
-    """Export Ground-Truth correction dataset in JSONL format for Harness AI coder."""
-    jsonl_content = await service.export_corrections_jsonl(limit=limit, session=db)
-    filename = f"autopilot_corrections_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.jsonl"
-    return Response(
-        content=jsonl_content.encode("utf-8"),
-        media_type="application/x-ndjson; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

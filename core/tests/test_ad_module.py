@@ -3,8 +3,8 @@
 import pytest
 
 from core.ad import (
-    ADPoolConfig,
     ActiveDirectoryPool,
+    ADPoolConfig,
     SecretPassword,
     generate_sam_account_name,
     generate_secure_password,

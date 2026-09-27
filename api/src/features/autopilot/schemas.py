@@ -1,4 +1,4 @@
-"""Autopilot API Schemas."""
+"""Autopilot API Schemas and Request/Response Contracts."""
 
 import uuid
 from datetime import datetime
@@ -6,7 +6,14 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from core.autopilot.dto import AgentPlanDTO, AutopilotMode, AutopilotPolicyDTO
+from core.autopilot.dto import (
+    AgentPlanDTO,
+    AutopilotMode,
+    AutopilotPolicyDTO,
+    RoutingFeedbackDTO,
+    RoutingQualityMetricsDTO,
+    ScenarioCatalogItemDTO,
+)
 
 
 class AutopilotPoliciesListResponse(BaseModel):
@@ -20,7 +27,6 @@ class UpdateAutopilotPolicyRequest(BaseModel):
     """Payload to update an autopilot scenario policy."""
 
     mode: AutopilotMode = Field(..., description="Target execution mode: FULL_AUTO, ASSISTED, or DISABLED")
-    min_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Confidence threshold between 0.0 and 1.0")
 
 
 class AutopilotCommandDTO(BaseModel):
@@ -46,55 +52,123 @@ class AutopilotStatsResponse(BaseModel):
     tripped_circuit_breakers: int
 
 
-
-
 class ApprovePlanRequest(BaseModel):
-    """Payload to approve agent plan without changes."""
+    """Payload to approve prepared agent plan without changes."""
 
-    expected_status_id: Optional[int] = None
-    last_event_id: Optional[int] = None
-    override_comment: Optional[str] = None
+    decision_id: uuid.UUID = Field(..., description="ID of the RoutingDecision being approved")
+    plan_id: uuid.UUID = Field(..., description="Prepared plan UUID")
+    plan_hash: str = Field(..., min_length=64, max_length=64, description="Canonical SHA-256 hash of the prepared plan")
+    snapshot_hash: str = Field(..., min_length=64, max_length=64, description="Canonical SHA-256 hash of the ticket snapshot")
+    expected_status_id: int = Field(..., description="Expected IntraService status ID for OCC validation")
+    last_event_id: Optional[int] = Field(..., description="Expected last lifetime event ID watermark (null if no events)")
 
 
 class CorrectPlanRequest(BaseModel):
-    """Payload to correct agent plan and contribute to the Ground-Truth dataset."""
+    """Payload to correct agent plan and record human supervision feedback."""
 
-    expected_status_id: Optional[int] = None
-    last_event_id: Optional[int] = None
-    corrected_scenario: str
-    corrected_params: Dict[str, Any] = Field(default_factory=dict)
+    decision_id: uuid.UUID = Field(..., description="ID of the RoutingDecision being corrected")
+    plan_id: uuid.UUID = Field(..., description="Prepared plan UUID")
+    plan_hash: str = Field(..., min_length=64, max_length=64, description="Canonical SHA-256 hash of the prepared plan")
+    snapshot_hash: str = Field(..., min_length=64, max_length=64, description="Canonical SHA-256 hash of the ticket snapshot")
+    expected_status_id: int = Field(..., description="Expected IntraService status ID for OCC validation")
+    last_event_id: Optional[int] = Field(..., description="Expected last lifetime event ID watermark (null if no events)")
+    corrected_scenario: str = Field(..., min_length=1, description="Target corrected scenario key")
+    corrected_params: Dict[str, Any] = Field(default_factory=dict, description="Corrected parameters")
     corrected_comment: Optional[str] = None
     correction_tag: str = Field(
-        default="general",
-        description="Reason tag: typo, wrong_printer_model, slang, false_duplicate, policy_override",
+        ...,
+        min_length=1,
+        description="Mandatory reason tag: typo, wrong_scenario, missing_parameters, policy_override, applicant_changed_request, other",
     )
     operator_notes: Optional[str] = None
 
 
-class AutopilotCorrectionDTO(BaseModel):
-    """Historical correction record for harness coding agent."""
+class RejectPlanRequest(BaseModel):
+    """Payload to reject an agent proposal without creating an execution command."""
 
-    id: uuid.UUID
-    task_id: int
-    original_scenario: str
-    corrected_scenario: str
-    original_params: Dict[str, Any]
-    corrected_params: Dict[str, Any]
-    original_comment: Optional[str] = None
-    corrected_comment: Optional[str] = None
-    confidence: float
-    factors_snapshot: Dict[str, Any]
-    correction_tag: str
-    operator_notes: Optional[str] = None
-    operator_username: str
-    created_at: datetime
+    decision_id: uuid.UUID = Field(..., description="ID of the RoutingDecision being rejected")
+    plan_id: uuid.UUID = Field(..., description="Prepared plan UUID")
+    plan_hash: str = Field(..., min_length=64, max_length=64, description="Canonical SHA-256 hash of the prepared plan")
+    snapshot_hash: str = Field(..., min_length=64, max_length=64, description="Canonical SHA-256 hash of the ticket snapshot")
+    reason_tag: str = Field(default="rejected", description="Rejection reason code")
+    operator_notes: Optional[str] = Field(default=None, description="Operator explanation notes")
 
 
-class CorrectionsListResponse(BaseModel):
-    """Response wrapper for historical supervisor corrections."""
+class ManualTakeoverRequest(BaseModel):
+    """Payload to leave the ticket for human engineer takeover without running automation."""
 
-    corrections: List[AutopilotCorrectionDTO]
+    decision_id: uuid.UUID = Field(..., description="ID of the RoutingDecision being assigned to human")
+    plan_id: uuid.UUID = Field(..., description="Prepared plan UUID")
+    plan_hash: str = Field(..., min_length=64, max_length=64, description="Canonical SHA-256 hash of the prepared plan")
+    snapshot_hash: str = Field(..., min_length=64, max_length=64, description="Canonical SHA-256 hash of the ticket snapshot")
+    reason_tag: str = Field(default="manual_takeover", description="Takeover reason code")
+    operator_notes: Optional[str] = Field(default=None, description="Operator explanation notes")
+
+
+class FeedbackListResponse(BaseModel):
+    """Response wrapper for historical operator feedback and corrections."""
+
+    feedback: List[RoutingFeedbackDTO]
     total: int
+
+
+class ScenarioCatalogResponse(BaseModel):
+    """Response wrapper for executable scenario catalog."""
+
+    scenarios: List[ScenarioCatalogItemDTO]
+    total: int
+
+
+class RoutingQualityMetricsResponse(BaseModel):
+    """Response wrapper for routing calibration and quality metrics."""
+
+    metrics: RoutingQualityMetricsDTO
+
+
+class ApprovePlanResponse(BaseModel):
+    """Response returned upon approving a plan."""
+
+    status: str = "approved"
+    command_id: str
+    ticket_id: int
+    action: str
+    plan_hash: str
+    is_duplicate: bool = False
+
+
+class CorrectPlanResponse(BaseModel):
+    """Response returned upon correcting a plan."""
+
+    status: str = "corrected"
+    command_id: str
+    ticket_id: int
+    action: str
+    plan_id: str
+    plan_hash: str
+    is_duplicate: bool = False
+
+
+class RejectPlanResponse(BaseModel):
+    """Response returned upon rejecting a plan."""
+
+    status: str = "rejected"
+    feedback_id: str
+    ticket_id: int
+    is_duplicate: bool = False
+
+
+class ManualTakeoverResponse(BaseModel):
+    """Response returned upon taking over a ticket manually."""
+
+    status: str = "manual_takeover"
+    feedback_id: str
+    ticket_id: int
+    is_duplicate: bool = False
+    external_update_succeeded: Optional[bool] = Field(
+        default=None,
+        description="Whether the IntraService status/note update was confirmed; null for an idempotent replay",
+    )
+    warning: Optional[str] = None
 
 
 class BatchAssignRequest(BaseModel):
@@ -119,8 +193,8 @@ class BatchAssignResponse(BaseModel):
 __all__ = [
     "AgentPlanDTO",
     "ApprovePlanRequest",
+    "ApprovePlanResponse",
     "AutopilotCommandDTO",
-    "AutopilotCorrectionDTO",
     "AutopilotMode",
     "AutopilotPoliciesListResponse",
     "AutopilotPolicyDTO",
@@ -128,7 +202,16 @@ __all__ = [
     "BatchAssignRequest",
     "BatchAssignResponse",
     "CorrectPlanRequest",
-    "CorrectionsListResponse",
+    "CorrectPlanResponse",
+    "FeedbackListResponse",
+    "ManualTakeoverRequest",
+    "ManualTakeoverResponse",
+    "RejectPlanRequest",
+    "RejectPlanResponse",
+    "RoutingFeedbackDTO",
+    "RoutingQualityMetricsDTO",
+    "RoutingQualityMetricsResponse",
+    "ScenarioCatalogItemDTO",
+    "ScenarioCatalogResponse",
     "UpdateAutopilotPolicyRequest",
 ]
-

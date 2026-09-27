@@ -1,7 +1,8 @@
 """Tests for IntraService custom fields parsing and onboarding entities extraction."""
 
-from unittest.mock import AsyncMock, MagicMock
 import json
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from core.intraservice.dto import ExtractedEntitiesDTO
