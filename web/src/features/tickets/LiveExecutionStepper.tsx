@@ -41,7 +41,7 @@ export const LiveExecutionStepper: React.FC<LiveExecutionStepperProps> = ({
               ? "Автономное исполнение команды..."
               : status === "succeeded"
               ? "Команда успешно выполнена"
-              : "Ошибка выполнения сценария"}
+              : "Результат действия требует проверки"}
           </span>
           <span className="text-[10px] font-mono text-neutral-500">
             ID: {commandId.slice(0, 8)}
@@ -87,7 +87,7 @@ export const LiveExecutionStepper: React.FC<LiveExecutionStepperProps> = ({
             <span className="text-[10px] text-emerald-400 font-mono">OK</span>
           </div>
           <span className="text-[10px] text-neutral-400 truncate">
-            {command?.target_json?.pc_name || "Проверка связи"}
+            {command?.task_id ? `Заявка #${command.task_id}` : "Проверка связи"}
           </span>
         </div>
 
@@ -106,7 +106,7 @@ export const LiveExecutionStepper: React.FC<LiveExecutionStepperProps> = ({
           <div className="flex items-center justify-between">
             <span className="font-semibold flex items-center gap-1">
               <Terminal className="w-3 h-3 text-purple-400" />
-              2. Сценарий
+              2. Capability
             </span>
             {status === "running" || status === "pending" ? (
               <Loader2 className="w-2.5 h-2.5 animate-spin text-amber-400" />
@@ -117,7 +117,7 @@ export const LiveExecutionStepper: React.FC<LiveExecutionStepperProps> = ({
             )}
           </div>
           <span className="text-[10px] text-neutral-400 truncate">
-            {command?.action || "Исполнение воркером"}
+            {command?.capability_key || "Исполнение воркером"}
           </span>
         </div>
 
@@ -154,10 +154,10 @@ export const LiveExecutionStepper: React.FC<LiveExecutionStepperProps> = ({
       {command?.result_json && (
         <div className="p-2 bg-[#121418] border border-neutral-800 rounded text-[11px] text-neutral-300 space-y-1">
           <div className="font-semibold text-neutral-400 text-[10px] uppercase tracking-wider">
-            Ответ сценария
+            Результат capability
           </div>
           <div className="text-emerald-300">
-            {command.result_json.message || JSON.stringify(command.result_json)}
+            {JSON.stringify(command.result_json)}
           </div>
         </div>
       )}

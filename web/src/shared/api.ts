@@ -92,9 +92,6 @@ export interface TicketListItem {
   is_tense?: boolean;
   tense_reason?: string | null;
   has_attachments?: boolean;
-  scenario_key?: string | null;
-  scenario_name?: string | null;
-  confidence?: number | null;
 }
 
 export interface TicketEntities {
@@ -153,31 +150,6 @@ export interface ServiceItem {
   parent_id?: number | null;
   is_active?: boolean;
   description?: string | null;
-}
-
-export interface TriageDecision {
-  action: string;
-  target_service_id?: number | null;
-  target_service_name?: string | null;
-  confidence: number;
-  reason: string;
-  suggested_comment?: string | null;
-  suggested_status_id?: number | null;
-  is_duplicate: boolean;
-  master_ticket_id?: number | null;
-}
-
-export interface TriageAnalysisResponse {
-  audit_id: string;
-  ticket_id: number;
-  decision: TriageDecision;
-  model_used: string;
-  rule_matched?: string | null;
-}
-
-export interface BatchTriageResponse {
-  total_analyzed: number;
-  decisions: TriageAnalysisResponse[];
 }
 
 export interface KBSearchResultItem {
@@ -319,39 +291,6 @@ export const ticketsApi = {
   },
 };
 
-export const triageApi = {
-  analyze: (ticketId: number, signal?: AbortSignal) =>
-    request<TriageAnalysisResponse>(`/triage/analyze/${ticketId}`, {
-      method: "POST",
-      signal,
-    }),
-
-  batchAnalyze: (filterId: number = 984, limit: number = 20, signal?: AbortSignal) =>
-    request<BatchTriageResponse>("/triage/batch-analyze", {
-      method: "POST",
-      body: JSON.stringify({ filter_id: filterId, limit }),
-      signal,
-    }),
-
-  apply: (
-    auditId: string,
-    overrideComment?: string,
-    overrideStatusId?: number,
-    signal?: AbortSignal
-  ) =>
-    request<{ audit_id: string; ticket_id: number; applied: boolean }>(
-      `/triage/apply/${auditId}`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          override_comment: overrideComment,
-          override_status_id: overrideStatusId,
-        }),
-        signal,
-      }
-    ),
-};
-
 export const kbApi = {
   search: (query: string, limit: number = 5, minSimilarity: number = 0.60, signal?: AbortSignal) =>
     request<KBSearchResponse>("/kb/search", {
@@ -395,5 +334,3 @@ export const authApi = {
 };
 
 export { autopilotApi } from "@/features/autopilot/api";
-export type { BatchAssignRequest, BatchAssignResponse } from "@/features/autopilot/types";
-

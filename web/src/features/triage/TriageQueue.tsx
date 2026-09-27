@@ -5,13 +5,11 @@ import {
   Search,
   CheckCheck,
   AlertTriangle,
-  Zap,
 } from "lucide-react";
 import { Button, Badge, KbdBadge, useToast } from "@/shared/ui";
 import { TicketRow } from "./TicketRow";
 import { useTicketQueue, ticketKeys } from "@/features/tickets/queries";
 import { isStatusInWork, isStatusResolved, isStatusCancelled } from "@/shared/statuses";
-import { autopilotApi } from "@/features/autopilot/api";
 import { useQueryClient } from "@tanstack/react-query";
 
 export interface TriageQueueProps {
@@ -38,7 +36,6 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<FilterCategory>("validation");
   const [selectedTicketIds, setSelectedTicketIds] = useState<number[]>([]);
-  const [isBatchAssigning, setIsBatchAssigning] = useState(false);
 
   // Counters for pipeline tabs
   const counts = useMemo(() => {
@@ -117,27 +114,6 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
     await queryClient.invalidateQueries({ queryKey: ticketKeys.all });
     await refetch();
     toast.success("Очередь синхронизирована с сервером");
-  };
-
-  const handleBatchAssign = async () => {
-    if (selectedTicketIds.length === 0 || isBatchAssigning) return;
-    try {
-      setIsBatchAssigning(true);
-      const res = await autopilotApi.batchAssign(selectedTicketIds);
-      if (res.assigned_count > 0) {
-        toast.success(`Передано автопилоту: ${res.assigned_count} заявок`);
-      }
-      if (res.failed_ids && res.failed_ids.length > 0) {
-        toast.error(`Не удалось назначить ${res.failed_ids.length} заявок`);
-      }
-      setSelectedTicketIds([]);
-      await queryClient.invalidateQueries({ queryKey: ticketKeys.all });
-      await refetch();
-    } catch (err: any) {
-      toast.error(`Ошибка пакетного назначения: ${err?.message || "Сбой запроса"}`);
-    } finally {
-      setIsBatchAssigning(false);
-    }
   };
 
   // Auto-shift focus when selected ticket completes or disappears
@@ -357,16 +333,6 @@ export const TriageQueue: React.FC<TriageQueueProps> = ({
             </div>
 
             <div className="flex items-center gap-2">
-              <Button
-                variant="primary"
-                size="sm"
-                loading={isBatchAssigning}
-                onClick={handleBatchAssign}
-                icon={<Zap className="w-3.5 h-3.5 text-amber-400" />}
-                className="bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs shadow-md"
-              >
-                ⚡ Передать автопилоту (alen_assistant)
-              </Button>
               <Button
                 variant="ghost"
                 size="sm"

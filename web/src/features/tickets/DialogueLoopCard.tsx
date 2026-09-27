@@ -1,10 +1,10 @@
 import React from "react";
 import { MessageSquare, Clock, AlertCircle, Play } from "lucide-react";
 import { Button, Badge } from "@/shared/ui";
-import { AgentPlan } from "@/features/autopilot/types";
+import { TicketAutomation } from "@/features/autopilot/types";
 
 export interface DialogueLoopCardProps {
-  plan: AgentPlan;
+  plan: TicketAutomation;
   onForceResume: () => void;
   isResuming?: boolean;
 }
@@ -54,7 +54,7 @@ export const DialogueLoopCard: React.FC<DialogueLoopCardProps> = ({
           Запрос на уточнение заявителю
         </div>
         <p className="text-[11px] text-neutral-300 leading-relaxed italic">
-          "{plan.suggested_comment || "Уточните, пожалуйста, имя компьютера или модель устройства."}"
+          "Уточните, пожалуйста: {plan.workflow_plan.missing_facts.join(", ") || "недостающие сведения по заявке"}."
         </p>
       </div>
 

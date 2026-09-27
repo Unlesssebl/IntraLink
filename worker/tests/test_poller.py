@@ -20,10 +20,10 @@ from core.intraservice.auth import (
     ServiceAuthError,
 )
 from core.intraservice.dto import TaskDTO
+from core.intraservice.polling import get_executor_ids_list
 from worker.src.broker import QUEUE_DEFAULT, broker
 from worker.src.tasks.poller import (
     IngestionPoller,
-    get_executor_ids_list,
 )
 
 
@@ -52,15 +52,13 @@ def crypto_fernet():
 
 
 def test_poller_tasks_registration():
-    """Verify poller, triage and autopilot tasks are registered with the Taskiq broker."""
+    """Only passive polling is registered; analysis is an explicit HTTP action."""
     tasks = broker.get_all_tasks()
     assert "poll_queue_task" in tasks
-    assert "triage_task" in tasks
-    assert "autopilot_task" in tasks
+    assert "triage_task" not in tasks
+    assert "autopilot_task" not in tasks
 
     assert tasks["poll_queue_task"].labels.get("queue_name") == QUEUE_DEFAULT
-    assert tasks["triage_task"].labels.get("queue_name") == QUEUE_DEFAULT
-    assert tasks["autopilot_task"].labels.get("queue_name") == QUEUE_DEFAULT
 
 
 def test_get_executor_ids_list_parsing():
@@ -178,8 +176,8 @@ async def test_service_auth_invalid_credentials_raises_error():
 
 
 @pytest.mark.asyncio
-async def test_ingestion_poller_dual_slice_and_routing(test_db):
-    """Verify poller executes dual-slice query, deduplicates tickets and routes properly."""
+async def test_ingestion_poller_observes_without_triggering_automation(test_db):
+    """Dual-slice polling updates its cursor but never analyzes or executes a ticket."""
     # Setup mocks
     mock_auth = AsyncMock()
     mock_auth.bootstrap_auth.return_value = ServiceAuthCredentials(
@@ -214,40 +212,26 @@ async def test_ingestion_poller_dual_slice_and_routing(test_db):
         session_factory=test_db,
     )
 
-    with (
-        patch("worker.src.tasks.poller.triage_task.kiq", new_callable=AsyncMock) as mock_triage,
-        patch("worker.src.tasks.poller.autopilot_task.kiq", new_callable=AsyncMock) as mock_autopilot,
-    ):
-        result = await poller.poll_step()
+    result = await poller.poll_step()
 
-        assert result.filter_tasks_count == 2
-        assert result.changed_tasks_count == 2
-        assert result.unique_tasks_count == 3  # 101, 102, 103
-        assert result.triaged_tasks_count == 1  # 101 (unassigned)
-        assert result.autopilot_tasks_count == 1  # 103 (bot assigned)
-        assert result.next_interval_sec == 30.0
-        assert result.consecutive_errors == 0
-        assert result.error is None
+    assert result.filter_tasks_count == 2
+    assert result.changed_tasks_count == 2
+    assert result.unique_tasks_count == 3
+    assert result.observed_tasks_count == 3
+    assert result.next_interval_sec == 30.0
+    assert result.consecutive_errors == 0
+    assert result.error is None
 
-        # Verify triage queue called for 101
-        mock_triage.assert_awaited_once_with(task_id=101)
+    mock_client.get_tasks_by_filter.assert_awaited_once_with(
+        filter_id=984,
+        auth_b64="valid_auth",
+    )
+    mock_client.get_tasks.assert_awaited_once()
+    assert "ChangedMoreThan" in mock_client.get_tasks.call_args[1]["filters"]
 
-        # Verify autopilot queue called for 103
-        mock_autopilot.assert_awaited_once_with(task_id=103)
-
-        # Verify filter queries
-        mock_client.get_tasks_by_filter.assert_awaited_once_with(
-            filter_id=984,
-            auth_b64="valid_auth",
-        )
-        mock_client.get_tasks.assert_awaited_once()
-        changed_filter_call = mock_client.get_tasks.call_args[1]["filters"]
-        assert "ChangedMoreThan" in changed_filter_call
-
-        # Verify watermark updated to max task id (103)
-        updated_wm = await mock_watermark_service.get_watermark("ingestion_poller")
-        assert updated_wm.last_task_id == 103
-        assert updated_wm.last_poll_at is not None
+    updated_wm = await mock_watermark_service.get_watermark("ingestion_poller")
+    assert updated_wm.last_task_id == 103
+    assert updated_wm.last_poll_at is not None
 
 
 @pytest.mark.asyncio

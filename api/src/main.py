@@ -22,7 +22,6 @@ from api.src.features.knowledge_base.router import router as kb_router
 from api.src.features.reports.router import router as reports_router
 from api.src.features.tickets.router import router as tickets_router
 from api.src.features.tickets.router import tasks_router
-from api.src.features.triage.router import router as triage_router
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.exceptions import (
     IntraServiceAuthError,
@@ -207,7 +206,6 @@ async def login(payload: LoginRequest) -> dict:
 # Mount Vertical Feature Slices (/api/v2/...)
 app.include_router(tickets_router, prefix="/api/v2")
 app.include_router(tasks_router, prefix="/api/v2")
-app.include_router(triage_router, prefix="/api/v2")
 app.include_router(kb_router, prefix="/api/v2")
 app.include_router(diagnostics_router, prefix="/api/v2")
 app.include_router(reports_router, prefix="/api/v2")

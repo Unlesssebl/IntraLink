@@ -1,6 +1,6 @@
 # ADR 0006: CaseFrame, прикладные процессы и технические capabilities
 
-- **Статус:** Accepted / implementation pending
+- **Статус:** Implemented / offline acceptance in progress
 - **Дата:** 2026-09-27
 - **Авторы:** IntraLink Core Architecture Team
 - **Заменяет:** объект маршрутизации и ограничение роли LLM из разделов 2.1 и 2.3 ADR 0005
@@ -93,7 +93,7 @@ Capability является узкой технической операцией
 | Текущий ключ | Целевая роль |
 |---|---|
 | `install_printer` | capability `install_printer` внутри workflow подключения принтера |
-| `printer_spooler_restart` | capability `restart_spooler` внутри workflow инцидента печати |
+| `printer_spooler_restart` | capability `reset_print_spooler` внутри workflow инцидента печати |
 | `default_printer_fix` | capability `set_default_printer` внутри workflow инцидента печати |
 | `grant_wlan` | workflow предоставления WLAN-доступа и capability `add_wlan_group_member` |
 | `account_create` | workflow онбординга и capability `create_ad_user` |
@@ -143,8 +143,8 @@ operator feedback
     -> sanitized versioned dataset
     -> replay and error analysis
     -> profiles / extraction / policy / workflow update
-    -> champion-challenger shadow
-    -> explicit version promotion
+    -> closed offline acceptance benchmark
+    -> atomic replacement of the active version
 ```
 
 Feedback фиксируется отдельно для:
@@ -156,7 +156,7 @@ Feedback фиксируется отдельно для:
 
 До накопления достаточной разметки обучение означает калибровку профилей, примеров, правил серой зоны и workflow. В дальнейшем обученный classifier/reranker может быть добавлен только как ещё один provider доказательств. Он не становится владельцем решения.
 
-Каждая новая версия обязана проходить закрытый replay и read-only shadow. Данные оператора дедуплицируются, проходят санитарную проверку и не применяются автоматически.
+Каждая новая версия обязана проходить закрытый offline replay. Параллельный shadow-контур и одновременная работа двух движков не допускаются: после успешной приёмки новая версия атомарно заменяет предыдущую. Данные оператора дедуплицируются, проходят санитарную проверку и не применяются автоматически.
 
 ---
 
@@ -191,9 +191,19 @@ Feedback фиксируется отдельно для:
 5. Пересобрать ещё не развёрнутые routing-миграции вместо добавления переходных колонок и dual-write.
 6. Удалить старый `ScenarioRouter`, смешанные `scenario_key` и совместимые fallback-ветви после переноса тестов.
 7. Обновить UI: отдельно показывать тип обращения, workflow, недостающие факты и технические действия.
-8. После стабилизации контрактов подготовить два dataset и выполнить offline replay, затем live shadow без мутаций IntraService.
+8. Подготовить два versioned dataset, выполнить offline replay и использовать единственный новый движок без shadow, dual-write и совместимого legacy API.
 
 Существующие evidence, DLP, feedback, approval, lease, idempotency и execution-result механизмы переиспользуются, но привязываются к правильному уровню модели.
+
+### 5.1. Фактический cutover
+
+- HTTP API использует только вложенную модель `TicketAutomationDTO` и маршруты `/api/v2/autopilot/tickets/{id}/...`.
+- Poller выполняет только read-only наблюдение и не запускает анализ либо исполнение по факту назначения сервисной учётной записи.
+- Анализ запускается оператором явно; исполнение начинается только после подтверждения конкретного `ActionPlan`.
+- Worker принимает только команду, связанную с `action_plan_id`, `action_id`, capability, snapshot hash, plan hash и params hash.
+- Старые `ScenarioRouter`, `BaseScenario`, `ScenarioRegistry`, scenario workers и policy API удалены из runtime.
+- Все workflow работают только в `ASSISTED`. Переключатель `FULL_AUTO` в текущем движке отсутствует.
+- Проверка версии выполняется закрытым offline replay. Параллельный shadow-контур не создаётся.
 
 ---
 
@@ -204,7 +214,7 @@ Feedback фиксируется отдельно для:
 - LLM предлагает, но не разрешает и не подтверждает выполнение.
 - Любая инфраструктурная мутация создаётся только из валидированного ActionPlan.
 - Неизвестные и многозначные случаи сохраняются как таковые.
-- Feedback не изменяет production-поведение без replay, shadow и явного продвижения версии.
+- Feedback не изменяет активное поведение без offline replay и явной атомарной замены версии.
 - Dataset размечает только информацию, доступную на соответствующем этапе процесса.
 
 ---

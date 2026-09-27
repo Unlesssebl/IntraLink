@@ -1,4 +1,4 @@
-"""Queue Monitoring & Ingestion Poller with Dual-Slice Querying, Watermark and Event Lock.
+"""Read-only queue monitoring with dual-slice querying and a durable watermark.
 
 Pulse interval: every 30 seconds.
 Slices:
@@ -6,21 +6,17 @@ Slices:
   2. Incremental updates (ChangedMoreThan=<watermark>).
 Backoff:
   30s -> 60s -> 120s on network/5xx server errors. Resets to 30s on success.
-Routing:
-  - Unassigned tickets -> enqueue in triage_task.
-  - Bot assigned tickets -> enqueue in autopilot_task.
+Automation:
+  - Polling never analyzes or mutates tickets.
+  - Operators explicitly invoke the ADR 0006 analyze/approve flow.
 Watermark:
-  - Dual persistent state: Redis (autopilot:watermark:ts, autopilot:watermark:task_id) + PostgreSQL (system_state table).
-Concurrency & Idempotency:
-  - Single-Flight: checks active in-flight worker locks (lock:task:{id}).
-  - Event Lock: suppresses redundant enqueuing for unmodified ticket events within 300s window.
+  - Dual persistent state: Redis system-state cache + PostgreSQL (system_state table).
 """
 
 import asyncio
-import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -35,14 +31,11 @@ from core.intraservice.auth import (
 )
 from core.intraservice.client import IntraServiceClient
 from core.intraservice.dto import TaskDTO
-from core.intraservice.poller import (
+from core.intraservice.polling import (
     PollerStepResult,
-    get_executor_ids_list,
 )
 from core.redis_client import get_redis_client
 from worker.src.broker import QUEUE_DEFAULT, broker
-from worker.src.tasks.autopilot import autopilot_task
-from worker.src.tasks.triage import triage_task
 
 PollStepResult = PollerStepResult
 
@@ -57,8 +50,6 @@ class IngestionPoller:
     BACKOFF_FACTOR: float = 2.0
     FILTER_ACTIVE_IT: int = 984
     WATERMARK_KEY: str = "ingestion_poller"
-    EVENT_LOCK_TTL_SEC: int = 300  # 5 minutes de-duplication window
-
     def __init__(
         self,
         service_auth: Optional[ServiceAuthBootstrap] = None,
@@ -78,7 +69,6 @@ class IngestionPoller:
 
         self.consecutive_errors: int = 0
         self.current_interval_sec: float = self.DEFAULT_POLL_INTERVAL_SEC
-        self._in_memory_event_cache: Set[str] = set()
 
     def get_current_interval(self) -> float:
         """Calculate polling interval based on consecutive error count."""
@@ -101,58 +91,14 @@ class IngestionPoller:
         self.current_interval_sec = self.get_current_interval()
         return self.current_interval_sec
 
-    async def _is_event_locked(self, queue_type: str, task: TaskDTO) -> bool:
-        """Check Single-Flight concurrency lock and Event Lock for ticket."""
-        event_signature = f"{task.id}:{task.changed or ''}:{task.status_id}"
-        event_hash = hashlib.md5(event_signature.encode()).hexdigest()[:12]
-
-        if self.redis_client is not None:
-            try:
-                # 1. Single-Flight Concurrency check: is ticket actively being executed?
-                inflight_lock = await self.redis_client.exists(f"lock:task:{task.id}")
-                if inflight_lock:
-                    logger.debug(
-                        "Ticket #%d is actively being executed by a worker (Single-Flight lock). Skipping enqueue.",
-                        task.id,
-                    )
-                    return True
-
-                # 2. Event Lock: has this exact ticket state already been enqueued?
-                event_key = f"poller:event:{queue_type}:{task.id}:{event_hash}"
-                acquired = await self.redis_client.set(
-                    event_key,
-                    "enqueued",
-                    nx=True,
-                    ex=self.EVENT_LOCK_TTL_SEC,
-                )
-                if not acquired:
-                    logger.debug(
-                        "Ticket #%d event state is already locked (%s). Suppressing duplicate enqueue.",
-                        task.id,
-                        event_key,
-                    )
-                    return True
-                return False
-            except Exception as exc:
-                logger.debug("Redis error in _is_event_locked for task #%d: %s", task.id, exc)
-
-        # In-memory fallback for testing / no Redis
-        in_mem_key = f"{queue_type}:{event_signature}"
-        if in_mem_key in self._in_memory_event_cache:
-            return True
-        self._in_memory_event_cache.add(in_mem_key)
-        if len(self._in_memory_event_cache) > 2000:
-            self._in_memory_event_cache.clear()
-        return False
-
     async def poll_step(self, session: Optional[AsyncSession] = None) -> PollerStepResult:
         """Execute a single polling iteration.
 
         1. Ensures bot authentication.
         2. Retrieves latest watermark cursor (Redis/Postgres).
         3. Executes dual-slice query (Filter 984 + ChangedMoreThan).
-        4. Deduplicates and routes tickets to triage or autopilot queues with Event Lock protection.
-        5. Updates dual watermark in Postgres and Redis (autopilot:watermark:ts, autopilot:watermark:task_id).
+        4. Deduplicates observed tickets without dispatching automation.
+        5. Updates the durable watermark in PostgreSQL and its Redis cache.
         """
         now_utc = datetime.now(timezone.utc)
 
@@ -170,8 +116,7 @@ class IngestionPoller:
                 filter_tasks_count=0,
                 changed_tasks_count=0,
                 unique_tasks_count=0,
-                triaged_tasks_count=0,
-                autopilot_tasks_count=0,
+                observed_tasks_count=0,
                 next_interval_sec=next_interval,
                 consecutive_errors=self.consecutive_errors,
                 error=f"Auth error: {exc}",
@@ -222,8 +167,7 @@ class IngestionPoller:
                 filter_tasks_count=0,
                 changed_tasks_count=0,
                 unique_tasks_count=0,
-                triaged_tasks_count=0,
-                autopilot_tasks_count=0,
+                observed_tasks_count=0,
                 next_interval_sec=next_interval,
                 consecutive_errors=self.consecutive_errors,
                 error=f"IntraService fetch error: {exc}",
@@ -236,30 +180,7 @@ class IngestionPoller:
         for t in tasks_changed:
             unique_tasks[t.id] = t
 
-        # 5. Route tickets to appropriate queues with Event Lock & Single-Flight protection
-        triaged_count = 0
-        autopilot_count = 0
-
-        for task in unique_tasks.values():
-            executors = get_executor_ids_list(task)
-            if not executors:
-                # Unassigned ticket -> enqueue in triage
-                if await self._is_event_locked("triage", task):
-                    continue
-                logger.debug("Enqueuing unassigned ticket #%d in triage_task", task.id)
-                await triage_task.kiq(task_id=task.id)
-                triaged_count += 1
-            elif auth.bot_user_id in executors:
-                # Bot assigned ticket -> enqueue in autopilot
-                if await self._is_event_locked("autopilot", task):
-                    continue
-                logger.debug("Enqueuing bot ticket #%d in autopilot_task", task.id)
-                await autopilot_task.kiq(task_id=task.id)
-                autopilot_count += 1
-            else:
-                # Assigned to human engineer -> do not interfere
-                pass
-
+        # 5. Record observations only. ASSISTED mode requires an explicit operator action.
         # 6. Update dual watermark in PostgreSQL & Redis
         max_task_id = (watermark.last_task_id if watermark else None) or 0
         if unique_tasks:
@@ -279,12 +200,11 @@ class IngestionPoller:
 
         logger.info(
             "Poll iteration complete: %d filter tasks, %d changed tasks, %d unique, "
-            "%d triaged, %d autopilot. Next interval: %.1fs",
+            "%d observed. Next interval: %.1fs",
             len(tasks_filter),
             len(tasks_changed),
             len(unique_tasks),
-            triaged_count,
-            autopilot_count,
+            len(unique_tasks),
             self.current_interval_sec,
         )
 
@@ -293,8 +213,7 @@ class IngestionPoller:
             filter_tasks_count=len(tasks_filter),
             changed_tasks_count=len(tasks_changed),
             unique_tasks_count=len(unique_tasks),
-            triaged_tasks_count=triaged_count,
-            autopilot_tasks_count=autopilot_count,
+            observed_tasks_count=len(unique_tasks),
             next_interval_sec=self.current_interval_sec,
             consecutive_errors=0,
             error=None,

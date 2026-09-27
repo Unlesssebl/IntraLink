@@ -189,7 +189,7 @@ export default function App() {
             }`}
           >
             <Bot className="w-4 h-4 text-indigo-400" />
-            <span>Автопилот (Core-6)</span>
+            <span>Автоматизация</span>
           </button>
         </nav>
 
@@ -262,7 +262,7 @@ export default function App() {
               {activeTab === "triage" && "Операторская панель очереди"}
               {activeTab === "kb" && "База знаний (RAG)"}
               {activeTab === "reports" && "Сводный отчет нагрузки"}
-              {activeTab === "autopilot" && "Операторская консоль Автопилота (Core-6)"}
+              {activeTab === "autopilot" && "Операторская консоль автоматизации"}
             </span>
           </div>
 
@@ -330,7 +330,7 @@ export default function App() {
         </main>
 
         <main className={`flex-1 overflow-y-auto p-6 ${activeTab === "autopilot" ? "" : "hidden"}`}>
-          <ErrorBoundary fallbackTitle="Ошибка в консоли Автопилота">
+          <ErrorBoundary fallbackTitle="Ошибка в консоли автоматизации">
             <AutopilotConsole />
           </ErrorBoundary>
         </main>

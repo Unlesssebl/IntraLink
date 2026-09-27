@@ -113,25 +113,11 @@ export const TicketRow = React.memo<TicketRowProps>(function TicketRow({
         )}
       </div>
 
-      {/* Autonomous Background Classification Badge */}
-      {ticket.scenario_name && (
-        <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-neutral-400">
-          <span className="px-1.5 py-0.5 rounded bg-purple-950/40 border border-purple-800/60 text-purple-300 font-medium truncate max-w-[240px]">
-            {ticket.scenario_name}
-          </span>
-          {ticket.confidence !== undefined && ticket.confidence !== null && (
-            <span className="font-mono text-[9px] text-neutral-500">
-              {Math.round(ticket.confidence * 100)}%
-            </span>
-          )}
-        </div>
-      )}
-
       {/* Status 6: Applicant dialogue indicator */}
       {ticket.status_id === 6 && (
         <div className="mt-1.5 pt-1.5 border-t border-neutral-800/80 flex items-center gap-1.5 text-[10px] text-blue-400">
           <MessageSquare className="w-3 h-3 shrink-0" />
-          <span className="font-medium">Ожидает ответа заявителя (Автономный диалог)</span>
+          <span className="font-medium">Ожидает ответа заявителя</span>
         </div>
       )}
     </div>

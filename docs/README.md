@@ -4,13 +4,14 @@
 
 ---
 
-## 🚀 Активные архитектурные этапы
+## 🚀 Активная архитектура
 
-1. **[Переход на сценарный контур](plans/archive/scenario-orchestration/transition-roadmap.md):** перевод жизненного цикла заявок на конечный автомат `TicketRunOrchestrator`, сбор фактов (`FactBag`) с контролем источника правды (Provenance), компиляция решений `DecisionCompiler` и безопасная раскатка через режимы `shadow` / `canary` / `active`. Спецификация: [сценарный план](plans/archive/scenario-orchestration/execution-plan.md).
-2. **[Асинхронная платформа пакетного триажа (ADR 0003)](adr/0003-asynchronous-batch-triage-platform.md):** перевод анализа очередей на неблокирующий шлюз `202 Accepted`, Redis Job Queue, Single-flight lock и стриминг прогресса через SSE (`/api/v1/events/stream`).
-3. **[Модульная Worker Platform (5 инкрементов)](plans/archive/worker-platform/README.md):** безопасное исполнение действий, модульный SDK хэндлеров, маршрутизация fleet и пилот удаленной установки принтеров.
-4. **[Desktop Companion](services/desktop-companion/README.md):** нативный Windows tray-helper на Tauri 2 для запуска DameWare, LiteManager и RDP из веб-интерфейса по одноразовым deep links Core API.
-5. **[Roadmap качества RAG](plans/archive/rag-quality-roadmap.md):** гибридный поиск (pgvector BGE-M3 + FTS Russian tsvector) и Cross-Encoder `BAAI/bge-reranker-v2-m3` на FastEmbed (Recall@5 97.5%, Hit@5 100%).
+1. **[Case/workflow/capability engine](architecture/automation-engine.md):** единственный runtime ADR 0006 с цепочкой `TicketSnapshot → CaseFrame → CaseDecision → WorkflowPlan → ActionPlan → ActionCommand`, только `ASSISTED` и закрытая offline-приёмка.
+2. **[Service-aware routing и AD onboarding](architecture/service-aware-routing-ad-plan.md):** план жёсткой привязки AD provisioning к сервису IntraService и доказательного RedirectPlan.
+3. **[Асинхронная платформа пакетного триажа (ADR 0003)](adr/0003-asynchronous-batch-triage-platform.md):** перевод анализа очередей на неблокирующий шлюз `202 Accepted`, Redis Job Queue, Single-flight lock и стриминг прогресса через SSE (`/api/v1/events/stream`).
+4. **[Модульная Worker Platform (5 инкрементов)](plans/archive/worker-platform/README.md):** безопасное исполнение действий, модульный SDK хэндлеров, маршрутизация fleet и пилот удаленной установки принтеров.
+5. **[Desktop Companion](services/desktop-companion/README.md):** нативный Windows tray-helper на Tauri 2 для запуска DameWare, LiteManager и RDP из веб-интерфейса по одноразовым deep links Core API.
+6. **[Roadmap качества RAG](plans/archive/rag-quality-roadmap.md):** гибридный поиск (pgvector BGE-M3 + FTS Russian tsvector) и Cross-Encoder `BAAI/bge-reranker-v2-m3` на FastEmbed (Recall@5 97.5%, Hit@5 100%).
 
 ---
 
@@ -19,7 +20,8 @@
 ```text
 docs/
 ├── README.md                      ← Центральный навигатор и статусная матрица
-├── architecture.md                ← SSOT архитектуры, схемы C4, шины, контуры безопасности
+├── architecture.md                ← Исторический обзор архитектуры
+├── architecture/automation-engine.md ← Действующий automation runtime
 ├── developer_guide.md             ← Инварианты, правила и настольная книга инженера/агента
 ├── brandbook.md                   ← Дизайн-система, токены интерфейса, Zero-Emoji Policy
 │

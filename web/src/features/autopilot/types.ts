@@ -1,264 +1,126 @@
-export type AutopilotMode = "FULL_AUTO" | "ASSISTED" | "DISABLED";
+export type CaseDecisionState = "selected" | "multi_intent" | "ambiguous" | "unknown" | "degraded";
+export type Disposition = "execute" | "clarify" | "consult" | "redirect" | "manual";
 
-export type AnalysisState = "not_analyzed" | "in_progress" | "ready" | "stale" | "failed";
-
-export type RoutingState =
-  | "selected"
-  | "needs_clarification"
-  | "ambiguous"
-  | "unmatched"
-  | "degraded"
-  | "refused";
-
-export type ApprovalState =
-  | "not_applicable"
-  | "ready_for_approval"
-  | "approved"
-  | "corrected"
-  | "rejected"
-  | "manual_takeover"
-  | "blocked";
-
-export interface AutopilotPolicy {
-  scenario_key: string;
-  mode: AutopilotMode;
-  consecutive_failures: number;
-  last_failure_at: string | null;
-  is_circuit_broken: boolean;
-  description: string | null;
-}
-
-export interface AutopilotPoliciesListResponse {
-  policies: AutopilotPolicy[];
-  total: number;
-}
-
-export interface UpdateAutopilotPolicyRequest {
-  mode: AutopilotMode;
-}
-
-export interface AutopilotCommand {
+export interface CaseAssertion {
   id: string;
-  action: string;
-  status: "pending" | "running" | "succeeded" | "failed" | "needs_review";
-  task_id: number | null;
+  kind: string;
+  key: string;
+  value: string;
+  source_ref: string;
+  text_span?: string | null;
+  extraction_method: "deterministic" | "llm" | "operator";
+  is_negated: boolean;
+}
+
+export interface CaseFrame {
+  id: string;
+  task_id: number;
+  snapshot_hash: string;
+  frame_version: string;
+  assertions: CaseAssertion[];
+  entities: Record<string, string>;
+  unknown_facts: string[];
+  conflicting_facts: string[];
+  degraded_components: Record<string, string>;
+  created_at: string;
+}
+
+export interface CaseDecision {
+  id: string;
+  task_id: number;
+  snapshot_hash: string;
+  frame_id: string;
+  router_version: string;
+  prompt_version?: string | null;
+  state: CaseDecisionState;
+  primary_case_type?: string | null;
+  secondary_case_types: string[];
+  candidates: Array<{ case_type: string; case_type_version: string }>;
+  evidence: Array<{ id: string; candidate_key: string; source: string; source_ref: string; text_span?: string | null }>;
+  reason_codes: string[];
+  degradation_reason?: string | null;
+}
+
+export interface WorkflowPlan {
+  id: string;
+  task_id: number;
+  snapshot_hash: string;
+  case_decision_id: string;
+  workflow_key: string;
+  workflow_version: string;
+  state: string;
+  disposition: Disposition;
+  steps: Array<{ id: string; kind: string; key: string; params: Record<string, unknown> }>;
+  missing_facts: string[];
+  clarification_round: number;
+  reason_codes: string[];
+}
+
+export interface ActionPlan {
+  id: string;
+  task_id: number;
+  snapshot_hash: string;
+  workflow_plan_id: string;
+  workflow_key: string;
+  workflow_version: string;
+  state: string;
+  disposition: Disposition;
+  plan_hash: string;
+  actions: Array<{
+    id: string;
+    capability_key: string;
+    sequence_no: number;
+    params: Record<string, unknown>;
+    risk: string;
+    requires_approval: boolean;
+  }>;
+}
+
+export interface TicketAutomation {
+  task_id: number;
+  snapshot_hash: string;
+  case_frame: CaseFrame;
+  case_decision: CaseDecision;
+  workflow_plan: WorkflowPlan;
+  action_plan?: ActionPlan | null;
+  approval: { state?: string; operator?: string | null };
+  execution: Array<{
+    command_id: string;
+    action_id?: string | null;
+    capability_key?: string | null;
+    status: string;
+    outcome?: string | null;
+  }>;
+}
+
+export interface AutomationCommand {
+  id: string;
+  task_id?: number | null;
+  action_plan_id?: string | null;
+  action_id?: string | null;
+  capability_key?: string | null;
+  sequence_no?: number | null;
+  status: string;
   initiator: string;
-  target_json?: Record<string, any> | null;
   error_message?: string | null;
+  result_json?: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 }
 
-export interface AutopilotStats {
-  total_automated_actions: number;
-  hours_saved: number;
-  active_scenarios_count: number;
-  tripped_circuit_breakers: number;
-}
-
-export interface PreflightCheckItem {
-  name: string;
-  status: "passed" | "failed" | "warning" | "skipped";
-  details: Record<string, any>;
-  message?: string | null;
-}
-
-export interface PreflightResult {
-  id?: string | null;
-  status: "passed" | "failed" | "degraded" | "not_applicable";
-  scenario_key: string;
-  params_hash: string;
-  checks: PreflightCheckItem[];
-  details: Record<string, any>;
-  error_message?: string | null;
-  expires_at?: string | null;
-  created_at?: string | null;
-  is_expired: boolean;
-}
-
-export interface EvidenceSummary {
-  source_type: string;
-  reason_code: string;
-  description: string;
-  scenario_key?: string | null;
-  verdict_polarity: "supporting" | "contradicting" | "neutral";
-  provider: string;
-  version?: string | null;
-  is_degraded: boolean;
-}
-
-export interface ScenarioFieldSchema {
-  field_key: string;
-  label: string;
-  field_type: "string" | "integer" | "boolean" | "select";
-  required: boolean;
-  default_value?: any;
-  options?: Array<{ value: string; label: string }>;
-  hint?: string | null;
-}
-
-export interface ScenarioCatalogItem {
-  scenario_key: string;
-  name: string;
-  description: string;
-  policy_mode: AutopilotMode;
-  is_enabled: boolean;
-  required_facts: string[];
-  editable_fields: ScenarioFieldSchema[];
-  supported_executor: string;
-  disabled_reason?: string | null;
-}
-
-export interface ScenarioCatalogResponse {
-  scenarios: ScenarioCatalogItem[];
+export interface CatalogResponse<T = Record<string, unknown>> {
+  items: T[];
   total: number;
 }
 
-export interface AgentPlan {
-  task_id: number;
-  scenario_key: string;
-  scenario_name: string;
-  description: string;
-  analysis_state: AnalysisState;
-  routing_state: RoutingState;
-  approval_state: ApprovalState;
-  can_approve: boolean;
-  can_correct: boolean;
-  can_reject: boolean;
-  blocking_reason_codes: string[];
-  is_stale: boolean;
-  freshness_expires_at?: string | null;
-  has_terminal_feedback: boolean;
+export interface ApprovalResponse {
+  status: string;
+  action_plan_id: string;
   command_id?: string | null;
-  command_status?: string | null;
-  decision_id?: string | null;
-  snapshot_hash: string;
-  plan_id?: string | null;
   plan_hash: string;
-  decision_reason_codes: string[];
-  degraded_components: Record<string, string>;
-  missing_facts: string[];
-  preflight?: PreflightResult | null;
-  is_executable: boolean;
-  evidence_summaries: EvidenceSummary[];
-  extracted_entities: Record<string, any>;
-  candidate_hosts: string[];
-  proposed_action: string;
-  proposed_params: Record<string, any>;
-  suggested_comment: string;
-  target_status_id: number;
-  last_event_id?: number | null;
-  is_circuit_broken: boolean;
-  mode: string;
-  is_tense?: boolean;
-  tense_reason?: string | null;
-  has_attachments?: boolean;
 }
 
-export interface ApprovePlanRequest {
-  decision_id: string;
-  plan_id: string;
-  plan_hash: string;
-  snapshot_hash: string;
-  expected_status_id: number;
-  last_event_id: number | null;
-}
-
-export interface CorrectPlanRequest {
-  decision_id: string;
-  plan_id: string;
-  plan_hash: string;
-  snapshot_hash: string;
-  expected_status_id: number;
-  last_event_id: number | null;
-  corrected_scenario: string;
-  corrected_params: Record<string, any>;
-  corrected_comment?: string | null;
-  correction_tag: string;
-  operator_notes?: string | null;
-}
-
-export interface RejectPlanRequest {
-  decision_id: string;
-  plan_id: string;
-  plan_hash: string;
-  snapshot_hash: string;
-  reason_tag: string;
-  operator_notes?: string | null;
-}
-
-export interface ManualTakeoverRequest {
-  decision_id: string;
-  plan_id: string;
-  plan_hash: string;
-  snapshot_hash: string;
-  reason_tag: string;
-  operator_notes?: string | null;
-}
-
-export interface ManualTakeoverResponse {
-  status: "manual_takeover";
-  feedback_id: string;
-  ticket_id: number;
-  is_duplicate: boolean;
-  external_update_succeeded?: boolean | null;
-  warning?: string | null;
-}
-
-export interface RoutingFeedbackItem {
-  id: string;
-  decision_id?: string | null;
-  prepared_plan_id?: string | null;
-  command_id?: string | null;
-  task_id: number;
-  snapshot_hash?: string | null;
-  operator_username: string;
-  verdict: "approved" | "corrected" | "rejected" | "manual_takeover";
-  original_scenario?: string | null;
-  corrected_scenario?: string | null;
-  original_params: Record<string, any>;
-  corrected_params: Record<string, any>;
-  reason_tag?: string | null;
-  operator_notes?: string | null;
-  router_version?: string | null;
-  prompt_version?: string | null;
-  verifier_used?: boolean;
-  source: string;
-  created_at?: string | null;
-}
-
-export type RoutingFeedback = RoutingFeedbackItem;
-
-export interface FeedbackListResponse {
-  feedback: RoutingFeedbackItem[];
-  total: number;
-}
-
-export interface RoutingQualityMetrics {
-  total_decisions: number;
-  by_routing_state: Record<string, number>;
-  approve_rate: number;
-  correction_rate: number;
-  reject_takeover_rate: number;
-  by_scenario: Record<string, number>;
-  scenario_transitions: Array<{ original_scenario: string; corrected_scenario: string; count: number }>;
-  llm_verifier_call_rate: number;
-  verifier_agreement_rate?: number | null;
-  degraded_provider_rate: number;
-  missing_facts_rate: number;
-  preflight_failure_rate: number;
-  command_success_rate: number;
-  command_failure_rate: number;
-  p50_latency_ms?: number | null;
-  p95_latency_ms?: number | null;
-}
-
-export interface BatchAssignRequest {
-  ticket_ids: number[];
-}
-
-export interface BatchAssignResponse {
-  assigned_count: number;
-  failed_ids: number[];
-  details: Record<number, string>;
+export interface CorrectedActionInput {
+  capability_key: string;
+  params: Record<string, unknown>;
 }

@@ -3,11 +3,13 @@
 import uuid
 
 from core.database.models import (
+    ActionPlanRecord,
+    CaseDecisionRecord,
+    CaseFeedbackRecord,
     CommandRecord,
-    RoutingDecisionRecord,
-    RoutingFeedbackRecord,
+    ExecutionFeedbackRecord,
+    PlanFeedbackRecord,
     TaskKnowledgeBase,
-    TriageAudit,
     User,
 )
 
@@ -63,100 +65,82 @@ def test_command_record_model_instantiation():
     assert cmd.status == "pending"
 
 
-def test_triage_audit_model_instantiation():
-    audit_id = uuid.uuid4()
-    audit = TriageAudit(
-        id=audit_id,
-        task_id=54321,
-        action="auto_classify",
-        model_used="helpdesk-fast",
-        confidence=0.98,
-        prompt_tokens=350,
-        completion_tokens=42,
-        context_snapshot={"title": "Ошибка Directum"},
-        decision_json={"suggested_service_id": 234},
-        applied=True,
-        applied_by="system",
-    )
-    assert audit.id == audit_id
-    assert audit.task_id == 54321
-    assert audit.confidence == 0.98
-    assert audit.applied is True
-
-
-def test_routing_decision_record_model_instantiation():
+def test_case_decision_record_model_instantiation():
     dec_id = uuid.uuid4()
-    record = RoutingDecisionRecord(
+    frame_id = uuid.uuid4()
+    record = CaseDecisionRecord(
         id=dec_id,
         task_id=777,
         snapshot_hash="f" * 64,
-        router_version="2.0.0",
-        prompt_version="verifier-v1",
+        frame_id=frame_id,
+        frame_version="case-frame-v1",
+        router_version="case-router-v1",
         state="selected",
-        selected_scenario="install_printer",
-        selected_scenario_version="1.0.0",
-        snapshot_json={"task_id": 777, "title": "Установка принтера"},
-        candidates_json=[{"scenario_key": "install_printer"}],
-        evidence_json=[{"id": "ev-1", "candidate_key": "install_printer"}],
-        verifier_result_json=[{"scenario_key": "install_printer", "verdict": "supported"}],
-        missing_facts_json=[],
-        degradation_reason=None,
-        decision_reason_codes_json=["direct_exact_service_id"],
-        degraded_components_json={"semantic": "provider_timeout"},
-        verifier_trace_json={"status": "success", "prompt_version": "verifier-v1"},
+        primary_case_type="printer_connection_request",
+        case_frame_json={"id": str(frame_id), "task_id": 777},
+        decision_json={"state": "selected", "primary_case_type": "printer_connection_request"},
     )
     assert record.id == dec_id
-    assert record.task_id == 777
-    assert record.snapshot_hash == "f" * 64
-    assert record.router_version == "2.0.0"
-    assert record.prompt_version == "verifier-v1"
-    assert record.state == "selected"
-    assert record.selected_scenario == "install_printer"
-    assert record.selected_scenario_version == "1.0.0"
-    assert record.snapshot_json["task_id"] == 777
-    assert len(record.candidates_json) == 1
-    assert len(record.evidence_json) == 1
-    assert len(record.verifier_result_json) == 1
-    assert record.missing_facts_json == []
-    assert record.decision_reason_codes_json == ["direct_exact_service_id"]
-    assert record.degraded_components_json == {"semantic": "provider_timeout"}
-    assert record.verifier_trace_json["status"] == "success"
+    assert record.frame_id == frame_id
+    assert record.primary_case_type == "printer_connection_request"
+    assert record.case_frame_json["task_id"] == 777
 
 
-def test_routing_feedback_record_model_instantiation():
+def test_stage_specific_feedback_models():
     feedback_id = uuid.uuid4()
     decision_id = uuid.uuid4()
-    feedback = RoutingFeedbackRecord(
+    feedback = CaseFeedbackRecord(
         id=feedback_id,
-        decision_id=decision_id,
+        case_decision_id=decision_id,
         task_id=777,
+        snapshot_hash="f" * 64,
         operator_username="supervisor",
         verdict="corrected",
-        corrected_scenario="grant_wlan",
-        corrected_params={"user_login": "ivanov.i", "temp_password": "supersecretpassword"},
+        original_case_type="printing_incident",
+        corrected_case_type="wireless_access_request",
+        corrected_frame_json={"password": "supersecretpassword"},
         reason_tag="misclassification",
-        notes="Пользователь просил Wi-Fi, а не принтер",
+        notes="Исправлен тип обращения",
     )
     assert feedback.id == feedback_id
-    assert feedback.decision_id == decision_id
-    assert feedback.task_id == 777
-    assert feedback.operator_username == "supervisor"
-    assert feedback.verdict == "corrected"
-    assert feedback.corrected_scenario == "grant_wlan"
-    # Secrets in corrected_params must be sanitized automatically
-    assert feedback.corrected_params["user_login"] == "ivanov.i"
-    assert feedback.corrected_params["temp_password"] == "***REDACTED***"
-    assert feedback.reason_tag == "misclassification"
-    assert feedback.notes == "Пользователь просил Wi-Fi, а не принтер"
+    assert feedback.case_decision_id == decision_id
+    assert feedback.corrected_case_type == "wireless_access_request"
 
 
-def test_terminal_feedback_unique_index_includes_corrected_verdict():
-    index = next(
-        idx
-        for idx in RoutingFeedbackRecord.__table__.indexes
-        if idx.name == "uq_routing_feedback_terminal_plan"
+def test_action_plan_feedback_and_execution_are_plan_bound():
+    decision_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    plan_id = uuid.uuid4()
+    command_id = uuid.uuid4()
+    plan = ActionPlanRecord(
+        id=plan_id,
+        workflow_plan_id=workflow_id,
+        case_decision_id=decision_id,
+        task_id=777,
+        snapshot_hash="f" * 64,
+        workflow_key="wireless_access",
+        workflow_version="1",
+        state="ready",
+        disposition="execute",
+        plan_hash="a" * 64,
+        plan_json={"actions": []},
     )
-    sqlite_predicate = str(index.dialect_options["sqlite"]["where"])
-    postgres_predicate = str(index.dialect_options["postgresql"]["where"])
-    assert "corrected" in sqlite_predicate
-    assert "corrected" in postgres_predicate
+    plan_feedback = PlanFeedbackRecord(
+        action_plan_id=plan_id,
+        task_id=777,
+        operator_username="supervisor",
+        verdict="approved",
+        original_plan_hash="a" * 64,
+    )
+    execution = ExecutionFeedbackRecord(
+        action_plan_id=plan_id,
+        command_id=command_id,
+        task_id=777,
+        action_id="grant_wlan",
+        capability_key="add_wlan_group_member",
+        outcome="succeeded",
+        result_json={"verified": True},
+    )
+    assert plan.plan_hash == "a" * 64
+    assert plan_feedback.action_plan_id == plan.id
+    assert execution.capability_key == "add_wlan_group_member"

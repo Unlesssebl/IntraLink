@@ -11,6 +11,7 @@ services:
       - POSTGRES_PASSWORD=postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init/01-create-litellm-db.sql:/docker-entrypoint-initdb.d/01-create-litellm-db.sql:ro
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
@@ -43,7 +44,7 @@ services:
     volumes:
       - ./litellm_config.yaml:/app/config.yaml:ro
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/intraservice
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/litellm
       - REDIS_URL=redis://redis:6379/1
       - LITELLM_API_KEY=${LITELLM_API_KEY:-sk-intralink-dev}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}

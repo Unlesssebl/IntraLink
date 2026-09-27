@@ -1,16 +1,16 @@
 """IntraLink v2 Core Database Models (Fresh DB Clean State).
 
-Only 5 active entities are maintained:
+Active entities include:
 1. TaskKnowledgeBase (RAG dataset with pgvector HNSW index)
 2. User (Engineers, admin users, credentials)
 3. CommandRecord (Idempotent commands, outbox pattern)
-4. TriageAudit (Immutable audit log of LLM triage decisions)
-5. SystemState (System watermarks, poller cursors and settings)
+4. SystemState (System watermarks, poller cursors and settings)
+5. ADR 0006 case, workflow, action and feedback records
 """
 
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from pgvector.sqlalchemy import Vector
@@ -25,8 +25,6 @@ from sqlalchemy import (
     String,
     Text,
     event,
-    func,
-    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
@@ -139,25 +137,18 @@ class CommandRecord(Base, TimestampMixin):
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
     initiator: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     task_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
-    decision_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    action_plan_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         GUID,
-        ForeignKey("routing_decisions.id", ondelete="SET NULL"),
+        ForeignKey("action_plans.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    plan_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        GUID,
-        ForeignKey("prepared_plans.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    preflight_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        GUID,
-        ForeignKey("routing_preflights.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
+    action_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    capability_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    sequence_no: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    params_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     plan_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    snapshot_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     result_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(
         JSONB().with_variant(JSON(), "sqlite"),
         nullable=True,
@@ -169,48 +160,6 @@ class CommandRecord(Base, TimestampMixin):
         kwargs.setdefault("priority", 5)
         kwargs.setdefault("target_json", {})
         kwargs.setdefault("params_json", {})
-        super().__init__(**kwargs)
-
-
-class TriageAudit(Base):
-    """Immutable audit trail for LLM decisions, automated classification and redirects."""
-
-    __tablename__ = "triage_audit"
-
-    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
-    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    model_used: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    context_snapshot: Mapped[Dict[str, Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=dict,
-    )
-    decision_json: Mapped[Dict[str, Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=dict,
-    )
-    applied: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    applied_by: Mapped[str] = mapped_column(String(100), nullable=False, default="system")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        server_default=func.now(),
-        nullable=False,
-        index=True,
-    )
-
-    def __init__(self, **kwargs: Any) -> None:
-        kwargs.setdefault("applied", False)
-        kwargs.setdefault("applied_by", "system")
-        kwargs.setdefault("prompt_tokens", 0)
-        kwargs.setdefault("completion_tokens", 0)
-        kwargs.setdefault("context_snapshot", {})
-        kwargs.setdefault("decision_json", {})
         super().__init__(**kwargs)
 
 
@@ -233,23 +182,208 @@ class SystemState(Base, TimestampMixin):
         super().__init__(**kwargs)
 
 
-class AutopilotPolicy(Base, TimestampMixin):
-    """Autopilot governance policy per scenario with Circuit Breaker tracking."""
+class CaseDecisionRecord(Base, TimestampMixin):
+    """Immutable intake frame and case-type decision for one ticket snapshot."""
 
-    __tablename__ = "autopilot_policies"
+    __tablename__ = "case_decisions"
 
-    scenario_key: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    frame_id: Mapped[uuid.UUID] = mapped_column(GUID, nullable=False, index=True)
+    frame_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    router_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    primary_case_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    case_frame_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
+    decision_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["case_frame_json"] = sanitize_secrets(kwargs.get("case_frame_json", {}))
+        kwargs["decision_json"] = sanitize_secrets(kwargs.get("decision_json", {}))
+        super().__init__(**kwargs)
+
+
+class WorkflowPlanRecord(Base, TimestampMixin):
+    """Versioned business-process state derived from a CaseDecision."""
+
+    __tablename__ = "workflow_plans"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    case_decision_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("case_decisions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    workflow_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    workflow_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    disposition: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    clarification_round: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    plan_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["plan_json"] = sanitize_secrets(kwargs.get("plan_json", {}))
+        kwargs.setdefault("clarification_round", 0)
+        super().__init__(**kwargs)
+
+
+class ActionPlanRecord(Base, TimestampMixin):
+    """Canonical, approval-bound list of capability invocations."""
+
+    __tablename__ = "action_plans"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    workflow_plan_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("workflow_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    case_decision_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("case_decisions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    workflow_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    workflow_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    disposition: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    plan_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
+    approved_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["plan_json"] = sanitize_secrets(kwargs.get("plan_json", {}))
+        super().__init__(**kwargs)
+
+
+class ActionPreflightRecord(Base, TimestampMixin):
+    """Append-only technical preflight result for one action."""
+
+    __tablename__ = "action_preflights"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    action_plan_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("action_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    action_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    capability_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    params_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    checks_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
+    )
+    details_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("checks_json", [])
+        kwargs["details_json"] = sanitize_secrets(kwargs.get("details_json", {}))
+        if kwargs.get("error_message"):
+            kwargs["error_message"] = sanitize_secret_text(kwargs["error_message"])
+        super().__init__(**kwargs)
+
+
+class CaseFeedbackRecord(Base, TimestampMixin):
+    """Operator feedback about extraction and case-type selection only."""
+
+    __tablename__ = "case_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    case_decision_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("case_decisions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    operator_username: Mapped[str] = mapped_column(String(100), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    original_case_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    corrected_case_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    corrected_frame_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=True
+    )
+    reason_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class PlanFeedbackRecord(Base, TimestampMixin):
+    """Terminal operator feedback for an ActionPlan."""
+
+    __tablename__ = "plan_feedback"
+    __table_args__ = (Index("uq_plan_feedback_terminal", "action_plan_id", unique=True),)
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    action_plan_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("action_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    operator_username: Mapped[str] = mapped_column(String(100), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    original_plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    corrected_action_plan_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID, ForeignKey("action_plans.id", ondelete="SET NULL"), nullable=True
+    )
+    reason_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class ExecutionFeedbackRecord(Base, TimestampMixin):
+    """Observed outcome for one capability command."""
+
+    __tablename__ = "execution_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    action_plan_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("action_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    command_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("commands.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    action_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    capability_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    result_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
+
+
+class WorkflowPolicyRecord(Base, TimestampMixin):
+    """Execution mode belongs to business workflows, never to case routing."""
+
+    __tablename__ = "workflow_policies"
+
+    workflow_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     mode: Mapped[str] = mapped_column(String(32), nullable=False, default="ASSISTED", server_default="ASSISTED")
+    description: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+
+class CapabilityHealthRecord(Base, TimestampMixin):
+    """Runtime health and circuit-breaker state of a technical capability."""
+
+    __tablename__ = "capability_health"
+
+    capability_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     last_failure_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     is_circuit_broken: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
-    description: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-
-    def __init__(self, **kwargs: Any) -> None:
-        kwargs.setdefault("mode", "ASSISTED")
-        kwargs.setdefault("consecutive_failures", 0)
-        kwargs.setdefault("is_circuit_broken", False)
-        super().__init__(**kwargs)
+    details_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
 
 
 _SECRET_STRING_PATTERNS = [
@@ -285,243 +419,76 @@ def sanitize_secrets(data: Any) -> Any:
     return data
 
 
-class RoutingDecisionRecord(Base, TimestampMixin):
-    """Immutable audit log and persistent record of an Evidence-Based Routing Cascade decision."""
-
-    __tablename__ = "routing_decisions"
-
-    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
-    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    router_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    prompt_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    selected_scenario: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
-    selected_scenario_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-
-    snapshot_json: Mapped[Dict[str, Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=dict,
-    )
-    candidates_json: Mapped[List[Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=list,
-    )
-    evidence_json: Mapped[List[Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=list,
-    )
-    verifier_result_json: Mapped[Optional[List[Any]]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=True,
-    )
-    missing_facts_json: Mapped[List[Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=list,
-    )
-    degradation_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    decision_reason_codes_json: Mapped[List[str]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=list,
-    )
-    degraded_components_json: Mapped[Dict[str, str]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=dict,
-    )
-    verifier_trace_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=True,
-    )
-
-    def __init__(self, **kwargs: Any) -> None:
-        kwargs.setdefault("snapshot_json", {})
-        kwargs.setdefault("candidates_json", [])
-        kwargs.setdefault("evidence_json", [])
-        kwargs.setdefault("missing_facts_json", [])
-        kwargs.setdefault("decision_reason_codes_json", [])
-        kwargs.setdefault("degraded_components_json", {})
-        super().__init__(**kwargs)
-
-
-class RoutingFeedbackRecord(Base, TimestampMixin):
-    """Operator supervisor feedback and corrections on routing cascade decisions."""
-
-    __tablename__ = "routing_feedback"
-
-    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
-    decision_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        GUID,
-        ForeignKey("routing_decisions.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
-    prepared_plan_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        GUID,
-        ForeignKey("prepared_plans.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    command_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        GUID,
-        ForeignKey("commands.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    snapshot_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
-    operator_username: Mapped[str] = mapped_column(String(100), nullable=False, default="operator")
-    verdict: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # approved, corrected, rejected, manual_takeover
-    original_scenario: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
-    corrected_scenario: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    original_params: Mapped[Dict[str, Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=dict,
-    )
-    corrected_params: Mapped[Dict[str, Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=dict,
-    )
-    reason_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    operator_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    router_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    prompt_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    verifier_used: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=False)
-    source: Mapped[str] = mapped_column(String(32), nullable=False, default="runtime", index=True)
-
-    __table_args__ = (
-        Index(
-            "uq_routing_feedback_terminal_plan",
-            "prepared_plan_id",
-            unique=True,
-            postgresql_where=text(
-                "verdict IN ('approved', 'corrected', 'rejected', 'manual_takeover') "
-                "AND prepared_plan_id IS NOT NULL"
-            ),
-            sqlite_where=text(
-                "verdict IN ('approved', 'corrected', 'rejected', 'manual_takeover') "
-                "AND prepared_plan_id IS NOT NULL"
-            ),
-        ),
-    )
-
-    def __init__(self, **kwargs: Any) -> None:
-        if "original_params" in kwargs and kwargs["original_params"]:
-            kwargs["original_params"] = sanitize_secrets(kwargs["original_params"])
-        if "corrected_params" in kwargs and kwargs["corrected_params"]:
-            kwargs["corrected_params"] = sanitize_secrets(kwargs["corrected_params"])
-        if "operator_notes" in kwargs and kwargs["operator_notes"] and not kwargs.get("notes"):
-            kwargs["notes"] = sanitize_secrets(kwargs["operator_notes"])
-            kwargs["operator_notes"] = kwargs["notes"]
-        elif "notes" in kwargs and kwargs["notes"] and not kwargs.get("operator_notes"):
-            kwargs["operator_notes"] = sanitize_secrets(kwargs["notes"])
-            kwargs["notes"] = kwargs["operator_notes"]
-        kwargs.setdefault("operator_username", "operator")
-        kwargs.setdefault("original_params", {})
-        kwargs.setdefault("corrected_params", {})
-        kwargs.setdefault("source", "runtime")
-        kwargs.setdefault("verifier_used", False)
-        super().__init__(**kwargs)
-
-
-@event.listens_for(RoutingFeedbackRecord, "before_insert")
-@event.listens_for(RoutingFeedbackRecord, "before_update")
-def _sanitize_routing_feedback_listener(mapper: Any, connection: Any, target: RoutingFeedbackRecord) -> None:
-    if target.original_params:
-        target.original_params = sanitize_secrets(target.original_params)
-    if target.corrected_params:
-        target.corrected_params = sanitize_secrets(target.corrected_params)
-    if target.operator_notes:
-        target.operator_notes = sanitize_secrets(target.operator_notes)
-    if target.notes:
-        target.notes = sanitize_secrets(target.notes)
-
-
 @event.listens_for(CommandRecord, "before_insert")
 @event.listens_for(CommandRecord, "before_update")
 def _sanitize_command_record_listener(mapper: Any, connection: Any, target: CommandRecord) -> None:
+    target.target_json = sanitize_secrets(target.target_json or {})
     if target.params_json:
         target.params_json = sanitize_secrets(target.params_json)
+    if target.result_json:
+        target.result_json = sanitize_secrets(target.result_json)
+    if target.error_message:
+        target.error_message = sanitize_secret_text(target.error_message)
 
 
-class RoutingPreflightRecord(Base, TimestampMixin):
-    """Append-only audit record and short-lived state of read-only preflight verification."""
-
-    __tablename__ = "routing_preflights"
-
-    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
-    decision_id: Mapped[uuid.UUID] = mapped_column(
-        GUID,
-        ForeignKey("routing_decisions.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    scenario_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    params_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # passed, failed, degraded, not_applicable
-    checks_json: Mapped[List[Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=list,
-    )
-    details_json: Mapped[Dict[str, Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=dict,
-    )
-    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
-
-    def __init__(self, **kwargs: Any) -> None:
-        if "details_json" in kwargs and kwargs["details_json"]:
-            kwargs["details_json"] = sanitize_secrets(kwargs["details_json"])
-        kwargs.setdefault("checks_json", [])
-        kwargs.setdefault("details_json", {})
-        super().__init__(**kwargs)
+@event.listens_for(CaseDecisionRecord, "before_insert")
+@event.listens_for(CaseDecisionRecord, "before_update")
+def _sanitize_case_decision_listener(mapper: Any, connection: Any, target: CaseDecisionRecord) -> None:
+    target.case_frame_json = sanitize_secrets(target.case_frame_json or {})
+    target.decision_json = sanitize_secrets(target.decision_json or {})
 
 
-class PreparedPlanRecord(Base, TimestampMixin):
-    """Persistent prepared operator action plan derived from evidence decision and preflight."""
+@event.listens_for(WorkflowPlanRecord, "before_insert")
+@event.listens_for(WorkflowPlanRecord, "before_update")
+def _sanitize_workflow_plan_listener(mapper: Any, connection: Any, target: WorkflowPlanRecord) -> None:
+    target.plan_json = sanitize_secrets(target.plan_json or {})
 
-    __tablename__ = "prepared_plans"
 
-    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
-    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    decision_id: Mapped[uuid.UUID] = mapped_column(
-        GUID,
-        ForeignKey("routing_decisions.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    scenario_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    preflight_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        GUID,
-        ForeignKey("routing_preflights.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    plan_json: Mapped[Dict[str, Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"),
-        nullable=False,
-        default=dict,
-    )
-    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+@event.listens_for(ActionPlanRecord, "before_insert")
+@event.listens_for(ActionPlanRecord, "before_update")
+def _sanitize_action_plan_listener(mapper: Any, connection: Any, target: ActionPlanRecord) -> None:
+    target.plan_json = sanitize_secrets(target.plan_json or {})
 
-    def __init__(self, **kwargs: Any) -> None:
-        if "plan_json" in kwargs and kwargs["plan_json"]:
-            kwargs["plan_json"] = sanitize_secrets(kwargs["plan_json"])
-        kwargs.setdefault("plan_json", {})
-        kwargs.setdefault("state", "ready")
-        super().__init__(**kwargs)
+
+@event.listens_for(ActionPreflightRecord, "before_insert")
+@event.listens_for(ActionPreflightRecord, "before_update")
+def _sanitize_action_preflight_listener(mapper: Any, connection: Any, target: ActionPreflightRecord) -> None:
+    target.details_json = sanitize_secrets(target.details_json or {})
+    if target.error_message:
+        target.error_message = sanitize_secret_text(target.error_message)
+
+
+@event.listens_for(CaseFeedbackRecord, "before_insert")
+@event.listens_for(CaseFeedbackRecord, "before_update")
+def _sanitize_case_feedback_listener(mapper: Any, connection: Any, target: CaseFeedbackRecord) -> None:
+    if target.corrected_frame_json:
+        target.corrected_frame_json = sanitize_secrets(target.corrected_frame_json)
+    if target.notes:
+        target.notes = sanitize_secret_text(target.notes)
+
+
+@event.listens_for(PlanFeedbackRecord, "before_insert")
+@event.listens_for(PlanFeedbackRecord, "before_update")
+def _sanitize_plan_feedback_listener(mapper: Any, connection: Any, target: PlanFeedbackRecord) -> None:
+    if target.notes:
+        target.notes = sanitize_secret_text(target.notes)
+
+
+@event.listens_for(ExecutionFeedbackRecord, "before_insert")
+@event.listens_for(ExecutionFeedbackRecord, "before_update")
+def _sanitize_execution_feedback_listener(
+    mapper: Any,
+    connection: Any,
+    target: ExecutionFeedbackRecord,
+) -> None:
+    target.result_json = sanitize_secrets(target.result_json or {})
+
+
+@event.listens_for(CapabilityHealthRecord, "before_insert")
+@event.listens_for(CapabilityHealthRecord, "before_update")
+def _sanitize_capability_health_listener(
+    mapper: Any,
+    connection: Any,
+    target: CapabilityHealthRecord,
+) -> None:
+    target.details_json = sanitize_secrets(target.details_json or {})

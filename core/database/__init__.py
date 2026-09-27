@@ -5,7 +5,6 @@ from core.database.models import (
     CommandRecord,
     SystemState,
     TaskKnowledgeBase,
-    TriageAudit,
     User,
 )
 from core.database.session import get_db_session, get_engine, get_session_factory
@@ -22,7 +21,6 @@ __all__ = [
     "CommandRecord",
     "SystemState",
     "TaskKnowledgeBase",
-    "TriageAudit",
     "User",
     "WatermarkDTO",
     "WatermarkService",

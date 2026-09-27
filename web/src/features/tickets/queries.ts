@@ -238,10 +238,10 @@ export function useTicketActions() {
 // -------------------------------------------------------------
 export function useAgentPlan(ticketId: number | null) {
   return useQuery({
-    queryKey: ["autopilot", "plan", ticketId || 0],
+    queryKey: ["autopilot", "automation", ticketId || 0],
     queryFn: ({ signal }) => {
       if (!ticketId) throw new Error("Ticket ID required");
-      return import("@/features/autopilot/api").then((m) => m.autopilotApi.getPlan(ticketId, signal));
+      return import("@/features/autopilot/api").then((m) => m.autopilotApi.getAutomation(ticketId, signal));
     },
     enabled: Boolean(ticketId && ticketId > 0),
     staleTime: 5000,

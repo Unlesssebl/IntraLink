@@ -153,17 +153,15 @@ class WatermarkService:
                     session=db_session,
                 )
 
-        # Update Redis cache and compatibility keys
+        # Update Redis cache and worker observability keys.
         if redis is not None:
             try:
                 await redis.set(f"system_state:{key}", dto.model_dump_json())
                 if key == "ingestion_poller":
                     if last_poll_at is not None:
                         await redis.set("worker:last_check_time", last_poll_at.isoformat())
-                        await redis.set("autopilot:watermark:ts", last_poll_at.isoformat())
                     if last_task_id is not None:
                         await redis.set("worker:service_last_task_id", str(last_task_id))
-                        await redis.set("autopilot:watermark:task_id", str(last_task_id))
             except Exception as exc:
                 logger.warning("Failed to persist watermark '%s' into Redis cache: %s", key, exc)
 

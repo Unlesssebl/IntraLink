@@ -3,20 +3,16 @@
 Verifies system stability during external service outages (LiteLLM down, Redis unavailable).
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from core.database.base import Base
 from core.database.models import TaskKnowledgeBase
-from core.intraservice.dto import TaskDTO
 from core.rag.embed_cache import EmbeddingCache
 from core.rag.embedder import get_embedding_vector
 from core.rag.search import search_hybrid_solutions
-from worker.src.scenarios.grant_wlan import GrantWLANScenario
-from worker.src.scenarios.install_printer import InstallPrinterScenario
-from worker.src.scenarios.router import ScenarioRouter
 
 
 @pytest.mark.asyncio
@@ -82,33 +78,3 @@ async def test_redis_failure_resilience():
     # Get must hit L1 in-memory without error
     retrieved = await cache.get("запрос при сбое redis", "bge-m3")
     assert retrieved == vec
-
-
-@pytest.mark.asyncio
-async def test_router_operates_when_semantic_index_cold():
-    """Verify router makes deterministic decisions even when semantic index warm_up failed."""
-    wlan_scen = GrantWLANScenario()
-    printer_scen = InstallPrinterScenario()
-    scenarios = {"grant_wlan": wlan_scen, "install_printer": printer_scen}
-
-    # Router with failing LiteLLM and no cache
-    failing_ai = AsyncMock()
-    failing_ai.embeddings.create.side_effect = RuntimeError("LiteLLM offline")
-
-    with patch("core.scenarios.semantic_index.get_embedding_vector", new=AsyncMock(return_value=None)):
-        router = ScenarioRouter(ai_client=failing_ai)
-        await router.warm_up()
-        assert router._semantic_index.is_ready is False
-
-        task = TaskDTO(
-            Id=505,
-            Name="Подключение к Wi-Fi",
-            Description="Прошу предоставить доступ к корпоративной беспроводной сети",
-        )
-
-        # Route task: must use Factor A (keyword matching) without crash
-        route_res = await router.route_task(task, scenarios, threshold=0.50)
-        assert route_res is not None
-        matched_scenario, match_dto = route_res
-        assert matched_scenario.scenario_key == "grant_wlan"
-        assert match_dto.matched is True
