@@ -1,5 +1,5 @@
 export type CaseDecisionState = "selected" | "multi_intent" | "ambiguous" | "unknown" | "degraded";
-export type Disposition = "execute" | "clarify" | "consult" | "redirect" | "manual";
+export type Disposition = "execute" | "clarify" | "consult" | "manual";
 
 export interface CaseAssertion {
   id: string;
@@ -22,6 +22,7 @@ export interface CaseFrame {
   unknown_facts: string[];
   conflicting_facts: string[];
   degraded_components: Record<string, string>;
+  llm_attempted: boolean;
   created_at: string;
 }
 
@@ -63,6 +64,10 @@ export interface ActionPlan {
   workflow_plan_id: string;
   workflow_key: string;
   workflow_version: string;
+  source_service_id?: number | null;
+  service_binding_key?: string | null;
+  service_binding_version?: string | null;
+  catalog_hash?: string | null;
   state: string;
   disposition: Disposition;
   plan_hash: string;
@@ -76,12 +81,80 @@ export interface ActionPlan {
   }>;
 }
 
+export interface RedirectCandidate {
+  service_id: number;
+  service_path: string;
+  binding_key: string;
+  binding_version: string;
+  redirect_strategy: "cancel_and_recreate" | "transfer_service" | "manual";
+  evidence: string[];
+  contradictions: string[];
+  verifier_result?: "supported" | "contradicted" | "insufficient" | null;
+}
+
+export interface ServiceTargetCandidate {
+  service_id: number;
+  service_path: string;
+  confidence: "high" | "medium" | "low" | string;
+  evidence: string[];
+}
+
+export interface ServiceCompatibility {
+  id: string;
+  task_id: number;
+  snapshot_hash: string;
+  case_decision_id: string;
+  source_service_id?: number | null;
+  source_service_path?: string | null;
+  source_task_type_id?: number | null;
+  binding_key?: string | null;
+  binding_version?: string | null;
+  catalog_hash?: string | null;
+  allowed_case_types: string[];
+  target_service_id?: number | null;
+  target_service_path?: string | null;
+  target_selection_state: "source_match" | "target_suggested" | "ambiguous" | "not_found" | "unavailable";
+  target_selection_method?: string | null;
+  target_candidates: ServiceTargetCandidate[];
+  routing_evidence: string[];
+  routing_contradictions: string[];
+  catalog_state: "available" | "stale" | "unavailable" | string;
+  authorization_state: string;
+  analysis_timings_ms: Record<string, number>;
+  llm_used: boolean;
+  candidates: RedirectCandidate[];
+  evidence: string[];
+  contradictions: string[];
+  reason_codes: string[];
+  degraded_component?: string | null;
+  state: "compatible" | "mismatch" | "ambiguous" | "unknown" | "degraded";
+}
+
+export interface RedirectPlan {
+  id: string;
+  task_id: number;
+  snapshot_hash: string;
+  source_service_id: number;
+  target_service_id: number;
+  target_service_path: string;
+  strategy: "cancel_and_recreate" | "transfer_service" | "manual";
+  rendered_public_comment: string;
+  plan_hash: string;
+  state: string;
+  approval_state: string;
+  execution_state: string;
+  execution_steps: Array<Record<string, unknown>>;
+  version: number;
+}
+
 export interface TicketAutomation {
   task_id: number;
   snapshot_hash: string;
   case_frame: CaseFrame;
   case_decision: CaseDecision;
+  service_compatibility: ServiceCompatibility;
   workflow_plan: WorkflowPlan;
+  redirect_plan?: RedirectPlan | null;
   action_plan?: ActionPlan | null;
   approval: { state?: string; operator?: string | null };
   execution: Array<{

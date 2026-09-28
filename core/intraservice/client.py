@@ -145,7 +145,7 @@ class IntraServiceClient:
         self,
         base_url: Optional[str] = None,
         auth_b64: Optional[str] = None,
-        verify_ssl: bool = True,
+        verify_ssl: bool | None = None,
         timeout: float = 30.0,
     ) -> None:
         url = base_url or os.getenv("INTRASERVICE_URL", "https://servicedesk-pub.corporate.loc/api")
@@ -156,7 +156,11 @@ class IntraServiceClient:
         self.base_url = cleaned_url
 
         self.auth_b64 = auth_b64
-        self.verify_ssl = verify_ssl
+        self.verify_ssl = (
+            verify_ssl
+            if verify_ssl is not None
+            else os.getenv("SSL_VERIFY", "true").strip().casefold() in {"1", "true", "yes", "on"}
+        )
         self.timeout = timeout
         self.circuit_breaker = CircuitBreaker()
         self._client: Optional[httpx.AsyncClient] = None

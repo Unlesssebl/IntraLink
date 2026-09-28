@@ -3,7 +3,6 @@ import {
   CheckCircle,
   CheckCheck,
   Copy,
-  ArrowRightLeft,
   Send,
   Lock,
   Globe,
@@ -14,7 +13,6 @@ import {
   isStatusResolved,
   isStatusCancelled,
 } from "@/shared/statuses";
-import { useServicesCatalog } from "./queries";
 
 export interface ActionDockProps {
   ticketId: number;
@@ -23,7 +21,6 @@ export interface ActionDockProps {
   onTake: () => Promise<void>;
   onResolve: (comment: string) => Promise<void>;
   onDuplicate: (masterId: number, comment: string) => Promise<void>;
-  onRedirect: (serviceId: number, comment: string) => Promise<void>;
   onAddComment: (comment: string, isPrivate: boolean) => Promise<void>;
   isBusy?: boolean;
   commentDraft?: string;
@@ -44,7 +41,6 @@ export const ActionDock: React.FC<ActionDockProps> = ({
   onTake,
   onResolve,
   onDuplicate,
-  onRedirect,
   onAddComment,
   isBusy = false,
   commentDraft = "",
@@ -65,14 +61,6 @@ export const ActionDock: React.FC<ActionDockProps> = ({
   const [dupMasterId, setDupMasterId] = useState("");
   const [dupComment, setDupComment] = useState("");
 
-  const [redirModalOpen, setRedirModalOpen] = useState(false);
-  const { data: rawServices = [] } = useServicesCatalog();
-  const services = React.useMemo(
-    () => rawServices.filter((s) => s.is_active !== false),
-    [rawServices]
-  );
-  const [selectedServiceId, setSelectedServiceId] = useState<number | "">("");
-  const [redirComment, setRedirComment] = useState("");
 
   // Sync external draft changes if provided
   useEffect(() => {
@@ -86,17 +74,10 @@ export const ActionDock: React.FC<ActionDockProps> = ({
     if (onCommentDraftChange) onCommentDraftChange(text);
   };
 
-  // Pre-select first service when catalog loads
-  useEffect(() => {
-    if (!selectedServiceId && services.length > 0) {
-      setSelectedServiceId(services[0].id);
-    }
-  }, [selectedServiceId, services]);
-
   const isAlreadyInWork = isStatusInWork(statusId);
   const isCompleted = isStatusResolved(statusId) || isStatusCancelled(statusId);
 
-  // Global hotkeys: Alt+1, Alt+2, Alt+3, Alt+4
+  // Global hotkeys: Alt+1, Alt+2, Alt+3
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.altKey) {
@@ -109,9 +90,6 @@ export const ActionDock: React.FC<ActionDockProps> = ({
         } else if (e.key === "3") {
           e.preventDefault();
           if (!isCompleted && !isBusy) setDupModalOpen(true);
-        } else if (e.key === "4") {
-          e.preventDefault();
-          if (!isCompleted && !isBusy) setRedirModalOpen(true);
         }
       }
     };
@@ -171,26 +149,6 @@ export const ActionDock: React.FC<ActionDockProps> = ({
     setDupMasterId("");
     setDupComment("");
     toast.success(`Заявка #${ticketId} отменена как дубликат #${masterId}`);
-  };
-
-  const handleConfirmRedirect = async () => {
-    if (!selectedServiceId) {
-      toast.error("Выберите целевой сервис");
-      return;
-    }
-    const sObj = services.find((s) => s.id === Number(selectedServiceId));
-    const sName = sObj ? sObj.name : `ID ${selectedServiceId}`;
-    
-    // Helpdesk domain invariant (docs/architecture/domain-model-and-contracts.md)
-    // Never falsely promise applicant to "wait for specialists" on a cancelled ticket!
-    const finalComment =
-      redirComment.trim() ||
-      `Заявка отменена, т. к. создана не в подходящем разделе каталога.\nТребуется оставить заявку в подходящем разделе: «${sName}».\nЕсли у вас остались вопросы, пожалуйста, напишите в комментариях к этой заявке.`;
-
-    await onRedirect(Number(selectedServiceId), finalComment);
-    setRedirModalOpen(false);
-    setRedirComment("");
-    toast.success(`Заявка #${ticketId} перенаправлена в сервис «${sName}»`);
   };
 
   return (
@@ -322,22 +280,6 @@ export const ActionDock: React.FC<ActionDockProps> = ({
           <KbdBadge shortcut="Alt+3" />
         </button>
 
-        {/* Alt + 4: Перенаправить */}
-        <button
-          type="button"
-          onClick={() => setRedirModalOpen(true)}
-          disabled={isBusy || isCompleted}
-          className={`flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-medium transition-all ${
-            isCompleted
-              ? "bg-[#101114] border-neutral-800/50 text-neutral-600 cursor-not-allowed opacity-60"
-              : "border-neutral-800 bg-[#121316] hover:border-neutral-700 hover:bg-neutral-800/60 text-neutral-200 active:scale-95"
-          }`}
-          title={isCompleted ? "Заявка уже завершена" : "Перенаправить в другой сервис (Alt+4)"}
-        >
-          <ArrowRightLeft className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-          <span className="truncate">Перенаправить</span>
-          <KbdBadge shortcut="Alt+4" />
-        </button>
       </div>
 
       {/* Modal 1: Resolve Ticket */}
@@ -440,55 +382,6 @@ export const ActionDock: React.FC<ActionDockProps> = ({
         </div>
       </Modal>
 
-      {/* Modal 3: Redirect Ticket */}
-      <Modal
-        isOpen={redirModalOpen}
-        onClose={() => setRedirModalOpen(false)}
-        title={`Перенаправление заявки #${ticketId}`}
-        description="Заявка будет отменена в текущем сервисе (статус 30) с регламентной инструкцией заявителю подать заявку в корректный раздел."
-        footer={
-          <>
-            <Button variant="ghost" size="sm" onClick={() => setRedirModalOpen(false)}>
-              Отмена
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              loading={isBusy}
-              disabled={!selectedServiceId}
-              onClick={handleConfirmRedirect}
-            >
-              Перенаправить
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-neutral-300">Целевой сервис:</label>
-            <select
-              value={selectedServiceId}
-              onChange={(e) => setSelectedServiceId(Number(e.target.value))}
-              className="w-full bg-[#121316] border border-neutral-800 rounded px-3 py-1.5 text-xs text-neutral-100 focus:outline-none focus:ring-1 focus:ring-neutral-400 focus:border-neutral-500"
-            >
-              <option value="">-- Выберите сервис --</option>
-              {services.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} (ID: {s.id})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <Textarea
-            label="Инструкция для заявителя"
-            placeholder="Заявка отменена, т. к. создана не в подходящем разделе..."
-            value={redirComment}
-            onChange={(e) => setRedirComment(e.target.value)}
-            rows={3}
-          />
-        </div>
-      </Modal>
     </div>
   );
 };

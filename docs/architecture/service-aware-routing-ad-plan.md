@@ -1,11 +1,14 @@
 # План service-aware routing, RedirectPlan и AD onboarding
 
+> **Статус реализации (2026-09-28):** runtime использует catalog-first `TargetServiceResolution` до CaseDecision, затем отдельно строит workflow и проверяет execution binding. Актуальный live-каталог подтверждает сервисы `53` (создание пользователя сети), `59` (установка ПО), `104` (блокировка пользователя), `181` (доступ Wi-Fi), `183` (настройка принтера) и `184` (ремонт принтера). Отсутствие binding больше не скрывает целевой сервис; неподдерживаемый workflow получает явное ручное состояние `unsupported`.
+
 ## Цель
 
 Перестроить обработку заявки вокруг разделённых решений:
 
 ```text
 TicketSnapshot
+  → TargetServiceResolution
   → CaseFrame
   → CaseDecision
   → ServiceCompatibilityDecision
@@ -95,7 +98,7 @@ Binding активируется только после проверки все
 
 ## 3. Доказательный каскад перенаправлений
 
-Redirect resolver получает CaseDecision и выбирает только существующие сервисы, bindings которых разрешают этот CaseType. Он фильтрует кандидатов по активности, `allowed_case_types`, типу формы, организационной области, обязательным полям и canonical binding. Возвращается не более трёх кандидатов с evidence и contradictions.
+Catalog-first resolver работает до CaseDecision и рассматривает только активные конечные сервисы синхронизированного каталога. Текущий конечный сервис является сильным исходным кандидатом; буквальное имя сервиса, совпавшие термины и принадлежность выбранному родителю могут предложить другой target. Возвращается не более пяти наблюдаемых кандидатов. После CaseDecision отдельная compatibility-фаза применяет bindings и формирует не более трёх разрешённых redirect-кандидатов.
 
 LLM вызывается только в серой зоне и получает санитизированный публичный текст, CaseDecision, текущий сервис, максимум три существующих кандидата и их официальные описания. Допустимые ответы: `supported`, `contradicted`, `insufficient`.
 
@@ -253,9 +256,9 @@ redirect_feedback
 
 Разделить versioned datasets:
 
-1. TicketSnapshot → CaseDecision.
-2. CaseDecision + source service → compatibility.
-3. CaseDecision + source service + candidates → target service.
+1. TicketSnapshot + catalog → TargetServiceResolution.
+2. TicketSnapshot + target service → CaseDecision.
+3. CaseDecision + source/target service + bindings → compatibility.
 4. Confirmed CaseFrame + compatible binding → ActionPlan.
 
 Feedback хранится отдельно для CaseType, compatibility, target service, facts, ActionPlan и execution. Он не меняет активную policy автоматически.

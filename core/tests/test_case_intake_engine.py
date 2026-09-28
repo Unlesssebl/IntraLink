@@ -7,6 +7,7 @@ from core.automation.contracts import CaseDecisionState, ExtractionMethod, Ticke
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.automation.intake import CaseIntakeEngine
 from core.automation.llm_transport import LLMTransportTimeoutError
+from core.automation.service_routing import RedirectResolver, ServiceCatalogEntry
 from core.automation.snapshot import compute_canonical_snapshot_hash
 
 
@@ -65,16 +66,20 @@ class SupportingVerifier:
 
 @pytest.mark.asyncio
 async def test_case_frame_extractor_grounds_llm_assertions_and_removes_secret_entities() -> None:
-    transport = FakeTransport({
-        "assertions": [{
-            "kind": "intent",
-            "key": "connect_printer",
-            "value": "true",
-            "source_ref": "description",
-            "text_span": "подключить принтер",
-            "is_negated": False,
-        }]
-    })
+    transport = FakeTransport(
+        {
+            "assertions": [
+                {
+                    "kind": "intent",
+                    "key": "connect_printer",
+                    "value": "true",
+                    "source_ref": "description",
+                    "text_span": "подключить принтер",
+                    "is_negated": False,
+                }
+            ]
+        }
+    )
     snapshot = _snapshot(
         title="Принтер",
         description="Прошу подключить принтер. Пароль: qwerty123",
@@ -94,15 +99,19 @@ async def test_case_frame_extractor_grounds_llm_assertions_and_removes_secret_en
 
 @pytest.mark.asyncio
 async def test_invalid_llm_span_degrades_frame_without_losing_deterministic_facts() -> None:
-    transport = FakeTransport({
-        "assertions": [{
-            "kind": "intent",
-            "key": "create_user",
-            "value": "true",
-            "source_ref": "description",
-            "text_span": "текста здесь нет",
-        }]
-    })
+    transport = FakeTransport(
+        {
+            "assertions": [
+                {
+                    "kind": "intent",
+                    "key": "create_user",
+                    "value": "true",
+                    "source_ref": "description",
+                    "text_span": "текста здесь нет",
+                }
+            ]
+        }
+    )
     snapshot = _snapshot(
         title="Пользователь",
         description="Создать пользователя",
@@ -131,7 +140,7 @@ async def test_intake_skips_llm_when_deterministic_evidence_is_decisive() -> Non
     snapshot = _snapshot(
         title="Установка принтера",
         description="Прошу подключить принтер",
-        service_id=19,
+        service_id=183,
     )
     engine = CaseIntakeEngine(CaseFrameExtractor(transport=transport), CaseRouter())
 
@@ -144,17 +153,95 @@ async def test_intake_skips_llm_when_deterministic_evidence_is_decisive() -> Non
 
 
 @pytest.mark.asyncio
+async def test_target_service_drives_case_selection_before_llm() -> None:
+    transport = FailingTransport(AssertionError("LLM must not be called"))
+    snapshot = _snapshot(
+        title="Установить приложение",
+        description="Требуется стандартное рабочее ПО",
+        service_id=59,
+    )
+    catalog_hash = "a" * 64
+    target = RedirectResolver().resolve_target(
+        snapshot=snapshot,
+        catalog_hash=catalog_hash,
+        entries=[
+            ServiceCatalogEntry(
+                service_id=59,
+                service_path="02. Установка и настройка программ → Установка, настройка (ПО)",
+                is_active=True,
+                catalog_hash=catalog_hash,
+            )
+        ],
+    )
+    engine = CaseIntakeEngine(CaseFrameExtractor(transport=transport), CaseRouter())
+
+    frame, decision = await engine.analyze(snapshot, target_resolution=target)
+
+    assert transport.calls == 0
+    assert frame.degraded_components == {}
+    assert decision.state == CaseDecisionState.selected
+    assert decision.primary_case_type == "software_installation_request"
+    assert any(item.source == "target_service_id" for item in decision.evidence)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("service_id", "service_path", "expected_case"),
+    [
+        (53, "01. Учетные записи пользователей → Создание нового пользователя сети", "employee_onboarding"),
+        (104, "01. Учетные записи пользователей → Блокировка пользователя", "access_revocation_request"),
+        (181, "04. Проблемы с сетью и интернетом → предоставление доступа к Wi-Fi сети", "wireless_access_request"),
+        (183, "03. Оргтехника → МФУ и принтеры → Настройка/установка", "printer_connection_request"),
+        (184, "03. Оргтехника → МФУ и принтеры → Ремонт", "printing_incident"),
+    ],
+)
+async def test_live_catalog_service_ids_are_deterministic(
+    service_id: int,
+    service_path: str,
+    expected_case: str,
+) -> None:
+    transport = FailingTransport(AssertionError("LLM must not be called"))
+    snapshot = _snapshot(title="Заявка", description="", service_id=service_id)
+    catalog_hash = "b" * 64
+    target = RedirectResolver().resolve_target(
+        snapshot=snapshot,
+        catalog_hash=catalog_hash,
+        entries=[
+            ServiceCatalogEntry(
+                service_id=service_id,
+                service_path=service_path,
+                is_active=True,
+                catalog_hash=catalog_hash,
+            )
+        ],
+    )
+
+    _, decision = await CaseIntakeEngine(
+        CaseFrameExtractor(transport=transport),
+        CaseRouter(),
+    ).analyze(snapshot, target_resolution=target)
+
+    assert transport.calls == 0
+    assert decision.state == CaseDecisionState.selected
+    assert decision.primary_case_type == expected_case
+
+
+@pytest.mark.asyncio
 async def test_grounded_llm_assertion_becomes_case_evidence_in_grey_zone() -> None:
-    transport = FakeTransport({
-        "assertions": [{
-            "kind": "intent",
-            "key": "connect_printer",
-            "value": "true",
-            "source_ref": "description",
-            "text_span": "Подключите устройство",
-            "is_negated": False,
-        }]
-    })
+    transport = FakeTransport(
+        {
+            "assertions": [
+                {
+                    "kind": "intent",
+                    "key": "connect_printer",
+                    "value": "true",
+                    "source_ref": "description",
+                    "text_span": "Подключите устройство",
+                    "is_negated": False,
+                }
+            ]
+        }
+    )
     snapshot = _snapshot(
         title="Оборудование",
         description="Подключите устройство на рабочем месте",
@@ -177,7 +264,7 @@ async def test_router_selects_printer_connection_not_technical_action() -> None:
     snapshot = _snapshot(
         title="Установка принтера",
         description="Прошу подключить принтер к рабочему компьютеру",
-        service_id=19,
+        service_id=183,
         service_name="Настройка/установка принтера",
     )
     frame = await CaseFrameExtractor().extract(snapshot)
@@ -195,7 +282,7 @@ async def test_router_selects_printing_incident_without_diagnosing_spooler() -> 
     snapshot = _snapshot(
         title="Проблема с печатью",
         description="Принтер не печатает, документ остался в очереди печати",
-        service_id=12,
+        service_id=184,
     )
     frame = await CaseFrameExtractor().extract(snapshot)
     decision = await CaseRouter().decide(snapshot, frame)

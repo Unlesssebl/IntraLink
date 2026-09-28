@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.automation.contracts import ActionPlan, CaseDecision, CaseFrame, WorkflowPlan
+from core.automation.service_routing import RedirectPlan, ServiceCompatibilityDecision
 
 
 class TicketAutomationDTO(BaseModel):
@@ -18,7 +19,9 @@ class TicketAutomationDTO(BaseModel):
     snapshot_hash: str
     case_frame: CaseFrame
     case_decision: CaseDecision
+    service_compatibility: ServiceCompatibilityDecision
     workflow_plan: WorkflowPlan
+    redirect_plan: RedirectPlan | None = None
     action_plan: ActionPlan | None = None
     approval: dict[str, Any] = Field(default_factory=dict)
     execution: list[dict[str, Any]] = Field(default_factory=list)
@@ -28,6 +31,27 @@ class ApproveActionPlanRequest(BaseModel):
     action_plan_id: UUID
     plan_hash: str = Field(min_length=64, max_length=64)
     snapshot_hash: str = Field(min_length=64, max_length=64)
+
+
+class RedirectPlanRequest(BaseModel):
+    redirect_plan_id: UUID
+    plan_hash: str = Field(min_length=64, max_length=64)
+    snapshot_hash: str = Field(min_length=64, max_length=64)
+    version: int = Field(ge=1)
+    reason_tag: str | None = Field(default=None, max_length=64)
+    notes: str | None = None
+
+
+class CorrectRedirectPlanRequest(RedirectPlanRequest):
+    target_service_id: int
+
+
+class RedirectPlanResponse(BaseModel):
+    status: str
+    redirect_plan_id: UUID
+    plan_hash: str
+    version: int
+    execution_state: str
 
 
 class ActionPlanFeedbackRequest(BaseModel):
@@ -57,6 +81,14 @@ class CorrectCaseDecisionRequest(BaseModel):
     snapshot_hash: str = Field(min_length=64, max_length=64)
     corrected_case_type: str = Field(min_length=2, max_length=64)
     reason_tag: str = Field(min_length=1, max_length=64)
+    notes: str | None = None
+
+
+class CorrectTargetServiceRequest(BaseModel):
+    compatibility_decision_id: UUID
+    snapshot_hash: str = Field(min_length=64, max_length=64)
+    target_service_id: int
+    reason_tag: str = Field(default="operator_target_correction", min_length=1, max_length=64)
     notes: str | None = None
 
 

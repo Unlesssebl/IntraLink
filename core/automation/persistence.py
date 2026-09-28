@@ -21,11 +21,14 @@ from core.automation.contracts import (
     WorkflowPlan,
     compute_action_plan_hash,
 )
+from core.automation.service_routing import RedirectPlan, ServiceCompatibilityDecision
 from core.database.models import (
     ActionPlanRecord,
     ActionPreflightRecord,
     CaseDecisionRecord,
     CommandRecord,
+    RedirectPlanRecord,
+    ServiceCompatibilityDecisionRecord,
     WorkflowPlanRecord,
     sanitize_secrets,
 )
@@ -35,8 +38,10 @@ from core.database.models import (
 class AutomationBundle:
     frame: CaseFrame
     decision: CaseDecision
+    compatibility: ServiceCompatibilityDecision
     workflow_plan: WorkflowPlan
     action_plan: ActionPlan | None
+    redirect_plan: RedirectPlan | None
 
 
 def canonical_params_hash(params: dict[str, Any]) -> str:
@@ -62,8 +67,18 @@ class AutomationRepository:
         decision: CaseDecision,
         workflow_plan: WorkflowPlan,
         action_plan: ActionPlan | None,
+        compatibility: ServiceCompatibilityDecision | None = None,
+        redirect_plan: RedirectPlan | None = None,
     ) -> AutomationBundle:
-        self._validate_bindings(frame, decision, workflow_plan, action_plan)
+        compatibility = compatibility or ServiceCompatibilityDecision(
+            task_id=decision.task_id,
+            snapshot_hash=decision.snapshot_hash,
+            case_decision_id=decision.id,
+            state="degraded",
+            degraded_component="service_catalog",
+            reason_codes=["catalog_unavailable"],
+        )
+        self._validate_bindings(frame, decision, compatibility, workflow_plan, action_plan, redirect_plan)
         frame_json = _secret_free(frame.model_dump(mode="json"))
         decision_json = _secret_free(decision.model_dump(mode="json"))
         workflow_json = _secret_free(workflow_plan.model_dump(mode="json"))
@@ -81,6 +96,20 @@ class AutomationRepository:
                 primary_case_type=decision.primary_case_type,
                 case_frame_json=frame_json,
                 decision_json=decision_json,
+            )
+        )
+        session.add(
+            ServiceCompatibilityDecisionRecord(
+                id=compatibility.id,
+                task_id=compatibility.task_id,
+                snapshot_hash=compatibility.snapshot_hash,
+                case_decision_id=decision.id,
+                source_service_id=compatibility.source_service_id,
+                binding_key=compatibility.binding_key,
+                binding_version=compatibility.binding_version,
+                catalog_hash=compatibility.catalog_hash,
+                state=compatibility.state.value,
+                decision_json=_secret_free(compatibility.model_dump(mode="json")),
             )
         )
         session.add(
@@ -108,14 +137,43 @@ class AutomationRepository:
                     snapshot_hash=action_plan.snapshot_hash,
                     workflow_key=action_plan.workflow_key,
                     workflow_version=action_plan.workflow_version,
+                    source_service_id=action_plan.source_service_id,
+                    service_binding_key=action_plan.service_binding_key,
+                    service_binding_version=action_plan.service_binding_version,
+                    catalog_hash=action_plan.catalog_hash,
                     state=action_plan.state.value,
                     disposition=action_plan.disposition.value,
                     plan_hash=action_plan.plan_hash,
                     plan_json=plan_json,
                 )
             )
+        if redirect_plan is not None:
+            session.add(
+                RedirectPlanRecord(
+                    id=redirect_plan.id,
+                    task_id=redirect_plan.task_id,
+                    snapshot_hash=redirect_plan.snapshot_hash,
+                    case_decision_id=redirect_plan.case_decision_id,
+                    compatibility_decision_id=redirect_plan.compatibility_decision_id,
+                    source_service_id=redirect_plan.source_service_id,
+                    target_service_id=redirect_plan.target_service_id,
+                    target_service_path=redirect_plan.target_service_path,
+                    strategy=redirect_plan.strategy.value,
+                    template_key=redirect_plan.template_key,
+                    rendered_public_comment=redirect_plan.rendered_public_comment,
+                    catalog_hash=redirect_plan.catalog_hash,
+                    binding_key=redirect_plan.binding_key,
+                    binding_version=redirect_plan.binding_version,
+                    plan_hash=redirect_plan.plan_hash,
+                    state=redirect_plan.state.value,
+                    approval_state=redirect_plan.approval_state,
+                    execution_state=redirect_plan.execution_state,
+                    version=redirect_plan.version,
+                    plan_json=_secret_free(redirect_plan.model_dump(mode="json")),
+                )
+            )
         await session.flush()
-        return AutomationBundle(frame, decision, workflow_plan, action_plan)
+        return AutomationBundle(frame, decision, compatibility, workflow_plan, action_plan, redirect_plan)
 
     async def latest_for_task(self, session: AsyncSession, task_id: int) -> AutomationBundle | None:
         decision_record = await session.scalar(
@@ -134,6 +192,13 @@ class AutomationRepository:
         )
         if workflow_record is None:
             raise RuntimeError("CaseDecision exists without a WorkflowPlan")
+        compatibility_record = await session.scalar(
+            select(ServiceCompatibilityDecisionRecord)
+            .where(ServiceCompatibilityDecisionRecord.case_decision_id == decision_record.id)
+            .limit(1)
+        )
+        if compatibility_record is None:
+            raise RuntimeError("CaseDecision exists without a ServiceCompatibilityDecision")
         action_record = await session.scalar(
             select(ActionPlanRecord)
             .where(
@@ -143,12 +208,23 @@ class AutomationRepository:
             .order_by(ActionPlanRecord.created_at.desc(), ActionPlanRecord.id.desc())
             .limit(1)
         )
+        redirect_record = await session.scalar(
+            select(RedirectPlanRecord)
+            .where(
+                RedirectPlanRecord.compatibility_decision_id == compatibility_record.id,
+                RedirectPlanRecord.state != "rejected",
+            )
+            .order_by(RedirectPlanRecord.created_at.desc())
+            .limit(1)
+        )
         frame = CaseFrame.model_validate(decision_record.case_frame_json)
         decision = CaseDecision.model_validate(decision_record.decision_json)
+        compatibility = ServiceCompatibilityDecision.model_validate(compatibility_record.decision_json)
         workflow = WorkflowPlan.model_validate(workflow_record.plan_json)
         action = ActionPlan.model_validate(action_record.plan_json) if action_record else None
-        self._validate_bindings(frame, decision, workflow, action)
-        return AutomationBundle(frame, decision, workflow, action)
+        redirect = RedirectPlan.model_validate(redirect_record.plan_json) if redirect_record else None
+        self._validate_bindings(frame, decision, compatibility, workflow, action, redirect)
+        return AutomationBundle(frame, decision, compatibility, workflow, action, redirect)
 
     async def save_action_plan(self, session: AsyncSession, plan: ActionPlan) -> None:
         """Persist an operator-corrected plan after all workflow constraints were compiled."""
@@ -166,6 +242,10 @@ class AutomationRepository:
                 snapshot_hash=plan.snapshot_hash,
                 workflow_key=plan.workflow_key,
                 workflow_version=plan.workflow_version,
+                source_service_id=plan.source_service_id,
+                service_binding_key=plan.service_binding_key,
+                service_binding_version=plan.service_binding_version,
+                catalog_hash=plan.catalog_hash,
                 state=plan.state.value,
                 disposition=plan.disposition.value,
                 plan_hash=plan.plan_hash,
@@ -259,11 +339,14 @@ class AutomationRepository:
     def _validate_bindings(
         frame: CaseFrame,
         decision: CaseDecision,
+        compatibility: ServiceCompatibilityDecision,
         workflow_plan: WorkflowPlan,
         action_plan: ActionPlan | None,
+        redirect_plan: RedirectPlan | None,
     ) -> None:
         identity = {(frame.task_id, frame.snapshot_hash), (decision.task_id, decision.snapshot_hash)}
         identity.add((workflow_plan.task_id, workflow_plan.snapshot_hash))
+        identity.add((compatibility.task_id, compatibility.snapshot_hash))
         if action_plan is not None:
             identity.add((action_plan.task_id, action_plan.snapshot_hash))
         if len(identity) != 1:
@@ -272,8 +355,18 @@ class AutomationRepository:
             raise ValueError("CaseDecision is not bound to CaseFrame")
         if workflow_plan.case_decision_id != decision.id:
             raise ValueError("WorkflowPlan is not bound to CaseDecision")
+        if compatibility.case_decision_id != decision.id:
+            raise ValueError("ServiceCompatibilityDecision is not bound to CaseDecision")
+        if action_plan is not None and redirect_plan is not None:
+            raise ValueError("ActionPlan and RedirectPlan are mutually exclusive")
         if action_plan is not None:
             if action_plan.case_decision_id != decision.id or action_plan.workflow_plan_id != workflow_plan.id:
                 raise ValueError("ActionPlan is not bound to its decision and workflow")
             if compute_action_plan_hash(action_plan) != action_plan.plan_hash:
                 raise ValueError("ActionPlan canonical hash mismatch")
+        if redirect_plan is not None:
+            if (
+                redirect_plan.case_decision_id != decision.id
+                or redirect_plan.compatibility_decision_id != compatibility.id
+            ):
+                raise ValueError("RedirectPlan is not bound to its decisions")

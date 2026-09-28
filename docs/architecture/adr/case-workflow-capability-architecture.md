@@ -48,7 +48,7 @@ TicketSnapshot
 4. **ActionPlan** — проверенный план из разрешённых технических действий.
 5. **ActionCommand** — одна исполнимая и проверяемая capability.
 
-Результат обработки хранится отдельно как `Disposition`: `execute`, `clarify`, `consult`, `redirect` или `manual`.
+Результат workflow хранится как `Disposition`: `execute`, `clarify`, `consult` или `manual`. Перенаправление хранится отдельно как проверяемый `RedirectPlan` после `ServiceCompatibilityDecision`.
 
 ### 2.2. CaseFrame является открытой моделью ситуации
 
@@ -99,7 +99,7 @@ Capability является узкой технической операцией
 | `account_create` | workflow онбординга и capability `create_ad_user` |
 | `account_lock` | workflow отзыва доступа и capability `disable_ad_user` |
 | `offline_host` | workflow диагностики недоступного рабочего места |
-| `service_redirect` | disposition `redirect` |
+| `service_redirect` | отдельный `RedirectPlan`, не workflow/disposition/capability |
 | `rag_consultation` | disposition `consult` и механизм подготовки ответа |
 
 Существующие LDAP, WinRM и диагностические адаптеры сохраняются как исполнители capabilities, если они удовлетворяют контрактам безопасности.
@@ -187,7 +187,7 @@ Feedback фиксируется отдельно для:
 1. Зафиксировать CaseFrame, CaseDecision, WorkflowPlan, ActionPlan, ActionCommand и Disposition как разные контракты.
 2. Заменить routing-профили технических сценариев профилями типов обращений.
 3. Перенести существующие технические адаптеры в capability registry.
-4. Вынести `redirect` и `consult` из scenario registry в dispositions.
+4. Вынести `consult` в disposition, а перенаправление — в отдельный `RedirectPlan` после service compatibility.
 5. Пересобрать ещё не развёрнутые routing-миграции вместо добавления переходных колонок и dual-write.
 6. Удалить старый `ScenarioRouter`, смешанные `scenario_key` и совместимые fallback-ветви после переноса тестов.
 7. Обновить UI: отдельно показывать тип обращения, workflow, недостающие факты и технические действия.

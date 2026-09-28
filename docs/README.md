@@ -7,7 +7,7 @@
 ## 🚀 Активная архитектура
 
 1. **[Case/workflow/capability engine](architecture/automation-engine.md):** единственный runtime ADR 0006 с цепочкой `TicketSnapshot → CaseFrame → CaseDecision → WorkflowPlan → ActionPlan → ActionCommand`, только `ASSISTED` и закрытая offline-приёмка.
-2. **[Service-aware routing и AD onboarding](architecture/service-aware-routing-ad-plan.md):** план жёсткой привязки AD provisioning к сервису IntraService и доказательного RedirectPlan.
+2. **[Service-aware routing и AD onboarding](architecture/service-aware-routing-ad-plan.md):** реализованный fail-closed контур каталога, service compatibility, самостоятельного RedirectPlan и жёсткой привязки AD provisioning к подтверждённому сервису IntraService.
 3. **[Асинхронная платформа пакетного триажа (ADR 0003)](adr/0003-asynchronous-batch-triage-platform.md):** перевод анализа очередей на неблокирующий шлюз `202 Accepted`, Redis Job Queue, Single-flight lock и стриминг прогресса через SSE (`/api/v1/events/stream`).
 4. **[Модульная Worker Platform (5 инкрементов)](plans/archive/worker-platform/README.md):** безопасное исполнение действий, модульный SDK хэндлеров, маршрутизация fleet и пилот удаленной установки принтеров.
 5. **[Desktop Companion](services/desktop-companion/README.md):** нативный Windows tray-helper на Tauri 2 для запуска DameWare, LiteManager и RDP из веб-интерфейса по одноразовым deep links Core API.

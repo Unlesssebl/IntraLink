@@ -18,7 +18,13 @@ from core.automation.capabilities import (
     CapabilityRegistry,
     get_default_capability_registry,
 )
-from core.automation.contracts import ActionPlan, ActionPlanState, compute_action_plan_hash
+from core.automation.contracts import (
+    ActionPlan,
+    ActionPlanState,
+    WorkflowPlan,
+    WorkflowPlanState,
+    compute_action_plan_hash,
+)
 from core.automation.persistence import canonical_params_hash
 from core.automation.policy import CapabilityHealthService
 from core.automation.runner import RunnerState, WorkflowRunner
@@ -29,6 +35,10 @@ from core.database.models import (
     CommandRecord,
     ExecutionFeedbackRecord,
     PlanFeedbackRecord,
+    ServiceCatalogEntryRecord,
+    ServiceCatalogVersionRecord,
+    ServiceRouteBindingRecord,
+    WorkflowPlanRecord,
     sanitize_secret_text,
     sanitize_secrets,
 )
@@ -117,9 +127,7 @@ def register_action(name: str) -> Callable[[SystemActionHandler], SystemActionHa
 
 
 @register_action("sync_kb")
-async def _sync_kb(
-    params: dict[str, Any], target: dict[str, Any], session: AsyncSession
-) -> dict[str, Any]:
+async def _sync_kb(params: dict[str, Any], target: dict[str, Any], session: AsyncSession) -> dict[str, Any]:
     return await sync_closed_tickets_task(batch_size=int(params.get("batch_size", 100)))
 
 
@@ -131,9 +139,7 @@ async def _echo(params: dict[str, Any], target: dict[str, Any], session: AsyncSe
 
 @register_action("cancel_duplicate")
 @register_action("cancel_ticket")
-async def _cancel_ticket(
-    params: dict[str, Any], target: dict[str, Any], session: AsyncSession
-) -> dict[str, Any]:
+async def _cancel_ticket(params: dict[str, Any], target: dict[str, Any], session: AsyncSession) -> dict[str, Any]:
     return {
         "status": "succeeded",
         "ticket_id": target.get("ticket_id") or params.get("ticket_id"),
@@ -142,9 +148,7 @@ async def _cancel_ticket(
     }
 
 
-async def _load_bound_plan(
-    session: AsyncSession, command: CommandRecord
-) -> tuple[ActionPlanRecord, ActionPlan, Any]:
+async def _load_bound_plan(session: AsyncSession, command: CommandRecord) -> tuple[ActionPlanRecord, ActionPlan, Any]:
     if command.action_plan_id is None or command.action_id is None or command.capability_key is None:
         raise ValueError("automation_command_binding_incomplete")
     record = await session.scalar(
@@ -163,7 +167,10 @@ async def _load_bound_plan(
     if action is None or action.capability_key != command.capability_key:
         raise ValueError("command_action_binding_mismatch")
     expected_params_hash = canonical_params_hash(action.params)
-    if command.params_hash != expected_params_hash or canonical_params_hash(command.params_json or {}) != expected_params_hash:
+    if (
+        command.params_hash != expected_params_hash
+        or canonical_params_hash(command.params_json or {}) != expected_params_hash
+    ):
         raise ValueError("command_params_binding_mismatch")
     preflight = await session.scalar(
         select(ActionPreflightRecord)
@@ -221,8 +228,18 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
         current_snapshot = TicketSnapshotFactory.create(task=task, comments=lifetime)
         if current_snapshot.snapshot_hash != plan.snapshot_hash:
             return {"status": "skipped", "error": "stale_ticket_snapshot"}
+        if action.capability_key == "create_ad_user":
+            ad_gate_error = await _validate_ad_service_gate(
+                session=session,
+                plan=plan,
+                command=command,
+                task=task,
+            )
+            if ad_gate_error:
+                return {"status": "skipped", "error": ad_gate_error}
 
         await lock.ensure_owned()
+        await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.executing)
         mutation_started = spec.is_mutating
         execution = await executor.execute(
             action.params,
@@ -235,6 +252,7 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
         await lock.ensure_owned()
 
         proof = sanitize_secrets(execution.proof)
+        await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.verifying)
         is_last = action.sequence_no == max(item.sequence_no for item in plan.actions)
         if execution.outcome == CapabilityOutcome.succeeded:
             status_id = 3 if is_last else 2
@@ -245,6 +263,8 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
                 is_private=not is_last,
                 auth_b64=auth.auth_b64,
             )
+            if is_last:
+                await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.completed)
         else:
             await _client().update_task(
                 task_id=plan.task_id,
@@ -253,6 +273,7 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
                 is_private=True,
                 auth_b64=auth.auth_b64,
             )
+            await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.needs_review)
 
         command_status = execution.outcome.value
         session.add(
@@ -284,6 +305,103 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
         raise
     finally:
         await lock.release()
+
+
+async def _validate_ad_service_gate(
+    *,
+    session: AsyncSession,
+    plan: ActionPlan,
+    command: CommandRecord,
+    task: Any,
+) -> str | None:
+    """Repeat every AD authorization binding immediately before LDAP mutation."""
+    if (
+        plan.service_binding_key != "ad_account_creation"
+        or not plan.service_binding_version
+        or not plan.catalog_hash
+        or plan.source_service_id is None
+    ):
+        return "ad_service_not_authorized"
+    if task.service_id != plan.source_service_id:
+        return "ad_service_not_authorized"
+    catalog = await session.scalar(
+        select(ServiceCatalogVersionRecord).where(
+            ServiceCatalogVersionRecord.is_active.is_(True),
+            ServiceCatalogVersionRecord.validation_state == "validated",
+        )
+    )
+    if catalog is None or catalog.catalog_hash != plan.catalog_hash:
+        return "service_catalog_changed"
+    binding = await session.scalar(
+        select(ServiceRouteBindingRecord).where(
+            ServiceRouteBindingRecord.key == plan.service_binding_key,
+            ServiceRouteBindingRecord.version == plan.service_binding_version,
+            ServiceRouteBindingRecord.catalog_hash == plan.catalog_hash,
+            ServiceRouteBindingRecord.is_active.is_(True),
+            ServiceRouteBindingRecord.is_validated.is_(True),
+        )
+    )
+    if binding is None:
+        return "service_binding_changed"
+    if (
+        task.service_id not in binding.service_ids_json
+        or "employee_onboarding" not in binding.allowed_case_types_json
+        or "employee_onboarding_workflow" not in binding.allowed_workflows_json
+        or "create_ad_user" not in binding.allowed_capabilities_json
+    ):
+        return "ad_service_not_authorized"
+    entry = await session.scalar(
+        select(ServiceCatalogEntryRecord).where(
+            ServiceCatalogEntryRecord.catalog_version_id == catalog.id,
+            ServiceCatalogEntryRecord.service_id == task.service_id,
+            ServiceCatalogEntryRecord.is_active.is_(True),
+        )
+    )
+    if entry is None:
+        return "ad_service_not_authorized"
+    if binding.required_task_type_id is not None and task.task_type_id != binding.required_task_type_id:
+        return "task_type_not_authorized"
+    custom_fields = {str(key).lower(): str(value).strip() for key, value in (task.custom_fields or {}).items()}
+    missing = [str(field) for field in binding.required_fields_json if not custom_fields.get(str(field).lower())]
+    if missing:
+        return "ad_required_form_fields_missing"
+    prior_feedback = await session.scalar(
+        select(ExecutionFeedbackRecord.id)
+        .where(
+            ExecutionFeedbackRecord.task_id == plan.task_id,
+            ExecutionFeedbackRecord.capability_key == "create_ad_user",
+            ExecutionFeedbackRecord.command_id != command.id,
+            ExecutionFeedbackRecord.outcome.in_(["succeeded", "unknown_outcome", "partial"]),
+        )
+        .limit(1)
+    )
+    prior_command = await session.scalar(
+        select(CommandRecord.id)
+        .where(
+            CommandRecord.task_id == plan.task_id,
+            CommandRecord.capability_key == "create_ad_user",
+            CommandRecord.id != command.id,
+            CommandRecord.status.in_(["succeeded", "unknown_outcome", "running"]),
+        )
+        .limit(1)
+    )
+    if prior_feedback is not None or prior_command is not None:
+        return "ad_previous_creation_not_safe_to_repeat"
+    return None
+
+
+async def _set_workflow_state(
+    session: AsyncSession,
+    workflow_plan_id: uuid.UUID,
+    state: WorkflowPlanState,
+) -> None:
+    record = await session.get(WorkflowPlanRecord, workflow_plan_id)
+    if record is None:
+        raise ValueError("workflow_plan_not_found")
+    plan = WorkflowPlan.model_validate(record.plan_json)
+    updated = plan.model_copy(update={"state": state})
+    record.state = state.value
+    record.plan_json = updated.model_dump(mode="json")
 
 
 def _success_comment(capability_key: str, proof: dict[str, Any]) -> str:
@@ -362,9 +480,9 @@ async def dispatch_command_task(command_id: uuid.UUID | str) -> dict[str, Any]:
                     raise ValueError("unbound_automation_command")
                 result = await handler(command.params_json or {}, command.target_json or {}, session)
             status = str(result.get("status", "succeeded"))
-            command.status = status if status in {
-                "succeeded", "failed", "unknown_outcome", "skipped", "aborted"
-            } else "succeeded"
+            command.status = (
+                status if status in {"succeeded", "failed", "unknown_outcome", "skipped", "aborted"} else "succeeded"
+            )
             command.result_json = sanitize_secrets(result)
             command.error_message = sanitize_secret_text(str(result.get("error") or "")) or None
         except DistributedTaskLockOwnershipLost:
@@ -378,9 +496,7 @@ async def dispatch_command_task(command_id: uuid.UUID | str) -> dict[str, Any]:
             command.result_json = sanitize_secrets({"error": str(exc)})
         if command.capability_key is not None:
             if command.status == "succeeded":
-                await capability_health.record_success(
-                    session, capability_key=command.capability_key
-                )
+                await capability_health.record_success(session, capability_key=command.capability_key)
             elif command.status in {"failed", "unknown_outcome"}:
                 await capability_health.record_failure(
                     session,

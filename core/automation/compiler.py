@@ -20,6 +20,11 @@ from core.automation.contracts import (
     WorkflowStepKind,
     compute_action_plan_hash,
 )
+from core.automation.service_routing import (
+    ServiceCompatibilityDecision,
+    ServiceCompatibilityState,
+    ServiceRouteBinding,
+)
 from core.automation.workflows import WorkflowDefinition, WorkflowRegistry
 
 
@@ -34,6 +39,8 @@ class WorkflowCompiler:
         frame: CaseFrame,
         decision: CaseDecision,
         clarification_round: int = 0,
+        compatibility: ServiceCompatibilityDecision | None = None,
+        binding: ServiceRouteBinding | None = None,
     ) -> tuple[WorkflowPlan, ActionPlan | None]:
         if decision.state not in (CaseDecisionState.selected, CaseDecisionState.multi_intent):
             raise ValueError("Only selected case decisions can be compiled")
@@ -43,10 +50,49 @@ class WorkflowCompiler:
         case_type = decision.primary_case_type or ""
         definition = self.workflows.for_case_type(case_type)
         if definition is None:
-            raise ValueError(f"No workflow registered for case type '{case_type}'")
+            return (
+                WorkflowPlan(
+                    task_id=frame.task_id,
+                    snapshot_hash=frame.snapshot_hash,
+                    case_decision_id=decision.id,
+                    workflow_key="unsupported_workflow",
+                    workflow_version="1.0.0",
+                    state=WorkflowPlanState.unsupported,
+                    disposition=Disposition.manual,
+                    reason_codes=["no_registered_workflow"],
+                ),
+                None,
+            )
+
+        if frame.conflicting_facts:
+            workflow = self._workflow_plan(
+                frame,
+                decision,
+                definition,
+                state=WorkflowPlanState.needs_review,
+                disposition=Disposition.manual,
+                clarification_round=clarification_round,
+                reason_codes=["conflicting_facts"],
+            )
+            return workflow, None
+
+        if compatibility is not None and compatibility.state != ServiceCompatibilityState.compatible:
+            workflow = self._workflow_plan(
+                frame,
+                decision,
+                definition,
+                state=WorkflowPlanState.needs_review,
+                disposition=Disposition.manual,
+                clarification_round=clarification_round,
+                reason_codes=[*compatibility.reason_codes, "service_not_compatible"],
+            )
+            return workflow, None
 
         facts = self._facts(frame)
-        missing = [name for name in definition.required_facts if not str(facts.get(name, "")).strip()]
+        required_facts = list(definition.required_facts)
+        if binding is not None:
+            required_facts.extend(item for item in binding.required_fields if item not in required_facts)
+        missing = [name for name in required_facts if not str(facts.get(name, "")).strip()]
         if missing:
             if clarification_round >= definition.max_clarification_rounds:
                 workflow = self._workflow_plan(
@@ -90,6 +136,18 @@ class WorkflowCompiler:
             return workflow, None
 
         capability = self.capabilities.require(capability_key)
+        if capability_key == "create_ad_user":
+            if not self._ad_authorized(decision, definition, compatibility, binding):
+                workflow = self._workflow_plan(
+                    frame,
+                    decision,
+                    definition,
+                    state=WorkflowPlanState.needs_review,
+                    disposition=Disposition.manual,
+                    clarification_round=clarification_round,
+                    reason_codes=["ad_service_not_authorized"],
+                )
+                return workflow, None
         missing_action_params = self.capabilities.validate_params(capability_key, facts)
         if missing_action_params:
             workflow = self._workflow_plan(
@@ -108,7 +166,11 @@ class WorkflowCompiler:
             frame,
             decision,
             definition,
-            state=WorkflowPlanState.awaiting_approval,
+            state=(
+                WorkflowPlanState.ready_for_approval
+                if definition.key == "employee_onboarding_workflow"
+                else WorkflowPlanState.awaiting_approval
+            ),
             disposition=Disposition.execute,
             clarification_round=clarification_round,
         )
@@ -117,7 +179,9 @@ class WorkflowCompiler:
             id=action_id,
             capability_key=capability_key,
             sequence_no=0,
-            params={key: facts[key] for key in (*capability.required_params, *capability.optional_params) if key in facts},
+            params={
+                key: facts[key] for key in (*capability.required_params, *capability.optional_params) if key in facts
+            },
             risk=capability.risk.value,
             requires_approval=True,
         )
@@ -129,12 +193,43 @@ class WorkflowCompiler:
             workflow_plan_id=workflow.id,
             workflow_key=definition.key,
             workflow_version=definition.version,
+            source_service_id=compatibility.source_service_id if compatibility else None,
+            service_binding_key=binding.key if binding else None,
+            service_binding_version=binding.version if binding else None,
+            catalog_hash=compatibility.catalog_hash if compatibility else None,
             state=ActionPlanState.ready,
             disposition=Disposition.execute,
             actions=[action],
         )
         action_plan = draft.model_copy(update={"plan_hash": compute_action_plan_hash(draft)})
         return workflow, action_plan
+
+    @staticmethod
+    def _ad_authorized(
+        decision: CaseDecision,
+        definition: WorkflowDefinition,
+        compatibility: ServiceCompatibilityDecision | None,
+        binding: ServiceRouteBinding | None,
+    ) -> bool:
+        return bool(
+            compatibility
+            and compatibility.state == ServiceCompatibilityState.compatible
+            and binding
+            and binding.is_active
+            and binding.is_validated
+            and binding.catalog_hash == compatibility.catalog_hash
+            and binding.key == "ad_account_creation"
+            and decision.primary_case_type == "employee_onboarding"
+            and "employee_onboarding" in binding.allowed_case_types
+            and definition.key == "employee_onboarding_workflow"
+            and definition.key in binding.allowed_workflows
+            and "create_ad_user" in binding.allowed_capabilities
+            and compatibility.source_service_id in binding.service_ids
+            and (
+                binding.required_task_type_id is None
+                or compatibility.source_task_type_id == binding.required_task_type_id
+            )
+        )
 
     @staticmethod
     def _facts(frame: CaseFrame) -> dict[str, str]:

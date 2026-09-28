@@ -2,6 +2,7 @@
 
 import logging
 import os
+from pathlib import Path
 from typing import Optional, Union
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -18,8 +19,14 @@ def get_fernet() -> Optional[Fernet]:
         return _fernet
 
     raw_key = os.getenv("ENCRYPTION_KEY")
+    key_file = os.getenv("ENCRYPTION_KEY_FILE")
+    if not raw_key and key_file:
+        try:
+            raw_key = Path(key_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            logger.error("Failed to read ENCRYPTION_KEY_FILE: %s", exc)
     if not raw_key:
-        logger.warning("ENCRYPTION_KEY is not configured in environment. Tokens will not be encrypted.")
+        logger.warning("ENCRYPTION_KEY or ENCRYPTION_KEY_FILE is not configured. Tokens will not be encrypted.")
         return None
 
     try:

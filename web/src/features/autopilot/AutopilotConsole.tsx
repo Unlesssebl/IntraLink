@@ -31,7 +31,7 @@ export const AutopilotConsole: React.FC = () => {
             <h2 className="text-base font-semibold text-neutral-100">Движок автоматизации заявок</h2>
           </div>
           <p className="mt-1 text-xs text-neutral-500">
-            CaseDecision → WorkflowPlan → ActionPlan → Capability execution
+            CaseDecision → ServiceCompatibility → ActionPlan или RedirectPlan
           </p>
         </div>
         <Button size="sm" variant="secondary" onClick={refresh} icon={<RefreshCw className="h-3.5 w-3.5" />}>

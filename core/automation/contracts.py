@@ -44,6 +44,8 @@ class TicketSnapshot(FrozenModel):
     status_id: int
     service_id: int | None = None
     service_name: str | None = None
+    service_path: str | None = None
+    task_type_id: int | None = None
     title: str
     description: str
     public_comments: list[SnapshotComment] = Field(default_factory=list)
@@ -82,16 +84,20 @@ class Disposition(str, Enum):
     execute = "execute"
     clarify = "clarify"
     consult = "consult"
-    redirect = "redirect"
     manual = "manual"
 
 
 class WorkflowPlanState(str, Enum):
+    intake = "intake"
+    unsupported = "unsupported"
     awaiting_facts = "awaiting_facts"
+    ready_for_approval = "ready_for_approval"
     awaiting_diagnostics = "awaiting_diagnostics"
     awaiting_approval = "awaiting_approval"
     approved = "approved"
     running = "running"
+    executing = "executing"
+    verifying = "verifying"
     needs_review = "needs_review"
     completed = "completed"
     cancelled = "cancelled"
@@ -144,6 +150,7 @@ class CaseFrame(FrozenModel):
     unknown_facts: list[str] = Field(default_factory=list)
     conflicting_facts: list[str] = Field(default_factory=list)
     degraded_components: dict[str, str] = Field(default_factory=dict)
+    llm_attempted: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="after")
@@ -285,6 +292,10 @@ class ActionPlan(FrozenModel):
     workflow_plan_id: UUID
     workflow_key: str
     workflow_version: str
+    source_service_id: int | None = None
+    service_binding_key: str | None = None
+    service_binding_version: str | None = None
+    catalog_hash: str | None = None
     state: ActionPlanState
     disposition: Disposition
     actions: list[ActionProposal] = Field(default_factory=list)
@@ -325,6 +336,10 @@ def compute_action_plan_hash(plan: ActionPlan | dict[str, Any]) -> str:
         "workflow_plan_id": str(data.get("workflow_plan_id")),
         "workflow_key": data.get("workflow_key"),
         "workflow_version": data.get("workflow_version"),
+        "source_service_id": data.get("source_service_id"),
+        "service_binding_key": data.get("service_binding_key"),
+        "service_binding_version": data.get("service_binding_version"),
+        "catalog_hash": data.get("catalog_hash"),
         "disposition": data.get("disposition"),
         "actions": data.get("actions", []),
     }

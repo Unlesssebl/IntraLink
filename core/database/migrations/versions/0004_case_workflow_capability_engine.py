@@ -54,6 +54,93 @@ def upgrade() -> None:
         op.create_index(f"ix_case_decisions_{column}", "case_decisions", [column])
 
     op.create_table(
+        "service_catalog_versions",
+        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("version", sa.Integer(), nullable=False),
+        sa.Column("catalog_hash", sa.String(length=64), nullable=False),
+        sa.Column("fetched_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("source", sa.String(length=64), nullable=False),
+        sa.Column("validation_state", sa.String(length=32), nullable=False),
+        sa.Column("is_active", sa.Boolean(), server_default="false", nullable=False),
+        *_timestamps(),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("version"),
+        sa.UniqueConstraint("catalog_hash"),
+    )
+    for column in ("version", "catalog_hash", "validation_state", "is_active"):
+        op.create_index(f"ix_service_catalog_versions_{column}", "service_catalog_versions", [column])
+    op.create_table(
+        "service_catalog_entries",
+        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("catalog_version_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("service_id", sa.Integer(), nullable=False),
+        sa.Column("service_path", sa.Text(), nullable=False),
+        sa.Column("parent_service_id", sa.Integer(), nullable=True),
+        sa.Column("task_type_id", sa.Integer(), nullable=True),
+        sa.Column("is_active", sa.Boolean(), nullable=False),
+        sa.Column("form_metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("field_metadata_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("catalog_hash", sa.String(length=64), nullable=False),
+        *_timestamps(),
+        sa.ForeignKeyConstraint(["catalog_version_id"], ["service_catalog_versions.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("catalog_version_id", "service_id", name="uq_service_catalog_entry_version_service"),
+    )
+    for column in ("catalog_version_id", "service_id", "task_type_id", "is_active", "catalog_hash"):
+        op.create_index(f"ix_service_catalog_entries_{column}", "service_catalog_entries", [column])
+    op.create_table(
+        "service_route_bindings",
+        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("key", sa.String(length=64), nullable=False),
+        sa.Column("version", sa.String(length=32), nullable=False),
+        sa.Column("service_ids_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("allowed_case_types_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("default_case_type", sa.String(length=64), nullable=True),
+        sa.Column("allowed_workflows_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("allowed_capabilities_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("required_task_type_id", sa.Integer(), nullable=True),
+        sa.Column("required_fields_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("redirect_strategy", sa.String(length=32), nullable=False),
+        sa.Column("risk", sa.String(length=16), nullable=False),
+        sa.Column("is_active", sa.Boolean(), server_default="false", nullable=False),
+        sa.Column("is_validated", sa.Boolean(), server_default="false", nullable=False),
+        sa.Column("catalog_hash", sa.String(length=64), nullable=False),
+        *_timestamps(),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("key", "version", "catalog_hash", name="uq_service_route_binding_key_version_catalog"),
+    )
+    for column in ("key", "is_active", "is_validated", "catalog_hash"):
+        op.create_index(f"ix_service_route_bindings_{column}", "service_route_bindings", [column])
+
+    op.create_table(
+        "service_compatibility_decisions",
+        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("task_id", sa.Integer(), nullable=False),
+        sa.Column("snapshot_hash", sa.String(length=64), nullable=False),
+        sa.Column("case_decision_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("source_service_id", sa.Integer(), nullable=True),
+        sa.Column("binding_key", sa.String(length=64), nullable=True),
+        sa.Column("binding_version", sa.String(length=32), nullable=True),
+        sa.Column("catalog_hash", sa.String(length=64), nullable=True),
+        sa.Column("state", sa.String(length=32), nullable=False),
+        sa.Column("decision_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        *_timestamps(),
+        sa.ForeignKeyConstraint(["case_decision_id"], ["case_decisions.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("case_decision_id"),
+    )
+    for column in (
+        "task_id",
+        "snapshot_hash",
+        "case_decision_id",
+        "source_service_id",
+        "binding_key",
+        "catalog_hash",
+        "state",
+    ):
+        op.create_index(f"ix_service_compatibility_decisions_{column}", "service_compatibility_decisions", [column])
+
+    op.create_table(
         "workflow_plans",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("case_decision_id", postgresql.UUID(as_uuid=True), nullable=False),
@@ -81,6 +168,10 @@ def upgrade() -> None:
         sa.Column("snapshot_hash", sa.String(length=64), nullable=False),
         sa.Column("workflow_key", sa.String(length=64), nullable=False),
         sa.Column("workflow_version", sa.String(length=32), nullable=False),
+        sa.Column("source_service_id", sa.Integer(), nullable=True),
+        sa.Column("service_binding_key", sa.String(length=64), nullable=True),
+        sa.Column("service_binding_version", sa.String(length=32), nullable=True),
+        sa.Column("catalog_hash", sa.String(length=64), nullable=True),
         sa.Column("state", sa.String(length=32), nullable=False),
         sa.Column("disposition", sa.String(length=32), nullable=False),
         sa.Column("plan_hash", sa.String(length=64), nullable=False),
@@ -94,10 +185,79 @@ def upgrade() -> None:
         sa.UniqueConstraint("plan_hash"),
     )
     for column in (
-        "workflow_plan_id", "case_decision_id", "task_id", "snapshot_hash",
-        "workflow_key", "state", "disposition", "plan_hash",
+        "workflow_plan_id",
+        "case_decision_id",
+        "task_id",
+        "snapshot_hash",
+        "workflow_key",
+        "state",
+        "disposition",
+        "plan_hash",
+        "source_service_id",
+        "service_binding_key",
+        "catalog_hash",
     ):
         op.create_index(f"ix_action_plans_{column}", "action_plans", [column])
+
+    op.create_table(
+        "redirect_plans",
+        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("task_id", sa.Integer(), nullable=False),
+        sa.Column("snapshot_hash", sa.String(length=64), nullable=False),
+        sa.Column("case_decision_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("compatibility_decision_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("source_service_id", sa.Integer(), nullable=False),
+        sa.Column("target_service_id", sa.Integer(), nullable=False),
+        sa.Column("target_service_path", sa.Text(), nullable=False),
+        sa.Column("strategy", sa.String(length=32), nullable=False),
+        sa.Column("template_key", sa.String(length=64), nullable=False),
+        sa.Column("rendered_public_comment", sa.Text(), nullable=False),
+        sa.Column("catalog_hash", sa.String(length=64), nullable=False),
+        sa.Column("binding_key", sa.String(length=64), nullable=False),
+        sa.Column("binding_version", sa.String(length=32), nullable=False),
+        sa.Column("plan_hash", sa.String(length=64), nullable=False),
+        sa.Column("state", sa.String(length=32), nullable=False),
+        sa.Column("approval_state", sa.String(length=32), nullable=False),
+        sa.Column("execution_state", sa.String(length=32), nullable=False),
+        sa.Column("version", sa.Integer(), server_default="1", nullable=False),
+        sa.Column("plan_json", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("approved_by", sa.String(length=100), nullable=True),
+        sa.Column("approved_at", sa.DateTime(timezone=True), nullable=True),
+        *_timestamps(),
+        sa.ForeignKeyConstraint(["case_decision_id"], ["case_decisions.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["compatibility_decision_id"], ["service_compatibility_decisions.id"], ondelete="CASCADE"
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("plan_hash"),
+    )
+    for column in (
+        "task_id",
+        "snapshot_hash",
+        "case_decision_id",
+        "compatibility_decision_id",
+        "target_service_id",
+        "catalog_hash",
+        "plan_hash",
+        "state",
+    ):
+        op.create_index(f"ix_redirect_plans_{column}", "redirect_plans", [column])
+    op.create_table(
+        "redirect_feedback",
+        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("redirect_plan_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("task_id", sa.Integer(), nullable=False),
+        sa.Column("operator_username", sa.String(length=100), nullable=False),
+        sa.Column("verdict", sa.String(length=32), nullable=False),
+        sa.Column("selected_target_service_id", sa.Integer(), nullable=True),
+        sa.Column("reason_tag", sa.String(length=64), nullable=True),
+        sa.Column("notes", sa.Text(), nullable=True),
+        *_timestamps(),
+        sa.ForeignKeyConstraint(["redirect_plan_id"], ["redirect_plans.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    for column in ("redirect_plan_id", "task_id", "verdict"):
+        op.create_index(f"ix_redirect_feedback_{column}", "redirect_feedback", [column])
 
     op.create_table(
         "action_preflights",
@@ -119,8 +279,15 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     for column in (
-        "action_plan_id", "task_id", "action_id", "capability_key", "snapshot_hash",
-        "plan_hash", "params_hash", "status", "expires_at",
+        "action_plan_id",
+        "task_id",
+        "action_id",
+        "capability_key",
+        "snapshot_hash",
+        "plan_hash",
+        "params_hash",
+        "status",
+        "expires_at",
     ):
         op.create_index(f"ix_action_preflights_{column}", "action_preflights", [column])
 
@@ -225,14 +392,28 @@ def downgrade() -> None:
     op.drop_table("execution_feedback")
     op.drop_table("plan_feedback")
     op.drop_table("case_feedback")
+    op.drop_table("redirect_feedback")
+    op.drop_table("redirect_plans")
     for column in ("snapshot_hash", "plan_hash", "params_hash", "capability_key", "action_id", "action_plan_id"):
         op.drop_index(f"ix_commands_{column}", table_name="commands")
     op.drop_constraint("fk_commands_action_plan_id", "commands", type_="foreignkey")
-    for column in ("snapshot_hash", "plan_hash", "params_hash", "sequence_no", "capability_key", "action_id", "action_plan_id"):
+    for column in (
+        "snapshot_hash",
+        "plan_hash",
+        "params_hash",
+        "sequence_no",
+        "capability_key",
+        "action_id",
+        "action_plan_id",
+    ):
         op.drop_column("commands", column)
     op.drop_table("action_preflights")
     op.drop_table("action_plans")
     op.drop_table("workflow_plans")
+    op.drop_table("service_compatibility_decisions")
+    op.drop_table("service_route_bindings")
+    op.drop_table("service_catalog_entries")
+    op.drop_table("service_catalog_versions")
     op.drop_table("case_decisions")
 
     # Restore the exact 0003 schema.

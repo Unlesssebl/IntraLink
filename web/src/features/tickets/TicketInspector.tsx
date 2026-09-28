@@ -63,7 +63,6 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
     takeMutation,
     resolveMutation,
     duplicateMutation,
-    redirectMutation,
     addCommentMutation,
   } = useTicketActions();
 
@@ -71,7 +70,6 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
     takeMutation.isPending ||
     resolveMutation.isPending ||
     duplicateMutation.isPending ||
-    redirectMutation.isPending ||
     addCommentMutation.isPending;
 
   // Lightbox preview for screenshots
@@ -110,12 +108,6 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
     executeAction(
       () => duplicateMutation.mutateAsync({ id: ticketId!, masterId, comment }),
       "Ошибка отмены дубликата"
-    );
-
-  const handleRedirect = (serviceId: number, comment: string) =>
-    executeAction(
-      () => redirectMutation.mutateAsync({ id: ticketId!, serviceId, comment }),
-      "Ошибка перенаправления"
     );
 
   const handleAddComment = (comment: string, isPrivate: boolean) =>
@@ -528,7 +520,6 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
             onTake={handleTake}
             onResolve={handleResolve}
             onDuplicate={handleDuplicate}
-            onRedirect={handleRedirect}
             onAddComment={handleAddComment}
             isBusy={isBusy}
             commentDraft={commentDraft}

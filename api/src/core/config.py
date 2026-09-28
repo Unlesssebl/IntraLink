@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     SSL_VERIFY: bool = False
     BOT_USER_ID: Optional[int] = None
 
+    # Corporate IntraService logins allowed to manage encrypted service credentials.
+    ADMIN_LOGINS: Union[List[str], str] = []
+
     # Security & CORS
     CORS_ORIGINS: Union[List[str], str] = ["http://localhost:3000", "http://localhost:5173"]
     JWT_SECRET: str = "dev-secret-key-change-in-production-must-be-long"
@@ -52,6 +55,13 @@ class Settings(BaseSettings):
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
         if isinstance(v, str):
             return [i.strip() for i in v.split(",") if i.strip()]
+        return v
+
+    @field_validator("ADMIN_LOGINS", mode="before")
+    @classmethod
+    def assemble_admin_logins(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str):
+            return [item.strip() for item in v.split(",") if item.strip()]
         return v
 
     @field_validator("INTRASERVICE_URL")

@@ -1,11 +1,13 @@
 """ADR 0006 API service vertical slice."""
 
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from api.src.features.autopilot.schemas import (
@@ -13,6 +15,8 @@ from api.src.features.autopilot.schemas import (
     CorrectActionPlanRequest,
     CorrectCaseDecisionRequest,
     CorrectedActionRequest,
+    CorrectTargetServiceRequest,
+    RedirectPlanRequest,
 )
 from api.src.features.autopilot.service import AutomationService
 from core.automation.capabilities import (
@@ -29,6 +33,13 @@ from core.automation.capabilities import (
 from core.automation.case_router import CaseRouter
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.database.base import Base
+from core.database.models import (
+    ServiceCatalogEntryRecord,
+    ServiceCatalogVersionRecord,
+    ServiceRouteBindingRecord,
+    ServiceRoutingFeedbackRecord,
+)
+from core.intraservice.auth import ServiceAuthCredentials, ServiceAuthError
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
 
 
@@ -36,9 +47,7 @@ class _Executor:
     async def preflight(self, params: dict[str, Any]) -> CapabilityPreflight:
         return CapabilityPreflight(status=PreflightStatus.passed)
 
-    async def execute(
-        self, params: dict[str, Any], *, context: CapabilityExecutionContext
-    ) -> CapabilityExecution:
+    async def execute(self, params: dict[str, Any], *, context: CapabilityExecutionContext) -> CapabilityExecution:
         return CapabilityExecution(outcome=CapabilityOutcome.succeeded)
 
 
@@ -47,7 +56,109 @@ async def session_factory() -> AsyncGenerator[async_sessionmaker[AsyncSession], 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-    yield async_sessionmaker(engine, expire_on_commit=False)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    catalog_hash = "a" * 64
+    async with factory() as session:
+        version = ServiceCatalogVersionRecord(
+            version=1,
+            catalog_hash=catalog_hash,
+            fetched_at=datetime.now(UTC),
+            source="test",
+            validation_state="validated",
+            is_active=True,
+        )
+        session.add(version)
+        await session.flush()
+        session.add(
+            ServiceCatalogEntryRecord(
+                catalog_version_id=version.id,
+                service_id=63,
+                service_path="WLAN → Доступ",
+                is_active=True,
+                form_metadata_json={},
+                field_metadata_json=[],
+                catalog_hash=catalog_hash,
+            )
+        )
+        session.add(
+            ServiceCatalogEntryRecord(
+                catalog_version_id=version.id,
+                service_id=55,
+                service_path="05. Directum → Пользователь Directum",
+                task_type_id=1018,
+                is_active=True,
+                form_metadata_json={},
+                field_metadata_json=[],
+                catalog_hash=catalog_hash,
+            )
+        )
+        session.add(
+            ServiceCatalogEntryRecord(
+                catalog_version_id=version.id,
+                service_id=900001,
+                service_path="01. Учётные записи → Создание пользователя сети",
+                task_type_id=1001,
+                is_active=True,
+                form_metadata_json={},
+                field_metadata_json=[],
+                catalog_hash=catalog_hash,
+            )
+        )
+        session.add(
+            ServiceRouteBindingRecord(
+                key="wlan_access",
+                version="test",
+                service_ids_json=[63],
+                allowed_case_types_json=["wireless_access_request"],
+                default_case_type="wireless_access_request",
+                allowed_workflows_json=["wireless_access_workflow"],
+                allowed_capabilities_json=["add_wlan_group_member"],
+                required_fields_json=[],
+                redirect_strategy="cancel_and_recreate",
+                risk="medium",
+                is_active=True,
+                is_validated=True,
+                catalog_hash=catalog_hash,
+            )
+        )
+        session.add(
+            ServiceRouteBindingRecord(
+                key="directum_user",
+                version="test",
+                service_ids_json=[55],
+                allowed_case_types_json=["knowledge_request"],
+                default_case_type="knowledge_request",
+                allowed_workflows_json=["knowledge_consultation_workflow"],
+                allowed_capabilities_json=[],
+                required_task_type_id=1018,
+                required_fields_json=[],
+                redirect_strategy="manual",
+                risk="medium",
+                is_active=True,
+                is_validated=True,
+                catalog_hash=catalog_hash,
+            )
+        )
+        session.add(
+            ServiceRouteBindingRecord(
+                key="ad_account_creation",
+                version="test",
+                service_ids_json=[900001],
+                allowed_case_types_json=["employee_onboarding"],
+                default_case_type="employee_onboarding",
+                allowed_workflows_json=["employee_onboarding_workflow"],
+                allowed_capabilities_json=["create_ad_user"],
+                required_task_type_id=1001,
+                required_fields_json=[],
+                redirect_strategy="cancel_and_recreate",
+                risk="high",
+                is_active=True,
+                is_validated=True,
+                catalog_hash=catalog_hash,
+            )
+        )
+        await session.commit()
+    yield factory
     await engine.dispose()
 
 
@@ -259,3 +370,174 @@ async def test_case_correction_cancels_the_previous_action_plan(session_factory)
             )
     assert exc.value.status_code == 409
     assert exc.value.detail == "action_plan_not_ready"
+
+
+async def test_redirect_plan_approval_comments_before_confirmed_cancel(session_factory) -> None:
+    wrong_service = TaskDTO(
+        Id=62002,
+        Name="Новый сотрудник",
+        Description="Создать доменную учетную запись новому сотруднику",
+        ServiceId=55,
+        ServiceName="Пользователь Directum",
+        TaskTypeId=1018,
+        StatusId=2,
+        StatusName="В работе",
+        ExecutorIds="999",
+    )
+    cancelled = wrong_service.model_copy(update={"status_id": 30, "status_name": "Отменена"})
+    client = AsyncMock()
+    client.get_task.return_value = wrong_service
+    client.get_task_lifetime.return_value = []
+    service = _service(client)
+    async with session_factory() as session:
+        automation = await service.analyze(session, ticket_id=62002, auth_b64="dGVzdDp0ZXN0", force=False)
+    assert automation.service_compatibility.state == "mismatch"
+    assert automation.action_plan is None
+    assert automation.redirect_plan is not None
+    assert automation.redirect_plan.target_service_id == 900001
+
+    client.get_task.side_effect = [wrong_service, cancelled]
+    client.add_task_comment.return_value = {"ok": True}
+    client.update_task.return_value = {"ok": True}
+    request = RedirectPlanRequest(
+        redirect_plan_id=automation.redirect_plan.id,
+        plan_hash=automation.redirect_plan.plan_hash,
+        snapshot_hash=automation.snapshot_hash,
+        version=automation.redirect_plan.version,
+    )
+    async with session_factory() as session:
+        result = await service.approve_redirect(
+            session,
+            ticket_id=62002,
+            request=request,
+            operator="operator",
+            auth_b64="dGVzdDp0ZXN0",
+        )
+        assert result.status == "succeeded"
+    client.add_task_comment.assert_awaited_once()
+    client.update_task.assert_awaited_once_with(task_id=62002, status_id=30, auth_b64="dGVzdDp0ZXN0")
+
+
+async def test_operator_can_correct_target_service_without_granting_execution(session_factory) -> None:
+    wrong_service = TaskDTO(
+        Id=62004,
+        Name="Новый сотрудник",
+        Description="Создать доменную учетную запись новому сотруднику",
+        ServiceId=55,
+        ServiceName="Пользователь Directum",
+        TaskTypeId=1018,
+        StatusId=2,
+        StatusName="В работе",
+    )
+    client = AsyncMock()
+    client.get_task.return_value = wrong_service
+    client.get_task_lifetime.return_value = []
+    service = _service(client)
+    async with session_factory() as session:
+        initial = await service.analyze(session, ticket_id=62004, auth_b64="dGVzdDp0ZXN0", force=False)
+        corrected = await service.correct_target_service(
+            session,
+            ticket_id=62004,
+            request=CorrectTargetServiceRequest(
+                compatibility_decision_id=initial.service_compatibility.id,
+                snapshot_hash=initial.snapshot_hash,
+                target_service_id=900001,
+            ),
+            operator="operator",
+            auth_b64="dGVzdDp0ZXN0",
+        )
+        feedback = await session.scalar(
+            select(ServiceRoutingFeedbackRecord).where(ServiceRoutingFeedbackRecord.task_id == 62004)
+        )
+
+    assert corrected.service_compatibility.target_service_id == 900001
+    assert corrected.service_compatibility.target_selection_method == "operator_confirmation"
+    assert corrected.service_compatibility.authorization_state == "not_authorized"
+    assert feedback is not None
+    assert feedback.selected_target_service_id == 900001
+
+
+@pytest.mark.asyncio
+async def test_auth_token_restores_saved_credentials_from_shared_vault() -> None:
+    bootstrap = AsyncMock()
+    bootstrap.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="c2VydmljZS5ib3Q6c2VjcmV0",
+        bot_user_id=42,
+        login="service.bot",
+    )
+    service = AutomationService(client=AsyncMock(), auth_bootstrap=bootstrap)
+    redis = AsyncMock()
+
+    with patch("api.src.features.autopilot.service.get_redis_client", return_value=redis):
+        token = await service._auth_token(None)
+
+    assert token == "c2VydmljZS5ib3Q6c2VjcmV0"
+    bootstrap.bootstrap_auth.assert_awaited_once()
+    call = bootstrap.bootstrap_auth.await_args
+    assert call.kwargs["client"] is service.client
+    assert call.kwargs["redis_client"] is redis
+    assert call.kwargs["session_factory"] is not None
+
+
+@pytest.mark.asyncio
+async def test_auth_token_returns_controlled_503_when_vault_is_empty() -> None:
+    bootstrap = AsyncMock()
+    bootstrap.bootstrap_auth.side_effect = ServiceAuthError("missing")
+    service = AutomationService(client=AsyncMock(), auth_bootstrap=bootstrap)
+
+    with patch("api.src.features.autopilot.service.get_redis_client", return_value=AsyncMock()):
+        with pytest.raises(HTTPException) as exc_info:
+            await service._auth_token(None)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "service_credentials_unavailable"
+
+
+async def test_redirect_partial_outcome_is_not_republished(session_factory) -> None:
+    wrong_service = TaskDTO(
+        Id=62003,
+        Name="Новый сотрудник",
+        Description="Создать доменную учетную запись новому сотруднику",
+        ServiceId=55,
+        ServiceName="Пользователь Directum",
+        TaskTypeId=1018,
+        StatusId=2,
+        StatusName="В работе",
+    )
+    client = AsyncMock()
+    client.get_task.return_value = wrong_service
+    client.get_task_lifetime.return_value = []
+    service = _service(client)
+    async with session_factory() as session:
+        automation = await service.analyze(session, ticket_id=62003, auth_b64="dGVzdDp0ZXN0", force=False)
+    assert automation.redirect_plan is not None
+    request = RedirectPlanRequest(
+        redirect_plan_id=automation.redirect_plan.id,
+        plan_hash=automation.redirect_plan.plan_hash,
+        snapshot_hash=automation.snapshot_hash,
+        version=automation.redirect_plan.version,
+    )
+    client.add_task_comment.return_value = {"ok": True}
+    client.update_task.side_effect = RuntimeError("status transport failed")
+    async with session_factory() as session:
+        result = await service.approve_redirect(
+            session,
+            ticket_id=62003,
+            request=request,
+            operator="operator",
+            auth_b64="dGVzdDp0ZXN0",
+        )
+    assert result.status == "needs_review"
+    assert result.execution_state == "partial_unknown"
+
+    async with session_factory() as session:
+        with pytest.raises(HTTPException) as exc:
+            await service.approve_redirect(
+                session,
+                ticket_id=62003,
+                request=request,
+                operator="operator",
+                auth_b64="dGVzdDp0ZXN0",
+            )
+    assert exc.value.status_code == 409
+    client.add_task_comment.assert_awaited_once()

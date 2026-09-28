@@ -1,0 +1,2 @@
+{"id":"ad-success","capability_key":"create_ad_user","authorized_service":true,"outcome":"succeeded"}
+{"id":"printer-unknown","capability_key":"install_printer","authorized_service":true,"outcome":"unknown_outcome"}

@@ -22,16 +22,27 @@ export function getStoredUserId(): string | null {
   return localStorage.getItem("intralink_user_id");
 }
 
-export function setStoredAuth(token: string, login?: string, userId?: number | string): void {
+export function getStoredIsAdmin(): boolean {
+  return localStorage.getItem("intralink_is_admin") === "true";
+}
+
+export function setStoredAuth(
+  token: string,
+  login?: string,
+  userId?: number | string,
+  isAdmin: boolean = false
+): void {
   localStorage.setItem("intralink_auth_b64", token);
   if (login) localStorage.setItem("intralink_user_login", login);
   if (userId) localStorage.setItem("intralink_user_id", String(userId));
+  localStorage.setItem("intralink_is_admin", String(isAdmin));
 }
 
 export function clearStoredAuth(): void {
   localStorage.removeItem("intralink_auth_b64");
   localStorage.removeItem("intralink_user_login");
   localStorage.removeItem("intralink_user_id");
+  localStorage.removeItem("intralink_is_admin");
 }
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -274,13 +285,6 @@ export const ticketsApi = {
       is_private: false,
     }),
 
-  redirect: (id: number, newServiceId: number, comment: string) =>
-    ticketsApi.update(id, {
-      status_id: 30,
-      comment: `[Перенаправлено в сервис ID ${newServiceId}] ${comment}`,
-      is_private: false,
-    }),
-
   getServices: (signal?: AbortSignal) =>
     request<ServiceItem[]>("/tickets/services/catalog", { signal }),
 
@@ -327,9 +331,41 @@ export const reportsApi = {
 
 export const authApi = {
   login: (login: string, password: string) =>
-    request<{ status: string; auth_b64: string; user_id: number; login: string }>("/auth/login", {
+    request<{ status: string; auth_b64: string; user_id: number; login: string; is_admin: boolean }>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ login, password }),
+    }),
+};
+
+export interface ServiceCredentialsStatus {
+  configured: boolean;
+  encryption_ready: boolean;
+  login: string | null;
+  bot_user_id: number | null;
+  updated_at: string | null;
+  redis_cached: boolean;
+  catalog: {
+    available: boolean;
+    version: number | null;
+    entries: number;
+    active_bindings: number;
+  };
+}
+
+export interface ServiceCredentialsUpdateResponse {
+  status: ServiceCredentialsStatus;
+  catalog_sync: "succeeded" | "failed" | "skipped";
+  catalog_sync_error: string | null;
+}
+
+export const adminApi = {
+  getServiceCredentialsStatus: (signal?: AbortSignal) =>
+    request<ServiceCredentialsStatus>("/admin/service-credentials/status", { signal }),
+
+  updateServiceCredentials: (login: string, password: string, syncCatalog: boolean) =>
+    request<ServiceCredentialsUpdateResponse>("/admin/service-credentials", {
+      method: "PUT",
+      body: JSON.stringify({ login, password, sync_catalog: syncCatalog }),
     }),
 };
 

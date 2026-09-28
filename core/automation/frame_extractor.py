@@ -79,6 +79,7 @@ class CaseFrameExtractor:
             assertions=self._deduplicate(assertions),
             entities={key: value for key, value in snapshot.entities.items() if not self._is_secret_key(key)},
             degraded_components=degraded,
+            llm_attempted=include_llm and self.transport is not None,
         )
 
     def _deterministic_assertions(self, snapshot: TicketSnapshot) -> list[CaseAssertion]:
@@ -103,8 +104,15 @@ class CaseFrameExtractor:
             "stuck_print_queue": (AssertionKind.symptom, ("зависли документы", "очередь печати", "зависла печать")),
             "wrong_default_printer": (AssertionKind.symptom, ("не тот принтер", "по умолчанию", "основной принтер")),
             "connect_printer": (AssertionKind.intent, ("подключить принтер", "установить принтер", "добавить принтер")),
-            "create_user": (AssertionKind.intent, ("создать пользователя", "создать учетную запись", "новый сотрудник")),
+            "create_user": (
+                AssertionKind.intent,
+                ("создать пользователя", "создать учетную запись", "новый сотрудник"),
+            ),
             "revoke_access": (AssertionKind.intent, ("заблокировать учетную запись", "закрыть доступ", "увольнение")),
+            "install_software": (
+                AssertionKind.intent,
+                ("установить программу", "установить по", "настроить программу", "установка программы"),
+            ),
         }
         for source_ref, text in targets:
             lowered = (text or "").casefold().replace("ё", "е")
@@ -151,7 +159,14 @@ class CaseFrameExtractor:
             raise ValueError("Invalid extractor response")
         assertions: list[CaseAssertion] = []
         for item in items:
-            if not isinstance(item, dict) or set(item) - {"kind", "key", "value", "source_ref", "text_span", "is_negated"}:
+            if not isinstance(item, dict) or set(item) - {
+                "kind",
+                "key",
+                "value",
+                "source_ref",
+                "text_span",
+                "is_negated",
+            }:
                 raise ValueError("Invalid extractor assertion schema")
             source_ref = str(item.get("source_ref", ""))
             span = str(item.get("text_span", ""))

@@ -16,6 +16,7 @@ from core.automation.contracts import (
     CaseFrame,
     TicketSnapshot,
 )
+from core.automation.service_routing import TargetServiceResolution
 
 
 class CaseVerifier(Protocol):
@@ -42,17 +43,18 @@ class CaseRouter:
         frame: CaseFrame,
         *,
         allow_verifier: bool = True,
+        target_resolution: TargetServiceResolution | None = None,
     ) -> CaseDecision:
-        evidence = self._collect_evidence(snapshot, frame)
+        evidence = self._collect_evidence(snapshot, frame, target_resolution)
         grouped: dict[str, list[CaseEvidence]] = defaultdict(list)
         for item in evidence:
             grouped[item.candidate_key].append(item)
         candidates = [
             CaseCandidate(
                 case_type=key,
-                case_type_version=(self.profiles.get(key) or CaseTypeProfile(
-                    case_type=key, title=key, intent_summary=key
-                )).version,
+                case_type_version=(
+                    self.profiles.get(key) or CaseTypeProfile(case_type=key, title=key, intent_summary=key)
+                ).version,
                 evidence_ids=sorted(item.id for item in items if item.polarity == "supports"),
                 contradiction_ids=sorted(item.id for item in items if item.polarity == "contradicts"),
             )
@@ -147,7 +149,9 @@ class CaseRouter:
                 degradation_reason="case_verifier_degraded",
             )
         candidate_keys = {item.case_type for item in candidates}
-        if set(verdicts) != candidate_keys or any(value not in {"supported", "contradicted", "insufficient"} for value in verdicts.values()):
+        if set(verdicts) != candidate_keys or any(
+            value not in {"supported", "contradicted", "insufficient"} for value in verdicts.values()
+        ):
             return self._decision(
                 snapshot,
                 frame,
@@ -183,26 +187,66 @@ class CaseRouter:
             trace=trace,
         )
 
-    def _collect_evidence(self, snapshot: TicketSnapshot, frame: CaseFrame) -> list[CaseEvidence]:
+    def _collect_evidence(
+        self,
+        snapshot: TicketSnapshot,
+        frame: CaseFrame,
+        target_resolution: TargetServiceResolution | None = None,
+    ) -> list[CaseEvidence]:
         evidence: dict[str, CaseEvidence] = {}
         targets = [("title", snapshot.title), ("description", snapshot.description)]
         targets.extend((f"comment:{item.id}", item.text) for item in snapshot.public_comments if not item.is_private)
+        routed_service_id = (
+            target_resolution.selected_service_id
+            if target_resolution is not None and target_resolution.selected_service_id is not None
+            else snapshot.service_id
+        )
+        routed_service_name = (
+            target_resolution.selected_service_path
+            if target_resolution is not None and target_resolution.selected_service_path
+            else snapshot.service_name
+        )
+        service_source = "target_service_id" if target_resolution is not None else "service_id"
+        service_name_source = "target_service_path" if target_resolution is not None else "service_name"
         for profile in self.profiles.list_all():
-            if snapshot.service_id is not None and snapshot.service_id in profile.exact_service_ids:
-                item = self._evidence(snapshot, profile.case_type, "service_id", "supports", "exact", f"service_id:{snapshot.service_id}")
+            if routed_service_id is not None and routed_service_id in profile.exact_service_ids:
+                item = self._evidence(
+                    snapshot,
+                    profile.case_type,
+                    service_source,
+                    "supports",
+                    "exact",
+                    f"{service_source}:{routed_service_id}",
+                )
                 evidence[item.id] = item
-            service_name = snapshot.service_name or ""
+            service_name = routed_service_name or ""
             for term in profile.service_name_terms:
                 span = self._find_span(service_name, term)
                 if span:
-                    item = self._evidence(snapshot, profile.case_type, "service_name", "supports", "strong", f"service_name:{term}", span)
+                    item = self._evidence(
+                        snapshot,
+                        profile.case_type,
+                        service_name_source,
+                        "supports",
+                        "strong",
+                        f"{service_name_source}:{term}",
+                        span,
+                    )
                     evidence[item.id] = item
                     break
             for phrase in profile.lexical_phrases:
                 for source_ref, text in targets:
                     span = self._find_span(text, phrase)
                     if span:
-                        item = self._evidence(snapshot, profile.case_type, source_ref.split(":")[0], "supports", "strong", source_ref, span)
+                        item = self._evidence(
+                            snapshot,
+                            profile.case_type,
+                            source_ref.split(":")[0],
+                            "supports",
+                            "strong",
+                            source_ref,
+                            span,
+                        )
                         evidence[item.id] = item
         for assertion in frame.assertions:
             for profile in self.profiles.list_all():
@@ -228,7 +272,9 @@ class CaseRouter:
             contradictions = [by_id[item_id] for item_id in candidate.contradiction_ids]
             if contradictions:
                 continue
-            has_exact = any(item.source == "service_id" and item.strength == "exact" for item in supporting)
+            has_exact = any(
+                item.source in {"service_id", "target_service_id"} and item.strength == "exact" for item in supporting
+            )
             distinct_sources = {item.source for item in supporting if item.source != "semantic"}
             if has_exact or len(distinct_sources) >= 2:
                 direct.append(candidate.case_type)

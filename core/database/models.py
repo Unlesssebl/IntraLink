@@ -209,6 +209,162 @@ class CaseDecisionRecord(Base, TimestampMixin):
         super().__init__(**kwargs)
 
 
+class ServiceCatalogVersionRecord(Base, TimestampMixin):
+    """Atomic, immutable snapshot of the read-only IntraService service catalog."""
+
+    __tablename__ = "service_catalog_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, unique=True, index=True)
+    catalog_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    validation_state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+
+
+class ServiceCatalogEntryRecord(Base, TimestampMixin):
+    __tablename__ = "service_catalog_entries"
+    __table_args__ = (
+        Index("uq_service_catalog_entry_version_service", "catalog_version_id", "service_id", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    catalog_version_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("service_catalog_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    service_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    service_path: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_service_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    task_type_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, index=True)
+    form_metadata_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
+    field_metadata_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
+    )
+    catalog_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+
+class ServiceRouteBindingRecord(Base, TimestampMixin):
+    __tablename__ = "service_route_bindings"
+    __table_args__ = (
+        Index("uq_service_route_binding_key_version_catalog", "key", "version", "catalog_hash", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    service_ids_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
+    )
+    allowed_case_types_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
+    )
+    default_case_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    allowed_workflows_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
+    )
+    allowed_capabilities_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
+    )
+    required_task_type_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    required_fields_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
+    )
+    redirect_strategy: Mapped[str] = mapped_column(String(32), nullable=False)
+    risk: Mapped[str] = mapped_column(String(16), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    is_validated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    catalog_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+
+class ServiceCompatibilityDecisionRecord(Base, TimestampMixin):
+    __tablename__ = "service_compatibility_decisions"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    case_decision_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("case_decisions.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    source_service_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    binding_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    binding_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    catalog_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    decision_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
+
+
+class ServiceRoutingFeedbackRecord(Base, TimestampMixin):
+    __tablename__ = "service_routing_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    compatibility_decision_id: Mapped[uuid.UUID] = mapped_column(
+        GUID,
+        ForeignKey("service_compatibility_decisions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    operator_username: Mapped[str] = mapped_column(String(100), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    selected_target_service_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    reason_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class RedirectPlanRecord(Base, TimestampMixin):
+    __tablename__ = "redirect_plans"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    case_decision_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("case_decisions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    compatibility_decision_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("service_compatibility_decisions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_service_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_service_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    target_service_path: Mapped[str] = mapped_column(Text, nullable=False)
+    strategy: Mapped[str] = mapped_column(String(32), nullable=False)
+    template_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    rendered_public_comment: Mapped[str] = mapped_column(Text, nullable=False)
+    catalog_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    binding_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    approval_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    execution_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    plan_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
+    approved_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RedirectFeedbackRecord(Base, TimestampMixin):
+    __tablename__ = "redirect_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    redirect_plan_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("redirect_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    operator_username: Mapped[str] = mapped_column(String(100), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    selected_target_service_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    reason_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
 class WorkflowPlanRecord(Base, TimestampMixin):
     """Versioned business-process state derived from a CaseDecision."""
 
@@ -251,6 +407,10 @@ class ActionPlanRecord(Base, TimestampMixin):
     snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     workflow_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     workflow_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_service_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    service_binding_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    service_binding_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    catalog_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     disposition: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     plan_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
@@ -281,9 +441,7 @@ class ActionPreflightRecord(Base, TimestampMixin):
     plan_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     params_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    checks_json: Mapped[List[Any]] = mapped_column(
-        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
-    )
+    checks_json: Mapped[List[Any]] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list)
     details_json: Mapped[Dict[str, Any]] = mapped_column(
         JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
     )
@@ -407,7 +565,10 @@ def sanitize_secrets(data: Any) -> Any:
         sanitized = {}
         for k, v in data.items():
             k_lower = str(k).lower()
-            if any(secret_kw in k_lower for secret_kw in ("password", "token", "secret", "auth_b64", "pass", "field1489", "1489")):
+            if any(
+                secret_kw in k_lower
+                for secret_kw in ("password", "token", "secret", "auth_b64", "pass", "field1489", "1489")
+            ):
                 sanitized[k] = "***REDACTED***"
             else:
                 sanitized[k] = sanitize_secrets(v)
@@ -448,6 +609,37 @@ def _sanitize_workflow_plan_listener(mapper: Any, connection: Any, target: Workf
 @event.listens_for(ActionPlanRecord, "before_update")
 def _sanitize_action_plan_listener(mapper: Any, connection: Any, target: ActionPlanRecord) -> None:
     target.plan_json = sanitize_secrets(target.plan_json or {})
+
+
+@event.listens_for(ServiceCompatibilityDecisionRecord, "before_insert")
+@event.listens_for(ServiceCompatibilityDecisionRecord, "before_update")
+def _sanitize_compatibility_listener(mapper: Any, connection: Any, target: ServiceCompatibilityDecisionRecord) -> None:
+    target.decision_json = sanitize_secrets(target.decision_json or {})
+
+
+@event.listens_for(ServiceRoutingFeedbackRecord, "before_insert")
+@event.listens_for(ServiceRoutingFeedbackRecord, "before_update")
+def _sanitize_service_routing_feedback_listener(
+    mapper: Any,
+    connection: Any,
+    target: ServiceRoutingFeedbackRecord,
+) -> None:
+    if target.notes:
+        target.notes = sanitize_secret_text(target.notes)
+
+
+@event.listens_for(RedirectPlanRecord, "before_insert")
+@event.listens_for(RedirectPlanRecord, "before_update")
+def _sanitize_redirect_plan_listener(mapper: Any, connection: Any, target: RedirectPlanRecord) -> None:
+    target.plan_json = sanitize_secrets(target.plan_json or {})
+    target.rendered_public_comment = sanitize_secret_text(target.rendered_public_comment)
+
+
+@event.listens_for(RedirectFeedbackRecord, "before_insert")
+@event.listens_for(RedirectFeedbackRecord, "before_update")
+def _sanitize_redirect_feedback_listener(mapper: Any, connection: Any, target: RedirectFeedbackRecord) -> None:
+    if target.notes:
+        target.notes = sanitize_secret_text(target.notes)
 
 
 @event.listens_for(ActionPreflightRecord, "before_insert")

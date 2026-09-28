@@ -6,6 +6,19 @@ from core.intraservice.client import CircuitBreaker, CircuitState, IntraServiceC
 from core.intraservice.exceptions import CircuitBreakerOpenError
 
 
+def test_client_reads_ssl_verify_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("SSL_VERIFY", "false")
+    assert IntraServiceClient().verify_ssl is False
+
+    monkeypatch.setenv("SSL_VERIFY", "true")
+    assert IntraServiceClient().verify_ssl is True
+
+
+def test_explicit_ssl_verify_overrides_environment(monkeypatch) -> None:
+    monkeypatch.setenv("SSL_VERIFY", "false")
+    assert IntraServiceClient(verify_ssl=True).verify_ssl is True
+
+
 def test_base_url_normalization_no_duplicate_api():
     """Verify GEMINI.md rule: base URL must always cleanly end with /api without duplication."""
     c1 = IntraServiceClient(base_url="https://servicedesk-pub.corporate.loc/api")

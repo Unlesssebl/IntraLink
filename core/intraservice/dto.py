@@ -261,6 +261,9 @@ class ServiceDTO(BaseModel):
     parent_id: Optional[int] = Field(default=None, alias="ParentId")
     is_active: bool = Field(default=True, alias="IsActive")
     description: Optional[str] = Field(default=None, alias="Description")
+    task_type_id: Optional[int] = Field(default=None, alias="TaskTypeId")
+    form_metadata: Dict[str, Any] = Field(default_factory=dict, alias="FormMetadata")
+    fields: List[Dict[str, Any]] = Field(default_factory=list, alias="Fields")
 
 
 class TaskStatusDTO(BaseModel):

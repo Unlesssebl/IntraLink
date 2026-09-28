@@ -4,6 +4,11 @@
 
 - `intake.jsonl`: доступный на входе снимок заявки → эталонный `CaseDecision`.
 - `action_selection.jsonl`: подтверждённые факты → эталонные workflow, disposition и capabilities.
+- `compatibility.jsonl`: CaseDecision + source service → ServiceCompatibilityDecision.
+- `redirect_target.jsonl`: CaseDecision + source service + constrained candidates → target service.
+- `execution_feedback.jsonl`: подтверждённый результат исполнения → execution feedback/security metric.
+
+Service ID `900001` в offline-наборах является явно синтетическим тестовым идентификатором и не описывает фактический каталог IntraService. Фактические bindings активируются только после read-only синхронизации каталога.
 
 В набор запрещено помещать пароли, токены, закрытые комментарии и сведения, появившиеся после принятия соответствующего решения. Новая версия набора создаётся в новом каталоге и после закрытой приёмки атомарно заменяет активную версию движка.
 

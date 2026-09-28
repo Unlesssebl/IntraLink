@@ -192,22 +192,6 @@ export function useTicketActions() {
     },
   });
 
-  const redirectMutation = useMutation({
-    mutationFn: ({
-      id,
-      serviceId,
-      comment,
-    }: {
-      id: number;
-      serviceId: number;
-      comment: string;
-    }) => ticketsApi.redirect(id, serviceId, comment),
-    onSuccess: (_, { id }) => {
-      updateTicketInCache(queryClient, id, { status_id: 30, status_name: "Отменена" });
-      queryClient.invalidateQueries({ queryKey: ticketKeys.all });
-    },
-  });
-
   const addCommentMutation = useMutation({
     mutationFn: ({
       id,
@@ -228,7 +212,6 @@ export function useTicketActions() {
     takeMutation,
     resolveMutation,
     duplicateMutation,
-    redirectMutation,
     addCommentMutation,
   };
 }

@@ -113,11 +113,11 @@ DEFAULT_WORKFLOWS = (
         default_disposition=Disposition.consult,
     ),
     WorkflowDefinition(
-        key="non_it_redirect_workflow",
+        key="manual_review_workflow",
         version="1.0.0",
-        name="Передача непрофильного обращения",
+        name="Ручная обработка обращения",
         case_types=("non_it_request",),
-        default_disposition=Disposition.redirect,
+        default_disposition=Disposition.manual,
     ),
 )
 

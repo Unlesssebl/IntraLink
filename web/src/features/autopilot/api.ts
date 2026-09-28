@@ -7,10 +7,16 @@ import type {
 } from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers || {});
+  headers.set("Content-Type", "application/json");
+  const auth = typeof window !== "undefined" ? window.localStorage.getItem("intralink_auth_b64") : null;
+  if (auth && !headers.has("Authorization")) {
+    headers.set("Authorization", `Basic ${auth}`);
+  }
   const response = await fetch(url, {
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
     ...init,
+    headers,
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
@@ -52,6 +58,18 @@ export const autopilotApi = {
       }),
     });
   },
+  correctTargetService(ticketId: number, automation: TicketAutomation, targetServiceId: number, notes?: string) {
+    return request<TicketAutomation>(`/api/v2/autopilot/tickets/${ticketId}/target-service/correct`, {
+      method: "POST",
+      body: JSON.stringify({
+        compatibility_decision_id: automation.service_compatibility.id,
+        snapshot_hash: automation.snapshot_hash,
+        target_service_id: targetServiceId,
+        reason_tag: "operator_target_correction",
+        notes,
+      }),
+    });
+  },
   correctActionPlan(ticketId: number, automation: TicketAutomation, actions: CorrectedActionInput[], notes?: string) {
     if (!automation.action_plan) throw new Error("ActionPlan отсутствует");
     return request<TicketAutomation>(`/api/v2/autopilot/tickets/${ticketId}/action-plans/correct`, {
@@ -89,6 +107,45 @@ export const autopilotApi = {
         snapshot_hash: automation.snapshot_hash,
         reason_tag: "manual_takeover",
         notes,
+      }),
+    });
+  },
+  approveRedirect(ticketId: number, automation: TicketAutomation) {
+    if (!automation.redirect_plan) throw new Error("RedirectPlan отсутствует");
+    return request(`/api/v2/autopilot/tickets/${ticketId}/redirect-plans/approve`, {
+      method: "POST",
+      body: JSON.stringify({
+        redirect_plan_id: automation.redirect_plan.id,
+        plan_hash: automation.redirect_plan.plan_hash,
+        snapshot_hash: automation.snapshot_hash,
+        version: automation.redirect_plan.version,
+      }),
+    });
+  },
+  correctRedirect(ticketId: number, automation: TicketAutomation, targetServiceId: number) {
+    if (!automation.redirect_plan) throw new Error("RedirectPlan отсутствует");
+    return request<TicketAutomation>(`/api/v2/autopilot/tickets/${ticketId}/redirect-plans/correct`, {
+      method: "POST",
+      body: JSON.stringify({
+        redirect_plan_id: automation.redirect_plan.id,
+        plan_hash: automation.redirect_plan.plan_hash,
+        snapshot_hash: automation.snapshot_hash,
+        version: automation.redirect_plan.version,
+        target_service_id: targetServiceId,
+        reason_tag: "operator_target_correction",
+      }),
+    });
+  },
+  stopRedirect(ticketId: number, automation: TicketAutomation, mode: "reject" | "manual-takeover") {
+    if (!automation.redirect_plan) throw new Error("RedirectPlan отсутствует");
+    return request(`/api/v2/autopilot/tickets/${ticketId}/redirect-plans/${mode}`, {
+      method: "POST",
+      body: JSON.stringify({
+        redirect_plan_id: automation.redirect_plan.id,
+        plan_hash: automation.redirect_plan.plan_hash,
+        snapshot_hash: automation.snapshot_hash,
+        version: automation.redirect_plan.version,
+        reason_tag: mode === "reject" ? "operator_rejected" : "manual_takeover",
       }),
     });
   },

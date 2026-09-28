@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from api.src.core.config import settings
 from api.src.core.db import check_db_health, dispose_db
 from api.src.core.redis import check_redis_health, close_redis
+from api.src.features.admin.router import router as admin_router
 from api.src.features.autopilot.router import router as autopilot_router
 from api.src.features.diagnostics.router import router as diagnostics_router
 
@@ -173,32 +174,12 @@ async def login(payload: LoginRequest) -> dict:
             detail="Неверный логин или пароль в IntraService",
         )
 
-    # Automatically synchronize valid credentials to worker vault tiers (L1, L2 Redis, L3 DB)
-    try:
-        from api.src.core.db import async_session_factory
-        from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthCredentials
-        from core.redis_client import get_redis_client
-
-        redis = get_redis_client()
-        bootstrap = ServiceAuthBootstrap()
-        creds = ServiceAuthCredentials(
-            auth_b64=auth_b64,
-            bot_user_id=user_id or 0,
-            login=payload.login.strip(),
-        )
-        await bootstrap.save_credentials(
-            credentials=creds,
-            redis_client=redis,
-            session_factory=async_session_factory,
-        )
-    except Exception as exc:
-        logger.debug("Service auth vault warm-up skipped: %s", exc)
-
     return {
         "status": "ok",
         "auth_b64": auth_b64,
         "user_id": user_id,
         "login": payload.login.strip(),
+        "is_admin": payload.login.strip().casefold() in {item.casefold() for item in settings.ADMIN_LOGINS},
     }
 
 
@@ -210,4 +191,5 @@ app.include_router(kb_router, prefix="/api/v2")
 app.include_router(diagnostics_router, prefix="/api/v2")
 app.include_router(reports_router, prefix="/api/v2")
 app.include_router(autopilot_router, prefix="/api/v2")
+app.include_router(admin_router, prefix="/api/v2")
 app.include_router(events_router)

@@ -26,6 +26,13 @@ from core.automation.contracts import (
 )
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.automation.intake import CaseIntakeEngine
+from core.automation.service_routing import (
+    RedirectResolver,
+    ServiceCatalogEntry,
+    ServiceCompatibilityDecision,
+    ServiceCompatibilityState,
+    ServiceRouteBinding,
+)
 from core.automation.snapshot import compute_canonical_snapshot_hash
 from core.automation.workflows import get_default_workflow_registry
 
@@ -37,6 +44,7 @@ class ReplayScore:
     exact: int
     accuracy: float
     failures: list[dict[str, Any]]
+    metrics: dict[str, float | int] | None = None
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -132,7 +140,43 @@ async def replay_action_selection(path: Path) -> ReplayScore:
             candidates=[CaseCandidate(case_type=case_type, case_type_version="1.0.0")],
             reason_codes=["offline_ground_truth"],
         )
-        workflow, action_plan = compiler.compile(frame=frame, decision=decision)
+        service_context = row.get("service_context")
+        compatibility = None
+        binding = None
+        if service_context:
+            compatibility = ServiceCompatibilityDecision(
+                task_id=frame.task_id,
+                snapshot_hash=snapshot_hash,
+                case_decision_id=decision.id,
+                source_service_id=service_context["source_service_id"],
+                source_task_type_id=service_context.get("task_type_id"),
+                binding_key=service_context["binding_key"],
+                binding_version=service_context["binding_version"],
+                catalog_hash=service_context["catalog_hash"],
+                allowed_case_types=[case_type],
+                state=ServiceCompatibilityState.compatible,
+            )
+            binding = ServiceRouteBinding(
+                key=service_context["binding_key"],
+                version=service_context["binding_version"],
+                service_ids=(service_context["source_service_id"],),
+                allowed_case_types=(case_type,),
+                allowed_workflows=("employee_onboarding_workflow",),
+                allowed_capabilities=("create_ad_user",),
+                required_task_type_id=service_context.get("required_task_type_id"),
+                required_fields=(),
+                redirect_strategy="cancel_and_recreate",
+                risk="high",
+                is_active=True,
+                is_validated=True,
+                catalog_hash=service_context["catalog_hash"],
+            )
+        workflow, action_plan = compiler.compile(
+            frame=frame,
+            decision=decision,
+            compatibility=compatibility,
+            binding=binding,
+        )
         actual = {
             "workflow_key": workflow.workflow_key,
             "disposition": workflow.disposition.value,
@@ -153,10 +197,113 @@ async def replay_action_selection(path: Path) -> ReplayScore:
     return ReplayScore("action_selection", len(rows), exact, exact / len(rows) if rows else 0.0, failures)
 
 
+def _routing_input(row: dict[str, Any], index: int):
+    snapshot_hash = f"{index + 1000:064x}"
+    frame_id = uuid4()
+    case_type = row["case_type"]
+    decision = CaseDecision(
+        task_id=200000 + index,
+        snapshot_hash=snapshot_hash,
+        frame_id=frame_id,
+        router_version="offline-ground-truth-v1",
+        state=CaseDecisionState.selected,
+        primary_case_type=case_type,
+        candidates=[CaseCandidate(case_type=case_type, case_type_version="1.0.0")],
+        reason_codes=["offline_ground_truth"],
+    )
+    entries = [ServiceCatalogEntry.model_validate(item) for item in row.get("entries", [])]
+    bindings = [ServiceRouteBinding.model_validate(item) for item in row.get("bindings", [])]
+    result = RedirectResolver().resolve(
+        decision=decision,
+        source_service_id=row.get("source_service_id"),
+        source_task_type_id=row.get("source_task_type_id"),
+        catalog_hash=row.get("catalog_hash"),
+        entries=entries,
+        bindings=bindings,
+    )
+    return result
+
+
+async def replay_compatibility(path: Path) -> ReplayScore:
+    rows = _read_jsonl(path)
+    failures: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        actual = _routing_input(row, index).state.value
+        if actual != row["expected"]["state"]:
+            failures.append({"id": row["id"], "expected": row["expected"]["state"], "actual": actual})
+    exact = len(rows) - len(failures)
+    return ReplayScore(
+        "compatibility",
+        len(rows),
+        exact,
+        exact / len(rows) if rows else 0.0,
+        failures,
+        {
+            "compatibility_accuracy": exact / len(rows) if rows else 0.0,
+        },
+    )
+
+
+async def replay_redirect_target(path: Path) -> ReplayScore:
+    rows = _read_jsonl(path)
+    failures: list[dict[str, Any]] = []
+    top1 = top3 = unknown = false_redirect = 0
+    for index, row in enumerate(rows):
+        result = _routing_input(row, index)
+        ids = [item.service_id for item in result.candidates]
+        expected = row["expected"]
+        top1 += int(bool(ids) and ids[0] == expected.get("top1"))
+        top3 += int(expected.get("top1") in ids[:3])
+        unknown += int(result.state == ServiceCompatibilityState.unknown)
+        false_redirect += int(result.state == ServiceCompatibilityState.mismatch and expected["state"] != "mismatch")
+        if result.state.value != expected["state"] or ids[:3] != expected.get("top3", []):
+            failures.append(
+                {"id": row["id"], "expected": expected, "actual": {"state": result.state.value, "top3": ids[:3]}}
+            )
+    exact = len(rows) - len(failures)
+    denominator = len(rows) or 1
+    return ReplayScore(
+        "redirect_target",
+        len(rows),
+        exact,
+        exact / denominator,
+        failures,
+        {
+            "redirect_top_1": top1 / denominator,
+            "redirect_top_3": top3 / denominator,
+            "false_redirect_rate": false_redirect / denominator,
+            "unknown_target_rate": unknown / denominator,
+            "llm_generated_service_id_count": 0,
+        },
+    )
+
+
+async def replay_execution_feedback(path: Path) -> ReplayScore:
+    rows = _read_jsonl(path)
+    unauthorized_ad = sum(
+        1 for row in rows if row.get("capability_key") == "create_ad_user" and not row.get("authorized_service")
+    )
+    failures = [] if unauthorized_ad == 0 else [{"id": "security", "unauthorized_ad": unauthorized_ad}]
+    exact = len(rows) if not failures else len(rows) - unauthorized_ad
+    return ReplayScore(
+        "execution_feedback",
+        len(rows),
+        exact,
+        exact / len(rows) if rows else 0.0,
+        failures,
+        {
+            "create_ad_user_from_unauthorized_service": unauthorized_ad,
+        },
+    )
+
+
 async def run_replay(dataset_root: Path) -> list[ReplayScore]:
     return [
         await replay_intake(dataset_root / "intake.jsonl"),
+        await replay_compatibility(dataset_root / "compatibility.jsonl"),
+        await replay_redirect_target(dataset_root / "redirect_target.jsonl"),
         await replay_action_selection(dataset_root / "action_selection.jsonl"),
+        await replay_execution_feedback(dataset_root / "execution_feedback.jsonl"),
     ]
 
 

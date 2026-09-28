@@ -93,6 +93,20 @@ def test_crypto_without_key_fallback():
         encrypt_secret("test")
 
 
+def test_crypto_loads_key_from_docker_secret_file(tmp_path, monkeypatch):
+    key_file = tmp_path / "encryption_key"
+    key_file.write_text(Fernet.generate_key().decode(), encoding="utf-8")
+    monkeypatch.delenv("ENCRYPTION_KEY", raising=False)
+    monkeypatch.setenv("ENCRYPTION_KEY_FILE", str(key_file))
+    set_fernet(None)
+
+    try:
+        encrypted = encrypt_secret("vault-secret")
+        assert decrypt_secret(encrypted) == "vault-secret"
+    finally:
+        set_fernet(None)
+
+
 @pytest.mark.asyncio
 async def test_watermark_service_db_persistence(test_db):
     """Verify persisting and reading watermark cursor from PostgreSQL (SQLite in test)."""

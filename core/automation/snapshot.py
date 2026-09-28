@@ -154,6 +154,7 @@ class TicketSnapshotFactory:
             "status_id": task.status_id,
             "service_id": task.service_id,
             "service_name": task.service_name,
+            "task_type_id": task.task_type_id,
             "title": task.name,
             "description": task.description,
             "public_comments": [item.model_dump() for item in public_comments],

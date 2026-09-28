@@ -11,6 +11,7 @@ import {
   User,
   KeyRound,
   Bot,
+  ShieldCheck,
 } from "lucide-react";
 import { Badge, Button, ErrorBoundary, Input, Modal, useToast } from "@/shared/ui";
 import { TriageQueue } from "@/features/triage/TriageQueue";
@@ -18,6 +19,7 @@ import { TicketInspector } from "@/features/tickets/TicketInspector";
 import { KBSearch } from "@/features/knowledge-base/KBSearch";
 import { LoadReport } from "@/features/reports/LoadReport";
 import { AutopilotConsole } from "@/features/autopilot/AutopilotConsole";
+import { AdminCredentials } from "@/features/admin/AdminCredentials";
 import {
   authApi,
   getStoredAuth,
@@ -29,7 +31,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ticketKeys } from "@/features/tickets/queries";
 
-type Tab = "triage" | "kb" | "reports" | "autopilot";
+type Tab = "triage" | "kb" | "reports" | "autopilot" | "admin";
 
 export default function App() {
   const queryClient = useQueryClient();
@@ -71,6 +73,7 @@ export default function App() {
   useEffect(() => {
     const handleUnauthorized = () => {
       setCurrentUser(null);
+      setActiveTab("triage");
       setAuthModalOpen(true);
       toast.error("Сессия истекла или учетные данные недействительны. Авторизуйтесь заново.");
     };
@@ -103,7 +106,7 @@ export default function App() {
       setLoggingIn(true);
       setAuthError(null);
       const res = await authApi.login(loginInput.trim(), passwordInput.trim());
-      setStoredAuth(res.auth_b64, res.login, res.user_id);
+      setStoredAuth(res.auth_b64, res.login, res.user_id, res.is_admin);
       setCurrentUser(res.login);
       setAuthModalOpen(false);
       setPasswordInput("");
@@ -119,6 +122,7 @@ export default function App() {
   const handleLogout = () => {
     clearStoredAuth();
     setCurrentUser(null);
+    if (activeTab === "admin") setActiveTab("triage");
     toast.info("Вы вышли из системы");
     queryClient.invalidateQueries({ queryKey: ticketKeys.all });
   };
@@ -191,6 +195,20 @@ export default function App() {
             <Bot className="w-4 h-4 text-indigo-400" />
             <span>Автоматизация</span>
           </button>
+
+          {currentUser && (
+            <button
+              onClick={() => setActiveTab("admin")}
+              className={`w-full flex items-center gap-2 px-2.5 py-2 rounded text-xs font-medium transition-colors ${
+                activeTab === "admin"
+                  ? "bg-neutral-800 text-white border border-neutral-700 shadow-xs"
+                  : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50"
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              <span>Администрирование</span>
+            </button>
+          )}
         </nav>
 
         {/* System & Backend Status Footer */}
@@ -263,6 +281,7 @@ export default function App() {
               {activeTab === "kb" && "База знаний (RAG)"}
               {activeTab === "reports" && "Сводный отчет нагрузки"}
               {activeTab === "autopilot" && "Операторская консоль автоматизации"}
+              {activeTab === "admin" && "Учетные данные сервисного бота"}
             </span>
           </div>
 
@@ -332,6 +351,12 @@ export default function App() {
         <main className={`flex-1 overflow-y-auto p-6 ${activeTab === "autopilot" ? "" : "hidden"}`}>
           <ErrorBoundary fallbackTitle="Ошибка в консоли автоматизации">
             <AutopilotConsole />
+          </ErrorBoundary>
+        </main>
+
+        <main className={`flex-1 overflow-y-auto p-6 ${activeTab === "admin" ? "" : "hidden"}`}>
+          <ErrorBoundary fallbackTitle="Ошибка в разделе администрирования">
+            <AdminCredentials />
           </ErrorBoundary>
         </main>
       </div>

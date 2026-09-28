@@ -24,7 +24,11 @@ from .schemas import (
     CatalogResponse,
     CorrectActionPlanRequest,
     CorrectCaseDecisionRequest,
+    CorrectRedirectPlanRequest,
+    CorrectTargetServiceRequest,
     FeedbackResponse,
+    RedirectPlanRequest,
+    RedirectPlanResponse,
     TicketAutomationDTO,
 )
 from .service import AutomationService, extract_operator
@@ -65,6 +69,23 @@ async def correct_case_decision(
     service: Service,
 ) -> TicketAutomationDTO:
     return await service.correct_case(
+        db,
+        ticket_id=ticket_id,
+        request=request,
+        operator=extract_operator(auth),
+        auth_b64=auth,
+    )
+
+
+@router.post("/tickets/{ticket_id}/target-service/correct", response_model=TicketAutomationDTO)
+async def correct_target_service(
+    ticket_id: int,
+    request: CorrectTargetServiceRequest,
+    db: Db,
+    auth: Auth,
+    service: Service,
+) -> TicketAutomationDTO:
+    return await service.correct_target_service(
         db,
         ticket_id=ticket_id,
         request=request,
@@ -141,6 +162,47 @@ async def manual_takeover(
         verdict="manual_takeover",
         auth_b64=auth,
     )
+
+
+@router.post("/tickets/{ticket_id}/redirect-plans/approve", response_model=RedirectPlanResponse)
+async def approve_redirect_plan(
+    ticket_id: int, request: RedirectPlanRequest, db: Db, auth: Auth, service: Service
+) -> RedirectPlanResponse:
+    return await service.approve_redirect(
+        db, ticket_id=ticket_id, request=request, operator=extract_operator(auth), auth_b64=auth
+    )
+
+
+@router.post("/tickets/{ticket_id}/redirect-plans/correct", response_model=TicketAutomationDTO)
+async def correct_redirect_plan(
+    ticket_id: int, request: CorrectRedirectPlanRequest, db: Db, auth: Auth, service: Service
+) -> TicketAutomationDTO:
+    return await service.correct_redirect(
+        db, ticket_id=ticket_id, request=request, operator=extract_operator(auth), auth_b64=auth
+    )
+
+
+@router.post("/tickets/{ticket_id}/redirect-plans/reject", response_model=RedirectPlanResponse)
+async def reject_redirect_plan(
+    ticket_id: int, request: RedirectPlanRequest, db: Db, auth: Auth, service: Service
+) -> RedirectPlanResponse:
+    return await service.stop_redirect(
+        db, ticket_id=ticket_id, request=request, operator=extract_operator(auth), verdict="rejected", auth_b64=auth
+    )
+
+
+@router.post("/tickets/{ticket_id}/redirect-plans/manual-takeover", response_model=RedirectPlanResponse)
+async def manual_redirect_plan(
+    ticket_id: int, request: RedirectPlanRequest, db: Db, auth: Auth, service: Service
+) -> RedirectPlanResponse:
+    return await service.stop_redirect(
+        db, ticket_id=ticket_id, request=request, operator=extract_operator(auth), verdict="manual", auth_b64=auth
+    )
+
+
+@router.post("/service-catalog/sync")
+async def sync_service_catalog(db: Db, auth: Auth, service: Service) -> dict[str, object]:
+    return await service.sync_service_catalog(db, auth_b64=auth)
 
 
 @router.get("/case-types", response_model=CatalogResponse)
