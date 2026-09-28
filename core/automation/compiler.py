@@ -76,7 +76,11 @@ class WorkflowCompiler:
             )
             return workflow, None
 
-        if compatibility is not None and compatibility.state != ServiceCompatibilityState.compatible:
+        if (
+            definition.allowed_capabilities
+            and compatibility is not None
+            and compatibility.state != ServiceCompatibilityState.compatible
+        ):
             workflow = self._workflow_plan(
                 frame,
                 decision,

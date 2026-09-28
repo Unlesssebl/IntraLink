@@ -44,6 +44,7 @@ from core.automation.preflight import ActionPreflightService
 from core.automation.runner import WorkflowRunner
 from core.automation.service_catalog import ServiceCatalogRepository
 from core.automation.service_routing import (
+    LLMServiceTargetReranker,
     RedirectPlan,
     RedirectPlanState,
     RedirectResolver,
@@ -98,6 +99,7 @@ class AutomationService:
         workflows: WorkflowRegistry | None = None,
         capabilities: CapabilityRegistry | None = None,
         repository: AutomationRepository | None = None,
+        target_reranker: LLMServiceTargetReranker | None = None,
     ) -> None:
         self.client = client or IntraServiceClient(
             base_url=settings.INTRASERVICE_URL,
@@ -131,6 +133,10 @@ class AutomationService:
         self.workflow_policy = WorkflowPolicyService()
         self.catalog_repository = ServiceCatalogRepository()
         self.redirect_resolver = RedirectResolver()
+        self.target_reranker = target_reranker or LLMServiceTargetReranker(
+            transport,
+            model_alias=settings.LITELLM_MODEL_FAST,
+        )
 
     async def get_automation(self, session: AsyncSession, ticket_id: int) -> TicketAutomationDTO:
         bundle = await self.repository.latest_for_task(session, ticket_id)
@@ -161,13 +167,19 @@ class AutomationService:
 
         catalog_started = perf_counter()
         version, entries, bindings = await self.catalog_repository.current(session)
+        timings["catalog_load"] = round((perf_counter() - catalog_started) * 1000)
+        target_started = perf_counter()
         target_resolution = self.redirect_resolver.resolve_target(
             snapshot=snapshot,
             catalog_hash=version.catalog_hash if version else None,
             entries=entries,
             catalog_fetched_at=version.fetched_at if version else None,
         )
-        timings["target_service"] = round((perf_counter() - catalog_started) * 1000)
+        timings["target_retrieval"] = round((perf_counter() - target_started) * 1000)
+        if target_resolution.state in {TargetSelectionState.ambiguous, TargetSelectionState.not_found}:
+            rerank_started = perf_counter()
+            target_resolution = await self.target_reranker.rerank(snapshot, target_resolution)
+            timings["target_rerank"] = round((perf_counter() - rerank_started) * 1000)
 
         intake_started = perf_counter()
         frame, decision = await self.intake.analyze(
@@ -183,7 +195,7 @@ class AutomationService:
             bindings=bindings,
             target_resolution=target_resolution,
         )
-        llm_used = frame.llm_attempted or any(
+        llm_used = target_resolution.llm_used or frame.llm_attempted or any(
             item.extraction_method == ExtractionMethod.llm for item in frame.assertions
         ) or bool(decision.verifier_trace)
         compatibility = compatibility.model_copy(

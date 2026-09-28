@@ -208,7 +208,14 @@ class CaseRouter:
         )
         service_source = "target_service_id" if target_resolution is not None else "service_id"
         service_name_source = "target_service_path" if target_resolution is not None else "service_name"
-        for profile in self.profiles.list_all():
+        profiles = [
+            profile
+            for profile in self.profiles.list_all()
+            if routed_service_id is None
+            or not profile.applicable_service_ids
+            or routed_service_id in profile.applicable_service_ids
+        ]
+        for profile in profiles:
             if routed_service_id is not None and routed_service_id in profile.exact_service_ids:
                 item = self._evidence(
                     snapshot,
@@ -249,7 +256,7 @@ class CaseRouter:
                         )
                         evidence[item.id] = item
         for assertion in frame.assertions:
-            for profile in self.profiles.list_all():
+            for profile in profiles:
                 if assertion.key in profile.assertion_keys:
                     item = self._evidence(
                         snapshot,

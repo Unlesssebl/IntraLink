@@ -12,6 +12,7 @@ class CaseTypeProfile(BaseModel):
     version: str = "1.0.0"
     title: str
     intent_summary: str
+    applicable_service_ids: frozenset[int] = frozenset()
     exact_service_ids: frozenset[int] = frozenset()
     service_name_terms: tuple[str, ...] = ()
     lexical_phrases: tuple[str, ...] = ()
@@ -105,6 +106,27 @@ DEFAULT_CASE_PROFILES = (
         lexical_phrases=("компьютер не включается", "черный экран", "нет питания", "пк не отвечает"),
         semantic_prototypes=("рабочая станция не реагирует на кнопку питания",),
         assertion_keys=("workstation_unavailable",),
+    ),
+    CaseTypeProfile(
+        case_type="workstation_hardware_diagnostic",
+        title="Диагностика оборудования",
+        intent_summary="Провести аппаратную диагностику рабочего места или подготовить акт дефектовки.",
+        applicable_service_ids=frozenset({32}),
+        lexical_phrases=(
+            "акт дефектовки",
+            "дефектовка hdd",
+            "дефектовка ssd",
+            "диагностика hdd",
+            "диагностика ssd",
+            "диагностика жесткого диска",
+            "диагностика жёсткого диска",
+            "неисправность комплектующих",
+            "проверка комплектующих",
+        ),
+        semantic_prototypes=(
+            "провести диагностику диска или комплектующих компьютера и оформить акт дефектовки",
+        ),
+        assertion_keys=("hardware_diagnostic", "storage_diagnostic", "defect_report"),
     ),
     CaseTypeProfile(
         case_type="non_it_request",

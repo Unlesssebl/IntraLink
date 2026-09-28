@@ -109,6 +109,20 @@ def test_printing_incident_does_not_guess_technical_action() -> None:
     assert action_plan is None
 
 
+def test_hardware_diagnostic_compiles_to_manual_diagnostic_workflow() -> None:
+    frame = _frame()
+    workflow, action_plan = _compiler().compile(
+        frame=frame,
+        decision=_decision(frame, "workstation_hardware_diagnostic"),
+    )
+
+    assert workflow.workflow_key == "workstation_hardware_diagnostic_workflow"
+    assert workflow.state == WorkflowPlanState.awaiting_diagnostics
+    assert workflow.disposition == Disposition.manual
+    assert [step.key for step in workflow.steps] == ["probe_host"]
+    assert action_plan is None
+
+
 def test_printing_incident_uses_explicit_queue_symptom() -> None:
     assertion = CaseAssertion(
         id="symptom-1",

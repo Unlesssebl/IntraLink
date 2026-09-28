@@ -7,7 +7,12 @@ from core.automation.contracts import CaseDecisionState, ExtractionMethod, Ticke
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.automation.intake import CaseIntakeEngine
 from core.automation.llm_transport import LLMTransportTimeoutError
-from core.automation.service_routing import RedirectResolver, ServiceCatalogEntry
+from core.automation.service_routing import (
+    RedirectResolver,
+    ServiceCatalogEntry,
+    TargetSelectionState,
+    TargetServiceResolution,
+)
 from core.automation.snapshot import compute_canonical_snapshot_hash
 
 
@@ -182,6 +187,65 @@ async def test_target_service_drives_case_selection_before_llm() -> None:
     assert decision.state == CaseDecisionState.selected
     assert decision.primary_case_type == "software_installation_request"
     assert any(item.source == "target_service_id" for item in decision.evidence)
+
+
+@pytest.mark.asyncio
+async def test_hardware_diagnostic_is_selected_from_text_within_service_scope() -> None:
+    transport = FailingTransport(AssertionError("LLM must not be called"))
+    snapshot = _snapshot(
+        title="Акт дефектовки HDD",
+        description="Нужно провести дефектовку HDD на новом компьютере",
+        service_id=32,
+    )
+    target = TargetServiceResolution(
+        task_id=snapshot.task_id,
+        snapshot_hash=snapshot.snapshot_hash,
+        source_service_id=32,
+        source_service_path="03. Установка и обслуживание оргтехники → Компьютеры и ноутбуки",
+        catalog_hash="c" * 64,
+        catalog_state="available",
+        state=TargetSelectionState.source_match,
+        selected_service_id=32,
+        selected_service_path="03. Установка и обслуживание оргтехники → Компьютеры и ноутбуки",
+    )
+
+    frame, decision = await CaseIntakeEngine(
+        CaseFrameExtractor(transport=transport),
+        CaseRouter(),
+    ).analyze(snapshot, target_resolution=target)
+
+    assert transport.calls == 0
+    assert frame.llm_attempted is False
+    assert decision.state == CaseDecisionState.selected
+    assert decision.primary_case_type == "workstation_hardware_diagnostic"
+    assert any(item.text_span == "Акт дефектовки" for item in decision.evidence)
+
+
+@pytest.mark.asyncio
+async def test_hardware_diagnostic_text_does_not_escape_service_scope() -> None:
+    snapshot = _snapshot(
+        title="Акт дефектовки HDD",
+        description="Нужно провести дефектовку HDD",
+        service_id=71,
+    )
+    target = TargetServiceResolution(
+        task_id=snapshot.task_id,
+        snapshot_hash=snapshot.snapshot_hash,
+        source_service_id=71,
+        source_service_path="04. Проблемы с сетью и интернетом → Общие вопросы",
+        catalog_hash="c" * 64,
+        catalog_state="available",
+        state=TargetSelectionState.source_match,
+        selected_service_id=71,
+        selected_service_path="04. Проблемы с сетью и интернетом → Общие вопросы",
+    )
+
+    _, decision = await CaseIntakeEngine(CaseFrameExtractor(), CaseRouter()).analyze(
+        snapshot,
+        target_resolution=target,
+    )
+
+    assert decision.primary_case_type != "workstation_hardware_diagnostic"
 
 
 @pytest.mark.asyncio

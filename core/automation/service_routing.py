@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from difflib import SequenceMatcher
 from enum import Enum
 from typing import Any, Iterable
 from uuid import UUID, uuid4
@@ -18,6 +19,10 @@ from pydantic import Field, model_validator
 
 from core.automation.case_profiles import CaseProfileRegistry
 from core.automation.contracts import CaseDecision, FrozenModel, TicketSnapshot
+from core.automation.llm_transport import LLMTransport, LLMTransportError
+from core.rag.sanitizer import PIISanitizer
+
+_SECRET_RE = re.compile(r"(?i)\b(password|passwd|пароль|token|secret)\b\s*[:=]?\s*\S+")
 
 
 class CatalogValidationState(str, Enum):
@@ -113,6 +118,8 @@ class ServiceTargetCandidate(FrozenModel):
     service_id: int
     service_path: str
     confidence: str
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    score_components: dict[str, float] = Field(default_factory=dict)
     evidence: list[str] = Field(default_factory=list)
 
 
@@ -129,10 +136,14 @@ class TargetServiceResolution(FrozenModel):
     selected_service_id: int | None = None
     selected_service_path: str | None = None
     method: str = "catalog_first"
-    candidates: list[ServiceTargetCandidate] = Field(default_factory=list, max_length=5)
+    candidates: list[ServiceTargetCandidate] = Field(default_factory=list, max_length=10)
     evidence: list[str] = Field(default_factory=list)
     contradictions: list[str] = Field(default_factory=list)
     reason_codes: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_verdict: str | None = None
+    llm_reason: str | None = None
+    llm_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def validate_resolution(self) -> "TargetServiceResolution":
@@ -160,13 +171,16 @@ class ServiceCompatibilityDecision(FrozenModel):
     target_service_path: str | None = None
     target_selection_state: TargetSelectionState = TargetSelectionState.unavailable
     target_selection_method: str | None = None
-    target_candidates: list[ServiceTargetCandidate] = Field(default_factory=list, max_length=5)
+    target_candidates: list[ServiceTargetCandidate] = Field(default_factory=list, max_length=10)
     routing_evidence: list[str] = Field(default_factory=list)
     routing_contradictions: list[str] = Field(default_factory=list)
     catalog_state: str = "unavailable"
     authorization_state: str = "unavailable"
     analysis_timings_ms: dict[str, int] = Field(default_factory=dict)
     llm_used: bool = False
+    target_reranker_verdict: str | None = None
+    target_reranker_reason: str | None = None
+    target_reranker_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     candidates: list[RedirectCandidate] = Field(default_factory=list, max_length=3)
     evidence: list[str] = Field(default_factory=list)
     contradictions: list[str] = Field(default_factory=list)
@@ -277,8 +291,6 @@ class RedirectResolver:
             "вопросы",
             "общие",
             "проблемы",
-            "установка",
-            "настройка",
             "обслуживание",
             "системы",
             "система",
@@ -329,43 +341,84 @@ class RedirectResolver:
         normalized_text = self._normalize(text)
         text_tokens = set(self._tokens(normalized_text))
 
-        ranked: list[tuple[int, ServiceTargetCandidate]] = []
+        ranked: list[tuple[float, ServiceTargetCandidate]] = []
         for entry in leaves:
             evidence: list[str] = []
-            score = 0
-            if source is not None and entry.service_id == source.service_id:
-                score += 100
+            components: dict[str, float] = {}
+            is_source = source is not None and entry.service_id == source.service_id
+            is_source_descendant = (
+                source is not None
+                and source.service_id in parent_ids
+                and self._is_descendant(entry, source, active)
+            )
+            if is_source:
                 evidence.extend(["source_service_active", "active_catalog_leaf"])
 
             leaf_name = self._normalize(entry.service_path.split("→")[-1])
             leaf_tokens = set(self._tokens(leaf_name))
             overlap = sorted(leaf_tokens & text_tokens)
             if leaf_name and len(leaf_name) >= 5 and leaf_name in normalized_text:
-                score += 140
+                components["exact_leaf_name"] = 0.70
                 evidence.append("ticket_exact_service_name")
-            elif len(overlap) >= 2:
-                score += min(90, len(overlap) * 25)
+            if leaf_tokens:
+                token_coverage = len(overlap) / len(leaf_tokens)
+                if token_coverage:
+                    components["term_coverage"] = round(0.45 * token_coverage, 4)
                 evidence.extend(f"ticket_service_term:{token}" for token in overlap)
 
-            if source is not None and source.service_id in parent_ids and self._is_descendant(entry, source, active):
-                score += 25
+                fuzzy_matches = 0
+                fuzzy_threshold = 0.73 if is_source else 0.82
+                for service_token in leaf_tokens - set(overlap):
+                    if len(service_token) < 6:
+                        continue
+                    best_ratio = max(
+                        (
+                            SequenceMatcher(None, service_token, ticket_token).ratio()
+                            for ticket_token in text_tokens
+                            if len(ticket_token) >= 6
+                        ),
+                        default=0.0,
+                    )
+                    if best_ratio >= fuzzy_threshold:
+                        fuzzy_matches += 1
+                fuzzy_is_grounded = fuzzy_matches >= 2 or bool(overlap) or is_source
+                if fuzzy_matches and fuzzy_is_grounded:
+                    components["fuzzy_term_coverage"] = round(0.25 * fuzzy_matches / len(leaf_tokens), 4)
+                    evidence.append("ticket_fuzzy_service_terms")
+
+            if is_source_descendant:
                 evidence.append("source_service_descendant")
 
-            if score:
-                ranked.append(
-                    (
-                        score,
-                        ServiceTargetCandidate(
-                            service_id=entry.service_id,
-                            service_path=entry.service_path,
-                            confidence="high" if score >= 100 else "medium",
-                            evidence=evidence,
-                        ),
-                    )
+            score = min(1.0, round(sum(components.values()), 4))
+            if score == 0.0 and not is_source and not is_source_descendant:
+                continue
+            ranked.append(
+                (
+                    score,
+                    ServiceTargetCandidate(
+                        service_id=entry.service_id,
+                        service_path=entry.service_path,
+                        confidence="high" if score >= 0.75 else "medium" if score >= 0.35 else "low",
+                        score=score,
+                        score_components=components,
+                        evidence=evidence,
+                    ),
                 )
+            )
 
-        ranked.sort(key=lambda item: (-item[0], item[1].service_path, item[1].service_id))
-        candidates = [item[1] for item in ranked[:5]]
+        ranked.sort(
+            key=lambda item: (
+                -item[0],
+                item[1].service_id != snapshot.service_id,
+                item[1].service_path,
+                item[1].service_id,
+            )
+        )
+        candidates = [item[1] for item in ranked[:10]]
+        if source is not None and source.service_id not in {item.service_id for item in candidates}:
+            source_item = next((item for _, item in ranked if item.service_id == source.service_id), None)
+            if source_item is not None:
+                candidates = (candidates[:9] + [source_item]) if len(candidates) >= 10 else candidates + [source_item]
         selected: ServiceTargetCandidate | None = None
         state = TargetSelectionState.not_found
         reason_codes = ["target_service_not_found"]
@@ -373,28 +426,25 @@ class RedirectResolver:
         if ranked:
             top_score, top = ranked[0]
             second_score = ranked[1][0] if len(ranked) > 1 else 0
-            source_candidate = next(
-                (item for score, item in ranked if source is not None and item.service_id == source.service_id),
-                None,
+            has_text_evidence = bool(top.score_components)
+            strong_match = top_score >= 0.75 and top_score - second_score >= 0.15
+            supported_source = (
+                source is not None
+                and top.service_id == source.service_id
+                and has_text_evidence
+                and top_score >= 0.10
             )
-            if top_score == second_score:
-                state = TargetSelectionState.ambiguous
-                reason_codes = ["multiple_catalog_targets"]
-            elif source_candidate is not None and top.service_id == source_candidate.service_id:
+            if strong_match or supported_source:
                 selected = top
-                state = TargetSelectionState.source_match
-                reason_codes = ["source_service_is_catalog_target"]
-            elif top_score >= 120 and top_score - second_score >= 20:
-                selected = top
-                state = TargetSelectionState.target_suggested
-                reason_codes = ["ticket_text_identifies_catalog_target"]
-            elif source_candidate is not None:
-                selected = source_candidate
-                state = TargetSelectionState.source_match
-                reason_codes = ["source_service_is_catalog_target"]
+                if source is not None and top.service_id == source.service_id:
+                    state = TargetSelectionState.source_match
+                    reason_codes = ["source_service_supported_by_ticket_text"]
+                else:
+                    state = TargetSelectionState.target_suggested
+                    reason_codes = ["ticket_text_identifies_catalog_target"]
             else:
                 state = TargetSelectionState.ambiguous
-                reason_codes = ["catalog_target_requires_operator_choice"]
+                reason_codes = ["catalog_target_requires_llm_rerank"]
 
         if source is None and snapshot.service_id is not None:
             reason_codes.append("source_service_unknown_or_inactive")
@@ -409,6 +459,7 @@ class RedirectResolver:
             state=state,
             selected_service_id=selected.service_id if selected else None,
             selected_service_path=selected.service_path if selected else None,
+            method="catalog_top10",
             candidates=candidates,
             evidence=list(selected.evidence) if selected else [],
             reason_codes=reason_codes,
@@ -445,6 +496,9 @@ class RedirectResolver:
                 "catalog_state": target_resolution.catalog_state,
                 "routing_evidence": list(target_resolution.evidence),
                 "routing_contradictions": list(target_resolution.contradictions),
+                "target_reranker_verdict": target_resolution.llm_verdict,
+                "target_reranker_reason": target_resolution.llm_reason,
+                "target_reranker_confidence": target_resolution.llm_confidence,
             }
         active_bindings = [b for b in bindings if b.is_active and b.is_validated and b.catalog_hash == catalog_hash]
         if not active_bindings:
@@ -678,6 +732,144 @@ class RedirectResolver:
             reason_codes=[reason],
             authorization_state=reason,
         )
+
+
+class LLMServiceTargetReranker:
+    """Selects only from the bounded catalog shortlist produced by RedirectResolver."""
+
+    prompt_version = "service-target-reranker-v1"
+
+    def __init__(
+        self,
+        transport: LLMTransport,
+        *,
+        model_alias: str = "helpdesk-fast",
+        timeout_seconds: float = 12.0,
+    ) -> None:
+        self.transport = transport
+        self.model_alias = model_alias
+        self.timeout_seconds = timeout_seconds
+        self.sanitizer = PIISanitizer(max_length=6000)
+
+    async def rerank(
+        self,
+        snapshot: TicketSnapshot,
+        resolution: TargetServiceResolution,
+    ) -> TargetServiceResolution:
+        if resolution.state not in {TargetSelectionState.ambiguous, TargetSelectionState.not_found}:
+            return resolution
+        if not resolution.candidates:
+            return resolution
+
+        allowed = {candidate.service_id: candidate for candidate in resolution.candidates}
+        payload = {
+            "public_text": {
+                "title": self._sanitize(snapshot.title),
+                "description": self._sanitize(snapshot.description),
+                "comments": [
+                    self._sanitize(item.text) for item in snapshot.public_comments if not item.is_private
+                ],
+            },
+            "source_service": {
+                "service_id": resolution.source_service_id,
+                "service_path": resolution.source_service_path,
+            },
+            "candidates": [
+                {
+                    "service_id": candidate.service_id,
+                    "service_path": candidate.service_path,
+                    "retrieval_score": candidate.score,
+                    "evidence": candidate.evidence,
+                }
+                for candidate in resolution.candidates
+            ],
+        }
+        try:
+            raw = await self.transport.complete_json(
+                model_alias=self.model_alias,
+                system_prompt=(
+                    "Choose the best target helpdesk service using only the supplied candidates and literal "
+                    "public ticket text. Return JSON with exactly: verdict, selected_service_id, confidence, "
+                    "reason. verdict must be selected, ambiguous, or insufficient. For selected, "
+                    "selected_service_id must be one supplied ID and confidence must be 0..1. "
+                    "Never invent a service, action, fact, or credential."
+                ),
+                payload=payload,
+                timeout_seconds=self.timeout_seconds,
+            )
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict) or set(parsed) - {
+                "verdict",
+                "selected_service_id",
+                "confidence",
+                "reason",
+            }:
+                raise ValueError("Invalid target reranker schema")
+            verdict = str(parsed.get("verdict", ""))
+            if verdict not in {"selected", "ambiguous", "insufficient"}:
+                raise ValueError("Invalid target reranker verdict")
+            reason = str(parsed.get("reason", ""))[:500]
+            confidence = float(parsed.get("confidence", 0.0))
+            if not 0.0 <= confidence <= 1.0:
+                raise ValueError("Invalid target reranker confidence")
+
+            if verdict == "selected":
+                selected_id = int(parsed.get("selected_service_id"))
+                selected = allowed.get(selected_id)
+                if selected is None:
+                    raise ValueError("Target reranker changed candidate set")
+                if confidence < 0.65:
+                    return resolution.model_copy(
+                        update={
+                            "llm_used": True,
+                            "llm_verdict": "insufficient",
+                            "llm_reason": reason or "confidence_below_threshold",
+                            "llm_confidence": confidence,
+                            "reason_codes": [*resolution.reason_codes, "target_reranker_low_confidence"],
+                        }
+                    )
+                state = (
+                    TargetSelectionState.source_match
+                    if selected_id == resolution.source_service_id
+                    else TargetSelectionState.target_suggested
+                )
+                return resolution.model_copy(
+                    update={
+                        "state": state,
+                        "selected_service_id": selected.service_id,
+                        "selected_service_path": selected.service_path,
+                        "method": "catalog_top10_llm_rerank",
+                        "evidence": [*selected.evidence, "llm_rerank_selected"],
+                        "reason_codes": ["llm_selected_catalog_target"],
+                        "llm_used": True,
+                        "llm_verdict": verdict,
+                        "llm_reason": reason,
+                        "llm_confidence": confidence,
+                    }
+                )
+
+            return resolution.model_copy(
+                update={
+                    "llm_used": True,
+                    "llm_verdict": verdict,
+                    "llm_reason": reason,
+                    "llm_confidence": confidence,
+                    "reason_codes": [*resolution.reason_codes, f"target_reranker_{verdict}"],
+                }
+            )
+        except (LLMTransportError, json.JSONDecodeError, TypeError, ValueError, KeyError):
+            return resolution.model_copy(
+                update={
+                    "llm_used": True,
+                    "llm_verdict": "degraded",
+                    "llm_reason": "target_reranker_unavailable_or_invalid",
+                    "reason_codes": [*resolution.reason_codes, "target_reranker_degraded"],
+                }
+            )
+
+    def _sanitize(self, text: str) -> str:
+        safe = self.sanitizer.sanitize(text or "").sanitized_text
+        return _SECRET_RE.sub("[SECRET]", safe)
 
 
 def build_redirect_plan(compatibility: ServiceCompatibilityDecision, decision: CaseDecision) -> RedirectPlan:

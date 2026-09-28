@@ -106,6 +106,14 @@ DEFAULT_WORKFLOWS = (
         default_disposition=Disposition.manual,
     ),
     WorkflowDefinition(
+        key="workstation_hardware_diagnostic_workflow",
+        version="1.0.0",
+        name="Диагностика оборудования рабочего места",
+        case_types=("workstation_hardware_diagnostic",),
+        diagnostic_capabilities=("probe_host",),
+        default_disposition=Disposition.manual,
+    ),
+    WorkflowDefinition(
         key="knowledge_consultation_workflow",
         version="1.0.0",
         name="Консультация пользователя",

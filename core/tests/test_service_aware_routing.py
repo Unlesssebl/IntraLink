@@ -223,16 +223,23 @@ def test_catalog_first_resolution_selects_active_leaf_without_case_type() -> Non
         is_active=True,
         catalog_hash=HASH,
     )
+    unrelated = ServiceCatalogEntry(
+        service_id=104,
+        service_path="01. Учетные записи пользователей → Блокировка пользователя",
+        is_active=True,
+        catalog_hash=HASH,
+    )
 
     resolution = RedirectResolver().resolve_target(
         snapshot=_snapshot(59, "Установить программу"),
         catalog_hash=HASH,
-        entries=[parent, software],
+        entries=[parent, software, unrelated],
     )
 
     assert resolution.state.value == "source_match"
     assert resolution.selected_service_id == 59
     assert resolution.selected_service_path == software.service_path
+    assert [candidate.service_id for candidate in resolution.candidates] == [59]
     assert "active_catalog_leaf" in resolution.evidence
 
 

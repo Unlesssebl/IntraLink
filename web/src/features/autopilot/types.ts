@@ -96,6 +96,8 @@ export interface ServiceTargetCandidate {
   service_id: number;
   service_path: string;
   confidence: "high" | "medium" | "low" | string;
+  score: number;
+  score_components: Record<string, number>;
   evidence: string[];
 }
 
@@ -122,6 +124,9 @@ export interface ServiceCompatibility {
   authorization_state: string;
   analysis_timings_ms: Record<string, number>;
   llm_used: boolean;
+  target_reranker_verdict?: string | null;
+  target_reranker_reason?: string | null;
+  target_reranker_confidence?: number | null;
   candidates: RedirectCandidate[];
   evidence: string[];
   contradictions: string[];

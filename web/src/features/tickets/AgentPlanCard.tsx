@@ -36,6 +36,7 @@ const CASE_NAMES: Record<string, string> = {
   employee_onboarding: "Онбординг сотрудника",
   access_revocation_request: "Отзыв доступа",
   workstation_unavailable_incident: "Недоступно рабочее место",
+  workstation_hardware_diagnostic: "Диагностика оборудования",
   knowledge_request: "Консультация",
   non_it_request: "Непрофильное обращение",
   software_installation_request: "Установка программного обеспечения",
@@ -224,7 +225,9 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
   };
   const workflowLabel = workflow.state === "unsupported"
     ? "Автоматизация не поддерживается"
-    : workflow.workflow_key;
+    : workflow.workflow_key === "workstation_hardware_diagnostic_workflow"
+      ? "Диагностика оборудования"
+      : workflow.workflow_key;
 
   return (
     <section className="overflow-hidden rounded-lg border border-neutral-800/80 bg-[#0d0f14]">
@@ -362,6 +365,15 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
           <p className="mt-1 font-mono text-[10px] text-neutral-500">
             {compatibility.target_selection_method || "метод не указан"}
           </p>
+          {compatibility.target_reranker_verdict && (
+            <p className="mt-1 text-[10px] leading-4 text-neutral-500">
+              reranker: {compatibility.target_reranker_verdict}
+              {compatibility.target_reranker_confidence != null
+                ? ` · ${Math.round(compatibility.target_reranker_confidence * 100)}%`
+                : ""}
+              {compatibility.target_reranker_reason ? ` · ${compatibility.target_reranker_reason}` : ""}
+            </p>
+          )}
           <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-neutral-400">
             <span className="inline-flex items-center gap-1 rounded border border-neutral-800 px-2 py-1">
               <ShieldCheck className="h-3 w-3" /> каталог: {compatibility.catalog_state}
@@ -383,7 +395,15 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
                     <p className="text-neutral-200">{candidate.service_path}</p>
                     <p className="mt-0.5 text-[10px] text-neutral-500">{candidate.evidence.join(" · ")}</p>
                   </div>
-                  <span className="shrink-0 font-mono text-[10px] text-neutral-500">#{candidate.service_id} · {candidate.confidence}</span>
+                  <span className="shrink-0 text-right font-mono text-[10px] text-neutral-500">
+                    <span>#{candidate.service_id} · текст {Math.round(candidate.score * 100)}%</span>
+                    {candidate.service_id === compatibility.target_service_id
+                      && compatibility.target_reranker_confidence != null && (
+                        <span className="mt-0.5 block text-emerald-400">
+                          выбран LLM · {Math.round(compatibility.target_reranker_confidence * 100)}%
+                        </span>
+                    )}
+                  </span>
                 </div>
               ))}
             </div>
