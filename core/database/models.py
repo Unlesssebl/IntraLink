@@ -391,6 +391,54 @@ class WorkflowPlanRecord(Base, TimestampMixin):
         super().__init__(**kwargs)
 
 
+class ClarificationRequestRecord(Base, TimestampMixin):
+    """Durable, idempotent request for missing public onboarding facts."""
+
+    __tablename__ = "clarification_requests"
+    __table_args__ = (Index("ix_clarification_requests_task_state", "task_id", "state"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    workflow_plan_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("workflow_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    workflow_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    round: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    missing_facts_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
+    )
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    baseline_event_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    response_event_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    response_facts_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("missing_facts_json", [])
+        kwargs["response_facts_json"] = sanitize_secrets(kwargs.get("response_facts_json", {}))
+        super().__init__(**kwargs)
+
+
+class OnboardingFactCorrectionRecord(Base, TimestampMixin):
+    """Operator-confirmed canonical onboarding fact, append-only by snapshot."""
+
+    __tablename__ = "onboarding_fact_corrections"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    fact_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    operator_username: Mapped[str] = mapped_column(String(100), nullable=False)
+    reason_tag: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class ActionPlanRecord(Base, TimestampMixin):
     """Canonical, approval-bound list of capability invocations."""
 

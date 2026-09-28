@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.src.core.config import settings
 from api.src.core.db import async_session_factory
 from api.src.features.autopilot.service import AutomationService
+from core.automation.service_catalog import ServiceCatalogRepository
+from core.automation.service_routing import RedirectStrategy, ServiceRouteBinding
 from core.crypto import get_fernet
 from core.database.models import (
     ServiceCatalogEntryRecord,
@@ -21,6 +23,8 @@ from core.intraservice.auth import ServiceAuthBootstrap
 from core.intraservice.client import IntraServiceClient
 
 from .schemas import (
+    ActivateAdAccountBindingRequest,
+    AdAccountBindingStatus,
     CatalogStatus,
     ServiceCredentialsStatus,
     ServiceCredentialsUpdate,
@@ -31,6 +35,57 @@ from .schemas import (
 class AdminCredentialsService:
     def __init__(self) -> None:
         self.client = IntraServiceClient(base_url=settings.INTRASERVICE_URL, verify_ssl=settings.SSL_VERIFY)
+        self.catalog_repository = ServiceCatalogRepository()
+
+    async def get_ad_account_binding(self, session: AsyncSession) -> AdAccountBindingStatus:
+        version, entries, bindings = await self.catalog_repository.current(session)
+        entry = next((item for item in entries if item.service_id == 53 and item.is_active), None)
+        binding = next((item for item in bindings if item.key == "ad_account_creation"), None)
+        current = bool(version and binding and binding.catalog_hash == version.catalog_hash)
+        return AdAccountBindingStatus(
+            service_path=entry.service_path if entry else None,
+            catalog_hash=version.catalog_hash if version else None,
+            catalog_version=version.version if version else None,
+            task_type_id=entry.task_type_id if entry else None,
+            field_metadata=entry.field_metadata if entry else [],
+            active=bool(current and binding and binding.is_active),
+            validated=bool(current and binding and binding.is_validated),
+            requires_confirmation=not bool(current and binding and binding.is_active and binding.is_validated),
+        )
+
+    async def activate_ad_account_binding(
+        self, session: AsyncSession, request: ActivateAdAccountBindingRequest
+    ) -> AdAccountBindingStatus:
+        version, entries, _ = await self.catalog_repository.current(session)
+        if version is None or version.catalog_hash != request.catalog_hash:
+            raise HTTPException(status.HTTP_409_CONFLICT, "service_catalog_changed")
+        entry = next((item for item in entries if item.service_id == 53 and item.is_active), None)
+        if entry is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "service_53_not_active")
+        if entry.service_path != request.confirmed_service_path:
+            raise HTTPException(status.HTTP_409_CONFLICT, "service_path_confirmation_mismatch")
+        binding = ServiceRouteBinding(
+            key="ad_account_creation",
+            version="1.0.0",
+            service_ids=(53,),
+            allowed_case_types=("employee_onboarding",),
+            default_case_type="employee_onboarding",
+            allowed_workflows=("employee_onboarding_workflow",),
+            allowed_capabilities=("create_ad_user",),
+            required_task_type_id=entry.task_type_id,
+            required_fields=(),
+            redirect_strategy=RedirectStrategy.cancel_and_recreate,
+            risk="high",
+            is_active=True,
+            is_validated=False,
+            catalog_hash=version.catalog_hash,
+        )
+        try:
+            await self.catalog_repository.validate_and_store_binding(session, binding)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        await session.commit()
+        return await self.get_ad_account_binding(session)
 
     async def get_status(
         self,

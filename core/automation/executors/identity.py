@@ -34,14 +34,47 @@ class CreateAdUserExecutor:
                 details={"missing_params": missing},
                 error_code="missing_identity_params",
             )
+        try:
+            preview = await self.provisioner.preflight(
+                last_name=str(params["last_name"]).strip(),
+                first_name=str(params["first_name"]).strip(),
+                middle_name=str(params.get("middle_name", "")).strip(),
+            )
+        except AccountProvisioningError as exc:
+            return CapabilityPreflight(
+                status=PreflightStatus.failed,
+                checks=["ad_available", "target_ou", "dn_absent", "login_preview"],
+                error_code=exc.code,
+            )
+        except Exception as exc:
+            return CapabilityPreflight(
+                status=PreflightStatus.degraded,
+                checks=["ad_available", "intraservice_available"],
+                error_code=f"identity_preflight_exception:{type(exc).__name__}",
+            )
         return CapabilityPreflight(
             status=PreflightStatus.passed,
-            checks=["required_identity_fields", "credentials_delivery_configured"],
+            checks=[
+                "required_identity_fields",
+                "ad_available",
+                "target_ou_exists",
+                "distinguished_name_absent",
+                "login_preview_available",
+                "intraservice_available",
+                "credential_fields_1488_1489_configured",
+            ],
+            details=preview,
         )
 
     async def execute(
         self, params: dict[str, Any], *, context: CapabilityExecutionContext
     ) -> CapabilityExecution:
+        if os.getenv("AD_ONBOARDING_EXECUTION_ENABLED", "false").lower() not in {"1", "true", "yes"}:
+            return CapabilityExecution(
+                outcome=CapabilityOutcome.failed,
+                proof={"ad_object_created": False, "safe_to_retry": True},
+                error_code="ad_onboarding_execution_disabled",
+            )
         try:
             receipt = await self.provisioner.provision(
                 task_id=context.task_id,
@@ -58,7 +91,7 @@ class CreateAdUserExecutor:
                 outcome=CapabilityOutcome.failed,
                 proof={
                     "ad_object_created": exc.ad_object_created,
-                    "safe_to_retry": False,
+                    "safe_to_retry": not exc.ad_object_created,
                 },
                 error_code=exc.code,
                 error_message=str(exc),

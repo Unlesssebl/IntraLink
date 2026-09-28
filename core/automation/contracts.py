@@ -254,6 +254,9 @@ class WorkflowPlan(FrozenModel):
     steps: list[WorkflowStep] = Field(default_factory=list)
     missing_facts: list[str] = Field(default_factory=list)
     clarification_round: int = Field(default=0, ge=0, le=2)
+    fact_provenance: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    fact_conflicts: dict[str, list[str]] = Field(default_factory=dict)
+    active_clarification_id: UUID | None = None
     reason_codes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")

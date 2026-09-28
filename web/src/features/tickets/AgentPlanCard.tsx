@@ -50,6 +50,8 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
   const [targetEditorOpen, setTargetEditorOpen] = React.useState(false);
   const [selectedTargetService, setSelectedTargetService] = React.useState("");
   const [actionEditorOpen, setActionEditorOpen] = React.useState(false);
+  const [factEditorOpen, setFactEditorOpen] = React.useState(false);
+  const [factDraft, setFactDraft] = React.useState<Record<string, string>>({});
   const [actionDraft, setActionDraft] = React.useState<Array<{ capability_key: string; params: Record<string, string> }>>([]);
   const [busy, setBusy] = React.useState<string | null>(null);
   const queryClient = useQueryClient();
@@ -180,6 +182,37 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
     }
   };
 
+  const openFactEditor = () => {
+    if (!data) return;
+    const keys = new Set(["last_name", "first_name", "middle_name", "department", "title", "phone", "company"]);
+    setFactDraft(Object.fromEntries(
+      [...keys].map((key) => {
+        const sources = data.workflow_plan.fact_provenance?.[key] || [];
+        return [
+        key,
+        String(sources[sources.length - 1]?.value || ""),
+        ];
+      })
+    ));
+    setFactEditorOpen(true);
+  };
+
+  const saveFactCorrection = async () => {
+    if (!data) return;
+    setBusy("correct-facts");
+    try {
+      const facts = Object.fromEntries(Object.entries(factDraft).filter(([, value]) => value.trim()));
+      await autopilotApi.correctOnboardingFacts(ticketId, data, facts);
+      setFactEditorOpen(false);
+      await refetch();
+      toast.success("Факты подтверждены оператором, workflow пересобран");
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : "Факты не изменены");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   if (isLoading) {
     return <div className="h-36 animate-pulse rounded-lg border border-neutral-800/80 bg-[#12151c]" />;
   }
@@ -211,7 +244,13 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
   const degradationDetails = Object.entries(data.case_frame.degraded_components)
     .map(([component, reason]) => `${component}: ${reason}`)
     .join(", ");
-  const canApprove = actionPlan?.state === "ready" && data.approval.state === "pending";
+  const preflightPassed = !!actionPlan && actionPlan.actions.every((action) =>
+    data.preflight.some((item) => item.action_id === action.id && ["passed", "not_applicable"].includes(item.status))
+  );
+  const canApprove = actionPlan?.state === "ready"
+    && data.approval.state === "pending"
+    && preflightPassed
+    && data.approval.execution_enabled !== false;
   const targetLabel = compatibility.target_service_path
     || (compatibility.target_selection_state === "ambiguous"
       ? "Несколько возможных сервисов"
@@ -462,6 +501,60 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
         </div>
       )}
 
+      {workflow.workflow_key === "employee_onboarding_workflow" && (
+        <div className="mx-4 my-3 rounded-md border border-neutral-800/80 bg-[#12151c] p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-medium text-neutral-100">Факты создания учётной записи</p>
+            <span className="font-mono text-[10px] text-neutral-500">
+              binding {actionPlan?.service_binding_key || compatibility.binding_key || "—"}@{actionPlan?.service_binding_version || compatibility.binding_version || "—"}
+            </span>
+          </div>
+          <div className="mt-3 grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(210px,1fr))]">
+            {Object.entries(workflow.fact_provenance || {}).map(([key, sources]) => {
+              const latest = sources[sources.length - 1] || {};
+              const conflict = workflow.fact_conflicts?.[key];
+              return (
+                <div key={key} className={`rounded border px-2.5 py-2 ${conflict ? "border-rose-800/60 bg-rose-950/20" : "border-neutral-800 bg-black/10"}`}>
+                  <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-neutral-500">
+                    <span>{key}</span>
+                    <span className="normal-case tracking-normal">{String(latest.source || "unknown")}</span>
+                  </div>
+                  <p className="mt-1 text-xs text-neutral-100">{String(latest.value || "")}</p>
+                  {conflict && <p className="mt-1 text-[10px] text-rose-300">Конфликт: {conflict.join(" / ")}</p>}
+                </div>
+              );
+            })}
+          </div>
+          {workflow.active_clarification_id && (
+            <p className="mt-2 font-mono text-[10px] text-neutral-500">clarification {workflow.active_clarification_id}</p>
+          )}
+          {!factEditorOpen ? (
+            <Button size="sm" variant="ghost" className="mt-2" onClick={openFactEditor} icon={<Pencil className="h-3.5 w-3.5" />}>
+              Подтвердить или исправить факты
+            </Button>
+          ) : (
+            <div className="mt-3 space-y-3 border-t border-neutral-800 pt-3">
+              <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(210px,1fr))]">
+                {Object.entries(factDraft).map(([key, value]) => (
+                  <label key={key} className="text-[10px] uppercase tracking-wider text-neutral-500">
+                    {key}
+                    <input
+                      value={value}
+                      onChange={(event) => setFactDraft((current) => ({ ...current, [key]: event.target.value }))}
+                      className="mt-1 h-8 w-full rounded-md border border-neutral-700 bg-[#0d0f14] px-2.5 text-xs normal-case tracking-normal text-neutral-100 outline-none focus:border-violet-500"
+                    />
+                  </label>
+                ))}
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="ghost" onClick={() => setFactEditorOpen(false)}>Отмена</Button>
+                <Button size="sm" loading={busy === "correct-facts"} onClick={saveFactCorrection}>Сохранить подтверждение</Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {actionPlan && (
         <div className="space-y-2 px-4 py-3">
           {actionPlan.actions.map((action) => (
@@ -476,6 +569,21 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
                 </p>
               </div>
               <Badge variant={action.risk === "high" ? "danger" : "neutral"}>{action.risk}</Badge>
+            </div>
+          ))}
+          {data.preflight.map((item) => (
+            <div key={`${item.action_id}-${item.expires_at}`} className="rounded-md border border-neutral-800 bg-black/10 p-3 text-[11px]">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium text-neutral-200">Preflight · {item.capability_key}</span>
+                <Badge variant={item.status === "passed" ? "success" : item.status === "failed" ? "danger" : "warning"}>{item.status}</Badge>
+              </div>
+              <p className="mt-1 text-neutral-500">{item.checks.join(" · ")}</p>
+              {Object.keys(item.details).length > 0 && (
+                <div className="mt-2 grid gap-1 font-mono text-[10px] text-neutral-400 [grid-template-columns:repeat(auto-fit,minmax(220px,1fr))]">
+                  {Object.entries(item.details).map(([key, value]) => <span key={key}>{key}={String(value)}</span>)}
+                </div>
+              )}
+              {item.error && <p className="mt-1 text-rose-300">{item.error}</p>}
             </div>
           ))}
           {actionPlan.state === "ready" && !actionEditorOpen && (
@@ -544,6 +652,7 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
         <div className="flex items-center gap-1.5 text-[11px] text-neutral-500">
           <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" strokeWidth={1.5} />
           Исполнение только после approval и preflight
+          {data.approval.execution_enabled === false && <span className="text-amber-400">· AD execution выключен</span>}
         </div>
         <div className="flex items-center gap-2">
           {actionPlan && data.approval.state === "pending" && (

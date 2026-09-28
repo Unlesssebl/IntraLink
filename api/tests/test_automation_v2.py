@@ -215,6 +215,37 @@ async def test_read_only_get_does_not_trigger_analysis(session_factory) -> None:
     client.get_task.assert_not_awaited()
 
 
+async def test_onboarding_reanalysis_does_not_duplicate_clarification(session_factory) -> None:
+    client = AsyncMock()
+    client.get_task.return_value = TaskDTO(
+        Id=63001,
+        Name="Создать учетную запись нового сотрудника",
+        Description="Нужно создать пользователя",
+        ServiceId=900001,
+        ServiceName="Создание пользователя сети",
+        TaskTypeId=1001,
+        StatusId=2,
+        entities=ExtractedEntitiesDTO(last_name="Иванов", first_name="Иван"),
+    )
+    client.get_task_lifetime.return_value = []
+    service = AutomationService(client=client, extractor=CaseFrameExtractor(), router=CaseRouter())
+    service.auth_bootstrap = AsyncMock()
+    service.auth_bootstrap.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="service-auth",
+        bot_user_id=999,
+        login="bot",
+    )
+
+    async with session_factory() as session:
+        first = await service.analyze(session, ticket_id=63001, auth_b64="operator-auth", force=True)
+        second = await service.analyze(session, ticket_id=63001, auth_b64="operator-auth", force=True)
+
+    assert first.workflow_plan.state.value == "awaiting_facts"
+    assert second.workflow_plan.active_clarification_id == first.workflow_plan.active_clarification_id
+    assert client.update_task.await_count == 1
+    assert client.update_task.await_args.kwargs["status_id"] == 6
+
+
 async def test_analyze_then_approve_creates_bound_first_command(session_factory) -> None:
     client = AsyncMock()
     client.get_task.return_value = _task()

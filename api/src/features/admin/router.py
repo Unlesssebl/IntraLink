@@ -10,7 +10,13 @@ from api.src.core.db import get_db_session
 from api.src.core.redis import get_redis
 from api.src.core.security import AdminIdentity, require_admin_intraservice_auth
 
-from .schemas import ServiceCredentialsStatus, ServiceCredentialsUpdate, ServiceCredentialsUpdateResponse
+from .schemas import (
+    ActivateAdAccountBindingRequest,
+    AdAccountBindingStatus,
+    ServiceCredentialsStatus,
+    ServiceCredentialsUpdate,
+    ServiceCredentialsUpdateResponse,
+)
 from .service import AdminCredentialsService
 
 router = APIRouter(prefix="/admin", tags=["Administration"])
@@ -39,3 +45,22 @@ async def update_service_credentials(
     service: Annotated[AdminCredentialsService, Depends(get_admin_credentials_service)],
 ) -> ServiceCredentialsUpdateResponse:
     return await service.update(session, redis_client, request)
+
+
+@router.get("/bindings/ad-account-creation", response_model=AdAccountBindingStatus)
+async def get_ad_account_binding(
+    _admin: Annotated[AdminIdentity, Depends(require_admin_intraservice_auth)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    service: Annotated[AdminCredentialsService, Depends(get_admin_credentials_service)],
+) -> AdAccountBindingStatus:
+    return await service.get_ad_account_binding(session)
+
+
+@router.put("/bindings/ad-account-creation", response_model=AdAccountBindingStatus)
+async def activate_ad_account_binding(
+    request: ActivateAdAccountBindingRequest,
+    _admin: Annotated[AdminIdentity, Depends(require_admin_intraservice_auth)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    service: Annotated[AdminCredentialsService, Depends(get_admin_credentials_service)],
+) -> AdAccountBindingStatus:
+    return await service.activate_ad_account_binding(session, request)

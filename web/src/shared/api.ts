@@ -358,6 +358,22 @@ export interface ServiceCredentialsUpdateResponse {
   catalog_sync_error: string | null;
 }
 
+export interface AdAccountBindingStatus {
+  binding_key: string;
+  service_id: number;
+  service_path: string | null;
+  catalog_hash: string | null;
+  catalog_version: number | null;
+  task_type_id: number | null;
+  field_metadata: Array<Record<string, unknown>>;
+  required_facts: string[];
+  workflow_key: string;
+  capability_key: string;
+  active: boolean;
+  validated: boolean;
+  requires_confirmation: boolean;
+}
+
 export const adminApi = {
   getServiceCredentialsStatus: (signal?: AbortSignal) =>
     request<ServiceCredentialsStatus>("/admin/service-credentials/status", { signal }),
@@ -366,6 +382,15 @@ export const adminApi = {
     request<ServiceCredentialsUpdateResponse>("/admin/service-credentials", {
       method: "PUT",
       body: JSON.stringify({ login, password, sync_catalog: syncCatalog }),
+    }),
+
+  getAdAccountBinding: (signal?: AbortSignal) =>
+    request<AdAccountBindingStatus>("/admin/bindings/ad-account-creation", { signal }),
+
+  activateAdAccountBinding: (catalogHash: string, confirmedServicePath: string) =>
+    request<AdAccountBindingStatus>("/admin/bindings/ad-account-creation", {
+      method: "PUT",
+      body: JSON.stringify({ catalog_hash: catalogHash, confirmed_service_path: confirmedServicePath }),
     }),
 };
 

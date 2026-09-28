@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     INTRASERVICE_PASSWORD: str = ""
     SSL_VERIFY: bool = False
     BOT_USER_ID: Optional[int] = None
+    WORKER_API_KEY: str = ""
+    AD_ONBOARDING_EXECUTION_ENABLED: bool = False
 
     # Corporate IntraService logins allowed to manage encrypted service credentials.
     ADMIN_LOGINS: Union[List[str], str] = []

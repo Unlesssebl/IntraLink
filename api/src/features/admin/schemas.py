@@ -32,3 +32,24 @@ class ServiceCredentialsUpdateResponse(BaseModel):
     status: ServiceCredentialsStatus
     catalog_sync: str
     catalog_sync_error: str | None = None
+
+
+class AdAccountBindingStatus(BaseModel):
+    binding_key: str = "ad_account_creation"
+    service_id: int = 53
+    service_path: str | None = None
+    catalog_hash: str | None = None
+    catalog_version: int | None = None
+    task_type_id: int | None = None
+    field_metadata: list[dict] = Field(default_factory=list)
+    required_facts: list[str] = Field(default_factory=lambda: ["last_name", "first_name", "department", "title"])
+    workflow_key: str = "employee_onboarding_workflow"
+    capability_key: str = "create_ad_user"
+    active: bool = False
+    validated: bool = False
+    requires_confirmation: bool = True
+
+
+class ActivateAdAccountBindingRequest(BaseModel):
+    catalog_hash: str = Field(min_length=64, max_length=64)
+    confirmed_service_path: str = Field(min_length=1, max_length=1000)

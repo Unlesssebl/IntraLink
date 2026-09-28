@@ -15,12 +15,17 @@ Watermark:
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+import httpx
 import redis.asyncio as aioredis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from core.automation.clarification import latest_human_public_event
+from core.database.models import ClarificationRequestRecord, WorkflowPlanRecord
 from core.database.system_state import (
     WatermarkService,
     _get_active_session_factory,
@@ -57,6 +62,9 @@ class IngestionPoller:
         client: Optional[IntraServiceClient] = None,
         redis_client: Optional[aioredis.Redis] = None,
         session_factory: Optional[async_sessionmaker[AsyncSession]] = None,
+        resume_base_url: Optional[str] = None,
+        worker_api_key: Optional[str] = None,
+        http_client: Optional[httpx.AsyncClient] = None,
     ) -> None:
         self.service_auth = service_auth or ServiceAuthBootstrap()
         self.watermark_service = watermark_service or WatermarkService(
@@ -66,6 +74,9 @@ class IngestionPoller:
         self.client = client or IntraServiceClient()
         self.redis_client = redis_client
         self.session_factory = session_factory
+        self.resume_base_url = (resume_base_url or os.getenv("CORE_API_URL") or "http://api:8000/api/v2").rstrip("/")
+        self.worker_api_key = worker_api_key if worker_api_key is not None else os.getenv("WORKER_API_KEY", "")
+        self.http_client = http_client
 
         self.consecutive_errors: int = 0
         self.current_interval_sec: float = self.DEFAULT_POLL_INTERVAL_SEC
@@ -180,7 +191,8 @@ class IngestionPoller:
         for t in tasks_changed:
             unique_tasks[t.id] = t
 
-        # 5. Record observations only. ASSISTED mode requires an explicit operator action.
+        # 5. Resume only an already awaiting assisted workflow when a new public human answer exists.
+        await self._resume_waiting_clarifications(unique_tasks, auth, session=session)
         # 6. Update dual watermark in PostgreSQL & Redis
         max_task_id = (watermark.last_task_id if watermark else None) or 0
         if unique_tasks:
@@ -218,6 +230,71 @@ class IngestionPoller:
             consecutive_errors=0,
             error=None,
         )
+
+    async def _resume_waiting_clarifications(
+        self,
+        tasks: Dict[int, TaskDTO],
+        auth: ServiceAuthCredentials,
+        *,
+        session: Optional[AsyncSession],
+    ) -> None:
+        if not self.worker_api_key or not tasks:
+            return
+
+        async def process(db: AsyncSession) -> None:
+            for task_id in tasks:
+                latest = await db.scalar(
+                    select(WorkflowPlanRecord)
+                    .where(WorkflowPlanRecord.task_id == task_id)
+                    .order_by(WorkflowPlanRecord.created_at.desc(), WorkflowPlanRecord.id.desc())
+                    .limit(1)
+                )
+                if latest is None or latest.state != "awaiting_facts":
+                    continue
+                clarification = await db.scalar(
+                    select(ClarificationRequestRecord)
+                    .where(
+                        ClarificationRequestRecord.task_id == task_id,
+                        ClarificationRequestRecord.state == "published",
+                    )
+                    .order_by(ClarificationRequestRecord.published_at.desc())
+                    .limit(1)
+                )
+                if clarification is None:
+                    continue
+                try:
+                    events = await self.client.get_task_lifetime(task_id=task_id, auth_b64=auth.auth_b64)
+                    event = latest_human_public_event(
+                        events,
+                        baseline_event_id=clarification.baseline_event_id,
+                        bot_user_id=auth.bot_user_id,
+                    )
+                    if event is None or event.id is None:
+                        continue
+                    await self._post_resume(task_id, event.id)
+                except Exception as exc:
+                    logger.warning("Clarification resume failed for task %s: %s", task_id, exc)
+
+        if session is not None:
+            await process(session)
+        elif self.session_factory is not None:
+            async with self.session_factory() as owned_session:
+                await process(owned_session)
+
+    async def _post_resume(self, task_id: int, event_id: int) -> None:
+        client = self.http_client or httpx.AsyncClient(timeout=30.0)
+        owned = self.http_client is None
+        try:
+            response = await client.post(
+                f"{self.resume_base_url}/internal/autopilot/tickets/{task_id}/resume",
+                json={"event_id": event_id},
+                headers={"X-Worker-Key": self.worker_api_key},
+            )
+            if response.status_code not in (200, 409):
+                response.raise_for_status()
+        finally:
+            if owned:
+                await client.aclose()
 
 
 _active_poller: Optional[IngestionPoller] = None

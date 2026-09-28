@@ -17,6 +17,7 @@ import { adminApi } from "@/shared/api";
 import { Badge, Button, Card, Input, useToast } from "@/shared/ui";
 
 const statusKey = ["admin", "service-credentials"] as const;
+const bindingKey = ["admin", "ad-account-binding"] as const;
 
 export const AdminCredentials: React.FC = () => {
   const toast = useToast();
@@ -25,11 +26,30 @@ export const AdminCredentials: React.FC = () => {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [syncCatalog, setSyncCatalog] = useState(true);
+  const [bindingConfirmed, setBindingConfirmed] = useState(false);
 
   const statusQuery = useQuery({
     queryKey: statusKey,
     queryFn: ({ signal }) => adminApi.getServiceCredentialsStatus(signal),
     retry: false,
+  });
+  const bindingQuery = useQuery({
+    queryKey: bindingKey,
+    queryFn: ({ signal }) => adminApi.getAdAccountBinding(signal),
+    retry: false,
+  });
+  const bindingMutation = useMutation({
+    mutationFn: () => {
+      const binding = bindingQuery.data;
+      if (!binding?.catalog_hash || !binding.service_path) throw new Error("Каталог или сервис #53 недоступен");
+      return adminApi.activateAdAccountBinding(binding.catalog_hash, binding.service_path);
+    },
+    onSuccess: (binding) => {
+      setBindingConfirmed(false);
+      queryClient.setQueryData(bindingKey, binding);
+      toast.success("Привязка создания учётной записи активирована");
+    },
+    onError: (error: Error) => toast.error(error.message || "Не удалось активировать привязку"),
   });
 
   useEffect(() => {
@@ -228,6 +248,42 @@ export const AdminCredentials: React.FC = () => {
           повторным сохранением этой формы; открытого значения в интерфейсе нет.
         </p>
       </div>
+
+      <Card
+        title="Создание учётной записи AD"
+        subtitle="Фиксированная привязка: сервис #53 → employee_onboarding → create_ad_user"
+        action={<Badge variant={bindingQuery.data?.active ? "success" : "warning"} dot>{bindingQuery.data?.active ? "Активна" : "Требует подтверждения"}</Badge>}
+      >
+        <div className="space-y-4 text-xs">
+          <div className="rounded-md border border-neutral-800 bg-[#0e1013] p-3">
+            <div className="text-[10px] uppercase tracking-wider text-neutral-500">Полный путь сервиса</div>
+            <div className="mt-1 text-neutral-100">{bindingQuery.data?.service_path || "Сервис #53 отсутствует в активном каталоге"}</div>
+            <div className="mt-2 font-mono text-[10px] text-neutral-500 break-all">catalog {bindingQuery.data?.catalog_hash || "—"}</div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <StatusRow label="Workflow" value={bindingQuery.data?.workflow_key || "employee_onboarding_workflow"} mono />
+            <StatusRow label="Capability" value={bindingQuery.data?.capability_key || "create_ad_user"} mono />
+            <StatusRow label="Task type" value={bindingQuery.data?.task_type_id == null ? "Не задан" : String(bindingQuery.data.task_type_id)} />
+            <StatusRow label="Обязательные факты" value={(bindingQuery.data?.required_facts || []).join(", ")} />
+          </div>
+          {!bindingQuery.data?.active && (
+            <div className="flex flex-col gap-3 border-t border-neutral-800 pt-3 sm:flex-row sm:items-center sm:justify-between">
+              <label className="flex items-start gap-2 text-neutral-300">
+                <input type="checkbox" checked={bindingConfirmed} onChange={(event) => setBindingConfirmed(event.target.checked)} className="mt-0.5 accent-neutral-200" />
+                <span>Я проверил полный путь сервиса и подтверждаю привязку к #53.</span>
+              </label>
+              <Button
+                variant="primary"
+                loading={bindingMutation.isPending}
+                disabled={!bindingConfirmed || !bindingQuery.data?.service_path || !bindingQuery.data?.catalog_hash}
+                onClick={() => bindingMutation.mutate()}
+              >
+                Активировать привязку
+              </Button>
+            </div>
+          )}
+        </div>
+      </Card>
     </div>
   );
 };

@@ -1,6 +1,7 @@
 """Unit and integration tests for IngestionPoller, ServiceAuthBootstrap, and routing logic."""
 
 import os
+import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from core.crypto import set_fernet
 from core.database.base import Base
+from core.database.models import ClarificationRequestRecord, WorkflowPlanRecord
 from core.database.system_state import (
     WatermarkService,
     set_system_state_session_factory,
@@ -19,7 +21,7 @@ from core.intraservice.auth import (
     ServiceAuthCredentials,
     ServiceAuthError,
 )
-from core.intraservice.dto import TaskDTO
+from core.intraservice.dto import TaskDTO, TaskLifetimeEventDTO
 from core.intraservice.polling import get_executor_ids_list
 from worker.src.broker import QUEUE_DEFAULT, broker
 from worker.src.tasks.poller import (
@@ -232,6 +234,68 @@ async def test_ingestion_poller_observes_without_triggering_automation(test_db):
     updated_wm = await mock_watermark_service.get_watermark("ingestion_poller")
     assert updated_wm.last_task_id == 103
     assert updated_wm.last_poll_at is not None
+
+
+@pytest.mark.asyncio
+async def test_poller_resumes_only_published_awaiting_clarification(test_db):
+    workflow_id = uuid.uuid4()
+    async with test_db() as session:
+        session.add(
+            WorkflowPlanRecord(
+                id=workflow_id,
+                case_decision_id=uuid.uuid4(),
+                task_id=501,
+                snapshot_hash="a" * 64,
+                workflow_key="employee_onboarding_workflow",
+                workflow_version="1.0.0",
+                state="awaiting_facts",
+                disposition="clarify",
+                clarification_round=0,
+                plan_json={},
+            )
+        )
+        session.add(
+            ClarificationRequestRecord(
+                task_id=501,
+                workflow_plan_id=workflow_id,
+                workflow_key="employee_onboarding_workflow",
+                round=1,
+                snapshot_hash="a" * 64,
+                missing_facts_json=["title"],
+                request_fingerprint="b" * 64,
+                baseline_event_id=10,
+                question_text="Укажите должность",
+                state="published",
+            )
+        )
+        await session.commit()
+
+    client = AsyncMock()
+    client.get_task_lifetime.return_value = [
+        TaskLifetimeEventDTO(Id=11, EditorId=999, Comment="Укажите должность"),
+        TaskLifetimeEventDTO(Id=12, EditorId=77, Comment="Должность: Инженер"),
+    ]
+    http_client = AsyncMock()
+    http_client.post.return_value.status_code = 200
+    poller = IngestionPoller(
+        client=client,
+        session_factory=test_db,
+        worker_api_key="worker-key",
+        resume_base_url="http://api/api/v2",
+        http_client=http_client,
+    )
+    async with test_db() as session:
+        await poller._resume_waiting_clarifications(
+            {501: TaskDTO(Id=501, Name="Создать пользователя", StatusId=6)},
+            ServiceAuthCredentials(auth_b64="auth", bot_user_id=999, login="bot"),
+            session=session,
+        )
+
+    http_client.post.assert_awaited_once_with(
+        "http://api/api/v2/internal/autopilot/tickets/501/resume",
+        json={"event_id": 12},
+        headers={"X-Worker-Key": "worker-key"},
+    )
 
 
 @pytest.mark.asyncio

@@ -70,6 +70,16 @@ export const autopilotApi = {
       }),
     });
   },
+  correctOnboardingFacts(ticketId: number, automation: TicketAutomation, facts: Record<string, string>) {
+    return request<TicketAutomation>(`/api/v2/autopilot/tickets/${ticketId}/onboarding-facts/correct`, {
+      method: "POST",
+      body: JSON.stringify({
+        snapshot_hash: automation.snapshot_hash,
+        facts,
+        reason_tag: "operator_fact_confirmation",
+      }),
+    });
+  },
   correctActionPlan(ticketId: number, automation: TicketAutomation, actions: CorrectedActionInput[], notes?: string) {
     if (!automation.action_plan) throw new Error("ActionPlan отсутствует");
     return request<TicketAutomation>(`/api/v2/autopilot/tickets/${ticketId}/action-plans/correct`, {

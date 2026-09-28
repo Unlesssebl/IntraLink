@@ -27,6 +27,16 @@ from core.automation.service_routing import (
 )
 from core.automation.workflows import WorkflowDefinition, WorkflowRegistry
 
+FIELD_ID_TO_FACT_KEY = {
+    "1121": "last_name", "1057": "last_name", "1069": "last_name",
+    "1122": "first_name", "1058": "first_name", "1070": "first_name",
+    "1123": "middle_name", "1059": "middle_name", "1071": "middle_name",
+    "1129": "title", "1198": "title", "1065": "title", "1073": "title",
+    "1091": "department", "1206": "department", "1078": "department", "1064": "department", "1128": "department",
+    "1130": "phone",
+    "1017": "company",
+}
+
 
 class WorkflowCompiler:
     def __init__(self, workflows: WorkflowRegistry, capabilities: CapabilityRegistry) -> None:
@@ -95,7 +105,24 @@ class WorkflowCompiler:
         facts = self._facts(frame)
         required_facts = list(definition.required_facts)
         if binding is not None:
-            required_facts.extend(item for item in binding.required_fields if item not in required_facts)
+            unknown_binding_fields: list[str] = []
+            for item in binding.required_fields:
+                fact_key = item if item in facts or item in definition.required_facts else FIELD_ID_TO_FACT_KEY.get(item)
+                if fact_key is None:
+                    unknown_binding_fields.append(item)
+                elif fact_key not in required_facts:
+                    required_facts.append(fact_key)
+            if unknown_binding_fields:
+                workflow = self._workflow_plan(
+                    frame,
+                    decision,
+                    definition,
+                    state=WorkflowPlanState.needs_review,
+                    disposition=Disposition.manual,
+                    clarification_round=clarification_round,
+                    reason_codes=["unknown_binding_fact_mapping"],
+                )
+                return workflow, None
         missing = [name for name in required_facts if not str(facts.get(name, "")).strip()]
         if missing:
             if clarification_round >= definition.max_clarification_rounds:

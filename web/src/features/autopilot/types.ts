@@ -54,6 +54,9 @@ export interface WorkflowPlan {
   steps: Array<{ id: string; kind: string; key: string; params: Record<string, unknown> }>;
   missing_facts: string[];
   clarification_round: number;
+  fact_provenance: Record<string, Array<Record<string, unknown>>>;
+  fact_conflicts: Record<string, string[]>;
+  active_clarification_id?: string | null;
   reason_codes: string[];
 }
 
@@ -161,7 +164,16 @@ export interface TicketAutomation {
   workflow_plan: WorkflowPlan;
   redirect_plan?: RedirectPlan | null;
   action_plan?: ActionPlan | null;
-  approval: { state?: string; operator?: string | null };
+  preflight: Array<{
+    action_id: string;
+    capability_key: string;
+    status: string;
+    checks: string[];
+    details: Record<string, unknown>;
+    error?: string | null;
+    expires_at: string;
+  }>;
+  approval: { state?: string; operator?: string | null; execution_enabled?: boolean };
   execution: Array<{
     command_id: string;
     action_id?: string | null;

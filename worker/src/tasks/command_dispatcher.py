@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -229,6 +230,8 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
         if current_snapshot.snapshot_hash != plan.snapshot_hash:
             return {"status": "skipped", "error": "stale_ticket_snapshot"}
         if action.capability_key == "create_ad_user":
+            if os.getenv("AD_ONBOARDING_EXECUTION_ENABLED", "false").lower() not in {"1", "true", "yes"}:
+                return {"status": "skipped", "error": "ad_onboarding_execution_disabled"}
             ad_gate_error = await _validate_ad_service_gate(
                 session=session,
                 plan=plan,
@@ -255,14 +258,49 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
         await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.verifying)
         is_last = action.sequence_no == max(item.sequence_no for item in plan.actions)
         if execution.outcome == CapabilityOutcome.succeeded:
-            status_id = 3 if is_last else 2
-            await _client().update_task(
-                task_id=plan.task_id,
-                status_id=status_id,
-                comment=_success_comment(action.capability_key, proof),
-                is_private=not is_last,
-                auth_b64=auth.auth_b64,
-            )
+            if action.capability_key == "create_ad_user":
+                try:
+                    await _complete_ad_onboarding(
+                        session=session,
+                        client=_client(),
+                        auth_b64=auth.auth_b64,
+                        plan=plan,
+                        command=command,
+                        proof=proof,
+                    )
+                except Exception as exc:
+                    await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.needs_review)
+                    plan_record.state = ActionPlanState.needs_review.value
+                    session.add(
+                        ExecutionFeedbackRecord(
+                            action_plan_id=plan.id,
+                            command_id=command.id,
+                            task_id=plan.task_id,
+                            action_id=action.id,
+                            capability_key=action.capability_key,
+                            outcome="partial",
+                            result_json={
+                                "proof": proof,
+                                "error_code": "ad_completion_pending",
+                                "safe_to_retry": False,
+                            },
+                        )
+                    )
+                    return {
+                        "status": "partial",
+                        "outcome": "partial",
+                        "proof": proof,
+                        "error": f"ad_completion_pending:{type(exc).__name__}",
+                    }
+            else:
+                status_id = 3 if is_last else 2
+                await _client().update_task(
+                    task_id=plan.task_id,
+                    status_id=status_id,
+                    comment=_success_comment(action.capability_key, proof),
+                    is_private=not is_last,
+                    auth_b64=auth.auth_b64,
+                )
             if is_last:
                 await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.completed)
         else:
@@ -287,7 +325,11 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
                 result_json={"proof": proof, "error_code": execution.error_code},
             )
         )
-        plan_record.state = ActionPlanState.running.value
+        plan_record.state = (
+            ActionPlanState.succeeded.value
+            if execution.outcome == CapabilityOutcome.succeeded and is_last
+            else ActionPlanState.running.value
+        )
         return {
             "status": command_status,
             "outcome": command_status,
@@ -365,15 +407,26 @@ async def _validate_ad_service_gate(
     missing = [str(field) for field in binding.required_fields_json if not custom_fields.get(str(field).lower())]
     if missing:
         return "ad_required_form_fields_missing"
-    prior_feedback = await session.scalar(
-        select(ExecutionFeedbackRecord.id)
-        .where(
-            ExecutionFeedbackRecord.task_id == plan.task_id,
-            ExecutionFeedbackRecord.capability_key == "create_ad_user",
-            ExecutionFeedbackRecord.command_id != command.id,
-            ExecutionFeedbackRecord.outcome.in_(["succeeded", "unknown_outcome", "partial"]),
+    prior_feedbacks = list(
+        (
+            await session.scalars(
+                select(ExecutionFeedbackRecord)
+                .where(
+                    ExecutionFeedbackRecord.task_id == plan.task_id,
+                    ExecutionFeedbackRecord.capability_key == "create_ad_user",
+                    ExecutionFeedbackRecord.command_id != command.id,
+                )
+                .order_by(ExecutionFeedbackRecord.created_at.desc())
+            )
+        ).all()
+    )
+    unsafe_prior_feedback = any(
+        item.outcome in {"succeeded", "unknown_outcome", "partial"}
+        or (
+            item.outcome == "failed"
+            and (item.result_json or {}).get("proof", {}).get("safe_to_retry") is not True
         )
-        .limit(1)
+        for item in prior_feedbacks
     )
     prior_command = await session.scalar(
         select(CommandRecord.id)
@@ -381,11 +434,11 @@ async def _validate_ad_service_gate(
             CommandRecord.task_id == plan.task_id,
             CommandRecord.capability_key == "create_ad_user",
             CommandRecord.id != command.id,
-            CommandRecord.status.in_(["succeeded", "unknown_outcome", "running"]),
+            CommandRecord.status.in_(["succeeded", "partial", "unknown_outcome", "running"]),
         )
         .limit(1)
     )
-    if prior_feedback is not None or prior_command is not None:
+    if unsafe_prior_feedback or prior_command is not None:
         return "ad_previous_creation_not_safe_to_repeat"
     return None
 
@@ -412,10 +465,55 @@ def _success_comment(capability_key: str, proof: dict[str, Any]) -> str:
     if capability_key == "add_wlan_group_member":
         return "Доступ к корпоративной сети WLAN-WORKNET предоставлен."
     if capability_key == "create_ad_user":
-        return "Учётная запись создана. Логин и временный пароль записаны в защищённые поля заявки."
+        return (
+            "Учётная запись создана. Имя пользователя и пароль для первого входа указаны "
+            "в соответствующих полях заявки. При первом входе необходимо сменить пароль."
+        )
     if capability_key == "disable_ad_user":
         return "Учётная запись сотрудника отключена, результат подтверждён повторным чтением Active Directory."
     return f"Техническое действие {capability_key} выполнено и проверено."
+
+
+async def _complete_ad_onboarding(
+    *,
+    session: AsyncSession,
+    client: IntraServiceClient,
+    auth_b64: str,
+    plan: ActionPlan,
+    command: CommandRecord,
+    proof: dict[str, Any],
+) -> None:
+    if not proof.get("credentials_written"):
+        raise ValueError("credentials_not_confirmed")
+    preflight = await session.scalar(
+        select(ActionPreflightRecord)
+        .where(ActionPreflightRecord.action_plan_id == plan.id)
+        .order_by(ActionPreflightRecord.created_at.desc())
+        .limit(1)
+    )
+    checks = list(preflight.checks_json) if preflight else []
+    audit = (
+        f"[AD onboarding audit] task_id={plan.task_id}; action_plan_id={plan.id}; "
+        f"command_id={command.id}; login={proof.get('sam_account_name', '')}; "
+        f"upn={proof.get('upn', '')}; dn={proof.get('user_dn', '')}; "
+        f"binding={plan.service_binding_key}:{plan.service_binding_version}; "
+        f"catalog={plan.catalog_hash}; checks={','.join(str(item) for item in checks)}"
+    )
+    public = _success_comment("create_ad_user", proof)
+    events = await client.get_task_lifetime(task_id=plan.task_id, auth_b64=auth_b64)
+    comments = {(item.comment or "").strip() for item in events if item.comment}
+    if audit not in comments:
+        await client.add_task_comment(task_id=plan.task_id, comment=audit, is_private=True, auth_b64=auth_b64)
+    if public in comments:
+        await client.update_task(task_id=plan.task_id, status_id=3, auth_b64=auth_b64)
+    else:
+        await client.update_task(
+            task_id=plan.task_id,
+            status_id=3,
+            comment=public,
+            is_private=False,
+            auth_b64=auth_b64,
+        )
 
 
 def _failure_note(
@@ -481,7 +579,9 @@ async def dispatch_command_task(command_id: uuid.UUID | str) -> dict[str, Any]:
                 result = await handler(command.params_json or {}, command.target_json or {}, session)
             status = str(result.get("status", "succeeded"))
             command.status = (
-                status if status in {"succeeded", "failed", "unknown_outcome", "skipped", "aborted"} else "succeeded"
+                status
+                if status in {"succeeded", "failed", "partial", "unknown_outcome", "skipped", "aborted"}
+                else "failed"
             )
             command.result_json = sanitize_secrets(result)
             command.error_message = sanitize_secret_text(str(result.get("error") or "")) or None
@@ -497,7 +597,7 @@ async def dispatch_command_task(command_id: uuid.UUID | str) -> dict[str, Any]:
         if command.capability_key is not None:
             if command.status == "succeeded":
                 await capability_health.record_success(session, capability_key=command.capability_key)
-            elif command.status in {"failed", "unknown_outcome"}:
+            elif command.status in {"failed", "partial", "unknown_outcome"}:
                 await capability_health.record_failure(
                     session,
                     capability_key=command.capability_key,
@@ -519,3 +619,47 @@ async def dispatch_command_task(command_id: uuid.UUID | str) -> dict[str, Any]:
     if next_command_id is not None:
         await dispatch_command_task.kiq(command_id=str(next_command_id))
     return response
+
+
+@broker.task(task_name="reconcile_ad_onboarding_completion_task")
+async def reconcile_ad_onboarding_completion_task(command_id: uuid.UUID | str) -> dict[str, Any]:
+    """Retry only ticket completion after AD and protected fields were confirmed."""
+    target_id = uuid.UUID(command_id) if isinstance(command_id, str) else command_id
+    async with _session_factory()() as session:
+        command = await session.get(CommandRecord, target_id)
+        if command is None or command.capability_key != "create_ad_user":
+            return {"status": "failed", "error": "ad_command_not_found"}
+        feedback = await session.scalar(
+            select(ExecutionFeedbackRecord).where(
+                ExecutionFeedbackRecord.command_id == target_id,
+                ExecutionFeedbackRecord.outcome == "partial",
+            )
+        )
+        proof = sanitize_secrets((feedback.result_json or {}).get("proof", {})) if feedback else {}
+        if not feedback or not proof.get("credentials_written"):
+            return {"status": "failed", "error": "verified_provisioning_receipt_missing"}
+        plan_record = await session.get(ActionPlanRecord, command.action_plan_id)
+        if plan_record is None:
+            return {"status": "failed", "error": "action_plan_not_found"}
+        plan = ActionPlan.model_validate(plan_record.plan_json)
+        auth = await _service_auth().bootstrap_auth(client=_client(), redis_client=_redis())
+        try:
+            await _complete_ad_onboarding(
+                session=session,
+                client=_client(),
+                auth_b64=auth.auth_b64,
+                plan=plan,
+                command=command,
+                proof=proof,
+            )
+        except Exception as exc:
+            return {"status": "partial", "error": f"ad_completion_pending:{type(exc).__name__}"}
+        feedback.outcome = "succeeded"
+        feedback.result_json = {"proof": proof, "reconciled": True}
+        command.status = "succeeded"
+        command.error_message = None
+        command.result_json = {"status": "succeeded", "proof": proof, "reconciled": True}
+        plan_record.state = ActionPlanState.succeeded.value
+        await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.completed)
+        await session.commit()
+        return {"status": "succeeded", "command_id": str(target_id), "reconciled": True}

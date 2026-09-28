@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+import hmac
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import redis.asyncio as aioredis
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.src.core.config import settings
 from api.src.core.db import get_db_session
+from api.src.core.redis import get_redis
 from api.src.core.security import get_intraservice_auth
 from core.automation.capabilities import get_default_capability_registry
 from core.automation.case_profiles import CaseProfileRegistry
 from core.automation.workflows import get_default_workflow_registry
 from core.database.models import CommandRecord
+from core.redis_lock import DistributedTaskLock
 
 from .schemas import (
     ActionPlanFeedbackRequest,
@@ -24,16 +29,19 @@ from .schemas import (
     CatalogResponse,
     CorrectActionPlanRequest,
     CorrectCaseDecisionRequest,
+    CorrectOnboardingFactsRequest,
     CorrectRedirectPlanRequest,
     CorrectTargetServiceRequest,
     FeedbackResponse,
     RedirectPlanRequest,
     RedirectPlanResponse,
+    ResumeClarificationRequest,
     TicketAutomationDTO,
 )
 from .service import AutomationService, extract_operator
 
 router = APIRouter(prefix="/autopilot", tags=["Ticket automation"])
+internal_router = APIRouter(prefix="/internal/autopilot", tags=["Internal ticket automation"])
 
 
 def get_automation_service() -> AutomationService:
@@ -50,14 +58,69 @@ async def get_ticket_automation(ticket_id: int, db: Db, _auth: Auth, service: Se
     return await service.get_automation(db, ticket_id)
 
 
+async def _analyze_with_lock(
+    ticket_id: int,
+    *,
+    force: bool,
+    db: AsyncSession,
+    auth: str | None,
+    service: AutomationService,
+    redis_client: aioredis.Redis,
+) -> TicketAutomationDTO:
+    lock = DistributedTaskLock(redis_client, f"lock:analysis:{ticket_id}", ttl_seconds=60)
+    if not await lock.acquire():
+        raise HTTPException(status.HTTP_409_CONFLICT, "analysis_already_running")
+    try:
+        return await service.analyze(db, ticket_id=ticket_id, auth_b64=auth, force=force)
+    finally:
+        await lock.release()
+
+
 @router.post("/tickets/{ticket_id}/analyze", response_model=TicketAutomationDTO)
-async def analyze_ticket(ticket_id: int, db: Db, auth: Auth, service: Service) -> TicketAutomationDTO:
-    return await service.analyze(db, ticket_id=ticket_id, auth_b64=auth, force=False)
+async def analyze_ticket(
+    ticket_id: int,
+    db: Db,
+    auth: Auth,
+    service: Service,
+    redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
+) -> TicketAutomationDTO:
+    return await _analyze_with_lock(
+        ticket_id, force=False, db=db, auth=auth, service=service, redis_client=redis_client
+    )
 
 
 @router.post("/tickets/{ticket_id}/reanalyze", response_model=TicketAutomationDTO)
-async def reanalyze_ticket(ticket_id: int, db: Db, auth: Auth, service: Service) -> TicketAutomationDTO:
-    return await service.analyze(db, ticket_id=ticket_id, auth_b64=auth, force=True)
+async def reanalyze_ticket(
+    ticket_id: int,
+    db: Db,
+    auth: Auth,
+    service: Service,
+    redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
+) -> TicketAutomationDTO:
+    return await _analyze_with_lock(
+        ticket_id, force=True, db=db, auth=auth, service=service, redis_client=redis_client
+    )
+
+
+@internal_router.post("/tickets/{ticket_id}/resume", response_model=TicketAutomationDTO)
+async def resume_ticket(
+    ticket_id: int,
+    request: ResumeClarificationRequest,
+    db: Db,
+    service: Service,
+    redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
+    worker_key: Annotated[str | None, Header(alias="X-Worker-Key")] = None,
+) -> TicketAutomationDTO:
+    configured = settings.WORKER_API_KEY
+    if not configured or not worker_key or not hmac.compare_digest(worker_key, configured):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid_worker_key")
+    lock = DistributedTaskLock(redis_client, f"lock:analysis:{ticket_id}", ttl_seconds=60)
+    if not await lock.acquire():
+        raise HTTPException(status.HTTP_409_CONFLICT, "analysis_already_running")
+    try:
+        return await service.resume(db, ticket_id=ticket_id, event_id=request.event_id)
+    finally:
+        await lock.release()
 
 
 @router.post("/tickets/{ticket_id}/case-decision/correct", response_model=TicketAutomationDTO)
@@ -75,6 +138,30 @@ async def correct_case_decision(
         operator=extract_operator(auth),
         auth_b64=auth,
     )
+
+
+@router.post("/tickets/{ticket_id}/onboarding-facts/correct", response_model=TicketAutomationDTO)
+async def correct_onboarding_facts(
+    ticket_id: int,
+    request: CorrectOnboardingFactsRequest,
+    db: Db,
+    auth: Auth,
+    service: Service,
+    redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
+) -> TicketAutomationDTO:
+    lock = DistributedTaskLock(redis_client, f"lock:analysis:{ticket_id}", ttl_seconds=60)
+    if not await lock.acquire():
+        raise HTTPException(status.HTTP_409_CONFLICT, "analysis_already_running")
+    try:
+        return await service.correct_onboarding_facts(
+            db,
+            ticket_id=ticket_id,
+            request=request,
+            operator=extract_operator(auth),
+            auth_b64=auth,
+        )
+    finally:
+        await lock.release()
 
 
 @router.post("/tickets/{ticket_id}/target-service/correct", response_model=TicketAutomationDTO)

@@ -23,6 +23,7 @@ class TicketAutomationDTO(BaseModel):
     workflow_plan: WorkflowPlan
     redirect_plan: RedirectPlan | None = None
     action_plan: ActionPlan | None = None
+    preflight: list[dict[str, Any]] = Field(default_factory=list)
     approval: dict[str, Any] = Field(default_factory=dict)
     execution: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -97,6 +98,16 @@ class ApprovalResponse(BaseModel):
     action_plan_id: UUID
     command_id: UUID | None = None
     plan_hash: str
+
+
+class ResumeClarificationRequest(BaseModel):
+    event_id: int = Field(gt=0)
+
+
+class CorrectOnboardingFactsRequest(BaseModel):
+    snapshot_hash: str = Field(min_length=64, max_length=64)
+    facts: dict[str, str] = Field(min_length=1)
+    reason_tag: str = Field(default="operator_fact_confirmation", min_length=1, max_length=64)
 
 
 class FeedbackResponse(BaseModel):

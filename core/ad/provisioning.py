@@ -198,6 +198,47 @@ class AccountProvisioningService:
             credentials_written=False,
         )
 
+    def _preflight_sync(self, *, last_name: str, first_name: str, middle_name: str) -> dict[str, str]:
+        """Read-only AD validation and deterministic login preview."""
+        full_name = f"{last_name} {first_name} {middle_name}".strip()
+        domain = self.ad_pool.config.domain
+        base_dn = ",".join(f"DC={part}" for part in domain.split(".") if part)
+        target_ou = os.getenv("AD_USERS_OU") or f"CN=Users,{base_dn}"
+        user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
+        with self.ad_pool.connection_scope(auto_bind=True, read_only=True) as conn:
+            conn.search(target_ou, "(objectClass=*)", ldap3.BASE, attributes=["distinguishedName"])
+            if len(conn.entries) != 1:
+                raise AccountProvisioningError("ad_target_ou_not_found", "Target OU is unavailable")
+            conn.search(user_dn, "(objectClass=user)", ldap3.BASE, attributes=["distinguishedName"])
+            if conn.entries:
+                raise AccountProvisioningError("ad_object_already_exists", "AD object already exists")
+            for collision_index in range(1, 51):
+                sam = generate_sam_account_name(last_name, first_name, middle_name, collision_index)
+                conn.search(
+                    base_dn,
+                    f"(&(objectClass=user)(sAMAccountName={escape_filter_chars(sam)}))",
+                    ldap3.SUBTREE,
+                    attributes=["sAMAccountName"],
+                )
+                if not conn.entries:
+                    return {
+                        "target_ou": target_ou,
+                        "preview_sam_account_name": sam,
+                        "preview_upn": f"{sam}@{domain}",
+                        "preview_user_dn": user_dn,
+                    }
+        raise AccountProvisioningError("login_collision_limit", "AD login collision limit exceeded")
+
+    async def preflight(self, *, last_name: str, first_name: str, middle_name: str) -> dict[str, str]:
+        preview = await asyncio.to_thread(
+            self._preflight_sync,
+            last_name=last_name,
+            first_name=first_name,
+            middle_name=middle_name,
+        )
+        await self.auth_bootstrap.bootstrap_auth(client=self.client)
+        return preview
+
     async def provision(
         self,
         *,
