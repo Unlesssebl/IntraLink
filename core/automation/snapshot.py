@@ -35,6 +35,11 @@ def _is_comment_private(comment: Any) -> bool:
     if isinstance(comment, dict):
         if comment.get("is_private") or comment.get("IsPrivate") or comment.get("IsPrivateComment"):
             return True
+        is_pub = comment.get("IsPublic")
+        if is_pub is None:
+            is_pub = comment.get("is_public")
+        if is_pub is not None and (is_pub is False or str(is_pub).lower() in ("false", "0")):
+            return True
         security = comment.get("TaskCommentSecurityGroupIDs")
         if security is None:
             security = comment.get("security_group_ids")
@@ -44,6 +49,9 @@ def _is_comment_private(comment: Any) -> bool:
             or getattr(comment, "IsPrivateComment", False)
             or getattr(comment, "IsPrivate", False)
         ):
+            return True
+        is_pub = getattr(comment, "is_public", getattr(comment, "IsPublic", None))
+        if is_pub is not None and (is_pub is False or str(is_pub).lower() in ("false", "0")):
             return True
         security = getattr(comment, "TaskCommentSecurityGroupIDs", None)
         if security is None:

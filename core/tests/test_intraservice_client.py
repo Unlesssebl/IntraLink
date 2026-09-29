@@ -155,3 +155,55 @@ async def test_update_task_rejects_invalid_custom_field_id():
     client = IntraServiceClient(base_url="https://servicedesk.local/api")
     with pytest.raises(ValueError):
         await client.update_task(task_id=501, custom_fields={0: "invalid"})
+
+
+@pytest.mark.asyncio
+async def test_get_task_lifetime_chronological_ordering_monotonic_ids():
+    """Verify that get_task_lifetime sorts reverse-chronological API responses to chronological order with monotonic stable IDs."""
+    from unittest.mock import AsyncMock, patch
+
+    client = IntraServiceClient(base_url="https://servicedesk.local/api")
+
+    # API returns newest first (descending):
+    raw_descending_lifetime = {
+        "TaskLifetimes": [
+            {
+                "Date": "2026-09-29T13:10:00",
+                "EditorId": 8664,
+                "Editor": "Беликов Ален",
+                "Comments": "Ахмедов Ахмед Ахмедович",
+            },
+            {
+                "Date": "2026-09-29T13:05:00",
+                "EditorId": 10502,
+                "Editor": "Service Bot",
+                "Comments": "Укажите ФИО",
+            },
+            {
+                "Date": "2026-09-29T13:00:00",
+                "EditorId": 8664,
+                "Editor": "Беликов Ален",
+                "Comments": "Заявка создана",
+            },
+        ]
+    }
+
+    with patch.object(client, "_request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = raw_descending_lifetime
+        events = await client.get_task_lifetime(task_id=142250)
+
+        assert len(events) == 3
+        # Chronological order: oldest first!
+        assert events[0].created == "2026-09-29T13:00:00"
+        assert events[0].id == 1
+        assert events[0].comment == "Заявка создана"
+
+        assert events[1].created == "2026-09-29T13:05:00"
+        assert events[1].id == 2
+        assert events[1].comment == "Укажите ФИО"
+
+        assert events[2].created == "2026-09-29T13:10:00"
+        assert events[2].id == 3
+        assert events[2].comment == "Ахмедов Ахмед Ахмедович"
+        # User answer ID (3) is strictly greater than question ID (2)!
+        assert events[2].id > events[1].id

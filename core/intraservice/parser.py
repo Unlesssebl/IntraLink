@@ -522,13 +522,37 @@ def extract_target_user_from_text(text: str) -> str:
     return ""
 
 
-def parse_custom_fields(data_xml: str | None) -> Tuple[ExtractedEntitiesDTO, Dict[str, str]]:
-    """Parse custom field XML payload into typed entities and friendly key-value map."""
-    if not data_xml:
+def parse_custom_fields(
+    data_xml: str | None,
+    raw_task: Dict[str, Any] | None = None,
+) -> Tuple[ExtractedEntitiesDTO, Dict[str, str]]:
+    """Parse custom field XML payload and direct field values into typed entities and friendly key-value map."""
+    if not data_xml and not raw_task:
         return ExtractedEntitiesDTO(), {}
 
     friendly_fields: Dict[str, str] = {}
-    matches = re.findall(r"""<field id=['"](\d+)['"]>([^<]*)</field>""", data_xml)
+    raw_fields: Dict[str, str] = {}
+
+    if data_xml:
+        matches = re.findall(r"""<field id=['"](\d+)['"]>([^<]*)</field>""", data_xml)
+        for fid, val in matches:
+            v = val.strip()
+            if v:
+                raw_fields[fid] = v
+
+    if raw_task and isinstance(raw_task, dict):
+        for k, val in raw_task.items():
+            if val is None:
+                continue
+            fid = None
+            if k.startswith("Field") and k[5:].isdigit():
+                fid = k[5:]
+            elif k.isdigit():
+                fid = k
+            if fid and fid not in raw_fields:
+                v = str(val).strip()
+                if v:
+                    raw_fields[fid] = v
 
     pc_name = ""
     inventory_number = ""
@@ -541,12 +565,7 @@ def parse_custom_fields(data_xml: str | None) -> Tuple[ExtractedEntitiesDTO, Dic
     printer_model = ""
     target_user = ""
 
-    raw_fields: Dict[str, str] = {}
-    for fid, val in matches:
-        v = val.strip()
-        if not v:
-            continue
-        raw_fields[fid] = v
+    for fid, v in raw_fields.items():
         f_name = FIELD_NAME_MAP.get(fid, f"Поле_{fid}")
         friendly_fields[f_name] = v
 
@@ -651,8 +670,13 @@ def enrich_task_dict(task: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(task, dict):
         return task
 
-    xml_data = task.get("CustomFieldData")
-    entities, friendly = parse_custom_fields(xml_data)
+    xml_data = task.get("CustomFieldData") or task.get("Data")
+    if not task.get("CustomFieldData") and task.get("Data"):
+        task["CustomFieldData"] = task["Data"]
+    if not task.get("TaskTypeId") and task.get("TypeId"):
+        task["TaskTypeId"] = task["TypeId"]
+
+    entities, friendly = parse_custom_fields(xml_data, raw_task=task)
 
     task_entities = entities.model_dump()
     task["entities"] = task_entities

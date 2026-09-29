@@ -206,3 +206,49 @@ def test_normalize_pc_name_no_digit_returns_empty():
     # Valid tokens must still work
     assert normalize_pc_name("KZM0010") == "KZM0010"
     assert normalize_pc_name("wks1020") == "WKS-1020"
+
+
+def test_enrich_task_dict_reads_data_xml_and_direct_field_keys():
+    """Verify that Data XML and direct Field1057..Field1068 fields (as returned by real IntraService API in ticket 142250) are parsed."""
+    task_142250_raw = {
+        "Id": 142250,
+        "Name": "Создание пользователя",
+        "Description": "Создать учетную запись",
+        "TypeId": 2,
+        "ServiceId": 53,
+        "Creator": "Беликов Ален",
+        "CreatorId": 8664,
+        "Data": (
+            "<fields>"
+            "<field id='1057'>Ахмедж</field>"
+            "<field id='1058'>Ахмедж</field>"
+            "<field id='1059'>Ахмедж</field>"
+            "<field id='1064'>Ахмедж</field>"
+            "<field id='1065'>Ахмедж</field>"
+            "<field id='1066'>Ахмедж</field>"
+            "<field id='1068'>WKS-1020</field>"
+            "</fields>"
+        ),
+        "Field1057": "Ахмедж",
+        "Field1058": "Ахмедж",
+        "Field1059": "Ахмедж",
+        "Field1064": "Ахмедж",
+        "Field1065": "Ахмедж",
+        "Field1066": "Ахмедж",
+        "Field1068": "WKS-1020",
+    }
+    enriched = enrich_task_dict(task_142250_raw)
+    assert enriched["entities"]["last_name"] == "Ахмедж"
+    assert enriched["entities"]["first_name"] == "Ахмедж"
+    assert enriched["entities"]["middle_name"] == "Ахмедж"
+    assert enriched["entities"]["department"] == "Ахмедж"
+    assert enriched["entities"]["title"] == "Ахмедж"
+    assert enriched["entities"]["phone"] == "Ахмедж"
+    assert enriched["entities"]["pc_name"] == "WKS-1020"
+    assert enriched["TaskTypeId"] == 2
+    assert enriched["CustomFieldData"] == task_142250_raw["Data"]
+    assert "Фамилия" in enriched["custom_fields"]
+    assert "Имя" in enriched["custom_fields"]
+    assert "Отчество" in enriched["custom_fields"]
+    assert "Подразделение" in enriched["custom_fields"]
+    assert "Должность" in enriched["custom_fields"]

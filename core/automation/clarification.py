@@ -69,6 +69,15 @@ def render_clarification(missing_facts: Iterable[str]) -> str:
     return "Для создания учётной записи дополнительно укажите, пожалуйста: " + ", ".join(labels) + "."
 
 
+_NON_NAME_TOKENS = {
+    "спасибо", "большое", "добрый", "день", "вечер", "утро", "здравствуйте",
+    "привет", "приветствую", "хорошо", "ок", "ладно", "принято", "понятно",
+    "ясно", "сделано", "отмените", "отмена", "не", "надо", "нужно", "жду",
+    "пожалуйста", "благодарю", "прошу", "здравствуй", "hi", "hello", "thanks",
+    "thank", "you", "ok", "yes", "no",
+}
+
+
 def extract_labeled_facts(text: str, allowed_facts: Iterable[str]) -> dict[str, dict[str, str]]:
     """Extract only literal labelled spans; never infer an unstated value."""
     allowed = set(allowed_facts) & set(ONBOARDING_FACTS)
@@ -93,10 +102,11 @@ def extract_labeled_facts(text: str, allowed_facts: Iterable[str]) -> dict[str, 
         compact = " ".join(text.split())
         if re.fullmatch(r"[A-Za-zА-Яа-яЁё-]+(?:\s+[A-Za-zА-Яа-яЁё-]+){1,2}", compact):
             parts = compact.split()
-            result["last_name"] = {"value": parts[0], "text_span": compact}
-            result["first_name"] = {"value": parts[1], "text_span": compact}
-            if len(parts) == 3 and "middle_name" in allowed:
-                result["middle_name"] = {"value": parts[2], "text_span": compact}
+            if not any(part.casefold() in _NON_NAME_TOKENS for part in parts):
+                result["last_name"] = {"value": parts[0], "text_span": compact}
+                result["first_name"] = {"value": parts[1], "text_span": compact}
+                if len(parts) == 3 and "middle_name" in allowed:
+                    result["middle_name"] = {"value": parts[2], "text_span": compact}
     return result
 
 
@@ -144,18 +154,29 @@ def merge_onboarding_facts(
 
 
 def latest_human_public_event(
-    events: Iterable[TaskLifetimeEventDTO], *, baseline_event_id: int | None, bot_user_id: int
+    events: Iterable[TaskLifetimeEventDTO],
+    *,
+    baseline_event_id: int | None,
+    bot_user_id: int,
+    question_text: str | None = None,
 ) -> TaskLifetimeEventDTO | None:
-    candidates = [
-        event
-        for event in events
-        if event.id is not None
-        and event.id > (baseline_event_id or 0)
-        and not event.is_private
-        and bool((event.comment or "").strip())
-        and event.editor_id is not None
-        and event.editor_id != bot_user_id
-    ]
+    norm_question = " ".join((question_text or "").split()).strip()
+    candidates = []
+    for event in events:
+        if event.id is None or event.id <= (baseline_event_id or 0):
+            continue
+        if event.is_private:
+            continue
+        comment = (event.comment or "").strip()
+        if not comment:
+            continue
+        if event.editor_id is not None and event.editor_id == bot_user_id:
+            continue
+        # Guard against bot's own question being mistaken for a human reply
+        if norm_question and " ".join(comment.split()).strip() == norm_question:
+            continue
+        candidates.append(event)
+
     return max(candidates, key=lambda item: int(item.id or 0), default=None)
 
 
@@ -165,36 +186,66 @@ class ClarificationFactExtractor:
     def __init__(self, transport: LLMTransport, model_alias: str = "helpdesk-fast") -> None:
         self.transport = transport
         self.model_alias = model_alias
+        self.last_diagnostic: dict[str, Any] = {}
 
-    async def extract(self, text: str, missing_facts: Iterable[str]) -> dict[str, dict[str, str]]:
+    async def extract_with_trace(
+        self, text: str, missing_facts: Iterable[str]
+    ) -> tuple[dict[str, dict[str, str]], dict[str, Any]]:
         allowed = sorted(set(missing_facts) & set(ONBOARDING_FACTS))
         deterministic = extract_labeled_facts(text, allowed)
         remaining = [key for key in allowed if key not in deterministic]
+        diag: dict[str, Any] = {
+            "model_alias": self.model_alias,
+            "requested_keys": allowed,
+            "deterministic_keys": list(deterministic.keys()),
+            "llm_attempted": False,
+            "llm_used": False,
+            "llm_keys": [],
+            "error": None,
+        }
         if not remaining:
-            return deterministic
+            self.last_diagnostic = diag
+            return deterministic, diag
+
+        diag["llm_attempted"] = True
         sanitized = _SECRET_RE.sub("[SECRET]", text)[:4000]
-        raw = await self.transport.complete_json(
-            model_alias=self.model_alias,
-            system_prompt=(
-                "Extract only explicitly stated employee facts for allowed_keys. "
-                "Return JSON {facts:[{key,value,text_span}]}. text_span must be an exact literal substring "
-                "of source_text. Do not infer, normalize, translate, or return any unrequested key."
-            ),
-            payload={"allowed_keys": remaining, "source_text": sanitized},
-            timeout_seconds=15.0,
-        )
-        parsed = json.loads(raw)
-        items = parsed.get("facts")
-        if not isinstance(items, list):
-            raise ValueError("invalid_clarification_extraction")
-        result = dict(deterministic)
-        for item in items:
-            if not isinstance(item, dict) or set(item) != {"key", "value", "text_span"}:
-                raise ValueError("invalid_clarification_fact_schema")
-            key = str(item["key"])
-            value = " ".join(str(item["value"]).split())
-            span = str(item["text_span"])
-            if key not in remaining or not value or not span or span not in sanitized or value not in span:
-                raise ValueError("ungrounded_clarification_fact")
-            result[key] = {"value": value, "text_span": span}
-        return result
+        try:
+            raw = await self.transport.complete_json(
+                model_alias=self.model_alias,
+                system_prompt=(
+                    "Extract only explicitly stated employee facts for allowed_keys. "
+                    "Return JSON {facts:[{key,value,text_span}]}. text_span must be an exact literal substring "
+                    "of source_text. Do not infer, normalize, translate, or return any unrequested key."
+                ),
+                payload={"allowed_keys": remaining, "source_text": sanitized},
+                timeout_seconds=15.0,
+            )
+            parsed = json.loads(raw)
+            items = parsed.get("facts")
+            if not isinstance(items, list):
+                raise ValueError("invalid_clarification_extraction")
+            result = dict(deterministic)
+            llm_added: list[str] = []
+            for item in items:
+                if not isinstance(item, dict) or set(item) != {"key", "value", "text_span"}:
+                    raise ValueError("invalid_clarification_fact_schema")
+                key = str(item["key"])
+                value = " ".join(str(item["value"]).split())
+                span = str(item["text_span"])
+                if key not in remaining or not value or not span or span not in sanitized or value not in span:
+                    raise ValueError("ungrounded_clarification_fact")
+                result[key] = {"value": value, "text_span": span}
+                llm_added.append(key)
+            if llm_added:
+                diag["llm_used"] = True
+                diag["llm_keys"] = llm_added
+            self.last_diagnostic = diag
+            return result, diag
+        except Exception as exc:
+            diag["error"] = str(exc)
+            self.last_diagnostic = diag
+            return deterministic, diag
+
+    async def extract(self, text: str, missing_facts: Iterable[str]) -> dict[str, dict[str, str]]:
+        facts, _ = await self.extract_with_trace(text, missing_facts)
+        return facts

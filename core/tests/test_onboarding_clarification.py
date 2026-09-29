@@ -69,3 +69,32 @@ def test_creation_and_revocation_workflows_have_disjoint_capabilities() -> None:
     assert revocation is not None and revocation.key == "access_revocation_workflow"
     assert revocation.allowed_capabilities == ("disable_ad_user",)
     assert "create_ad_user" not in revocation.allowed_capabilities
+
+
+def test_latest_human_public_event_ignores_operator_posted_bot_question() -> None:
+    question = "Укажите, пожалуйста, полные ФИО сотрудника, для которого необходимо создать учётную запись."
+    events = [
+        # Event 1: Baseline before clarification
+        TaskLifetimeEventDTO(Id=1, EditorId=8664, Comment="Предыдущий комментарий", IsPrivateComment=False),
+        # Event 2: Bot question erroneously published with operator's token (EditorId=8664 instead of 10502)
+        TaskLifetimeEventDTO(Id=2, EditorId=8664, Comment=question, IsPrivateComment=False),
+        # Event 3: Actual human answer
+        TaskLifetimeEventDTO(Id=3, EditorId=8664, Comment="Ахмедов Ахмед Ахмедович", IsPrivateComment=False),
+    ]
+    # With question_text guard, event 2 is rejected even though EditorId != 10502
+    selected = latest_human_public_event(
+        events, baseline_event_id=1, bot_user_id=10502, question_text=question
+    )
+    assert selected is not None
+    assert selected.id == 3
+    assert selected.comment == "Ахмедов Ахмед Ахмедович"
+
+
+def test_is_public_false_is_treated_as_private() -> None:
+    event_dict = {"Id": 5, "Comment": "Внутренняя заметка", "IsPublic": False}
+    event = TaskLifetimeEventDTO.model_validate(event_dict)
+    assert event.is_private is True
+
+    event_dict_str = {"Id": 6, "Comment": "Внутренняя заметка", "IsPublic": "false"}
+    event_str = TaskLifetimeEventDTO.model_validate(event_dict_str)
+    assert event_str.is_private is True

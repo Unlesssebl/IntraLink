@@ -209,8 +209,9 @@ class AutomationService:
             snapshot,
             target_resolution=target_resolution,
         )
+        extraction_diag: dict[str, Any] = {}
         if decision.primary_case_type == "employee_onboarding":
-            initial_facts = await self._extract_onboarding_snapshot_facts(snapshot, frame.entities)
+            initial_facts, extraction_diag = await self._extract_onboarding_snapshot_facts(snapshot, frame.entities)
             fact_merge = await self._merge_onboarding_facts(
                 session, frame.entities, ticket_id, initial_facts=initial_facts
             )
@@ -218,6 +219,7 @@ class AutomationService:
                 update={
                     "entities": {**frame.entities, **fact_merge.values},
                     "conflicting_facts": sorted(set(frame.conflicting_facts) | set(fact_merge.conflicts)),
+                    "llm_attempted": frame.llm_attempted or bool(extraction_diag.get("llm_attempted")),
                 }
             )
             decision = decision.model_copy(update={"frame_id": frame.id})
@@ -232,9 +234,13 @@ class AutomationService:
             bindings=bindings,
             target_resolution=target_resolution,
         )
-        llm_used = target_resolution.llm_used or frame.llm_attempted or any(
-            item.extraction_method == ExtractionMethod.llm for item in frame.assertions
-        ) or bool(decision.verifier_trace)
+        llm_used = (
+            target_resolution.llm_used
+            or frame.llm_attempted
+            or bool(extraction_diag.get("llm_used"))
+            or any(item.extraction_method == ExtractionMethod.llm for item in frame.assertions)
+            or bool(decision.verifier_trace)
+        )
         compatibility = compatibility.model_copy(
             update={
                 "analysis_timings_ms": timings,
@@ -311,6 +317,7 @@ class AutomationService:
             lifetime,
             baseline_event_id=record.baseline_event_id,
             bot_user_id=credentials.bot_user_id,
+            question_text=record.question_text,
         )
         if event is None or event.id != event_id:
             raise HTTPException(status.HTTP_409_CONFLICT, "clarification_event_not_eligible")
@@ -319,10 +326,18 @@ class AutomationService:
         except Exception:
             # Deterministic labelled values remain usable when the optional LLM is unavailable.
             facts = extract_labeled_facts(event.comment or "", record.missing_facts_json)
+        if not facts:
+            record.last_error_code = f"no_facts_in_event:{event_id}"
+            record.last_error_detail = f"Ответ пользователя (событие {event_id}) не содержит обязательных фактов."
+            record.last_attempt_at = datetime.now(UTC)
+            await session.commit()
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "clarification_response_empty")
         record.response_event_id = event_id
         record.response_facts_json = facts
         record.resolved_at = datetime.now(UTC)
         record.state = "resolved"
+        record.last_error_code = None
+        record.last_error_detail = None
         await session.commit()
         return await self.analyze(session, ticket_id=ticket_id, auth_b64=credentials.auth_b64, force=True)
 
@@ -357,25 +372,74 @@ class AutomationService:
         await session.commit()
         return await self.analyze(session, ticket_id=ticket_id, auth_b64=auth_b64, force=True)
 
-    async def _extract_onboarding_snapshot_facts(self, snapshot, existing: dict[str, str]):
+    async def _extract_onboarding_snapshot_facts(
+        self, snapshot, existing: dict[str, str]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         missing = [key for key in ONBOARDING_FACTS if not str(existing.get(key, "")).strip()]
+        diag: dict[str, Any] = {"llm_attempted": False, "llm_used": False, "trace": []}
         if not missing:
-            return {}
-        source_text = "\n".join(
-            value
-            for value in [
-                snapshot.title,
-                snapshot.description,
-                *(comment.text for comment in snapshot.public_comments),
-            ]
-            if value and value.strip()
+            return {}, diag
+
+        extracted_facts: dict[str, Any] = {}
+
+        # 1. Deterministic extraction from ticket title & description
+        ticket_body = f"{snapshot.title}\n{snapshot.description}".strip()
+        if ticket_body:
+            body_facts = extract_labeled_facts(ticket_body, missing)
+            for k, v in body_facts.items():
+                extracted_facts[k] = v
+            missing = [k for k in missing if k not in extracted_facts]
+
+        # 2. Deterministic extraction from individual public human comments (chronological order)
+        bot_markers = (
+            "Укажите, пожалуйста, полные ФИО",
+            "Для создания учётной записи дополнительно укажите",
         )
-        if not source_text:
-            return {}
-        try:
-            return await self.clarification_extractor.extract(source_text[:12000], missing)
-        except Exception:
-            return extract_labeled_facts(source_text, missing)
+        for comment in snapshot.public_comments:
+            if not missing:
+                break
+            text = (comment.text or "").strip()
+            if not text:
+                continue
+            if any(marker in text for marker in bot_markers):
+                continue
+            comment_facts = extract_labeled_facts(text, missing)
+            for k, v in comment_facts.items():
+                if isinstance(v, dict):
+                    v = {**v, "comment_id": comment.id}
+                extracted_facts[k] = v
+            missing = [k for k in missing if k not in extracted_facts]
+
+        # 3. If missing facts remain, attempt bounded LLM fallback on human comments & body
+        if missing:
+            candidates_for_llm: list[str] = []
+            for comment in reversed(snapshot.public_comments):
+                text = (comment.text or "").strip()
+                if not text or any(marker in text for marker in bot_markers):
+                    continue
+                candidates_for_llm.append(text)
+            if ticket_body and len(ticket_body) > 10:
+                candidates_for_llm.append(ticket_body)
+
+            for cand_text in candidates_for_llm:
+                if not missing:
+                    break
+                try:
+                    llm_facts, llm_diag = await self.clarification_extractor.extract_with_trace(
+                        cand_text[:4000], missing
+                    )
+                    diag["trace"].append(llm_diag)
+                    if llm_diag.get("llm_attempted"):
+                        diag["llm_attempted"] = True
+                    if llm_diag.get("llm_used"):
+                        diag["llm_used"] = True
+                    for k, v in llm_facts.items():
+                        extracted_facts[k] = v
+                    missing = [k for k in missing if k not in extracted_facts]
+                except Exception as exc:
+                    diag["trace"].append({"error": str(exc)})
+
+        return extracted_facts, diag
 
     async def _merge_onboarding_facts(
         self,
@@ -561,11 +625,12 @@ class AutomationService:
                 active.publish_attempts = int(active.publish_attempts or 0) + 1
                 active.last_attempt_at = datetime.now(UTC)
                 if not already_published:
+                    bot_token = credentials.auth_b64 or auth_b64
                     await self.client.update_task(
                         task_id=workflow.task_id,
                         comment=active.question_text,
                         is_private=False,
-                        auth_b64=auth_b64,
+                        auth_b64=bot_token,
                     )
                 active.state = "published"
                 active.published_at = datetime.now(UTC)

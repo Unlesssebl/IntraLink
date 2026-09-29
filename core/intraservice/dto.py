@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ExtractedEntitiesDTO(BaseModel):
@@ -106,6 +106,11 @@ class TaskCommentDTO(BaseModel):
             or data.get("IsPrivate")
             or data.get("IsPrivateComment")
         )
+        is_pub = data.get("IsPublic")
+        if is_pub is None:
+            is_pub = data.get("is_public")
+        if is_pub is not None and (is_pub is False or str(is_pub).lower() in ("false", "0")):
+            is_priv = True
         sec_groups = data.get("TaskCommentSecurityGroupIDs")
         if sec_groups is None:
             sec_groups = data.get("security_group_ids")
@@ -150,6 +155,10 @@ class TaskDTO(BaseModel):
                 data["ApplicantName"] = data["Creator"]
             if "ApplicantId" not in data and data.get("CreatorId") is not None:
                 data["ApplicantId"] = data["CreatorId"]
+            if "TypeId" in data and "TaskTypeId" not in data:
+                data["TaskTypeId"] = data.get("TypeId")
+            if "Data" in data and "CustomFieldData" not in data:
+                data["CustomFieldData"] = data.get("Data")
         return data
 
     id: int = Field(alias="Id")
@@ -161,7 +170,10 @@ class TaskDTO(BaseModel):
     status_name: str = Field(alias="StatusName", default="")
     priority_id: Optional[int] = Field(default=None, alias="PriorityId")
     priority_name: Optional[str] = Field(default=None, alias="PriorityName")
-    task_type_id: Optional[int] = Field(default=None, alias="TaskTypeId")
+    task_type_id: Optional[int] = Field(
+        default=None,
+        validation_alias=AliasChoices("TaskTypeId", "TypeId", "task_type_id"),
+    )
     created: Optional[str] = Field(default=None, alias="Created")
     changed: Optional[str] = Field(default=None, alias="Changed")
 
@@ -181,7 +193,10 @@ class TaskDTO(BaseModel):
     executor_ids: Optional[str] = Field(default=None, alias="ExecutorIds")
 
     # Raw XML and parsed custom fields
-    custom_field_data: Optional[str] = Field(default=None, alias="CustomFieldData")
+    custom_field_data: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("CustomFieldData", "Data", "custom_field_data"),
+    )
     entities: ExtractedEntitiesDTO = Field(default_factory=ExtractedEntitiesDTO)
     custom_fields: Dict[str, str] = Field(default_factory=dict)
 
@@ -235,6 +250,11 @@ class TaskLifetimeEventDTO(BaseModel):
             or data.get("IsPrivate")
             or data.get("IsPrivateComment")
         )
+        is_pub = data.get("IsPublic")
+        if is_pub is None:
+            is_pub = data.get("is_public")
+        if is_pub is not None and (is_pub is False or str(is_pub).lower() in ("false", "0")):
+            is_priv = True
         sec_groups = data.get("TaskCommentSecurityGroupIDs")
         if sec_groups is None:
             sec_groups = data.get("security_group_ids")

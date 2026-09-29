@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+from datetime import datetime
 import enum
 import logging
 import os
@@ -9,6 +10,30 @@ import time
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import httpx
+
+
+def _parse_api_date(val: Any) -> Optional[datetime]:
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        return val
+    s = str(val).replace("T", " ").strip()
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d.%m.%Y %H:%M:%S.%f",
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
+    ):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
 
 from core.intraservice.catalog import ServiceCatalog
 from core.intraservice.dto import (
@@ -489,6 +514,22 @@ class IntraServiceClient:
                 raw_events = res["Lifetimes"]
         elif isinstance(res, list):
             raw_events = res
+
+        # Ensure chronological ordering (oldest first) so event IDs and indices are strictly monotonic
+        if len(raw_events) >= 2:
+            first_dt = _parse_api_date(raw_events[0].get("Date") or raw_events[0].get("Created"))
+            last_dt = _parse_api_date(raw_events[-1].get("Date") or raw_events[-1].get("Created"))
+            if first_dt and last_dt and first_dt > last_dt:
+                raw_events = list(reversed(raw_events))
+            else:
+                dates = [_parse_api_date(e.get("Date") or e.get("Created")) for e in raw_events if isinstance(e, dict)]
+                if any(dates):
+                    raw_events = sorted(
+                        raw_events,
+                        key=lambda item: _parse_api_date(item.get("Date") or item.get("Created")) or datetime.min
+                        if isinstance(item, dict)
+                        else datetime.min,
+                    )
 
         events: List[TaskLifetimeEventDTO] = []
         for idx, e in enumerate(raw_events):

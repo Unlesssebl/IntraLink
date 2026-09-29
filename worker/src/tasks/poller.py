@@ -268,8 +268,11 @@ class IngestionPoller:
                         events,
                         baseline_event_id=clarification.baseline_event_id,
                         bot_user_id=auth.bot_user_id,
+                        question_text=clarification.question_text,
                     )
                     if event is None or event.id is None:
+                        continue
+                    if clarification.last_error_code == f"no_facts_in_event:{event.id}":
                         continue
                     await self._post_resume(task_id, event.id)
                 except Exception as exc:
@@ -290,7 +293,7 @@ class IngestionPoller:
                 json={"event_id": event_id},
                 headers={"X-Worker-Key": self.worker_api_key},
             )
-            if response.status_code not in (200, 409):
+            if response.status_code not in (200, 409, 422):
                 response.raise_for_status()
         finally:
             if owned:

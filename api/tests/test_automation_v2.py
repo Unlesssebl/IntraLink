@@ -35,13 +35,14 @@ from core.automation.case_router import CaseRouter
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.database.base import Base
 from core.database.models import (
+    ClarificationRequestRecord,
     ServiceCatalogEntryRecord,
     ServiceCatalogVersionRecord,
     ServiceRouteBindingRecord,
     ServiceRoutingFeedbackRecord,
 )
 from core.intraservice.auth import ServiceAuthCredentials, ServiceAuthError
-from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
+from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO, TaskLifetimeEventDTO
 
 
 class _Executor:
@@ -650,3 +651,59 @@ async def test_redirect_partial_outcome_is_not_republished(session_factory) -> N
             )
     assert exc.value.status_code == 409
     client.add_task_comment.assert_awaited_once()
+
+
+async def test_resume_rejects_empty_extracted_facts(session_factory) -> None:
+    client = AsyncMock()
+    task = TaskDTO(
+        Id=63004,
+        Name="Создать учетную запись нового сотрудника",
+        Description="Нужно создать пользователя",
+        ServiceId=900001,
+        ServiceName="Создание пользователя сети",
+        TaskTypeId=1001,
+        StatusId=2,
+    )
+    client.get_task.return_value = task
+    client.get_task_lifetime.return_value = []
+    service = AutomationService(client=client, extractor=CaseFrameExtractor(), router=CaseRouter())
+    service.auth_bootstrap = AsyncMock()
+    service.auth_bootstrap.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="service-auth", bot_user_id=999, login="bot"
+    )
+
+    async with session_factory() as session:
+        analyzed = await service.analyze(session, ticket_id=63004, auth_b64="operator-auth", force=True)
+        assert analyzed.readiness is not None
+        assert analyzed.readiness.clarification is not None
+        assert analyzed.readiness.clarification.state == "published"
+
+        clarification_record = await session.scalar(
+            select(ClarificationRequestRecord).where(ClarificationRequestRecord.task_id == 63004)
+        )
+        assert clarification_record is not None
+
+        uninformative_events = [
+            TaskLifetimeEventDTO(Id=1, EditorId=8664, Created="2026-09-29T13:00:00", Comment="Создана"),
+            TaskLifetimeEventDTO(
+                Id=2,
+                EditorId=999,
+                Created="2026-09-29T13:01:00",
+                Comment=clarification_record.question_text,
+            ),
+            TaskLifetimeEventDTO(Id=3, EditorId=8664, Created="2026-09-29T13:05:00", Comment="Спасибо большое"),
+        ]
+        client.get_task_lifetime.return_value = uninformative_events
+
+        with pytest.raises(HTTPException) as exc:
+            await service.resume(session, ticket_id=63004, event_id=3)
+
+        assert exc.value.status_code == 422
+        assert exc.value.detail == "clarification_response_empty"
+
+        # Verify clarification was NOT resolved and remains published
+        reloaded = await session.scalar(
+            select(ClarificationRequestRecord).where(ClarificationRequestRecord.task_id == 63004)
+        )
+        assert reloaded.state == "published"
+        assert reloaded.last_error_code == "no_facts_in_event:3"

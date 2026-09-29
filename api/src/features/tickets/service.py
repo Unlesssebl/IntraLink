@@ -112,8 +112,12 @@ class TicketService:
             creator_name=task.creator_name,
             applicant_name=task.applicant_name,
             executor_ids=task.executor_ids,
-            entities=task.entities.model_dump() if task.entities else {},
-            custom_fields=task.custom_fields,
+            entities={k: v for k, v in (task.entities.model_dump() if task.entities else {}).items() if k != "it_password"},
+            custom_fields={
+                k: v
+                for k, v in (task.custom_fields or {}).items()
+                if str(k).lower() not in ("1489", "field1489", "пароль (it)")
+            },
             attachments=[a.model_dump() for a in task.attachments],
         )
 

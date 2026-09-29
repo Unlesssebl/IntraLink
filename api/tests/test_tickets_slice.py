@@ -58,6 +58,26 @@ async def test_get_single_ticket_endpoint(mock_task):
 
 
 @pytest.mark.asyncio
+async def test_get_single_ticket_never_exposes_it_password(mock_task):
+    transport = ASGITransport(app=app)
+    mock_task.entities.it_password = "super-secret-password"
+    mock_task.custom_fields["Пароль (IT)"] = "super-secret-password"
+    mock_task.custom_fields["1489"] = "super-secret-password"
+    mock_task.custom_fields["Телефон"] = "+79991234567"
+
+    with patch("core.intraservice.client.IntraServiceClient.get_task", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_task
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/v2/tickets/1001")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "it_password" not in data["entities"]
+            assert "Пароль (IT)" not in data["custom_fields"]
+            assert "1489" not in data["custom_fields"]
+            assert data["custom_fields"]["Телефон"] == "+79991234567"
+
+
+@pytest.mark.asyncio
 async def test_get_ticket_lifetime_endpoint():
     transport = ASGITransport(app=app)
     from core.intraservice.dto import TaskLifetimeEventDTO

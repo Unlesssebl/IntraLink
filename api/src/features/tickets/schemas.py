@@ -66,6 +66,24 @@ class TicketDetailDTO(BaseModel):
     def coerce_detail_int(cls, v: Any) -> int:
         return 0 if v is None else int(v)
 
+    @field_validator("entities", mode="before")
+    @classmethod
+    def sanitize_entities(cls, v: Any) -> Dict[str, Any]:
+        if not isinstance(v, dict):
+            return {}
+        return {k: val for k, val in v.items() if k != "it_password"}
+
+    @field_validator("custom_fields", mode="before")
+    @classmethod
+    def sanitize_custom_fields(cls, v: Any) -> Dict[str, str]:
+        if not isinstance(v, dict):
+            return {}
+        return {
+            str(k): str(val)
+            for k, val in v.items()
+            if str(k).lower() not in ("1489", "field1489", "пароль (it)")
+        }
+
 
 class UpdateTicketRequest(BaseModel):
     status_id: Optional[int] = None
