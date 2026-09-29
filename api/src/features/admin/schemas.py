@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 
 class ServiceCredentialsUpdate(BaseModel):
@@ -32,6 +32,56 @@ class ServiceCredentialsUpdateResponse(BaseModel):
     status: ServiceCredentialsStatus
     catalog_sync: str
     catalog_sync_error: str | None = None
+
+
+class AdCredentialsUpdate(BaseModel):
+    servers: list[str] = Field(min_length=1, max_length=8)
+    username: str = Field(min_length=1, max_length=256)
+    password: SecretStr = Field(min_length=1, max_length=512)
+    port: int = Field(default=636, ge=1, le=65535)
+    use_ssl: bool = True
+
+    @field_validator("servers")
+    @classmethod
+    def normalize_servers(cls, value: list[str]) -> list[str]:
+        servers = list(dict.fromkeys(item.strip() for item in value if item.strip()))
+        if not servers:
+            raise ValueError("at_least_one_domain_controller_required")
+        return servers
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        username = value.strip()
+        if not username:
+            raise ValueError("username_required")
+        return username
+
+    @field_validator("use_ssl")
+    @classmethod
+    def require_ldaps(cls, value: bool) -> bool:
+        if not value:
+            raise ValueError("ldaps_required_for_password_provisioning")
+        return value
+
+
+class AdCredentialsStatus(BaseModel):
+    configured: bool
+    encryption_ready: bool
+    domain: str
+    users_root_ou: str
+    servers: list[str] = Field(default_factory=list)
+    username: str | None = None
+    port: int = 636
+    use_ssl: bool = True
+    updated_at: datetime | None = None
+    last_verified_at: datetime | None = None
+    verified_server: str | None = None
+    ou_count: int | None = None
+
+
+class AdCredentialsUpdateResponse(BaseModel):
+    status: AdCredentialsStatus
 
 
 class AdAccountBindingStatus(BaseModel):

@@ -1,7 +1,10 @@
-"""Secure management of IntraService service-bot credentials."""
+"""Secure management of IntraService and Active Directory credentials."""
 
+import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
+import ldap3
 import redis.asyncio as aioredis
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -10,6 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.src.core.config import settings
 from api.src.core.db import async_session_factory
 from api.src.features.autopilot.service import AutomationService
+from core.ad.credentials import (
+    AD_CREDENTIALS_STATE_KEY,
+    AD_DOMAIN,
+    AD_USERS_ROOT_OU,
+    ActiveDirectoryCredentialVault,
+)
+from core.ad.pool import ActiveDirectoryPool, ADPoolConfig
 from core.automation.service_catalog import ServiceCatalogRepository
 from core.automation.service_routing import RedirectStrategy, ServiceRouteBinding
 from core.crypto import get_fernet
@@ -25,6 +35,9 @@ from core.intraservice.client import IntraServiceClient
 from .schemas import (
     ActivateAdAccountBindingRequest,
     AdAccountBindingStatus,
+    AdCredentialsStatus,
+    AdCredentialsUpdate,
+    AdCredentialsUpdateResponse,
     CatalogStatus,
     ServiceCredentialsStatus,
     ServiceCredentialsUpdate,
@@ -36,6 +49,106 @@ class AdminCredentialsService:
     def __init__(self) -> None:
         self.client = IntraServiceClient(base_url=settings.INTRASERVICE_URL, verify_ssl=settings.SSL_VERIFY)
         self.catalog_repository = ServiceCatalogRepository()
+        self.ad_credential_vault = ActiveDirectoryCredentialVault(session_factory=async_session_factory)
+
+    async def get_ad_credentials_status(self, session: AsyncSession) -> AdCredentialsStatus:
+        row = await session.scalar(select(SystemState).where(SystemState.key == AD_CREDENTIALS_STATE_KEY))
+        data: dict[str, Any] = row.state_data if row and row.state_data else {}
+        verified_at: datetime | None = None
+        if data.get("verified_at"):
+            try:
+                verified_at = datetime.fromisoformat(str(data["verified_at"]))
+            except ValueError:
+                verified_at = None
+        return AdCredentialsStatus(
+            configured=bool(data.get("encrypted_password") and data.get("username") and data.get("servers")),
+            encryption_ready=get_fernet() is not None,
+            domain=AD_DOMAIN,
+            users_root_ou=AD_USERS_ROOT_OU,
+            servers=[str(item) for item in data.get("servers", [])],
+            username=data.get("username"),
+            port=int(data.get("port") or 636),
+            use_ssl=bool(data.get("use_ssl", True)),
+            updated_at=row.updated_at if row else None,
+            last_verified_at=verified_at,
+            verified_server=data.get("verified_server"),
+            ou_count=int(data["ou_count"]) if data.get("ou_count") is not None else None,
+        )
+
+    @staticmethod
+    def _verify_ad_credentials_sync(
+        *, servers: list[str], username: str, password: str, port: int, use_ssl: bool
+    ) -> tuple[str, int]:
+        pool = ActiveDirectoryPool(
+            ADPoolConfig(
+                servers=servers,
+                connect_timeout=2.0,
+                port=port,
+                use_ssl=use_ssl,
+                bind_user=username,
+                bind_password=password,
+                domain=AD_DOMAIN,
+            )
+        )
+        with pool.connection_scope(auto_bind=True, read_only=True) as connection:
+            connection.search(
+                AD_USERS_ROOT_OU,
+                "(objectClass=organizationalUnit)",
+                ldap3.BASE,
+                attributes=["distinguishedName"],
+            )
+            if len(connection.entries) != 1:
+                raise RuntimeError("ad_users_root_unavailable")
+            connection.search(
+                AD_USERS_ROOT_OU,
+                "(objectClass=organizationalUnit)",
+                ldap3.SUBTREE,
+                attributes=["distinguishedName"],
+            )
+            if not connection.entries:
+                raise RuntimeError("ad_ou_catalog_empty")
+            active_server = connection.server.host if connection.server else servers[0]
+            return str(active_server), len(connection.entries)
+
+    async def update_ad_credentials(
+        self, session: AsyncSession, request: AdCredentialsUpdate
+    ) -> AdCredentialsUpdateResponse:
+        if get_fernet() is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "ENCRYPTION_KEY не настроен: сохранение секрета заблокировано",
+            )
+        password = request.password.get_secret_value()
+        try:
+            verified_server, ou_count = await asyncio.to_thread(
+                self._verify_ad_credentials_sync,
+                servers=request.servers,
+                username=request.username,
+                password=password,
+                port=request.port,
+                use_ssl=request.use_ssl,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Проверка подключения к Active Directory не пройдена",
+            ) from exc
+
+        verified_at = datetime.now(UTC)
+        await self.ad_credential_vault.save(
+            session,
+            servers=request.servers,
+            username=request.username,
+            password=password,
+            port=request.port,
+            use_ssl=request.use_ssl,
+            verified_server=verified_server,
+            ou_count=ou_count,
+            verified_at=verified_at,
+        )
+        password = ""
+        await session.commit()
+        return AdCredentialsUpdateResponse(status=await self.get_ad_credentials_status(session))
 
     async def get_ad_account_binding(self, session: AsyncSession) -> AdAccountBindingStatus:
         version, entries, bindings = await self.catalog_repository.current(session)

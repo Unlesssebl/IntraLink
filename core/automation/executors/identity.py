@@ -39,11 +39,14 @@ class CreateAdUserExecutor:
                 last_name=str(params["last_name"]).strip(),
                 first_name=str(params["first_name"]).strip(),
                 middle_name=str(params.get("middle_name", "")).strip(),
+                department=str(params["department"]).strip(),
+                company=str(params.get("company", "")).strip(),
             )
         except AccountProvisioningError as exc:
             return CapabilityPreflight(
                 status=PreflightStatus.failed,
                 checks=["ad_available", "target_ou", "dn_absent", "login_preview"],
+                details=exc.details,
                 error_code=exc.code,
             )
         except Exception as exc:

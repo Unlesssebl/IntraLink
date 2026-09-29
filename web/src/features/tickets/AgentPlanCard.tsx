@@ -19,6 +19,18 @@ import { useQueryClient } from "@tanstack/react-query";
 import { autopilotApi } from "@/features/autopilot/api";
 import { Badge, Button, useToast } from "@/shared/ui";
 import type { TicketAttachment } from "@/shared/api";
+import { DecisionOutcome } from "./agent-plan/DecisionOutcome";
+import { PreflightDetails } from "./agent-plan/PreflightDetails";
+import {
+  CAPABILITY_NAMES,
+  CASE_NAMES,
+  DECISION_STATE_NAMES,
+  FACT_NAMES,
+  PREFLIGHT_ERROR_NAMES,
+  preflightStatusLabel,
+  preflightUsable,
+  type PreflightItem,
+} from "./agent-plan/presentation";
 import { useAgentPlan } from "./queries";
 
 export interface AgentPlanCardProps {
@@ -28,19 +40,6 @@ export interface AgentPlanCardProps {
   onExecutionStarted?: (commandId: string) => void;
   onClose?: () => void;
 }
-
-const CASE_NAMES: Record<string, string> = {
-  printer_connection_request: "Подключение принтера",
-  printing_incident: "Инцидент печати",
-  wireless_access_request: "Доступ к WLAN",
-  employee_onboarding: "Онбординг сотрудника",
-  access_revocation_request: "Отзыв доступа",
-  workstation_unavailable_incident: "Недоступно рабочее место",
-  workstation_hardware_diagnostic: "Диагностика оборудования",
-  knowledge_request: "Консультация",
-  non_it_request: "Непрофильное обращение",
-  software_installation_request: "Установка программного обеспечения",
-};
 
 export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecutionStarted }) => {
   const { data, isLoading, error, refetch } = useAgentPlan(ticketId);
@@ -244,9 +243,17 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
   const degradationDetails = Object.entries(data.case_frame.degraded_components)
     .map(([component, reason]) => `${component}: ${reason}`)
     .join(", ");
-  const preflightPassed = !!actionPlan && actionPlan.actions.every((action) =>
-    data.preflight.some((item) => item.action_id === action.id && ["passed", "not_applicable"].includes(item.status))
-  );
+  const currentPreflight = actionPlan
+    ? actionPlan.actions
+        .map((action) => data.preflight.find((item) => item.action_id === action.id))
+        .filter((item): item is PreflightItem => Boolean(item))
+    : [];
+  const preflightPassed = !!actionPlan && actionPlan.actions.every((action) => {
+    const item = currentPreflight.find((candidate) => candidate.action_id === action.id);
+    return !!item
+      && ["passed", "not_applicable"].includes(item.status)
+      && new Date(item.expires_at).getTime() > Date.now();
+  });
   const canApprove = actionPlan?.state === "ready"
     && data.approval.state === "pending"
     && preflightPassed
@@ -275,46 +282,73 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
           <div className="flex items-center gap-2">
             <GitBranch className="h-4 w-4 text-violet-400" strokeWidth={1.5} />
             <h3 className="truncate text-sm font-semibold text-neutral-100">{selectedName}</h3>
-            <Badge variant={decision.state === "selected" ? "success" : "warning"}>{decision.state}</Badge>
+            <Badge variant={decision.state === "selected" ? "success" : "warning"} dot>
+              {DECISION_STATE_NAMES[decision.state] || decision.state}
+            </Badge>
           </div>
-          <p className="mt-1 font-mono text-[10px] text-neutral-500">
-            {decision.router_version} · {data.snapshot_hash.slice(0, 12)}
-          </p>
         </div>
         <div className="flex items-center gap-2">
           <Button
             size="sm"
             variant="ghost"
-            onClick={() => {
-              setSelectedTargetService(String(compatibility.target_service_id || ""));
-              setTargetEditorOpen((value) => !value);
-            }}
-            icon={<Route className="h-3.5 w-3.5" />}
+            onClick={() => setDetailsOpen((value) => !value)}
+            icon={detailsOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
           >
-            Исправить сервис
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setSelectedCaseType(decision.primary_case_type || "unknown");
-              setCaseEditorOpen((value) => !value);
-            }}
-            icon={<Pencil className="h-3.5 w-3.5" />}
-          >
-            Исправить тип
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            loading={busy === "analyze"}
-            onClick={() => analyze(true)}
-            icon={<RefreshCw className="h-3.5 w-3.5" />}
-          >
-            Пересобрать
+            {detailsOpen ? "Скрыть детали" : "Технические детали"}
           </Button>
         </div>
       </header>
+
+      <DecisionOutcome
+        data={data}
+        currentPreflight={currentPreflight}
+        preflightPassed={preflightPassed}
+        canApprove={canApprove}
+      />
+
+      {detailsOpen && (
+        <div className="border-t border-neutral-800/80 bg-[#0b0d11]">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-800/80 px-4 py-3">
+            <div>
+              <p className="text-xs font-medium text-neutral-200">Диагностика и корректировки</p>
+              <p className="mt-0.5 font-mono text-[10px] text-neutral-500">
+                {decision.router_version} · snapshot {data.snapshot_hash.slice(0, 12)}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setSelectedTargetService(String(compatibility.target_service_id || ""));
+                  setTargetEditorOpen((value) => !value);
+                }}
+                icon={<Route className="h-3.5 w-3.5" />}
+              >
+                Исправить сервис
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setSelectedCaseType(decision.primary_case_type || "unknown");
+                  setCaseEditorOpen((value) => !value);
+                }}
+                icon={<Pencil className="h-3.5 w-3.5" />}
+              >
+                Исправить тип
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={busy === "analyze"}
+                onClick={() => analyze(true)}
+                icon={<RefreshCw className="h-3.5 w-3.5" />}
+              >
+                Пересобрать
+              </Button>
+            </div>
+          </div>
 
       {targetEditorOpen && (
         <div className="flex flex-wrap items-end gap-3 border-b border-neutral-800/80 bg-[#12151c] px-4 py-3">
@@ -497,7 +531,7 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
       {workflow.missing_facts.length > 0 && (
         <div className="m-4 flex gap-2 rounded-md border border-amber-800/50 bg-amber-950/20 p-3 text-xs text-amber-200">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.5} />
-          <span>Нужно уточнить: {workflow.missing_facts.join(", ")}</span>
+          <span>Нужно уточнить: {workflow.missing_facts.map((key) => FACT_NAMES[key] || key).join(", ")}</span>
         </div>
       )}
 
@@ -516,7 +550,7 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
               return (
                 <div key={key} className={`rounded border px-2.5 py-2 ${conflict ? "border-rose-800/60 bg-rose-950/20" : "border-neutral-800 bg-black/10"}`}>
                   <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-neutral-500">
-                    <span>{key}</span>
+                    <span>{FACT_NAMES[key] || key}</span>
                     <span className="normal-case tracking-normal">{String(latest.source || "unknown")}</span>
                   </div>
                   <p className="mt-1 text-xs text-neutral-100">{String(latest.value || "")}</p>
@@ -537,7 +571,7 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
               <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(210px,1fr))]">
                 {Object.entries(factDraft).map(([key, value]) => (
                   <label key={key} className="text-[10px] uppercase tracking-wider text-neutral-500">
-                    {key}
+                    {FACT_NAMES[key] || key}
                     <input
                       value={value}
                       onChange={(event) => setFactDraft((current) => ({ ...current, [key]: event.target.value }))}
@@ -562,7 +596,7 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-xs font-medium text-neutral-100">
                   <span className="font-mono text-neutral-500">{action.sequence_no + 1}</span>
-                  {action.capability_key}
+                  {CAPABILITY_NAMES[action.capability_key] || action.capability_key}
                 </div>
                 <p className="mt-1 truncate font-mono text-[10px] text-neutral-500">
                   {Object.entries(action.params).map(([key, value]) => `${key}=${String(value)}`).join(" · ")}
@@ -571,19 +605,20 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
               <Badge variant={action.risk === "high" ? "danger" : "neutral"}>{action.risk}</Badge>
             </div>
           ))}
-          {data.preflight.map((item) => (
+          {currentPreflight.map((item) => (
             <div key={`${item.action_id}-${item.expires_at}`} className="rounded-md border border-neutral-800 bg-black/10 p-3 text-[11px]">
               <div className="flex items-center justify-between gap-3">
-                <span className="font-medium text-neutral-200">Preflight · {item.capability_key}</span>
-                <Badge variant={item.status === "passed" ? "success" : item.status === "failed" ? "danger" : "warning"}>{item.status}</Badge>
+                <span className="font-medium text-neutral-200">Проверка перед выполнением · {item.capability_key}</span>
+                <Badge variant={preflightUsable(item) ? "success" : item.status === "failed" ? "danger" : "warning"} dot>
+                  {preflightStatusLabel(item)}
+                </Badge>
               </div>
-              <p className="mt-1 text-neutral-500">{item.checks.join(" · ")}</p>
-              {Object.keys(item.details).length > 0 && (
-                <div className="mt-2 grid gap-1 font-mono text-[10px] text-neutral-400 [grid-template-columns:repeat(auto-fit,minmax(220px,1fr))]">
-                  {Object.entries(item.details).map(([key, value]) => <span key={key}>{key}={String(value)}</span>)}
-                </div>
+              <PreflightDetails item={item} />
+              {item.error && (
+                <p className="mt-2 text-rose-300">
+                  {PREFLIGHT_ERROR_NAMES[item.error] || item.error}
+                </p>
               )}
-              {item.error && <p className="mt-1 text-rose-300">{item.error}</p>}
             </div>
           ))}
           {actionPlan.state === "ready" && !actionEditorOpen && (
@@ -624,15 +659,6 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => setDetailsOpen((value) => !value)}
-        className="flex w-full items-center justify-between border-t border-neutral-800/80 px-4 py-2.5 text-left text-xs text-neutral-400 hover:bg-white/[0.02]"
-      >
-        <span>Доказательства и извлечённые факты</span>
-        {detailsOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-      </button>
-      {detailsOpen && (
         <div className="grid gap-3 border-t border-neutral-800/80 px-4 py-3 md:grid-cols-2">
           <Detail title="Assertions" values={data.case_frame.assertions.map((item) => item.text_span || `${item.key}: ${item.value}`)} />
           <Detail title="Evidence" values={decision.evidence.map((item) => item.text_span || item.source_ref)} />
@@ -646,13 +672,14 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
             ]}
           />
         </div>
+        </div>
       )}
 
       <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-neutral-800/80 bg-[#101218] px-4 py-3">
         <div className="flex items-center gap-1.5 text-[11px] text-neutral-500">
           <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" strokeWidth={1.5} />
-          Исполнение только после approval и preflight
-          {data.approval.execution_enabled === false && <span className="text-amber-400">· AD execution выключен</span>}
+          Изменения выполняются только после подтверждения оператора
+          {data.approval.execution_enabled === false && <span className="text-amber-400">· реальное выполнение отключено</span>}
         </div>
         <div className="flex items-center gap-2">
           {actionPlan && data.approval.state === "pending" && (
@@ -667,7 +694,9 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, onExecut
           )}
           {canApprove && (
             <Button size="sm" loading={busy === "approve"} onClick={approve} icon={<Play className="h-3.5 w-3.5" />}>
-              Подтвердить
+              {actionPlan?.actions.some((action) => action.capability_key === "create_ad_user")
+                ? "Создать учётную запись"
+                : "Подтвердить выполнение"}
             </Button>
           )}
           {redirectPlan?.state === "ready" && redirectPlan.approval_state === "pending" && (

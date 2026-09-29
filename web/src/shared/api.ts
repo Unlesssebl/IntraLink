@@ -358,6 +358,25 @@ export interface ServiceCredentialsUpdateResponse {
   catalog_sync_error: string | null;
 }
 
+export interface AdCredentialsStatus {
+  configured: boolean;
+  encryption_ready: boolean;
+  domain: string;
+  users_root_ou: string;
+  servers: string[];
+  username: string | null;
+  port: number;
+  use_ssl: boolean;
+  updated_at: string | null;
+  last_verified_at: string | null;
+  verified_server: string | null;
+  ou_count: number | null;
+}
+
+export interface AdCredentialsUpdateResponse {
+  status: AdCredentialsStatus;
+}
+
 export interface AdAccountBindingStatus {
   binding_key: string;
   service_id: number;
@@ -382,6 +401,21 @@ export const adminApi = {
     request<ServiceCredentialsUpdateResponse>("/admin/service-credentials", {
       method: "PUT",
       body: JSON.stringify({ login, password, sync_catalog: syncCatalog }),
+    }),
+
+  getAdCredentialsStatus: (signal?: AbortSignal) =>
+    request<AdCredentialsStatus>("/admin/ad-credentials/status", { signal }),
+
+  updateAdCredentials: (
+    servers: string[],
+    username: string,
+    password: string,
+    port: number,
+    useSsl: boolean
+  ) =>
+    request<AdCredentialsUpdateResponse>("/admin/ad-credentials", {
+      method: "PUT",
+      body: JSON.stringify({ servers, username, password, port, use_ssl: useSsl }),
     }),
 
   getAdAccountBinding: (signal?: AbortSignal) =>

@@ -13,6 +13,9 @@ from api.src.core.security import AdminIdentity, require_admin_intraservice_auth
 from .schemas import (
     ActivateAdAccountBindingRequest,
     AdAccountBindingStatus,
+    AdCredentialsStatus,
+    AdCredentialsUpdate,
+    AdCredentialsUpdateResponse,
     ServiceCredentialsStatus,
     ServiceCredentialsUpdate,
     ServiceCredentialsUpdateResponse,
@@ -24,6 +27,25 @@ router = APIRouter(prefix="/admin", tags=["Administration"])
 
 def get_admin_credentials_service() -> AdminCredentialsService:
     return AdminCredentialsService()
+
+
+@router.get("/ad-credentials/status", response_model=AdCredentialsStatus)
+async def get_ad_credentials_status(
+    _admin: Annotated[AdminIdentity, Depends(require_admin_intraservice_auth)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    service: Annotated[AdminCredentialsService, Depends(get_admin_credentials_service)],
+) -> AdCredentialsStatus:
+    return await service.get_ad_credentials_status(session)
+
+
+@router.put("/ad-credentials", response_model=AdCredentialsUpdateResponse)
+async def update_ad_credentials(
+    request: AdCredentialsUpdate,
+    _admin: Annotated[AdminIdentity, Depends(require_admin_intraservice_auth)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    service: Annotated[AdminCredentialsService, Depends(get_admin_credentials_service)],
+) -> AdCredentialsUpdateResponse:
+    return await service.update_ad_credentials(session, request)
 
 
 @router.get("/service-credentials/status", response_model=ServiceCredentialsStatus)

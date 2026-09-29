@@ -5,14 +5,15 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 import ldap3
 from ldap3.utils.conv import escape_filter_chars
 from ldap3.utils.dn import escape_rdn
 
+from core.ad.credentials import AD_USERS_ROOT_OU, ActiveDirectoryCredentialVault
+from core.ad.ou_resolver import OrganizationalUnit, OrganizationalUnitResolver
 from core.ad.password import generate_secure_password
-from core.ad.pool import ActiveDirectoryPool
+from core.ad.pool import ActiveDirectoryPool, ADPoolConfig
 from core.ad.transliteration import generate_sam_account_name
 from core.intraservice.auth import ServiceAuthBootstrap
 from core.intraservice.client import IntraServiceClient
@@ -31,10 +32,18 @@ class AccountProvisioningReceipt:
 
 
 class AccountProvisioningError(RuntimeError):
-    def __init__(self, code: str, message: str, *, ad_object_created: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        ad_object_created: bool = False,
+        details: dict | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.ad_object_created = ad_object_created
+        self.details = details or {}
 
 
 class AccountProvisioningService:
@@ -42,13 +51,94 @@ class AccountProvisioningService:
 
     def __init__(
         self,
-        ad_pool: Optional[ActiveDirectoryPool] = None,
-        client: Optional[IntraServiceClient] = None,
-        auth_bootstrap: Optional[ServiceAuthBootstrap] = None,
+        ad_pool: ActiveDirectoryPool | None = None,
+        client: IntraServiceClient | None = None,
+        auth_bootstrap: ServiceAuthBootstrap | None = None,
+        credential_vault: ActiveDirectoryCredentialVault | None = None,
     ) -> None:
-        self.ad_pool = ad_pool or ActiveDirectoryPool()
+        self.ad_pool = ad_pool
         self.client = client or IntraServiceClient()
         self.auth_bootstrap = auth_bootstrap or ServiceAuthBootstrap()
+        self.credential_vault = credential_vault or ActiveDirectoryCredentialVault()
+        self.ou_resolver = OrganizationalUnitResolver()
+
+    async def _connection_boundary(self) -> tuple[ActiveDirectoryPool, str]:
+        if self.ad_pool is not None:
+            return self.ad_pool, os.getenv("AD_USERS_OU") or AD_USERS_ROOT_OU
+        try:
+            settings = await self.credential_vault.load()
+        except Exception as exc:
+            raise AccountProvisioningError(
+                "ad_credentials_unavailable",
+                "Active Directory credentials are not configured",
+            ) from exc
+        if not settings.use_ssl:
+            raise AccountProvisioningError(
+                "ad_secure_channel_required",
+                "LDAPS is required for Active Directory password provisioning",
+            )
+        pool = ActiveDirectoryPool(
+            ADPoolConfig(
+                servers=list(settings.servers),
+                connect_timeout=settings.connect_timeout,
+                port=settings.port,
+                use_ssl=settings.use_ssl,
+                bind_user=settings.username,
+                bind_password=settings.password,
+                domain=settings.domain,
+            )
+        )
+        return pool, settings.users_root_ou
+
+    def _resolve_target_ou_sync(
+        self,
+        conn: ldap3.Connection,
+        *,
+        users_root_ou: str,
+        company: str,
+        department: str,
+    ) -> tuple[str, dict]:
+        conn.search(
+            users_root_ou,
+            "(objectClass=organizationalUnit)",
+            ldap3.SUBTREE,
+            attributes=["ou", "distinguishedName"],
+        )
+        units = [
+            OrganizationalUnit(
+                name=str(entry.ou.value or ""),
+                distinguished_name=str(entry.distinguishedName.value or ""),
+            )
+            for entry in conn.entries
+            if getattr(entry, "ou", None) is not None and getattr(entry, "distinguishedName", None) is not None
+        ]
+        resolution = self.ou_resolver.resolve(
+            units,
+            company=company,
+            department=department,
+            users_root_ou=users_root_ou,
+        )
+        details = {
+            "ou_resolution_method": resolution.method,
+            "resolved_company": company.strip() or None,
+            "resolved_department": department.strip(),
+            "ou_candidates": [
+                {
+                    "distinguished_name": item.distinguished_name,
+                    "name": item.name,
+                    "score": item.score,
+                    "evidence": list(item.evidence),
+                }
+                for item in resolution.candidates
+            ],
+        }
+        if resolution.selected_ou is None:
+            raise AccountProvisioningError(
+                "ad_target_ou_ambiguous",
+                "Target organizational unit could not be resolved unambiguously",
+                details=details,
+            )
+        return resolution.selected_ou, details
 
     @staticmethod
     def _assert_ldap_success(conn: ldap3.Connection, step: str) -> None:
@@ -70,14 +160,24 @@ class AccountProvisioningService:
         phone: str,
         company: str,
         password: str,
+        ad_pool: ActiveDirectoryPool | None = None,
+        users_root_ou: str = AD_USERS_ROOT_OU,
     ) -> AccountProvisioningReceipt:
         full_name = f"{last_name} {first_name} {middle_name}".strip()
-        domain = self.ad_pool.config.domain
+        pool = ad_pool or self.ad_pool
+        if pool is None:
+            raise AccountProvisioningError("ad_credentials_unavailable", "AD credentials are not configured")
+        domain = pool.config.domain
         base_dn = ",".join(f"DC={part}" for part in domain.split(".") if part)
-        target_ou = os.getenv("AD_USERS_OU") or f"CN=Users,{base_dn}"
-        user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
 
-        with self.ad_pool.connection_scope(auto_bind=True) as conn:
+        with pool.connection_scope(auto_bind=True) as conn:
+            target_ou, _resolution = self._resolve_target_ou_sync(
+                conn,
+                users_root_ou=users_root_ou,
+                company=company,
+                department=department,
+            )
+            user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
             conn.search(
                 search_base=user_dn,
                 search_filter="(objectClass=user)",
@@ -198,17 +298,32 @@ class AccountProvisioningService:
             credentials_written=False,
         )
 
-    def _preflight_sync(self, *, last_name: str, first_name: str, middle_name: str) -> dict[str, str]:
+    def _preflight_sync(
+        self,
+        *,
+        last_name: str,
+        first_name: str,
+        middle_name: str,
+        department: str,
+        company: str,
+        ad_pool: ActiveDirectoryPool | None = None,
+        users_root_ou: str = AD_USERS_ROOT_OU,
+    ) -> dict:
         """Read-only AD validation and deterministic login preview."""
         full_name = f"{last_name} {first_name} {middle_name}".strip()
-        domain = self.ad_pool.config.domain
+        pool = ad_pool or self.ad_pool
+        if pool is None:
+            raise AccountProvisioningError("ad_credentials_unavailable", "AD credentials are not configured")
+        domain = pool.config.domain
         base_dn = ",".join(f"DC={part}" for part in domain.split(".") if part)
-        target_ou = os.getenv("AD_USERS_OU") or f"CN=Users,{base_dn}"
-        user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
-        with self.ad_pool.connection_scope(auto_bind=True, read_only=True) as conn:
-            conn.search(target_ou, "(objectClass=*)", ldap3.BASE, attributes=["distinguishedName"])
-            if len(conn.entries) != 1:
-                raise AccountProvisioningError("ad_target_ou_not_found", "Target OU is unavailable")
+        with pool.connection_scope(auto_bind=True, read_only=True) as conn:
+            target_ou, resolution = self._resolve_target_ou_sync(
+                conn,
+                users_root_ou=users_root_ou,
+                company=company,
+                department=department,
+            )
+            user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
             conn.search(user_dn, "(objectClass=user)", ldap3.BASE, attributes=["distinguishedName"])
             if conn.entries:
                 raise AccountProvisioningError("ad_object_already_exists", "AD object already exists")
@@ -226,15 +341,29 @@ class AccountProvisioningService:
                         "preview_sam_account_name": sam,
                         "preview_upn": f"{sam}@{domain}",
                         "preview_user_dn": user_dn,
+                        **resolution,
                     }
         raise AccountProvisioningError("login_collision_limit", "AD login collision limit exceeded")
 
-    async def preflight(self, *, last_name: str, first_name: str, middle_name: str) -> dict[str, str]:
+    async def preflight(
+        self,
+        *,
+        last_name: str,
+        first_name: str,
+        middle_name: str,
+        department: str,
+        company: str,
+    ) -> dict:
+        pool, users_root_ou = await self._connection_boundary()
         preview = await asyncio.to_thread(
             self._preflight_sync,
             last_name=last_name,
             first_name=first_name,
             middle_name=middle_name,
+            department=department,
+            company=company,
+            ad_pool=pool,
+            users_root_ou=users_root_ou,
         )
         await self.auth_bootstrap.bootstrap_auth(client=self.client)
         return preview
@@ -251,6 +380,7 @@ class AccountProvisioningService:
         phone: str,
         company: str,
     ) -> AccountProvisioningReceipt:
+        pool, users_root_ou = await self._connection_boundary()
         secret = generate_secure_password(length=14)
         password = secret.get_secret_value()
         del secret
@@ -265,6 +395,8 @@ class AccountProvisioningService:
                 phone=phone,
                 company=company,
                 password=password,
+                ad_pool=pool,
+                users_root_ou=users_root_ou,
             )
         except AccountProvisioningError:
             password = ""

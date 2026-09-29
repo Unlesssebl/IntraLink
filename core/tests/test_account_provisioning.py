@@ -18,7 +18,14 @@ def _provisioner_with_verified_ldap():
     verified.userAccountControl.value = 512
     verified.pwdLastSet.value = 0
 
-    searches = iter([[], [], [verified]])
+    organization_ou = MagicMock()
+    organization_ou.ou.value = "АО Тест"
+    organization_ou.distinguishedName.value = "OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    target_ou = MagicMock()
+    target_ou.ou.value = "ИТ"
+    target_ou.distinguishedName.value = "OU=ИТ,OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+
+    searches = iter([[organization_ou, target_ou], [], [], [verified]])
 
     def search_side_effect(*args, **kwargs):
         conn.entries = next(searches)
