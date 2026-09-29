@@ -36,6 +36,7 @@ from .schemas import (
     RedirectPlanRequest,
     RedirectPlanResponse,
     ResumeClarificationRequest,
+    RetryClarificationRequest,
     TicketAutomationDTO,
 )
 from .service import AutomationService, extract_operator
@@ -53,8 +54,10 @@ Auth = Annotated[str | None, Depends(get_intraservice_auth)]
 Service = Annotated[AutomationService, Depends(get_automation_service)]
 
 
-@router.get("/tickets/{ticket_id}/automation", response_model=TicketAutomationDTO)
-async def get_ticket_automation(ticket_id: int, db: Db, _auth: Auth, service: Service) -> TicketAutomationDTO:
+@router.get("/tickets/{ticket_id}/automation", response_model=TicketAutomationDTO | None)
+async def get_ticket_automation(
+    ticket_id: int, db: Db, _auth: Auth, service: Service
+) -> TicketAutomationDTO | None:
     return await service.get_automation(db, ticket_id)
 
 
@@ -158,6 +161,34 @@ async def correct_onboarding_facts(
             ticket_id=ticket_id,
             request=request,
             operator=extract_operator(auth),
+            auth_b64=auth,
+        )
+    finally:
+        await lock.release()
+
+
+@router.post(
+    "/tickets/{ticket_id}/clarifications/{clarification_id}/retry",
+    response_model=TicketAutomationDTO,
+)
+async def retry_clarification(
+    ticket_id: int,
+    clarification_id: UUID,
+    request: RetryClarificationRequest,
+    db: Db,
+    auth: Auth,
+    service: Service,
+    redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
+) -> TicketAutomationDTO:
+    lock = DistributedTaskLock(redis_client, f"lock:analysis:{ticket_id}", ttl_seconds=60)
+    if not await lock.acquire():
+        raise HTTPException(status.HTTP_409_CONFLICT, "analysis_already_running")
+    try:
+        return await service.retry_clarification(
+            db,
+            ticket_id=ticket_id,
+            clarification_id=clarification_id,
+            request=request,
             auth_b64=auth,
         )
     finally:

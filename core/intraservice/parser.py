@@ -303,12 +303,16 @@ def normalize_pc_name(raw_pc: str) -> str:
             return f"{norm_prefix.upper()}{number}"
 
     # Fallback to transliterated prefix or uppercase
+    # IMPORTANT: a token with no numeric part is NEVER a valid hostname (e.g. "стали", "недоступны").
+    # V1 returned None here; V2 incorrectly fell through to `return cleaned.upper()` producing junk
+    # like "СТАЛИ" which then polluted pc_name.  Fix: require at least one digit.
+    if not number:
+        return ""
     if prefix:
         norm_prefix = _transliterate_prefix(prefix)
         if norm_prefix.upper() in KNOWN_PRINTER_PREFIXES:
             return ""
-        if number:
-            return f"{norm_prefix.upper()}{number}"
+        return f"{norm_prefix.upper()}{number}"
 
     return cleaned.upper()
 
@@ -325,12 +329,14 @@ def extract_pc_names_from_text(text: str) -> List[str]:
     results: List[str] = []
 
     # 1. First pass: explicit context markers ('на ПК 1020', 'компьютер: buh-01', 'ПК kzm0010', 'к пк кзм 0010')
+    # NOTE: must call is_valid_pc_name() — identical to V1 marker_pattern pass.
+    # Without this guard, verbs like "стали" in "хост стали" would leak into pc_name.
     for m in PC_CONTEXT_REGEX.finditer(text):
         token = m.group(1).strip()
         if NON_PC_PATTERNS.match(token):
             continue
         norm = normalize_pc_name(token)
-        if norm and len(norm) >= 3 and not is_valid_printer_name(norm) and norm not in results:
+        if norm and is_valid_pc_name(norm) and not is_valid_printer_name(norm) and norm not in results:
             results.append(norm)
 
     # 2. Second pass: search for tokens with alphanumeric prefix + digits (KZM0010, TNT0088, SCSP0001)

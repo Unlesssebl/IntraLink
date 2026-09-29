@@ -12,6 +12,46 @@ from core.automation.contracts import ActionPlan, CaseDecision, CaseFrame, Workf
 from core.automation.service_routing import RedirectPlan, ServiceCompatibilityDecision
 
 
+class ReadinessStageDTO(BaseModel):
+    key: str
+    state: str
+    reason_code: str | None = None
+
+
+class ReadinessBlockerDTO(BaseModel):
+    code: str
+    stage: str
+    fact_keys: list[str] = Field(default_factory=list)
+    retryable: bool = False
+    detail: str | None = None
+
+
+class ClarificationReadinessDTO(BaseModel):
+    id: UUID
+    state: str
+    round: int
+    missing_facts: list[str] = Field(default_factory=list)
+    publish_attempts: int = 0
+    last_error_code: str | None = None
+    last_error_detail: str | None = None
+
+
+class PreflightReadinessDTO(BaseModel):
+    state: str
+    reason_code: str | None = None
+    checks: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AutomationReadinessDTO(BaseModel):
+    state: str
+    current_stage: str
+    stages: list[ReadinessStageDTO] = Field(default_factory=list)
+    blockers: list[ReadinessBlockerDTO] = Field(default_factory=list)
+    actions: list[str] = Field(default_factory=list)
+    clarification: ClarificationReadinessDTO | None = None
+    preflight: PreflightReadinessDTO
+
+
 class TicketAutomationDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -26,6 +66,7 @@ class TicketAutomationDTO(BaseModel):
     preflight: list[dict[str, Any]] = Field(default_factory=list)
     approval: dict[str, Any] = Field(default_factory=dict)
     execution: list[dict[str, Any]] = Field(default_factory=list)
+    readiness: AutomationReadinessDTO | None = None
 
 
 class ApproveActionPlanRequest(BaseModel):
@@ -102,6 +143,10 @@ class ApprovalResponse(BaseModel):
 
 class ResumeClarificationRequest(BaseModel):
     event_id: int = Field(gt=0)
+
+
+class RetryClarificationRequest(BaseModel):
+    snapshot_hash: str = Field(min_length=64, max_length=64)
 
 
 class CorrectOnboardingFactsRequest(BaseModel):

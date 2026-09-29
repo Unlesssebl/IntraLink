@@ -181,6 +181,33 @@ export interface TicketAutomation {
     status: string;
     outcome?: string | null;
   }>;
+  readiness?: {
+    state: string;
+    current_stage: string;
+    stages: Array<{ key: string; state: string; reason_code?: string | null }>;
+    blockers: Array<{
+      code: string;
+      stage: string;
+      fact_keys: string[];
+      retryable: boolean;
+      detail?: string | null;
+    }>;
+    actions: string[];
+    clarification?: {
+      id: string;
+      state: string;
+      round: number;
+      missing_facts: string[];
+      publish_attempts: number;
+      last_error_code?: string | null;
+      last_error_detail?: string | null;
+    } | null;
+    preflight: {
+      state: string;
+      reason_code?: string | null;
+      checks: Array<Record<string, unknown>>;
+    };
+  } | null;
 }
 
 export interface AutomationCommand {

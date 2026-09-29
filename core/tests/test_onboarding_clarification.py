@@ -7,6 +7,7 @@ from core.automation.clarification import (
     merge_onboarding_facts,
     render_clarification,
 )
+from core.automation.workflows import get_default_workflow_registry
 from core.intraservice.dto import TaskLifetimeEventDTO
 
 
@@ -56,3 +57,15 @@ def test_new_human_event_ignores_bot_private_and_status_events() -> None:
     ]
     selected = latest_human_public_event(events, baseline_event_id=10, bot_user_id=99)
     assert selected is not None and selected.id == 14
+
+
+def test_creation_and_revocation_workflows_have_disjoint_capabilities() -> None:
+    registry = get_default_workflow_registry()
+    onboarding = registry.for_case_type("employee_onboarding")
+    revocation = registry.for_case_type("access_revocation_request")
+    assert onboarding is not None and onboarding.key == "employee_onboarding_workflow"
+    assert onboarding.allowed_capabilities == ("create_ad_user",)
+    assert "disable_ad_user" not in onboarding.allowed_capabilities
+    assert revocation is not None and revocation.key == "access_revocation_workflow"
+    assert revocation.allowed_capabilities == ("disable_ad_user",)
+    assert "create_ad_user" not in revocation.allowed_capabilities

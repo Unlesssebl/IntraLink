@@ -31,6 +31,17 @@ def test_base_url_normalization_no_duplicate_api():
     assert c3.base_url == "https://servicedesk-pub.corporate.loc/api"
 
 
+def test_task_creator_is_normalized_as_applicant_not_employee() -> None:
+    from core.intraservice.dto import TaskDTO
+
+    task = TaskDTO(Id=142250, CreatorId=77, Creator="Петров П.П.")
+    assert task.creator_id == 77
+    assert task.creator_name == "Петров П.П."
+    assert task.applicant_id == 77
+    assert task.applicant_name == "Петров П.П."
+    assert not any(task.entities.model_dump().values())
+
+
 def test_circuit_breaker_transition_and_trip():
     cb = CircuitBreaker(failure_threshold=3, base_recovery_timeout=1.0)
     assert cb.state == CircuitState.CLOSED
@@ -102,7 +113,7 @@ async def test_get_task_lifetime_maps_date_and_editor():
                 "EditorId": 43,
                 "Editor": "Иванов И.И.",
                 "StatusId": 31,
-                "Comment": "Работы начаты",
+                "Comments": "Работы начаты",
             }
         ],
         "Statuses": [{"Id": 31, "Name": "Открыта"}],

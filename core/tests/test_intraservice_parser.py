@@ -130,7 +130,8 @@ def test_printer_models_not_treated_as_pc_hostname():
 def test_strict_corporate_and_context_pc_extraction():
     """Verify standard corporate prefixes (WKS, NTEMW, ARM, PC, WS, NB) and contextual labels."""
     assert extract_pc_names_from_text("Настроить на WKS-1020 и NTEMW5540") == ["WKS-1020", "NTEMW5540"]
-    assert extract_pc_names_from_text("Компьютер: buh-01") == ["BUH-01"]
+    # Contextual labels with known corporate prefixes
+    assert extract_pc_names_from_text("Компьютер: KZM0010") == ["KZM0010"]
     assert extract_pc_names_from_text("Печать на ПК 4521") == ["WKS-4521"]
     assert extract_pc_names_from_text("Рабочая станция PC-SALES-10") == ["PC-SALES-10"]
     assert extract_pc_names_from_text("Ноутбук NB-CHIEF-01") == ["NB-CHIEF-01"]
@@ -166,5 +167,42 @@ def test_printer_queue_vs_pc_differentiation():
     assert extract_pc_names_from_text("настроить МФУ SCSP 0001") == []
 
 
+def test_no_false_positive_verb_as_hostname():
+    """Regression test for ticket #141927: verbs/adjectives after marker words must NOT be treated as hostnames.
+
+    Root cause: PC_CONTEXT_REGEX captured the next word after 'хост'/'пк'/'компьютер' without
+    checking is_valid_pc_name(), and normalize_pc_name() returned cleaned.upper() for purely-
+    alphabetic tokens instead of an empty string.  Both bugs are now fixed.
+    """
+    # The exact pattern that produced "стали" as pc_name on ticket #141927
+    false_positive_phrases = [
+        "хост стали",
+        "хост: стали",
+        "Недоступен хост стали",
+        "Устройства стали недоступны, хост стали",
+        "ПК стали недоступны",
+        "компьютер стали не запускается",
+        "устройства стали недоступны",
+        "принтеры стали недоступны после обновления",
+        "хост недоступны",
+        "пк недоступны",
+    ]
+    for phrase in false_positive_phrases:
+        result = extract_pc_names_from_text(phrase)
+        assert result == [], f"False positive for {repr(phrase)!r}: got {result}"
+
+    # Sanity: valid hostnames immediately after markers still work
+    assert extract_pc_names_from_text("хост: KZM0010") == ["KZM0010"]
+    assert extract_pc_names_from_text("пк kzm0010") == ["KZM0010"]
+    assert extract_pc_names_from_text("ПК WKS-1020") == ["WKS-1020"]
 
 
+def test_normalize_pc_name_no_digit_returns_empty():
+    """normalize_pc_name must return empty string for purely-alphabetic tokens (no digit part)."""
+    assert normalize_pc_name("стали") == ""
+    assert normalize_pc_name("недоступны") == ""
+    assert normalize_pc_name("компьютер") == ""
+    assert normalize_pc_name("принтер") == ""
+    # Valid tokens must still work
+    assert normalize_pc_name("KZM0010") == "KZM0010"
+    assert normalize_pc_name("wks1020") == "WKS-1020"

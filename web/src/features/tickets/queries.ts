@@ -224,10 +224,29 @@ export function useAgentPlan(ticketId: number | null) {
     queryKey: ["autopilot", "automation", ticketId || 0],
     queryFn: ({ signal }) => {
       if (!ticketId) throw new Error("Ticket ID required");
-      return import("@/features/autopilot/api").then((m) => m.autopilotApi.getAutomation(ticketId, signal));
+      return import("@/features/autopilot/api").then(async (module) => {
+        try {
+          return await module.autopilotApi.getAutomation(ticketId, signal);
+        } catch (error) {
+          if (error instanceof module.AutopilotApiError && error.status === 404) return null;
+          throw error;
+        }
+      });
     },
     enabled: Boolean(ticketId && ticketId > 0),
     staleTime: 5000,
+    retry: (failureCount, error) => {
+      const status = error && typeof error === "object" && "status" in error
+        ? Number((error as { status?: number }).status)
+        : undefined;
+      return status !== 404 && failureCount < 2;
+    },
+    refetchInterval: (query) => {
+      const execution = query.state.data?.execution || [];
+      return execution.some((item) => ["pending", "queued", "running"].includes(item.status))
+        ? 1500
+        : false;
+    },
   });
 }
 

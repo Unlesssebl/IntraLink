@@ -17,6 +17,7 @@ from api.src.features.autopilot.schemas import (
     CorrectedActionRequest,
     CorrectTargetServiceRequest,
     RedirectPlanRequest,
+    RetryClarificationRequest,
 )
 from api.src.features.autopilot.service import AutomationService
 from core.automation.capabilities import (
@@ -209,9 +210,8 @@ async def test_read_only_get_does_not_trigger_analysis(session_factory) -> None:
     client = AsyncMock()
     service = _service(client)
     async with session_factory() as session:
-        with pytest.raises(HTTPException) as exc:
-            await service.get_automation(session, 62001)
-    assert exc.value.status_code == 404
+        result = await service.get_automation(session, 62001)
+    assert result is None
     client.get_task.assert_not_awaited()
 
 
@@ -243,7 +243,85 @@ async def test_onboarding_reanalysis_does_not_duplicate_clarification(session_fa
     assert first.workflow_plan.state.value == "awaiting_facts"
     assert second.workflow_plan.active_clarification_id == first.workflow_plan.active_clarification_id
     assert client.update_task.await_count == 1
-    assert client.update_task.await_args.kwargs["status_id"] == 6
+    assert "status_id" not in client.update_task.await_args.kwargs
+    assert client.update_task.await_args.kwargs["comment"]
+    assert first.readiness is not None
+    assert first.readiness.preflight.state == "not_started"
+    assert first.readiness.preflight.reason_code == "blocked_by_missing_facts"
+    assert {item.code for item in first.readiness.blockers} == {"required_facts_missing"}
+
+
+async def test_onboarding_extracts_missing_facts_after_service_routing(session_factory) -> None:
+    client = AsyncMock()
+    client.get_task.return_value = TaskDTO(
+        Id=63002,
+        Name="Создать учетную запись нового сотрудника",
+        Description=(
+            "Фамилия: Иванов\nИмя: Иван\n"
+            "Подразделение: Бюро разработки маршрутов изготовления МК\n"
+            "Должность: Инженер"
+        ),
+        ServiceId=900001,
+        ServiceName="Создание пользователя сети",
+        TaskTypeId=1001,
+        StatusId=2,
+    )
+    client.get_task_lifetime.return_value = []
+    service = AutomationService(client=client, extractor=CaseFrameExtractor(), router=CaseRouter())
+
+    async with session_factory() as session:
+        result = await service.analyze(session, ticket_id=63002, auth_b64="operator-auth", force=True)
+
+    assert result.case_decision.primary_case_type == "employee_onboarding"
+    assert result.case_frame.entities["last_name"] == "Иванов"
+    assert result.case_frame.entities["department"] == "Бюро разработки маршрутов изготовления МК"
+    assert result.workflow_plan.missing_facts == []
+    assert result.action_plan is not None
+    assert result.action_plan.actions[0].capability_key == "create_ad_user"
+    assert "target_user" not in result.action_plan.actions[0].params
+    client.update_task.assert_not_awaited()
+
+
+async def test_failed_clarification_is_visible_and_retry_is_idempotent(session_factory) -> None:
+    client = AsyncMock()
+    client.get_task.return_value = TaskDTO(
+        Id=63003,
+        Name="Создать учетную запись нового сотрудника",
+        Description="Нужно создать пользователя",
+        ServiceId=900001,
+        ServiceName="Создание пользователя сети",
+        TaskTypeId=1001,
+        StatusId=2,
+    )
+    client.get_task_lifetime.return_value = []
+    client.update_task.side_effect = [RuntimeError("HTTP 400 with secret token=hidden"), None]
+    service = AutomationService(client=client, extractor=CaseFrameExtractor(), router=CaseRouter())
+    service.auth_bootstrap = AsyncMock()
+    service.auth_bootstrap.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="service-auth", bot_user_id=999, login="bot"
+    )
+
+    async with session_factory() as session:
+        failed = await service.analyze(session, ticket_id=63003, auth_b64="operator-auth", force=True)
+        assert failed.readiness is not None
+        clarification = failed.readiness.clarification
+        assert clarification is not None and clarification.state == "failed"
+        assert clarification.publish_attempts == 1
+        assert "secret" not in (clarification.last_error_detail or "").lower()
+        retried = await service.retry_clarification(
+            session,
+            ticket_id=63003,
+            clarification_id=clarification.id,
+            request=RetryClarificationRequest(snapshot_hash=failed.snapshot_hash),
+            auth_b64="operator-auth",
+        )
+
+    assert retried.readiness is not None
+    assert retried.readiness.clarification is not None
+    assert retried.readiness.clarification.state == "published"
+    assert retried.readiness.clarification.publish_attempts == 2
+    assert retried.workflow_plan.state.value == "awaiting_facts"
+    assert client.update_task.await_count == 2
 
 
 async def test_analyze_then_approve_creates_bound_first_command(session_factory) -> None:

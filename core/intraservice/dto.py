@@ -137,10 +137,19 @@ class TaskDTO(BaseModel):
     @classmethod
     def normalize_entities_key(cls, data: Any) -> Any:
         if isinstance(data, dict):
+            data = dict(data)
             if "Entities" in data and "entities" not in data:
                 data["entities"] = data.pop("Entities")
             if "CustomFields" in data and "custom_fields" not in data:
                 data["custom_fields"] = data.pop("CustomFields")
+            # IntraService exposes the requester as Creator/CreatorId. Keep the
+            # applicant projection separate from employee facts used by onboarding.
+            if "Creator" in data and "CreatorName" not in data:
+                data["CreatorName"] = data["Creator"]
+            if "ApplicantName" not in data and data.get("Creator") is not None:
+                data["ApplicantName"] = data["Creator"]
+            if "ApplicantId" not in data and data.get("CreatorId") is not None:
+                data["ApplicantId"] = data["CreatorId"]
         return data
 
     id: int = Field(alias="Id")
@@ -214,6 +223,13 @@ class TaskLifetimeEventDTO(BaseModel):
     def normalize_privacy(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
+        data = dict(data)
+        if "Comments" in data and "Comment" not in data:
+            data["Comment"] = data["Comments"]
+        if "Date" in data and "Created" not in data:
+            data["Created"] = data["Date"]
+        if "Editor" in data and "UserName" not in data:
+            data["UserName"] = data["Editor"]
         is_priv = bool(
             data.get("is_private")
             or data.get("IsPrivate")

@@ -20,14 +20,21 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.detail || `HTTP ${response.status}`);
+    throw new AutopilotApiError(body?.detail || `HTTP ${response.status}`, response.status);
   }
   return response.json() as Promise<T>;
 }
 
+export class AutopilotApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "AutopilotApiError";
+  }
+}
+
 export const autopilotApi = {
   getAutomation(ticketId: number, signal?: AbortSignal) {
-    return request<TicketAutomation>(`/api/v2/autopilot/tickets/${ticketId}/automation`, { signal });
+    return request<TicketAutomation | null>(`/api/v2/autopilot/tickets/${ticketId}/automation`, { signal });
   },
   analyze(ticketId: number) {
     return request<TicketAutomation>(`/api/v2/autopilot/tickets/${ticketId}/analyze`, { method: "POST" });
@@ -79,6 +86,15 @@ export const autopilotApi = {
         reason_tag: "operator_fact_confirmation",
       }),
     });
+  },
+  retryClarification(ticketId: number, automation: TicketAutomation, clarificationId: string) {
+    return request<TicketAutomation>(
+      `/api/v2/autopilot/tickets/${ticketId}/clarifications/${clarificationId}/retry`,
+      {
+        method: "POST",
+        body: JSON.stringify({ snapshot_hash: automation.snapshot_hash }),
+      }
+    );
   },
   correctActionPlan(ticketId: number, automation: TicketAutomation, actions: CorrectedActionInput[], notes?: string) {
     if (!automation.action_plan) throw new Error("ActionPlan отсутствует");

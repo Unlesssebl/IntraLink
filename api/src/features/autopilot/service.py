@@ -89,14 +89,20 @@ from .schemas import (
     ActionPlanFeedbackRequest,
     ApprovalResponse,
     ApproveActionPlanRequest,
+    AutomationReadinessDTO,
+    ClarificationReadinessDTO,
     CorrectActionPlanRequest,
     CorrectCaseDecisionRequest,
     CorrectOnboardingFactsRequest,
     CorrectRedirectPlanRequest,
     CorrectTargetServiceRequest,
     FeedbackResponse,
+    PreflightReadinessDTO,
+    ReadinessBlockerDTO,
+    ReadinessStageDTO,
     RedirectPlanRequest,
     RedirectPlanResponse,
+    RetryClarificationRequest,
     TicketAutomationDTO,
 )
 
@@ -155,10 +161,10 @@ class AutomationService:
             model_alias=settings.LITELLM_MODEL_FAST,
         )
 
-    async def get_automation(self, session: AsyncSession, ticket_id: int) -> TicketAutomationDTO:
+    async def get_automation(self, session: AsyncSession, ticket_id: int) -> TicketAutomationDTO | None:
         bundle = await self.repository.latest_for_task(session, ticket_id)
         if bundle is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "automation_not_analyzed")
+            return None
         return await self._dto(session, bundle)
 
     async def analyze(
@@ -203,8 +209,11 @@ class AutomationService:
             snapshot,
             target_resolution=target_resolution,
         )
-        fact_merge = await self._merge_onboarding_facts(session, frame.entities, ticket_id)
         if decision.primary_case_type == "employee_onboarding":
+            initial_facts = await self._extract_onboarding_snapshot_facts(snapshot, frame.entities)
+            fact_merge = await self._merge_onboarding_facts(
+                session, frame.entities, ticket_id, initial_facts=initial_facts
+            )
             frame = frame.model_copy(
                 update={
                     "entities": {**frame.entities, **fact_merge.values},
@@ -212,6 +221,8 @@ class AutomationService:
                 }
             )
             decision = decision.model_copy(update={"frame_id": frame.id})
+        else:
+            fact_merge = merge_onboarding_facts({}, [])
         timings["case_classification"] = round((perf_counter() - intake_started) * 1000)
         compatibility, binding = self._compatibility_from_catalog(
             snapshot=snapshot,
@@ -346,7 +357,34 @@ class AutomationService:
         await session.commit()
         return await self.analyze(session, ticket_id=ticket_id, auth_b64=auth_b64, force=True)
 
-    async def _merge_onboarding_facts(self, session: AsyncSession, structured: dict[str, str], task_id: int):
+    async def _extract_onboarding_snapshot_facts(self, snapshot, existing: dict[str, str]):
+        missing = [key for key in ONBOARDING_FACTS if not str(existing.get(key, "")).strip()]
+        if not missing:
+            return {}
+        source_text = "\n".join(
+            value
+            for value in [
+                snapshot.title,
+                snapshot.description,
+                *(comment.text for comment in snapshot.public_comments),
+            ]
+            if value and value.strip()
+        )
+        if not source_text:
+            return {}
+        try:
+            return await self.clarification_extractor.extract(source_text[:12000], missing)
+        except Exception:
+            return extract_labeled_facts(source_text, missing)
+
+    async def _merge_onboarding_facts(
+        self,
+        session: AsyncSession,
+        structured: dict[str, str],
+        task_id: int,
+        *,
+        initial_facts: dict[str, Any] | None = None,
+    ):
         records = list(
             (
                 await session.scalars(
@@ -359,14 +397,17 @@ class AutomationService:
                 )
             ).all()
         )
-        responses = [
+        responses = []
+        if initial_facts:
+            responses.append({"source": "ticket_text", "event_id": None, "facts": initial_facts})
+        responses.extend([
             {
                 "source": "public_comment",
                 "event_id": item.response_event_id,
                 "facts": item.response_facts_json,
             }
             for item in records
-        ]
+        ])
         corrections = list(
             (
                 await session.scalars(
@@ -430,9 +471,6 @@ class AutomationService:
                     ClarificationRequestRecord.request_fingerprint == fingerprint
                 )
             )
-            if active is not None and active.state == "failed":
-                # The previous PUT may have succeeded despite a lost response; reconcile lifetime before retrying.
-                active.state = "pending_publish"
             if active is None:
                 active = ClarificationRequestRecord(
                     task_id=workflow.task_id,
@@ -449,10 +487,61 @@ class AutomationService:
                 session.add(active)
                 await session.commit()
 
-        updated = workflow.model_copy(update={"active_clarification_id": active.id})
+        restore_waiting = active.state == "pending_publish" and workflow.state == WorkflowPlanState.needs_review
+        updated = workflow.model_copy(
+            update={
+                "active_clarification_id": active.id,
+                **(
+                    {
+                        "state": WorkflowPlanState.awaiting_facts,
+                        "disposition": Disposition.clarify,
+                        "missing_facts": list(active.missing_facts_json or []),
+                        "reason_codes": [
+                            code
+                            for code in workflow.reason_codes
+                            if not code.startswith("clarification_publish_failed:")
+                        ],
+                    }
+                    if restore_waiting
+                    else {}
+                ),
+            }
+        )
         plan_record = await session.get(WorkflowPlanRecord, workflow.id)
         if plan_record is not None:
+            plan_record.state = updated.state.value
+            plan_record.disposition = updated.disposition.value
             plan_record.plan_json = updated.model_dump(mode="json")
+
+        if active.state == "failed":
+            failed = updated.model_copy(
+                update={
+                    "state": WorkflowPlanState.needs_review,
+                    "disposition": Disposition.manual,
+                    "missing_facts": [],
+                    "reason_codes": [
+                        *[
+                            code
+                            for code in updated.reason_codes
+                            if not code.startswith("clarification_publish_failed:")
+                        ],
+                        f"clarification_publish_failed:{active.last_error_code or 'unknown'}",
+                    ],
+                }
+            )
+            if plan_record is not None:
+                plan_record.state = failed.state.value
+                plan_record.disposition = failed.disposition.value
+                plan_record.plan_json = failed.model_dump(mode="json")
+            await session.commit()
+            return AutomationBundle(
+                bundle.frame,
+                bundle.decision,
+                bundle.compatibility,
+                failed,
+                None,
+                bundle.redirect_plan,
+            )
 
         if active.state == "pending_publish":
             credentials = await self.auth_bootstrap.bootstrap_auth(
@@ -469,16 +558,19 @@ class AutomationService:
                 for item in lifetime
             )
             try:
+                active.publish_attempts = int(active.publish_attempts or 0) + 1
+                active.last_attempt_at = datetime.now(UTC)
                 if not already_published:
                     await self.client.update_task(
                         task_id=workflow.task_id,
-                        status_id=6,
                         comment=active.question_text,
                         is_private=False,
                         auth_b64=auth_b64,
                     )
                 active.state = "published"
                 active.published_at = datetime.now(UTC)
+                active.last_error_code = None
+                active.last_error_detail = None
             except Exception as exc:
                 failed = updated.model_copy(
                     update={
@@ -489,6 +581,8 @@ class AutomationService:
                     }
                 )
                 active.state = "failed"
+                active.last_error_code = type(exc).__name__[:128]
+                active.last_error_detail = f"Не удалось опубликовать вопрос ({type(exc).__name__})."[:500]
                 if plan_record is not None:
                     plan_record.state = failed.state.value
                     plan_record.disposition = failed.disposition.value
@@ -499,6 +593,42 @@ class AutomationService:
         return AutomationBundle(
             bundle.frame, bundle.decision, bundle.compatibility, updated, bundle.action_plan, bundle.redirect_plan
         )
+
+    async def retry_clarification(
+        self,
+        session: AsyncSession,
+        *,
+        ticket_id: int,
+        clarification_id,
+        request: RetryClarificationRequest,
+        auth_b64: str | None,
+    ) -> TicketAutomationDTO:
+        await self._verify_current_snapshot(ticket_id, request.snapshot_hash, auth_b64)
+        bundle = await self.repository.latest_for_task(session, ticket_id)
+        if bundle is None or bundle.workflow_plan.workflow_key != "employee_onboarding_workflow":
+            raise HTTPException(status.HTTP_409_CONFLICT, "employee_onboarding_not_active")
+        record = await session.scalar(
+            select(ClarificationRequestRecord)
+            .where(
+                ClarificationRequestRecord.id == clarification_id,
+                ClarificationRequestRecord.task_id == ticket_id,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "clarification_not_found")
+        if record.snapshot_hash != request.snapshot_hash or record.id != bundle.workflow_plan.active_clarification_id:
+            raise HTTPException(status.HTTP_409_CONFLICT, "clarification_snapshot_changed")
+        if record.state not in {"failed", "pending_publish"}:
+            raise HTTPException(status.HTTP_409_CONFLICT, "clarification_not_retryable")
+        record.state = "pending_publish"
+        await session.commit()
+        token = await self._auth_token(auth_b64)
+        lifetime = await self.client.get_task_lifetime(task_id=ticket_id, auth_b64=token)
+        bundle = await self._ensure_clarification(
+            session, bundle=bundle, lifetime=lifetime, auth_b64=token
+        )
+        return await self._dto(session, bundle)
 
     async def approve(
         self,
@@ -1419,6 +1549,13 @@ class AutomationService:
                     "authorization_state": projected.authorization_state,
                 }
             )
+        readiness = await self._build_readiness(
+            session,
+            bundle=bundle,
+            preflight=preflight,
+            approval=approval,
+            execution=execution,
+        )
         return TicketAutomationDTO(
             task_id=bundle.frame.task_id,
             snapshot_hash=bundle.frame.snapshot_hash,
@@ -1431,6 +1568,155 @@ class AutomationService:
             preflight=preflight,
             approval=approval,
             execution=execution,
+            readiness=readiness,
+        )
+
+    async def _build_readiness(
+        self,
+        session: AsyncSession,
+        *,
+        bundle: AutomationBundle,
+        preflight: list[dict[str, Any]],
+        approval: dict[str, Any],
+        execution: list[dict[str, Any]],
+    ) -> AutomationReadinessDTO | None:
+        if bundle.workflow_plan.workflow_key != "employee_onboarding_workflow":
+            return None
+
+        clarification = await session.scalar(
+            select(ClarificationRequestRecord)
+            .where(ClarificationRequestRecord.task_id == bundle.frame.task_id)
+            .order_by(ClarificationRequestRecord.created_at.desc())
+            .limit(1)
+        )
+        clarification_dto = None
+        if clarification is not None:
+            clarification_dto = ClarificationReadinessDTO(
+                id=clarification.id,
+                state=clarification.state,
+                round=clarification.round,
+                missing_facts=list(clarification.missing_facts_json or []),
+                publish_attempts=int(clarification.publish_attempts or 0),
+                last_error_code=clarification.last_error_code,
+                last_error_detail=clarification.last_error_detail,
+            )
+
+        latest_preflight: dict[str, dict[str, Any]] = {}
+        for item in preflight:
+            latest_preflight.setdefault(str(item["action_id"]), item)
+        plan_checks = list(latest_preflight.values())
+        preflight_passed = bool(bundle.action_plan) and len(plan_checks) == len(bundle.action_plan.actions) and all(
+            item["status"] in {"passed", "not_applicable"}
+            and datetime.fromisoformat(item["expires_at"]) > datetime.now(UTC)
+            for item in plan_checks
+        )
+        preflight_failed = any(item["status"] not in {"passed", "not_applicable"} for item in plan_checks)
+        missing_facts = list(bundle.workflow_plan.missing_facts)
+        if not missing_facts and clarification is not None and clarification.state in {"failed", "pending_publish", "published"}:
+            missing_facts = list(clarification.missing_facts_json or [])
+
+        blockers: list[ReadinessBlockerDTO] = []
+        actions: list[str] = []
+        if missing_facts:
+            blockers.append(
+                ReadinessBlockerDTO(
+                    code="required_facts_missing",
+                    stage="facts",
+                    fact_keys=missing_facts,
+                    retryable=True,
+                    detail="Не получены обязательные данные нового сотрудника.",
+                )
+            )
+            actions.append("edit_facts")
+        if clarification is not None and clarification.state == "failed":
+            blockers.append(
+                ReadinessBlockerDTO(
+                    code="clarification_publish_failed",
+                    stage="facts",
+                    fact_keys=list(clarification.missing_facts_json or []),
+                    retryable=True,
+                    detail=clarification.last_error_detail,
+                )
+            )
+            actions.append("retry_clarification")
+        if preflight_failed:
+            blockers.append(
+                ReadinessBlockerDTO(
+                    code="preflight_failed",
+                    stage="preflight",
+                    retryable=True,
+                    detail="Одна или несколько проверок перед созданием не пройдены.",
+                )
+            )
+            actions.append("reanalyze")
+        execution_disabled = bool(bundle.action_plan) and approval.get("execution_enabled") is False
+        if execution_disabled:
+            blockers.append(
+                ReadinessBlockerDTO(
+                    code="ad_onboarding_execution_disabled",
+                    stage="execution",
+                    detail="Создание в AD отключено настройкой AD_ONBOARDING_EXECUTION_ENABLED.",
+                )
+            )
+
+        command_states = {str(item.get("status")) for item in execution}
+        completed = bundle.workflow_plan.state == WorkflowPlanState.completed or (
+            bool(command_states) and command_states <= {"succeeded"}
+        )
+        running = bool(command_states & {"pending", "queued", "running"})
+        if completed:
+            state, current_stage = "completed", "delivery"
+        elif running:
+            state, current_stage = "running", "execution"
+        elif bundle.action_plan is None:
+            state, current_stage = "blocked", "facts"
+        elif not preflight_passed:
+            state, current_stage = "blocked", "preflight"
+        elif execution_disabled:
+            state, current_stage = "blocked", "approval"
+        elif approval.get("state") == "pending":
+            state, current_stage = "ready_for_approval", "approval"
+            actions.extend(["approve", "reject_automation"])
+        else:
+            state, current_stage = "blocked", "execution"
+
+        stage_order = ["facts", "ou", "preflight", "approval", "execution", "delivery"]
+        current_index = stage_order.index(current_stage)
+        stages = []
+        for index, key in enumerate(stage_order):
+            if completed:
+                stage_state = "completed"
+            elif index < current_index:
+                stage_state = "completed"
+            elif index == current_index:
+                stage_state = "blocked" if blockers and state == "blocked" else ("running" if running else "active")
+            else:
+                stage_state = "not_started"
+            stages.append(ReadinessStageDTO(key=key, state=stage_state))
+
+        readiness_preflight = PreflightReadinessDTO(
+            state=("passed" if preflight_passed else "failed" if preflight_failed else "not_started"),
+            reason_code=("blocked_by_missing_facts" if bundle.action_plan is None and missing_facts else None),
+            checks=[
+                {
+                    "action_id": item["action_id"],
+                    "capability_key": item["capability_key"],
+                    "status": item["status"],
+                    "checks": item["checks"],
+                    "details": item["details"],
+                    "error": item.get("error"),
+                }
+                for item in plan_checks
+            ],
+        )
+        return AutomationReadinessDTO(
+            state=state,
+            current_stage=current_stage,
+            stages=stages,
+            blockers=blockers,
+            actions=list(dict.fromkeys(actions)),
+            clarification=clarification_dto,
+            preflight=readiness_preflight,
         )
 
 

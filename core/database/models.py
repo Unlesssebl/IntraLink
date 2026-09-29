@@ -413,6 +413,10 @@ class ClarificationRequestRecord(Base, TimestampMixin):
     question_text: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    publish_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    last_error_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     response_event_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     response_facts_json: Mapped[Dict[str, Any]] = mapped_column(
@@ -421,6 +425,7 @@ class ClarificationRequestRecord(Base, TimestampMixin):
 
     def __init__(self, **kwargs: Any) -> None:
         kwargs.setdefault("missing_facts_json", [])
+        kwargs.setdefault("publish_attempts", 0)
         kwargs["response_facts_json"] = sanitize_secrets(kwargs.get("response_facts_json", {}))
         super().__init__(**kwargs)
 

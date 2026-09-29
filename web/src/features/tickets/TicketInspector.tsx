@@ -10,8 +10,6 @@ import { Badge, StatusDot, Lightbox, KbdBadge, useToast } from "@/shared/ui";
 import { getStatusMeta, isStatusResolved, isStatusCancelled } from "@/shared/statuses";
 import { ActionDock } from "./ActionDock";
 import { AgentPlanCard } from "./AgentPlanCard";
-import { LiveExecutionStepper } from "./LiveExecutionStepper";
-import { DialogueLoopCard } from "./DialogueLoopCard";
 import { TicketAttachment, ticketsApi } from "@/shared/api";
 import { TicketActivity } from "./TicketActivity";
 import { TicketOverview } from "./TicketOverview";
@@ -19,7 +17,6 @@ import {
   useTicketDetail,
   useTicketLifetime,
   useTicketActions,
-  useAgentPlan,
 } from "./queries";
 
 export interface TicketInspectorProps {
@@ -49,17 +46,9 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
   } = useTicketLifetime(ticketId);
 
   // 2. Declarative mutations with automatic query invalidation
-  const {
-    takeMutation,
-    resolveMutation,
-    duplicateMutation,
-    addCommentMutation,
-  } = useTicketActions();
+  const { addCommentMutation } = useTicketActions();
 
   const isBusy =
-    takeMutation.isPending ||
-    resolveMutation.isPending ||
-    duplicateMutation.isPending ||
     addCommentMutation.isPending;
 
   // Lightbox preview for screenshots
@@ -68,10 +57,6 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
 
   // Comment draft synced with RAG suggestions
   const [commentDraft, setCommentDraft] = useState("");
-
-  // HITL Autopilot execution tracking
-  const [activeCommandId, setActiveCommandId] = useState<string | null>(null);
-  const { data: agentPlan } = useAgentPlan(ticketId);
 
   const toast = useToast();
 
@@ -84,21 +69,6 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
       toast.error(`${errorPrefix}: ${err?.message || "Произошла ошибка"}`);
     }
   };
-
-  const handleTake = () =>
-    executeAction(() => takeMutation.mutateAsync(ticketId!), "Ошибка взятия в работу");
-
-  const handleResolve = (comment: string) =>
-    executeAction(
-      () => resolveMutation.mutateAsync({ id: ticketId!, comment }),
-      "Ошибка закрытия заявки"
-    );
-
-  const handleDuplicate = (masterId: number, comment: string) =>
-    executeAction(
-      () => duplicateMutation.mutateAsync({ id: ticketId!, masterId, comment }),
-      "Ошибка отмены дубликата"
-    );
 
   const handleAddComment = (comment: string, isPrivate: boolean) =>
     executeAction(
@@ -218,22 +188,6 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
             </div>
           ) : ticket ? (
             <>
-              {/* 1. Live Execution Stepper (Active Taskiq Worker progression) */}
-              {activeCommandId && (
-                <LiveExecutionStepper
-                  commandId={activeCommandId}
-                  onDismiss={() => setActiveCommandId(null)}
-                />
-              )}
-
-              {/* 2. Autonomous Dialogue Loop Card (Status #6) */}
-              {ticket.status_id === 6 && agentPlan && (
-                <DialogueLoopCard
-                  plan={agentPlan}
-                  onForceResume={() => {}}
-                />
-              )}
-
               <TicketOverview
                 ticket={ticket}
                 isFetching={ticketFetching}
@@ -246,10 +200,7 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
               {!isStatusResolved(ticket.status_id) && !isStatusCancelled(ticket.status_id) && (
                 <AgentPlanCard
                   ticketId={ticket.id}
-                  currentStatusId={ticket.status_id}
-                  attachments={ticket.attachments}
-                  onExecutionStarted={(commandId) => setActiveCommandId(commandId)}
-                  onClose={onClose}
+                  applicantName={ticket.applicant_name || ticket.creator_name}
                 />
               )}
 
@@ -261,12 +212,6 @@ export const TicketInspector: React.FC<TicketInspectorProps> = ({
         {/* Action Dock Fixed Bottom */}
         {ticket && (
           <ActionDock
-            ticketId={ticket.id}
-            ticketTitle={ticket.name}
-            statusId={ticket.status_id}
-            onTake={handleTake}
-            onResolve={handleResolve}
-            onDuplicate={handleDuplicate}
             onAddComment={handleAddComment}
             isBusy={isBusy}
             commentDraft={commentDraft}
