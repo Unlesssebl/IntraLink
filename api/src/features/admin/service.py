@@ -1,10 +1,8 @@
 """Secure management of IntraService and Active Directory credentials."""
 
-import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
-import ldap3
 import redis.asyncio as aioredis
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -19,7 +17,7 @@ from core.ad.credentials import (
     AD_USERS_ROOT_OU,
     ActiveDirectoryCredentialVault,
 )
-from core.ad.pool import ActiveDirectoryPool, ADPoolConfig
+from core.ad.pool import ActiveDirectoryPool
 from core.automation.service_catalog import ServiceCatalogRepository
 from core.automation.service_routing import RedirectStrategy, ServiceRouteBinding
 from core.crypto import get_fernet
@@ -75,41 +73,6 @@ class AdminCredentialsService:
             ou_count=int(data["ou_count"]) if data.get("ou_count") is not None else None,
         )
 
-    @staticmethod
-    def _verify_ad_credentials_sync(
-        *, servers: list[str], username: str, password: str, port: int, use_ssl: bool
-    ) -> tuple[str, int]:
-        pool = ActiveDirectoryPool(
-            ADPoolConfig(
-                servers=servers,
-                connect_timeout=2.0,
-                port=port,
-                use_ssl=use_ssl,
-                bind_user=username,
-                bind_password=password,
-                domain=AD_DOMAIN,
-            )
-        )
-        with pool.connection_scope(auto_bind=True, read_only=True) as connection:
-            connection.search(
-                AD_USERS_ROOT_OU,
-                "(objectClass=organizationalUnit)",
-                ldap3.BASE,
-                attributes=["distinguishedName"],
-            )
-            if len(connection.entries) != 1:
-                raise RuntimeError("ad_users_root_unavailable")
-            connection.search(
-                AD_USERS_ROOT_OU,
-                "(objectClass=organizationalUnit)",
-                ldap3.SUBTREE,
-                attributes=["distinguishedName"],
-            )
-            if not connection.entries:
-                raise RuntimeError("ad_ou_catalog_empty")
-            active_server = connection.server.host if connection.server else servers[0]
-            return str(active_server), len(connection.entries)
-
     async def update_ad_credentials(
         self, session: AsyncSession, request: AdCredentialsUpdate
     ) -> AdCredentialsUpdateResponse:
@@ -120,8 +83,7 @@ class AdminCredentialsService:
             )
         password = request.password.get_secret_value()
         try:
-            verified_server, ou_count = await asyncio.to_thread(
-                self._verify_ad_credentials_sync,
+            verified_server, ou_count = await ActiveDirectoryPool.probe_credentials(
                 servers=request.servers,
                 username=request.username,
                 password=password,

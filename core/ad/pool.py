@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 from contextlib import contextmanager
-from typing import Generator, List, Optional, Tuple
+from typing import Generator, List, Optional, Sequence, Tuple
 
 from ldap3 import ALL, ROUND_ROBIN, Connection, Server, ServerPool
 from ldap3.core.exceptions import LDAPException
@@ -183,6 +183,92 @@ class ActiveDirectoryPool:
     async def get_computer(self, computer_name: str) -> Optional[dict]:
         """Asynchronously search for a computer account in Active Directory."""
         return await asyncio.to_thread(self.get_computer_sync, computer_name)
+
+    @classmethod
+    def probe_credentials_sync(
+        cls,
+        *,
+        servers: Sequence[str],
+        username: str,
+        password: str,
+        port: int = 636,
+        use_ssl: bool = True,
+        root_ou: Optional[str] = None,
+        connect_timeout: float = 2.0,
+        domain: str = "corporate.loc",
+    ) -> Tuple[str, int]:
+        """Verify Active Directory credentials and return (active_server, ou_count).
+
+        1. Binds to domain controllers using provided credentials.
+        2. Probes base root OU existence.
+        3. Scans subtree for organizational units.
+        """
+        import ldap3
+
+        from core.ad.credentials import AD_DOMAIN, AD_USERS_ROOT_OU
+
+        effective_domain = domain or AD_DOMAIN
+        target_root_ou = root_ou or AD_USERS_ROOT_OU
+        normalized_servers = [s.strip() for s in servers if s.strip()]
+        if not normalized_servers:
+            raise ValueError("servers_list_empty")
+
+        pool = cls(
+            ADPoolConfig(
+                servers=normalized_servers,
+                connect_timeout=connect_timeout,
+                port=port,
+                use_ssl=use_ssl,
+                bind_user=username,
+                bind_password=password,
+                domain=effective_domain,
+            )
+        )
+        with pool.connection_scope(auto_bind=True, read_only=True) as connection:
+            connection.search(
+                target_root_ou,
+                "(objectClass=organizationalUnit)",
+                ldap3.BASE,
+                attributes=["distinguishedName"],
+            )
+            if len(connection.entries) != 1:
+                raise RuntimeError("ad_users_root_unavailable")
+            connection.search(
+                target_root_ou,
+                "(objectClass=organizationalUnit)",
+                ldap3.SUBTREE,
+                attributes=["distinguishedName"],
+            )
+            if not connection.entries:
+                raise RuntimeError("ad_ou_catalog_empty")
+            active_server = connection.server.host if connection.server else normalized_servers[0]
+            return str(active_server), len(connection.entries)
+
+    @classmethod
+    async def probe_credentials(
+        cls,
+        *,
+        servers: Sequence[str],
+        username: str,
+        password: str,
+        port: int = 636,
+        use_ssl: bool = True,
+        root_ou: Optional[str] = None,
+        connect_timeout: float = 2.0,
+        domain: str = "corporate.loc",
+    ) -> Tuple[str, int]:
+        """Asynchronously verify Active Directory credentials using thread pool worker."""
+        return await asyncio.to_thread(
+            cls.probe_credentials_sync,
+            servers=servers,
+            username=username,
+            password=password,
+            port=port,
+            use_ssl=use_ssl,
+            root_ou=root_ou,
+            connect_timeout=connect_timeout,
+            domain=domain,
+        )
 
 
 _default_ad_pool: Optional[ActiveDirectoryPool] = None

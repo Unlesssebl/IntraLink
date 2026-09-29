@@ -2,14 +2,34 @@
 
 import asyncio
 import base64
-from datetime import datetime
 import enum
 import logging
 import os
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import httpx
+
+from core.intraservice.catalog import ServiceCatalog
+from core.intraservice.dto import (
+    ServiceDTO,
+    TaskDTO,
+    TaskLifetimeEventDTO,
+    TaskStatusDTO,
+    TaskTypeDTO,
+)
+from core.intraservice.exceptions import (
+    CircuitBreakerOpenError,
+    IntraServiceAuthError,
+    IntraServiceError,
+    IntraServiceNotFoundError,
+    IntraServiceServerError,
+    IntraServiceValidationError,
+)
+from core.intraservice.parser import enrich_task_dict
+
+logger = logging.getLogger("core.intraservice")
 
 
 def _parse_api_date(val: Any) -> Optional[datetime]:
@@ -34,26 +54,6 @@ def _parse_api_date(val: Any) -> Optional[datetime]:
         return datetime.fromisoformat(s)
     except Exception:
         return None
-
-from core.intraservice.catalog import ServiceCatalog
-from core.intraservice.dto import (
-    ServiceDTO,
-    TaskDTO,
-    TaskLifetimeEventDTO,
-    TaskStatusDTO,
-    TaskTypeDTO,
-)
-from core.intraservice.exceptions import (
-    CircuitBreakerOpenError,
-    IntraServiceAuthError,
-    IntraServiceError,
-    IntraServiceNotFoundError,
-    IntraServiceServerError,
-    IntraServiceValidationError,
-)
-from core.intraservice.parser import enrich_task_dict
-
-logger = logging.getLogger("core.intraservice")
 
 DEFAULT_STATUS_MAP: Dict[int, str] = {
     1: "Новая",

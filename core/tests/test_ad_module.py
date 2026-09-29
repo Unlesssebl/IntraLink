@@ -158,3 +158,39 @@ async def test_is_valid_domain_computer_negative_caching(monkeypatch):
     assert res is False
     assert await mock_redis.get("cache:ad:computer:PANTUM-P3300") == "0"
 
+
+def test_directory_provider_protocol_conformance():
+
+    assert hasattr(ActiveDirectoryPool, "probe_credentials")
+    assert hasattr(ActiveDirectoryPool, "probe_credentials_sync")
+    assert callable(ActiveDirectoryPool.probe_credentials)
+    assert callable(ActiveDirectoryPool.probe_credentials_sync)
+
+
+@pytest.mark.asyncio
+async def test_active_directory_pool_probe_credentials(monkeypatch):
+    from unittest.mock import MagicMock
+
+    mock_conn = MagicMock()
+    mock_entry1 = MagicMock()
+    mock_conn.entries = [mock_entry1]
+    mock_conn.server.host = "dc1.corporate.loc"
+
+    class FakeScope:
+        def __enter__(self):
+            return mock_conn
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    monkeypatch.setattr(ActiveDirectoryPool, "connection_scope", lambda self, auto_bind, read_only: FakeScope())
+
+    server, ou_count = await ActiveDirectoryPool.probe_credentials(
+        servers=["dc1.corporate.loc"],
+        username="admin",
+        password="secret",
+    )
+    assert server == "dc1.corporate.loc"
+    assert ou_count == 1
+
+

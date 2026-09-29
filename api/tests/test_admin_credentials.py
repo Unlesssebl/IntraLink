@@ -118,7 +118,7 @@ async def test_ad_credentials_are_verified_encrypted_and_response_is_secret_free
     monkeypatch.setattr("api.src.features.admin.service.async_session_factory", session_factory)
     service = AdminCredentialsService()
     verify = AsyncMock(return_value=("dc1.corporate.loc", 372))
-    monkeypatch.setattr("api.src.features.admin.service.asyncio.to_thread", verify)
+    monkeypatch.setattr("api.src.features.admin.service.ActiveDirectoryPool.probe_credentials", verify)
 
     try:
         async with session_factory() as session:

@@ -38,3 +38,40 @@ async def test_events_stream_connected_and_retry():
                 first_chunk = await anext(response.aiter_text())
                 assert "retry: 3000" in first_chunk
                 assert "event: connected" in first_chunk
+
+
+@pytest.mark.asyncio
+async def test_events_stream_message_and_ping_emission():
+    with patch("api.src.features.events.router.get_redis_client") as mock_get_redis:
+        mock_r = MagicMock()
+        mock_pubsub = AsyncMock()
+        mock_pubsub.subscribe = AsyncMock()
+        mock_pubsub.psubscribe = AsyncMock()
+        mock_pubsub.unsubscribe = AsyncMock()
+        mock_pubsub.punsubscribe = AsyncMock()
+        mock_pubsub.close = AsyncMock()
+
+        # Yield a message, then None (which triggers ping), then CancelledError
+        mock_pubsub.get_message = AsyncMock(
+            side_effect=[
+                {"type": "message", "data": b'{"event":"ticket_updated","ticket_id":123}'},
+                None,
+                asyncio.CancelledError(),
+            ]
+        )
+        mock_r.pubsub.return_value = mock_pubsub
+        mock_get_redis.return_value = mock_r
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            async with client.stream("GET", "/api/v2/events/stream") as response:
+                assert response.status_code == 200
+                chunks = []
+                async for chunk in response.aiter_text():
+                    chunks.append(chunk)
+
+                combined = "".join(chunks)
+                assert "event: connected" in combined
+                assert "event: ticket_updated" in combined
+                assert '"ticket_id":123' in combined
+                assert ": ping\n\n" in combined

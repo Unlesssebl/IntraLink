@@ -5,10 +5,10 @@ to Web UI, CLI, and external listeners via Redis Pub/Sub.
 """
 
 import asyncio
-import json
 import logging
 from typing import AsyncGenerator, Optional
 
+import orjson
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
@@ -41,37 +41,37 @@ async def sse_event_generator(
             logger.debug("SSE client subscribed to global event stream")
 
         # RFC 8895 retry directive + initial connected greeting event
-        init_payload = json.dumps(
-            {"event": "connected", "channel": channel, "job_id": job_id},
-            ensure_ascii=False,
-        )
+        init_payload = orjson.dumps(
+            {"event": "connected", "channel": channel, "job_id": job_id}
+        ).decode("utf-8")
         yield f"retry: 3000\nevent: connected\ndata: {init_payload}\n\n"
 
         while True:
             try:
-                # Poll pubsub with timeout to emit keep-alive heartbeat
-                message = await asyncio.wait_for(
-                    pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                    timeout=15.0,
-                )
-                if message and message.get("type") in ("message", "pmessage"):
-                    data = message.get("data")
-                    if isinstance(data, bytes):
-                        data = data.decode("utf-8")
+                # Direct async wait on Redis socket with 15s timeout for keep-alive ping
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=15.0)
+                if message is None:
+                    # Keep-alive heartbeat comment to prevent proxy timeouts
+                    yield ": ping\n\n"
+                    continue
+
+                if message.get("type") in ("message", "pmessage"):
+                    raw_data = message.get("data")
+                    if isinstance(raw_data, bytes):
+                        str_data = raw_data.decode("utf-8")
+                    else:
+                        str_data = str(raw_data)
 
                     event_type = "message"
                     try:
-                        parsed = json.loads(data)
+                        parsed = orjson.loads(raw_data if isinstance(raw_data, (bytes, bytearray)) else str_data)
                         if isinstance(parsed, dict):
                             event_type = parsed.get("event") or parsed.get("type") or "message"
                     except Exception:
                         pass
 
-                    yield f"event: {event_type}\ndata: {data}\n\n"
+                    yield f"event: {event_type}\ndata: {str_data}\n\n"
 
-            except asyncio.TimeoutError:
-                # Keep-alive heartbeat comment to prevent proxy timeouts
-                yield ": ping\n\n"
             except asyncio.CancelledError:
                 logger.debug("SSE connection closed by client")
                 break
@@ -80,7 +80,7 @@ async def sse_event_generator(
         pass
     except Exception as exc:
         logger.warning("Error in SSE event stream: %s", exc)
-        err_payload = json.dumps({"event": "error", "message": str(exc)}, ensure_ascii=False)
+        err_payload = orjson.dumps({"event": "error", "message": str(exc)}).decode("utf-8")
         yield f"event: error\ndata: {err_payload}\n\n"
     finally:
         try:

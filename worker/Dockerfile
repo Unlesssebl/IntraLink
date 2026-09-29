@@ -8,7 +8,6 @@ COPY --from=ghcr.io/astral-sh/uv:0.6.0 /uv /uvx /bin/
 # Copy workspace specifications and packages
 COPY pyproject.toml uv.lock ./
 COPY core/ ./core/
-COPY api/ ./api/
 COPY worker/ ./worker/
 COPY config/ ./config/
 
