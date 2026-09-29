@@ -3,6 +3,8 @@
 import asyncio
 import base64
 import enum
+import hashlib
+import json
 import logging
 import os
 import time
@@ -32,6 +34,30 @@ from core.intraservice.parser import enrich_task_dict
 logger = logging.getLogger("core.intraservice")
 
 
+def _lifetime_event_key(task_id: int, event: Mapping[str, Any]) -> str:
+    """Return a stable identity for lifetime rows that have no upstream ID."""
+    payload = {
+        "task_id": task_id,
+        "source_id": event.get("Id"),
+        "created": event.get("Created") or event.get("Date"),
+        "editor_id": event.get("EditorId"),
+        "editor": event.get("Editor") or event.get("UserName"),
+        "comment": event.get("Comment") or event.get("Comments"),
+        "status_id": event.get("StatusId"),
+        "old_status": event.get("OldStatusName"),
+        "new_status": event.get("NewStatusName"),
+        "is_public": event.get("IsPublic"),
+        "is_private": event.get("IsPrivateComment") or event.get("IsPrivate"),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _event_id_from_key(event_key: str) -> int:
+    """Produce a stable positive bigint-compatible compatibility ID."""
+    return int(event_key[:15], 16) + 1
+
+
 def _parse_api_date(val: Any) -> Optional[datetime]:
     if not val:
         return None
@@ -54,6 +80,7 @@ def _parse_api_date(val: Any) -> Optional[datetime]:
         return datetime.fromisoformat(s)
     except Exception:
         return None
+
 
 DEFAULT_STATUS_MAP: Dict[int, str] = {
     1: "Новая",
@@ -492,7 +519,6 @@ class IntraServiceClient:
         return all_tasks
 
     async def get_task_lifetime(self, task_id: int, auth_b64: Optional[str] = None) -> List[TaskLifetimeEventDTO]:
-
         """Get ticket change history and comments."""
         res = await self._request(
             method="GET",
@@ -526,17 +552,21 @@ class IntraServiceClient:
                 if any(dates):
                     raw_events = sorted(
                         raw_events,
-                        key=lambda item: _parse_api_date(item.get("Date") or item.get("Created")) or datetime.min
-                        if isinstance(item, dict)
-                        else datetime.min,
+                        key=lambda item: (
+                            _parse_api_date(item.get("Date") or item.get("Created")) or datetime.min
+                            if isinstance(item, dict)
+                            else datetime.min
+                        ),
                     )
 
         events: List[TaskLifetimeEventDTO] = []
-        for idx, e in enumerate(raw_events):
+        for e in raw_events:
             if isinstance(e, dict):
                 e_copy = dict(e)
+                event_key = _lifetime_event_key(task_id, e_copy)
+                e_copy["EventKey"] = event_key
                 if not e_copy.get("Id"):
-                    e_copy["Id"] = idx + 1
+                    e_copy["Id"] = _event_id_from_key(event_key)
                 if not e_copy.get("TaskId"):
                     e_copy["TaskId"] = task_id
                 if not e_copy.get("Created") and e_copy.get("Date"):

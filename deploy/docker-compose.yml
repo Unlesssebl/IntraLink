@@ -88,6 +88,7 @@ services:
     volumes:
       - ../core:/workspace/core
       - ../api:/workspace/api
+      - ../worker:/workspace/worker
       - ../config:/workspace/config:ro
     depends_on:
       postgres:
@@ -117,6 +118,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ../core:/workspace/core
+      - ../api:/workspace/api
       - ../worker:/workspace/worker
       - ../config:/workspace/config:ro
     depends_on:

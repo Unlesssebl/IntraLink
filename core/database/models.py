@@ -27,7 +27,7 @@ from sqlalchemy import (
     event,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 from core.database.base import GUID, Base, TimestampMixin
@@ -289,6 +289,7 @@ class ServiceCompatibilityDecisionRecord(Base, TimestampMixin):
     case_decision_id: Mapped[uuid.UUID] = mapped_column(
         GUID, ForeignKey("case_decisions.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
     )
+    case_decision: Mapped["CaseDecisionRecord"] = relationship("CaseDecisionRecord")
     source_service_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     binding_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     binding_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
@@ -329,6 +330,8 @@ class RedirectPlanRecord(Base, TimestampMixin):
     compatibility_decision_id: Mapped[uuid.UUID] = mapped_column(
         GUID, ForeignKey("service_compatibility_decisions.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    case_decision: Mapped["CaseDecisionRecord"] = relationship("CaseDecisionRecord")
+    compatibility_decision: Mapped["ServiceCompatibilityDecisionRecord"] = relationship("ServiceCompatibilityDecisionRecord")
     source_service_id: Mapped[int] = mapped_column(Integer, nullable=False)
     target_service_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     target_service_path: Mapped[str] = mapped_column(Text, nullable=False)
@@ -374,6 +377,7 @@ class WorkflowPlanRecord(Base, TimestampMixin):
     case_decision_id: Mapped[uuid.UUID] = mapped_column(
         GUID, ForeignKey("case_decisions.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    case_decision: Mapped["CaseDecisionRecord"] = relationship("CaseDecisionRecord")
     task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     workflow_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -410,6 +414,7 @@ class ClarificationRequestRecord(Base, TimestampMixin):
     )
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     baseline_event_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    baseline_event_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     question_text: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -419,6 +424,7 @@ class ClarificationRequestRecord(Base, TimestampMixin):
     last_error_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     response_event_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    response_event_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     response_facts_json: Mapped[Dict[str, Any]] = mapped_column(
         JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
     )
@@ -456,6 +462,8 @@ class ActionPlanRecord(Base, TimestampMixin):
     case_decision_id: Mapped[uuid.UUID] = mapped_column(
         GUID, ForeignKey("case_decisions.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    workflow_plan: Mapped["WorkflowPlanRecord"] = relationship("WorkflowPlanRecord")
+    case_decision: Mapped["CaseDecisionRecord"] = relationship("CaseDecisionRecord")
     task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     workflow_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)

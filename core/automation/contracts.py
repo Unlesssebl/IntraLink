@@ -23,9 +23,11 @@ class SnapshotComment(FrozenModel):
     """Sanitized public comment included in an immutable ticket snapshot."""
 
     id: int | None = None
+    event_key: str | None = None
     text: str
     created_at: str | None = None
     author_name: str
+    editor_id: int | None = None
     is_private: bool = False
 
 
@@ -46,6 +48,7 @@ class TicketSnapshot(FrozenModel):
     service_name: str | None = None
     service_path: str | None = None
     task_type_id: int | None = None
+    applicant_id: int | None = None
     title: str
     description: str
     public_comments: list[SnapshotComment] = Field(default_factory=list)
@@ -256,6 +259,7 @@ class WorkflowPlan(FrozenModel):
     clarification_round: int = Field(default=0, ge=0, le=2)
     fact_provenance: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     fact_conflicts: dict[str, list[str]] = Field(default_factory=dict)
+    fact_extraction_diagnostics: dict[str, Any] = Field(default_factory=dict)
     active_clarification_id: UUID | None = None
     reason_codes: list[str] = Field(default_factory=list)
 

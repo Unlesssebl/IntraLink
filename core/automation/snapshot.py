@@ -126,7 +126,11 @@ class TicketSnapshotFactory:
             if not text:
                 continue
             created = _value(comment, "created", "Created", "created_at", "CreatedAt")
-            created_at = created.isoformat() if isinstance(created, datetime) else (str(created) if created is not None else None)
+            created_at = (
+                created.isoformat()
+                if isinstance(created, datetime)
+                else (str(created) if created is not None else None)
+            )
             author = str(
                 _value(
                     comment,
@@ -142,9 +146,11 @@ class TicketSnapshotFactory:
             public_comments.append(
                 SnapshotComment(
                     id=comment_id,
+                    event_key=_value(comment, "event_key", "EventKey"),
                     text=text,
                     created_at=created_at,
                     author_name=author,
+                    editor_id=_value(comment, "editor_id", "EditorId"),
                 )
             )
 
@@ -163,6 +169,7 @@ class TicketSnapshotFactory:
             "service_id": task.service_id,
             "service_name": task.service_name,
             "task_type_id": task.task_type_id,
+            "applicant_id": task.applicant_id,
             "title": task.name,
             "description": task.description,
             "public_comments": [item.model_dump() for item in public_comments],

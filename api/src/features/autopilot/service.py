@@ -211,7 +211,26 @@ class AutomationService:
         )
         extraction_diag: dict[str, Any] = {}
         if decision.primary_case_type == "employee_onboarding":
-            initial_facts, extraction_diag = await self._extract_onboarding_snapshot_facts(snapshot, frame.entities)
+            bot_user_id: int | None = None
+            bot_identity_error: str | None = None
+            try:
+                bot_credentials = await self.auth_bootstrap.bootstrap_auth(
+                    client=self.client,
+                    redis_client=get_redis_client(),
+                    session_factory=async_session_factory,
+                )
+                bot_user_id = bot_credentials.bot_user_id
+            except Exception as exc:
+                # Without a trusted bot identity, comments are not valid fact
+                # sources. Structured fields and ticket text remain usable.
+                bot_identity_error = type(exc).__name__
+            initial_facts, extraction_diag = await self._extract_onboarding_snapshot_facts(
+                snapshot,
+                frame.entities,
+                bot_user_id=bot_user_id,
+                applicant_id=snapshot.applicant_id,
+                bot_identity_error=bot_identity_error,
+            )
             fact_merge = await self._merge_onboarding_facts(
                 session, frame.entities, ticket_id, initial_facts=initial_facts
             )
@@ -254,6 +273,7 @@ class AutomationService:
                 update={
                     "fact_provenance": fact_merge.provenance,
                     "fact_conflicts": fact_merge.conflicts,
+                    "fact_extraction_diagnostics": extraction_diag,
                 }
             )
             if action_plan is not None:
@@ -278,7 +298,10 @@ class AutomationService:
         if action_plan is not None:
             await self.preflight.run_plan(session, action_plan_id=action_plan.id)
         await session.commit()
-        if workflow.workflow_key == "employee_onboarding_workflow" and workflow.state == WorkflowPlanState.awaiting_facts:
+        if (
+            workflow.workflow_key == "employee_onboarding_workflow"
+            and workflow.state == WorkflowPlanState.awaiting_facts
+        ):
             bundle = await self._ensure_clarification(
                 session,
                 bundle=bundle,
@@ -312,11 +335,16 @@ class AutomationService:
         )
         if record is None:
             raise HTTPException(status.HTTP_409_CONFLICT, "clarification_not_awaiting")
-        lifetime = await self.client.get_task_lifetime(task_id=ticket_id, auth_b64=credentials.auth_b64)
+        task, lifetime = await asyncio.gather(
+            self.client.get_task(task_id=ticket_id, auth_b64=credentials.auth_b64),
+            self.client.get_task_lifetime(task_id=ticket_id, auth_b64=credentials.auth_b64),
+        )
         event = latest_human_public_event(
             lifetime,
             baseline_event_id=record.baseline_event_id,
+            baseline_event_key=record.baseline_event_key,
             bot_user_id=credentials.bot_user_id,
+            applicant_id=task.applicant_id,
             question_text=record.question_text,
         )
         if event is None or event.id != event_id:
@@ -333,6 +361,7 @@ class AutomationService:
             await session.commit()
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "clarification_response_empty")
         record.response_event_id = event_id
+        record.response_event_key = event.event_key
         record.response_facts_json = facts
         record.resolved_at = datetime.now(UTC)
         record.state = "resolved"
@@ -373,10 +402,20 @@ class AutomationService:
         return await self.analyze(session, ticket_id=ticket_id, auth_b64=auth_b64, force=True)
 
     async def _extract_onboarding_snapshot_facts(
-        self, snapshot, existing: dict[str, str]
+        self,
+        snapshot,
+        existing: dict[str, str],
+        *,
+        bot_user_id: int | None,
+        applicant_id: int | None,
+        bot_identity_error: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         missing = [key for key in ONBOARDING_FACTS if not str(existing.get(key, "")).strip()]
         diag: dict[str, Any] = {"llm_attempted": False, "llm_used": False, "trace": []}
+        if bot_identity_error:
+            diag["trace"].append({"stage": "bot_identity", "error": bot_identity_error})
+        if applicant_id is None:
+            diag["trace"].append({"stage": "applicant_identity", "error": "applicant_id_unavailable"})
         if not missing:
             return {}, diag
 
@@ -401,6 +440,12 @@ class AutomationService:
             text = (comment.text or "").strip()
             if not text:
                 continue
+            if bot_user_id is None:
+                continue
+            if comment.editor_id == bot_user_id:
+                continue
+            if applicant_id is None or comment.editor_id != applicant_id:
+                continue
             if any(marker in text for marker in bot_markers):
                 continue
             comment_facts = extract_labeled_facts(text, missing)
@@ -415,7 +460,13 @@ class AutomationService:
             candidates_for_llm: list[str] = []
             for comment in reversed(snapshot.public_comments):
                 text = (comment.text or "").strip()
-                if not text or any(marker in text for marker in bot_markers):
+                if not text or bot_user_id is None:
+                    continue
+                if comment.editor_id == bot_user_id:
+                    continue
+                if applicant_id is None or comment.editor_id != applicant_id:
+                    continue
+                if any(marker in text for marker in bot_markers):
                     continue
                 candidates_for_llm.append(text)
             if ticket_body and len(ticket_body) > 10:
@@ -464,14 +515,16 @@ class AutomationService:
         responses = []
         if initial_facts:
             responses.append({"source": "ticket_text", "event_id": None, "facts": initial_facts})
-        responses.extend([
-            {
-                "source": "public_comment",
-                "event_id": item.response_event_id,
-                "facts": item.response_facts_json,
-            }
-            for item in records
-        ])
+        responses.extend(
+            [
+                {
+                    "source": "public_comment",
+                    "event_id": item.response_event_id,
+                    "facts": item.response_facts_json,
+                }
+                for item in records
+            ]
+        )
         corrections = list(
             (
                 await session.scalars(
@@ -527,13 +580,9 @@ class AutomationService:
         )
         if active is None:
             question = render_clarification(workflow.missing_facts)
-            fingerprint = clarification_fingerprint(
-                workflow.task_id, workflow.snapshot_hash, workflow.missing_facts
-            )
+            fingerprint = clarification_fingerprint(workflow.task_id, workflow.snapshot_hash, workflow.missing_facts)
             active = await session.scalar(
-                select(ClarificationRequestRecord).where(
-                    ClarificationRequestRecord.request_fingerprint == fingerprint
-                )
+                select(ClarificationRequestRecord).where(ClarificationRequestRecord.request_fingerprint == fingerprint)
             )
             if active is None:
                 active = ClarificationRequestRecord(
@@ -544,7 +593,8 @@ class AutomationService:
                     snapshot_hash=workflow.snapshot_hash,
                     missing_facts_json=workflow.missing_facts,
                     request_fingerprint=fingerprint,
-                    baseline_event_id=max((item.id or 0 for item in lifetime), default=0) or None,
+                    baseline_event_id=lifetime[-1].id if lifetime else None,
+                    baseline_event_key=lifetime[-1].event_key if lifetime else None,
                     question_text=question,
                     state="pending_publish",
                 )
@@ -613,13 +663,23 @@ class AutomationService:
                 redis_client=get_redis_client(),
                 session_factory=async_session_factory,
             )
+            boundary_index: int | None = None
+            if active.baseline_event_key:
+                boundary_indexes = [
+                    index for index, item in enumerate(lifetime) if item.event_key == active.baseline_event_key
+                ]
+                if boundary_indexes:
+                    boundary_index = boundary_indexes[-1]
+            elif active.baseline_event_id is not None:
+                boundary_indexes = [index for index, item in enumerate(lifetime) if item.id == active.baseline_event_id]
+                if boundary_indexes:
+                    boundary_index = boundary_indexes[-1]
+            candidate_events = lifetime[(boundary_index + 1) :] if boundary_index is not None else lifetime
             already_published = any(
-                item.id is not None
-                and item.id > (active.baseline_event_id or 0)
-                and item.editor_id == credentials.bot_user_id
+                item.editor_id == credentials.bot_user_id
                 and not item.is_private
                 and (item.comment or "").strip() == active.question_text
-                for item in lifetime
+                for item in candidate_events
             )
             try:
                 active.publish_attempts = int(active.publish_attempts or 0) + 1
@@ -653,7 +713,9 @@ class AutomationService:
                     plan_record.disposition = failed.disposition.value
                     plan_record.plan_json = failed.model_dump(mode="json")
                 await session.commit()
-                return AutomationBundle(bundle.frame, bundle.decision, bundle.compatibility, failed, None, bundle.redirect_plan)
+                return AutomationBundle(
+                    bundle.frame, bundle.decision, bundle.compatibility, failed, None, bundle.redirect_plan
+                )
         await session.commit()
         return AutomationBundle(
             bundle.frame, bundle.decision, bundle.compatibility, updated, bundle.action_plan, bundle.redirect_plan
@@ -690,9 +752,7 @@ class AutomationService:
         await session.commit()
         token = await self._auth_token(auth_b64)
         lifetime = await self.client.get_task_lifetime(task_id=ticket_id, auth_b64=token)
-        bundle = await self._ensure_clarification(
-            session, bundle=bundle, lifetime=lifetime, auth_b64=token
-        )
+        bundle = await self._ensure_clarification(session, bundle=bundle, lifetime=lifetime, auth_b64=token)
         return await self._dto(session, bundle)
 
     async def approve(
@@ -1044,9 +1104,7 @@ class AutomationService:
         if version is None or latest.compatibility.catalog_hash != version.catalog_hash:
             raise HTTPException(status.HTTP_409_CONFLICT, "service_catalog_changed")
         active_entries = {
-            item.service_id: item
-            for item in entries
-            if item.is_active and item.catalog_hash == version.catalog_hash
+            item.service_id: item for item in entries if item.is_active and item.catalog_hash == version.catalog_hash
         }
         target = active_entries.get(request.target_service_id)
         if target is None:
@@ -1670,14 +1728,22 @@ class AutomationService:
         for item in preflight:
             latest_preflight.setdefault(str(item["action_id"]), item)
         plan_checks = list(latest_preflight.values())
-        preflight_passed = bool(bundle.action_plan) and len(plan_checks) == len(bundle.action_plan.actions) and all(
-            item["status"] in {"passed", "not_applicable"}
-            and datetime.fromisoformat(item["expires_at"]) > datetime.now(UTC)
-            for item in plan_checks
+        preflight_passed = (
+            bool(bundle.action_plan)
+            and len(plan_checks) == len(bundle.action_plan.actions)
+            and all(
+                item["status"] in {"passed", "not_applicable"}
+                and datetime.fromisoformat(item["expires_at"]) > datetime.now(UTC)
+                for item in plan_checks
+            )
         )
         preflight_failed = any(item["status"] not in {"passed", "not_applicable"} for item in plan_checks)
         missing_facts = list(bundle.workflow_plan.missing_facts)
-        if not missing_facts and clarification is not None and clarification.state in {"failed", "pending_publish", "published"}:
+        if (
+            not missing_facts
+            and clarification is not None
+            and clarification.state in {"failed", "pending_publish", "published"}
+        ):
             missing_facts = list(clarification.missing_facts_json or [])
 
         blockers: list[ReadinessBlockerDTO] = []
@@ -1713,7 +1779,6 @@ class AutomationService:
                     detail="Одна или несколько проверок перед созданием не пройдены.",
                 )
             )
-            actions.append("reanalyze")
         execution_disabled = bool(bundle.action_plan) and approval.get("execution_enabled") is False
         if execution_disabled:
             blockers.append(
@@ -1744,6 +1809,9 @@ class AutomationService:
             actions.extend(["approve", "reject_automation"])
         else:
             state, current_stage = "blocked", "execution"
+
+        if not completed and not running and "reanalyze" not in actions:
+            actions.append("reanalyze")
 
         stage_order = ["facts", "ou", "preflight", "approval", "execution", "delivery"]
         current_index = stage_order.index(current_stage)

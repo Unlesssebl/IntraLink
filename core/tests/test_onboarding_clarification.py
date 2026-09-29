@@ -55,7 +55,7 @@ def test_new_human_event_ignores_bot_private_and_status_events() -> None:
         TaskLifetimeEventDTO(Id=13, EditorId=12, StatusId=6),
         TaskLifetimeEventDTO(Id=14, EditorId=12, Comment="Должность: Инженер", IsPrivateComment=False),
     ]
-    selected = latest_human_public_event(events, baseline_event_id=10, bot_user_id=99)
+    selected = latest_human_public_event(events, baseline_event_id=11, bot_user_id=99, applicant_id=12)
     assert selected is not None and selected.id == 14
 
 
@@ -83,7 +83,11 @@ def test_latest_human_public_event_ignores_operator_posted_bot_question() -> Non
     ]
     # With question_text guard, event 2 is rejected even though EditorId != 10502
     selected = latest_human_public_event(
-        events, baseline_event_id=1, bot_user_id=10502, question_text=question
+        events,
+        baseline_event_id=1,
+        bot_user_id=10502,
+        applicant_id=8664,
+        question_text=question,
     )
     assert selected is not None
     assert selected.id == 3
@@ -98,3 +102,44 @@ def test_is_public_false_is_treated_as_private() -> None:
     event_dict_str = {"Id": 6, "Comment": "Внутренняя заметка", "IsPublic": "false"}
     event_str = TaskLifetimeEventDTO.model_validate(event_dict_str)
     assert event_str.is_private is True
+
+
+def test_latest_human_event_reconciles_legacy_baseline_at_question_boundary() -> None:
+    question = "Укажите ФИО"
+    events = [
+        TaskLifetimeEventDTO(Id=101, EventKey="a" * 64, EditorId=8664, Comment="Старый ответ"),
+        TaskLifetimeEventDTO(Id=202, EventKey="b" * 64, EditorId=10502, Comment=question),
+        TaskLifetimeEventDTO(
+            Id=303,
+            EventKey="c" * 64,
+            EditorId=8664,
+            Comment="Ахмедов Ахмед Ахмедович",
+        ),
+    ]
+    selected = latest_human_public_event(
+        events,
+        baseline_event_id=2,  # legacy positional value no longer present
+        bot_user_id=10502,
+        applicant_id=8664,
+        question_text=question,
+    )
+    assert selected is not None
+    assert selected.event_key == "c" * 64
+
+
+def test_latest_human_event_rejects_other_operator_comment() -> None:
+    events = [
+        TaskLifetimeEventDTO(Id=1, EventKey="a" * 64, EditorId=10502, Comment="Укажите ФИО"),
+        TaskLifetimeEventDTO(Id=2, EventKey="b" * 64, EditorId=777, Comment="Иванов Иван Иванович"),
+    ]
+    assert (
+        latest_human_public_event(
+            events,
+            baseline_event_id=1,
+            baseline_event_key="a" * 64,
+            bot_user_id=10502,
+            applicant_id=8664,
+            question_text="Укажите ФИО",
+        )
+        is None
+    )

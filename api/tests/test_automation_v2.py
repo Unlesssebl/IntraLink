@@ -663,6 +663,7 @@ async def test_resume_rejects_empty_extracted_facts(session_factory) -> None:
         ServiceName="Создание пользователя сети",
         TaskTypeId=1001,
         StatusId=2,
+        CreatorId=8664,
     )
     client.get_task.return_value = task
     client.get_task_lifetime.return_value = []
@@ -707,3 +708,29 @@ async def test_resume_rejects_empty_extracted_facts(session_factory) -> None:
         )
         assert reloaded.state == "published"
         assert reloaded.last_error_code == "no_facts_in_event:3"
+
+
+async def test_reanalyze_action_is_available_when_awaiting_facts(session_factory) -> None:
+    client = AsyncMock()
+    client.get_task.return_value = TaskDTO(
+        Id=63005,
+        Name="Создать учетную запись нового сотрудника",
+        Description="Нужна учетка",
+        ServiceId=900001,
+        ServiceName="Создание пользователя сети",
+        TaskTypeId=1001,
+        StatusId=1,
+    )
+    client.get_task_lifetime.return_value = []
+    service = AutomationService(client=client, extractor=CaseFrameExtractor(), router=CaseRouter())
+    service.auth_bootstrap = AsyncMock()
+    service.auth_bootstrap.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="service-auth", bot_user_id=999, login="bot"
+    )
+
+    async with session_factory() as session:
+        analyzed = await service.analyze(session, ticket_id=63005, auth_b64="operator-auth", force=True)
+        assert analyzed.readiness is not None
+        assert "reanalyze" in analyzed.readiness.actions
+        assert "edit_facts" in analyzed.readiness.actions
+

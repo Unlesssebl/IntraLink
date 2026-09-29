@@ -126,6 +126,7 @@ class AutomationRepository:
                 plan_json=workflow_json,
             )
         )
+        await session.flush()
         if action_plan is not None:
             plan_json = _secret_free(action_plan.model_dump(mode="json"))
             session.add(

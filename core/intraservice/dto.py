@@ -101,11 +101,7 @@ class TaskCommentDTO(BaseModel):
     def normalize_privacy(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        is_priv = bool(
-            data.get("is_private")
-            or data.get("IsPrivate")
-            or data.get("IsPrivateComment")
-        )
+        is_priv = bool(data.get("is_private") or data.get("IsPrivate") or data.get("IsPrivateComment"))
         is_pub = data.get("IsPublic")
         if is_pub is None:
             is_pub = data.get("is_public")
@@ -186,6 +182,7 @@ class TaskDTO(BaseModel):
     @classmethod
     def coerce_to_int(cls, v: Any) -> int:
         return 0 if v is None else int(v)
+
     creator_id: Optional[int] = Field(default=None, alias="CreatorId")
     creator_name: Optional[str] = Field(default=None, alias="CreatorName")
     applicant_id: Optional[int] = Field(default=None, alias="ApplicantId")
@@ -221,6 +218,7 @@ class TaskLifetimeEventDTO(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     id: Optional[int] = Field(default=None, alias="Id")
+    event_key: Optional[str] = Field(default=None, alias="EventKey")
     task_id: Optional[int] = Field(default=None, alias="TaskId")
     created: Optional[str] = Field(default=None, alias="Created")
     user_name: Optional[str] = Field(default=None, alias="UserName")
@@ -245,11 +243,7 @@ class TaskLifetimeEventDTO(BaseModel):
             data["Created"] = data["Date"]
         if "Editor" in data and "UserName" not in data:
             data["UserName"] = data["Editor"]
-        is_priv = bool(
-            data.get("is_private")
-            or data.get("IsPrivate")
-            or data.get("IsPrivateComment")
-        )
+        is_priv = bool(data.get("is_private") or data.get("IsPrivate") or data.get("IsPrivateComment"))
         is_pub = data.get("IsPublic")
         if is_pub is None:
             is_pub = data.get("is_public")

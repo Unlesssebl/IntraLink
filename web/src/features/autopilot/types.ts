@@ -56,6 +56,7 @@ export interface WorkflowPlan {
   clarification_round: number;
   fact_provenance: Record<string, Array<Record<string, unknown>>>;
   fact_conflicts: Record<string, string[]>;
+  fact_extraction_diagnostics: Record<string, unknown>;
   active_clarification_id?: string | null;
   reason_codes: string[];
 }

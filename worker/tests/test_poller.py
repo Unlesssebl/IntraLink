@@ -286,7 +286,7 @@ async def test_poller_resumes_only_published_awaiting_clarification(test_db):
     )
     async with test_db() as session:
         await poller._resume_waiting_clarifications(
-            {501: TaskDTO(Id=501, Name="Создать пользователя", StatusId=6)},
+            {501: TaskDTO(Id=501, Name="Создать пользователя", StatusId=6, CreatorId=77)},
             ServiceAuthCredentials(auth_b64="auth", bot_user_id=999, login="bot"),
             session=session,
         )

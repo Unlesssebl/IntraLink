@@ -55,6 +55,7 @@ class IngestionPoller:
     BACKOFF_FACTOR: float = 2.0
     FILTER_ACTIVE_IT: int = 984
     WATERMARK_KEY: str = "ingestion_poller"
+
     def __init__(
         self,
         service_auth: Optional[ServiceAuthBootstrap] = None,
@@ -86,9 +87,7 @@ class IngestionPoller:
         if self.consecutive_errors <= 0:
             return self.DEFAULT_POLL_INTERVAL_SEC
 
-        delay = self.DEFAULT_POLL_INTERVAL_SEC * (
-            self.BACKOFF_FACTOR ** min(self.consecutive_errors, 2)
-        )
+        delay = self.DEFAULT_POLL_INTERVAL_SEC * (self.BACKOFF_FACTOR ** min(self.consecutive_errors, 2))
         return min(delay, self.MAX_BACKOFF_INTERVAL_SEC)
 
     def record_success(self) -> None:
@@ -211,8 +210,7 @@ class IngestionPoller:
             logger.error("Failed to persist updated watermark: %s", exc)
 
         logger.info(
-            "Poll iteration complete: %d filter tasks, %d changed tasks, %d unique, "
-            "%d observed. Next interval: %.1fs",
+            "Poll iteration complete: %d filter tasks, %d changed tasks, %d unique, %d observed. Next interval: %.1fs",
             len(tasks_filter),
             len(tasks_changed),
             len(unique_tasks),
@@ -267,7 +265,9 @@ class IngestionPoller:
                     event = latest_human_public_event(
                         events,
                         baseline_event_id=clarification.baseline_event_id,
+                        baseline_event_key=clarification.baseline_event_key,
                         bot_user_id=auth.bot_user_id,
+                        applicant_id=tasks[task_id].applicant_id,
                         question_text=clarification.question_text,
                     )
                     if event is None or event.id is None:

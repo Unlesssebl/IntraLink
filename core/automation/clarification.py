@@ -70,11 +70,40 @@ def render_clarification(missing_facts: Iterable[str]) -> str:
 
 
 _NON_NAME_TOKENS = {
-    "спасибо", "большое", "добрый", "день", "вечер", "утро", "здравствуйте",
-    "привет", "приветствую", "хорошо", "ок", "ладно", "принято", "понятно",
-    "ясно", "сделано", "отмените", "отмена", "не", "надо", "нужно", "жду",
-    "пожалуйста", "благодарю", "прошу", "здравствуй", "hi", "hello", "thanks",
-    "thank", "you", "ok", "yes", "no",
+    "спасибо",
+    "большое",
+    "добрый",
+    "день",
+    "вечер",
+    "утро",
+    "здравствуйте",
+    "привет",
+    "приветствую",
+    "хорошо",
+    "ок",
+    "ладно",
+    "принято",
+    "понятно",
+    "ясно",
+    "сделано",
+    "отмените",
+    "отмена",
+    "не",
+    "надо",
+    "нужно",
+    "жду",
+    "пожалуйста",
+    "благодарю",
+    "прошу",
+    "здравствуй",
+    "hi",
+    "hello",
+    "thanks",
+    "thank",
+    "you",
+    "ok",
+    "yes",
+    "no",
 }
 
 
@@ -157,13 +186,47 @@ def latest_human_public_event(
     events: Iterable[TaskLifetimeEventDTO],
     *,
     baseline_event_id: int | None,
+    baseline_event_key: str | None = None,
     bot_user_id: int,
+    applicant_id: int | None = None,
     question_text: str | None = None,
 ) -> TaskLifetimeEventDTO | None:
+    ordered = list(events)
     norm_question = " ".join((question_text or "").split()).strip()
+    boundary_index: int | None = None
+
+    # Prefer the stable key for newly-created records. Retain the legacy ID
+    # lookup so already-persisted clarification rows remain readable.
+    if baseline_event_key:
+        matches = [index for index, event in enumerate(ordered) if event.event_key == baseline_event_key]
+        if matches:
+            boundary_index = matches[-1]
+    elif baseline_event_id is not None:
+        matches = [index for index, event in enumerate(ordered) if event.id == baseline_event_id]
+        if matches:
+            boundary_index = matches[-1]
+
+    # The published question is a stronger boundary than a legacy positional
+    # ID. This safely reconciles records created before stable event keys.
+    question_indexes = [
+        index
+        for index, event in enumerate(ordered)
+        if norm_question and not event.is_private and " ".join((event.comment or "").split()).strip() == norm_question
+    ]
+    if question_indexes:
+        question_boundary = question_indexes[-1]
+        boundary_index = max(boundary_index if boundary_index is not None else -1, question_boundary)
+
+    # A persisted boundary that cannot be located must fail closed. Otherwise
+    # an old comment could be mistaken for a new response.
+    if boundary_index is None and (baseline_event_key or baseline_event_id is not None):
+        return None
+
     candidates = []
-    for event in events:
-        if event.id is None or event.id <= (baseline_event_id or 0):
+    for index, event in enumerate(ordered):
+        if boundary_index is not None and index <= boundary_index:
+            continue
+        if event.id is None:
             continue
         if event.is_private:
             continue
@@ -172,12 +235,14 @@ def latest_human_public_event(
             continue
         if event.editor_id is not None and event.editor_id == bot_user_id:
             continue
+        if applicant_id is None or event.editor_id != applicant_id:
+            continue
         # Guard against bot's own question being mistaken for a human reply
         if norm_question and " ".join(comment.split()).strip() == norm_question:
             continue
         candidates.append(event)
 
-    return max(candidates, key=lambda item: int(item.id or 0), default=None)
+    return candidates[-1] if candidates else None
 
 
 class ClarificationFactExtractor:
@@ -242,7 +307,7 @@ class ClarificationFactExtractor:
             self.last_diagnostic = diag
             return result, diag
         except Exception as exc:
-            diag["error"] = str(exc)
+            diag["error"] = type(exc).__name__
             self.last_diagnostic = diag
             return deterministic, diag
 
