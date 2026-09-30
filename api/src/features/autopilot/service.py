@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from time import perf_counter
-import uuid
+from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
@@ -17,6 +18,7 @@ from api.src.core.config import settings
 from api.src.core.db import async_session_factory
 from api.src.core.redis import get_redis_client
 from api.src.core.task_dispatch import dispatch_command
+from core.automation.authorization import PlanAuthorizationService
 from core.automation.capabilities import CapabilityRegistry, get_default_capability_registry
 from core.automation.case_profiles import CaseProfileRegistry
 from core.automation.case_router import CaseRouter
@@ -24,14 +26,11 @@ from core.automation.case_verifier import LLMCaseVerifier
 from core.automation.clarification import (
     ONBOARDING_FACTS,
     ClarificationConvergenceService,
-    ClarificationFactExtractor,
-    FactCorrectionProposal,
     UniversalIntentExtractor,
     clarification_fingerprint,
     extract_labeled_facts,
     latest_human_public_event,
     merge_case_facts,
-    merge_onboarding_facts,
     render_clarification,
 )
 from core.automation.compiler import WorkflowCompiler
@@ -48,12 +47,11 @@ from core.automation.contracts import (
     WorkflowPlanState,
     compute_action_plan_hash,
 )
+from core.automation.execution_policy import ExecutionPolicyEvaluator
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.automation.intake import CaseIntakeEngine
 from core.automation.llm_transport import LiteLLMVerifierTransport
-from core.automation.execution_policy import ExecutionPolicyEvaluator
 from core.automation.persistence import AutomationBundle, AutomationRepository
-from core.automation.policy import CapabilityHealthService
 from core.automation.preflight import ActionPreflightService
 from core.automation.resolution import (
     HumanActionConflictError,
@@ -85,7 +83,6 @@ from core.automation.workflows import (
 from core.database.models import (
     ActionPlanRecord,
     ActionPreflightRecord,
-    CapabilityExecutionPolicyRecord,
     CaseDecisionRecord,
     CaseFeedbackRecord,
     ClarificationRequestRecord,
@@ -125,7 +122,6 @@ from .schemas import (
     RedirectPlanRequest,
     RedirectPlanResponse,
     ResolveHumanActionRequest,
-    ResolveHumanActionResponse,
     RetryClarificationRequest,
     SuggestedCorrectionDTO,
     TicketAutomationDTO,
@@ -181,6 +177,12 @@ class AutomationService:
         )
         self.runner = WorkflowRunner(self.repository)
         self.execution_policy_evaluator = ExecutionPolicyEvaluator()
+        self.authorization_service = PlanAuthorizationService(
+            capabilities=self.capabilities,
+            workflows=self.workflows,
+            evaluator=self.execution_policy_evaluator,
+            runner=self.runner,
+        )
         self.catalog_repository = ServiceCatalogRepository()
         self.redirect_resolver = RedirectResolver()
         self.target_reranker = target_reranker or LLMServiceTargetReranker(
@@ -430,6 +432,18 @@ class AutomationService:
         )
         if action_plan is not None:
             await self.preflight.run_plan(session, action_plan_id=action_plan.id)
+            auto_auth = await self.authorization_service.try_policy_auto_authorize(
+                session,
+                redis_client=get_redis_client(),
+                action_plan_id=action_plan.id,
+                expected_plan_hash=action_plan.plan_hash,
+                expected_snapshot_hash=action_plan.snapshot_hash,
+                current_snapshot_hash=action_plan.snapshot_hash,
+            )
+            if auto_auth.allowed and auto_auth.command is not None:
+                await session.commit()
+                await dispatch_command(auto_auth.command.id)
+                bundle = await self.repository.load_bundle_by_task(session, task_id=frame.task_id)
         await session.commit()
         if (
             workflow.workflow_key == "employee_onboarding_workflow"
@@ -964,110 +978,45 @@ class AutomationService:
         auth_b64: str | None,
     ) -> ApprovalResponse:
         await self._verify_current_snapshot(ticket_id, request.snapshot_hash, auth_b64)
-        plan_record = await session.scalar(
-            select(ActionPlanRecord).where(ActionPlanRecord.id == request.action_plan_id).with_for_update()
-        )
-        if plan_record is None or plan_record.task_id != ticket_id:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "action_plan_not_found")
-        if plan_record.state != ActionPlanState.ready.value:
-            raise HTTPException(status.HTTP_409_CONFLICT, "action_plan_not_ready")
-        try:
-            plan_for_policy = ActionPlan.model_validate(plan_record.plan_json)
-        except Exception as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, f"invalid_plan_json:{exc}") from exc
-
-        # Lock policy rows for mutating capabilities to ensure atomic approval
-        for action in plan_for_policy.actions:
-            spec = self.capabilities.get(action.capability_key)
-            if spec and spec.is_mutating:
-                await session.scalar(
-                    select(CapabilityExecutionPolicyRecord)
-                    .where(CapabilityExecutionPolicyRecord.capability_key == action.capability_key)
-                    .with_for_update()
-                )
-
         redis_client = None
         try:
             redis_client = get_redis_client()
         except Exception:
             pass
 
-        action = plan_for_policy.actions[0] if plan_for_policy.actions else None
-        if action is None:
-            raise HTTPException(status.HTTP_409_CONFLICT, "action_plan_empty")
-
-        decision = await self.execution_policy_evaluator.evaluate_for_action(
-            session=session,
-            redis_client=redis_client,
-            phase="approval",
-            plan=plan_for_policy,
-            action=action,
-            registry=self.capabilities,
-            operator_approved=True,
-            current_snapshot_hash=request.snapshot_hash,
-        )
-        if not decision.allowed:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                f"execution_policy_denied:{','.join(decision.reasons)}",
-            )
-
-        decision_id = uuid.uuid4()
-        decision_record = ExecutionPolicyDecisionRecord(
-            id=decision_id,
-            phase="approval",
-            capability_key=action.capability_key,
-            allowed=True,
-            policy_revision=decision.policy_revision,
-            engine_version=decision.engine_version,
-            context_hash=decision.context_hash,
-            decision_hash=decision.decision_hash,
-            reasons_json=decision.reasons,
-            ticket_id=ticket_id,
-            action_plan_id=plan_for_policy.id,
-        )
-        session.add(decision_record)
-        await session.flush()
-
         try:
-            plan = await self.repository.approve_action_plan(
-                session,
+            auth_res = await self.authorization_service.authorize(
+                session=session,
+                redis_client=redis_client,
                 action_plan_id=request.action_plan_id,
                 expected_plan_hash=request.plan_hash,
                 expected_snapshot_hash=request.snapshot_hash,
-                operator_username=operator,
+                kind="operator",
+                actor=operator,
+                current_snapshot_hash=request.snapshot_hash,
             )
-        except (LookupError, ValueError) as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        except ValueError as exc:
+            detail = "action_plan_not_ready" if str(exc).startswith("action_plan_not_ready") else str(exc)
+            raise HTTPException(status.HTTP_409_CONFLICT, detail) from exc
 
-        feedback = PlanFeedbackRecord(
-            action_plan_id=plan.id,
-            task_id=ticket_id,
-            operator_username=operator,
-            verdict="approved",
-            original_plan_hash=plan.plan_hash,
-        )
-        session.add(feedback)
-        advanced = await self.runner.advance(
-            session,
-            action_plan_id=plan.id,
-            initiator=operator,
-            approval_decision_id=decision_id,
-            approval_policy_revision=decision.policy_revision,
-            approval_policy_hash=decision.decision_hash,
-        )
-        if advanced.command is not None:
-            decision_record.command_id = advanced.command.id
+        if not auth_res.allowed:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"execution_policy_denied:{','.join(auth_res.reasons)}",
+            )
 
         await session.commit()
-        command_id = advanced.command.id if advanced.command is not None else None
+
+        command_id = auth_res.command.id if auth_res.command is not None else None
         if command_id is not None:
             await dispatch_command(command_id)
         return ApprovalResponse(
             status="approved",
-            action_plan_id=plan.id,
+            action_plan_id=auth_res.plan.id if auth_res.plan else request.action_plan_id,
             command_id=command_id,
-            plan_hash=plan.plan_hash,
+            plan_hash=auth_res.plan.plan_hash if auth_res.plan else request.plan_hash,
         )
 
     async def record_plan_feedback(
@@ -1854,11 +1803,31 @@ class AutomationService:
                 for item in preflight_records
             ]
             feedback = await session.scalar(
-                select(PlanFeedbackRecord).where(PlanFeedbackRecord.action_plan_id == bundle.action_plan.id)
+                select(PlanFeedbackRecord)
+                .where(PlanFeedbackRecord.action_plan_id == bundle.action_plan.id)
+                .order_by(PlanFeedbackRecord.created_at.desc())
+                .limit(1)
             )
+            auth_decision = await session.scalar(
+                select(ExecutionPolicyDecisionRecord)
+                .where(
+                    ExecutionPolicyDecisionRecord.action_plan_id == bundle.action_plan.id,
+                    ExecutionPolicyDecisionRecord.phase.in_(["authorization", "approval"]),
+                )
+                .order_by(ExecutionPolicyDecisionRecord.created_at.desc())
+                .limit(1)
+            )
+            is_authorized = bundle.action_plan.state in {
+                ActionPlanState.authorized,
+                ActionPlanState.approved,
+                ActionPlanState.running,
+                ActionPlanState.succeeded,
+            }
+            auth_kind = auth_decision.authorization_kind if auth_decision else ("operator" if feedback else None)
             approval = {
-                "state": feedback.verdict if feedback else "pending",
-                "operator": feedback.operator_username if feedback else None,
+                "state": "approved" if is_authorized else (feedback.verdict if feedback else "pending"),
+                "operator": feedback.operator_username if feedback else (auth_decision.authorization_kind if auth_decision else None),
+                "kind": auth_kind or "operator",
             }
             commands = list(
                 (
@@ -2165,6 +2134,17 @@ class AutomationService:
                 "preflight_expired": "Срок действия предварительных проверок (preflight) истек.",
                 "policy_tightened_after_approval": "Политика выполнения была ужесточена после утверждения плана.",
                 "policy_hash_mismatch": "Хэш политики при утверждении не совпадает с текущим.",
+                "workflow_not_eligible_for_full_auto": "Сценарий не поддерживает автоматическое выполнение без оператора.",
+                "mode_is_assisted": "Сценарий настроен на режим содействия (ASSISTED) и ожидает подтверждения оператора.",
+                "authorization_binding_mismatch": "Нарушена привязка решения авторизации к команде.",
+                "worker_force_disabled": "Воркер принудительно отключен от выполнения мутирующих действий.",
+                "service_catalog_changed": "Каталог услуг IntraService изменился, требуется повторная валидация.",
+                "service_binding_changed": "Маршрут услуги Active Directory изменился или стал неактивен.",
+                "task_type_not_authorized": "Тип заявки не соответствует разрешенному для Active Directory.",
+                "ad_service_not_authorized": "Сервис заявки не авторизован для создания пользователей Active Directory.",
+                "ad_delivery_policy_missing": "Отсутствует регламент доставки учетных данных для сервиса.",
+                "ad_required_form_fields_missing": "В заявке отсутствуют обязательные атрибуты Active Directory.",
+                "ad_previous_creation_not_safe_to_repeat": "Повторное создание учетной записи заблокировано политикой безопасности.",
             }
             for code in execution_policy.reasons:
                 detail = reason_map.get(code, f"Политика выполнения запрещает операцию ({code}).")
@@ -2259,7 +2239,9 @@ class AutomationService:
                 actions.append("reject_automation")
         elif approval.get("state") == "pending":
             state, current_stage = "ready_for_approval", "approval"
-            actions.extend(["approve", "reject_automation"])
+            if approval.get("kind") != "policy_auto":
+                actions.append("approve")
+            actions.append("reject_automation")
         else:
             state, current_stage = "blocked", "execution"
 

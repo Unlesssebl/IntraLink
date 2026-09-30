@@ -1,6 +1,11 @@
 // web/src/shared/api.ts
 // Pragmatic typed API client for IntraLink v2 Backend
 
+import type {
+  WorkflowExecutionModeDTO,
+  UpdateWorkflowExecutionModeRequest,
+} from "@/features/autopilot/types";
+
 const BASE_URL = "/api/v2";
 
 export class ApiError extends Error {
@@ -463,7 +468,30 @@ export const adminApi = {
         reason,
       }),
     }),
+
+  getWorkflowExecutionModes: (signal?: AbortSignal) =>
+    request<WorkflowExecutionModeDTO[]>("/admin/automation/workflows", { signal }),
+
+  updateWorkflowExecutionMode: (
+    workflowKey: string,
+    mode: "ASSISTED" | "FULL_AUTO",
+    expectedRevision: number,
+    reason: string
+  ) =>
+    request<WorkflowExecutionModeDTO>(`/admin/automation/workflows/${workflowKey}/mode`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        mode,
+        expected_revision: expectedRevision,
+        reason,
+      }),
+    }),
 };
+
+export type {
+  WorkflowExecutionModeDTO,
+  UpdateWorkflowExecutionModeRequest,
+} from "@/features/autopilot/types";
 
 export { autopilotApi } from "@/features/autopilot/api";
 

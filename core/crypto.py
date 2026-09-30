@@ -86,11 +86,16 @@ def decrypt_token(encrypted_token: Union[str, bytes]) -> str:
         token_bytes = token_str.encode("utf-8")
         return cipher.decrypt(token_bytes).decode("utf-8")
     except InvalidToken:
-        # Legacy unencrypted token fallback
+        if token_str.startswith("gAAAAA"):
+            logger.error(
+                "Fernet token decryption failed (InvalidToken: signature or key mismatch). Rejecting invalid ciphertext."
+            )
+            return ""
+        # Legacy unencrypted token fallback (plain user:pass base64)
         return token_str
     except Exception as exc:
         logger.error("Error decrypting token: %s", exc)
-        return token_str
+        return ""
 
 
 def encrypt_secret(value: str) -> str:

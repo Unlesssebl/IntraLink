@@ -1,8 +1,8 @@
 """Tests for UniversalIntentExtractor with strict Groundedness and Intent Detection."""
 
 import pytest
+
 from core.automation.clarification import (
-    FactCorrectionProposal,
     UniversalIntentExtractor,
     extract_labeled_facts,
 )

@@ -20,6 +20,7 @@ from core.intraservice.auth import (
     ServiceAuthBootstrap,
     ServiceAuthCredentials,
     ServiceAuthError,
+    set_service_auth_session_factory,
 )
 from core.intraservice.dto import TaskDTO, TaskLifetimeEventDTO
 from core.intraservice.polling import get_executor_ids_list
@@ -29,7 +30,7 @@ from worker.src.tasks.poller import (
 )
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 async def test_db():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
@@ -38,8 +39,10 @@ async def test_db():
         await conn.run_sync(Base.metadata.create_all)
 
     set_system_state_session_factory(session_factory)
+    set_service_auth_session_factory(session_factory)
     yield session_factory
 
+    set_service_auth_session_factory(None)
     set_system_state_session_factory(None)
     await engine.dispose()
 

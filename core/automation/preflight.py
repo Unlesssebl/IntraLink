@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -18,7 +17,6 @@ from core.automation.contracts import ActionPlan, ActionPlanState, ActionProposa
 from core.automation.persistence import canonical_params_hash
 from core.automation.policy import CapabilityHealthService
 from core.database.models import ActionPlanRecord, ActionPreflightRecord, HumanActionRequestRecord
-
 
 
 class ActionPreflightService:

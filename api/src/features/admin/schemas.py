@@ -129,3 +129,20 @@ class UpdateCapabilityExecutionPolicyRequest(BaseModel):
     expected_revision: int = Field(ge=1)
     reason: str = Field(min_length=10, max_length=500)
 
+
+class WorkflowExecutionModeDTO(BaseModel):
+    workflow_key: str
+    name: str
+    description: str = ""
+    auto_execution_eligible: bool
+    desired_mode: str  # "ASSISTED" | "FULL_AUTO"
+    policy_revision: int
+    updated_at: datetime
+    updated_by: str
+
+
+class UpdateWorkflowExecutionModeRequest(BaseModel):
+    mode: str = Field(pattern="^(ASSISTED|FULL_AUTO)$")
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=10, max_length=500)
+

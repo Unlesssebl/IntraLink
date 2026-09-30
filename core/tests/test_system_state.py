@@ -77,8 +77,10 @@ def test_crypto_fernet_roundtrip():
         set_fernet(None)
 
 
-def test_crypto_without_key_fallback():
+def test_crypto_without_key_fallback(monkeypatch):
     """Verify graceful plaintext fallback when ENCRYPTION_KEY is not set."""
+    monkeypatch.delenv("ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("ENCRYPTION_KEY_FILE", raising=False)
     set_fernet(None)
     token = "some_raw_b64_token"
     assert encrypt_token(token) == token
@@ -91,6 +93,21 @@ def test_crypto_without_key_fallback():
     # Secret encryption fails closed without key
     with pytest.raises(RuntimeError, match="ENCRYPTION_KEY is required"):
         encrypt_secret("test")
+
+
+def test_crypto_invalid_fernet_token_returns_empty_string():
+    """Verify corrupted/mismatched Fernet token returns empty string instead of ciphertext."""
+    test_key = Fernet.generate_key().decode()
+    cipher = Fernet(test_key.encode())
+    set_fernet(cipher)
+    try:
+        other_key = Fernet.generate_key().decode()
+        other_cipher = Fernet(other_key.encode())
+        other_encrypted = other_cipher.encrypt(b"secret").decode()
+        assert other_encrypted.startswith("gAAAAA")
+        assert decrypt_token(other_encrypted) == ""
+    finally:
+        set_fernet(None)
 
 
 def test_crypto_loads_key_from_docker_secret_file(tmp_path, monkeypatch):

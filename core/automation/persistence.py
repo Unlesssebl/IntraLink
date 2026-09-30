@@ -255,14 +255,14 @@ class AutomationRepository:
         )
         await session.flush()
 
-    async def approve_action_plan(
+    async def authorize_action_plan(
         self,
         session: AsyncSession,
         *,
         action_plan_id: UUID,
         expected_plan_hash: str,
         expected_snapshot_hash: str,
-        operator_username: str,
+        operator_username: str | None = None,
     ) -> ActionPlan:
         record = await session.scalar(
             select(ActionPlanRecord).where(ActionPlanRecord.id == action_plan_id).with_for_update()
@@ -296,13 +296,31 @@ class AutomationRepository:
             )
             if preflight is None:
                 raise ValueError(f"action_preflight_not_passed:{action.id}")
-        approved = plan.model_copy(update={"state": ActionPlanState.approved})
-        record.state = ActionPlanState.approved.value
-        record.approved_by = operator_username
-        record.approved_at = datetime.now(UTC)
-        record.plan_json = approved.model_dump(mode="json")
+        authorized = plan.model_copy(update={"state": ActionPlanState.authorized})
+        record.state = ActionPlanState.authorized.value
+        if operator_username:
+            record.approved_by = operator_username
+            record.approved_at = datetime.now(UTC)
+        record.plan_json = authorized.model_dump(mode="json")
         await session.flush()
-        return approved
+        return authorized
+
+    async def approve_action_plan(
+        self,
+        session: AsyncSession,
+        *,
+        action_plan_id: UUID,
+        expected_plan_hash: str,
+        expected_snapshot_hash: str,
+        operator_username: str,
+    ) -> ActionPlan:
+        return await self.authorize_action_plan(
+            session,
+            action_plan_id=action_plan_id,
+            expected_plan_hash=expected_plan_hash,
+            expected_snapshot_hash=expected_snapshot_hash,
+            operator_username=operator_username,
+        )
 
     @staticmethod
     def command_for_action(
@@ -311,12 +329,13 @@ class AutomationRepository:
         action: ActionProposal,
         initiator: str,
         executor: str = "worker",
-        approval_decision_id: UUID | None = None,
-        approval_policy_revision: int | None = None,
-        approval_policy_hash: str | None = None,
+        authorization_decision_id: UUID | None = None,
+        authorization_capability_policy_revision: int | None = None,
+        authorization_workflow_policy_revision: int | None = None,
+        authorization_decision_hash: str | None = None,
     ) -> CommandRecord:
-        if plan.state not in {ActionPlanState.approved, ActionPlanState.running}:
-            raise ValueError("Only an approved or running ActionPlan can create commands")
+        if plan.state not in {ActionPlanState.authorized, ActionPlanState.approved, ActionPlanState.running}:
+            raise ValueError("Only an authorized or running ActionPlan can create commands")
         if compute_action_plan_hash(plan) != plan.plan_hash:
             raise ValueError("ActionPlan canonical hash mismatch")
         if action not in plan.actions:
@@ -337,9 +356,10 @@ class AutomationRepository:
             params_hash=params_hash,
             plan_hash=plan.plan_hash,
             snapshot_hash=plan.snapshot_hash,
-            approval_policy_decision_id=approval_decision_id,
-            approval_policy_revision=approval_policy_revision,
-            approval_policy_hash=approval_policy_hash,
+            authorization_decision_id=authorization_decision_id,
+            authorization_capability_policy_revision=authorization_capability_policy_revision,
+            authorization_workflow_policy_revision=authorization_workflow_policy_revision,
+            authorization_decision_hash=authorization_decision_hash,
         )
 
     @staticmethod

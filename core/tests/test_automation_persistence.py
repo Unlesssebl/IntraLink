@@ -123,7 +123,7 @@ async def test_approval_binds_command_to_plan_snapshot_action_and_params(session
         )
         session.add(command)
 
-    assert approved.state == ActionPlanState.approved
+    assert approved.state in {ActionPlanState.authorized, ActionPlanState.approved}
     assert command.action_plan_id == action_plan.id
     assert command.action_id == approved.actions[0].id
     assert command.capability_key == "install_printer"

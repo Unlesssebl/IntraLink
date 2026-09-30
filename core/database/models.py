@@ -155,14 +155,15 @@ class CommandRecord(Base, TimestampMixin):
         nullable=True,
     )
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    approval_policy_decision_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    authorization_decision_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         GUID,
         ForeignKey("execution_policy_decisions.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    approval_policy_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    approval_policy_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    authorization_capability_policy_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    authorization_workflow_policy_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    authorization_decision_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     def __init__(self, **kwargs: Any) -> None:
         kwargs.setdefault("status", "pending")
@@ -678,19 +679,63 @@ class ExecutionPolicyEventRecord(Base):
     )
 
 
+class WorkflowExecutionModeRecord(Base):
+    """Administrative execution mode policy for a workflow (ASSISTED or FULL_AUTO)."""
+
+    __tablename__ = "workflow_execution_modes"
+
+    workflow_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    desired_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="ASSISTED", server_default="ASSISTED")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    changed_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+
+class WorkflowExecutionModeEventRecord(Base):
+    """Append-only audit trail of workflow execution mode mutations."""
+
+    __tablename__ = "workflow_execution_mode_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    workflow_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    previous_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    new_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    changed_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+
 class ExecutionPolicyDecisionRecord(Base):
-    """Append-only ledger of approval and execution phase evaluator decisions."""
+    """Append-only ledger of authorization and execution phase evaluator decisions."""
 
     __tablename__ = "execution_policy_decisions"
 
     id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
     phase: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     capability_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    action_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    authorization_kind: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, index=True)
     policy_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    workflow_policy_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     engine_version: Mapped[str] = mapped_column(String(32), nullable=False)
     context_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     decision_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    context_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=True
+    )
     reasons_json: Mapped[List[str]] = mapped_column(
         JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
     )
@@ -871,4 +916,16 @@ def _sanitize_human_action_request_listener(
     target.candidates_json = sanitize_secrets(target.candidates_json or [])
     if target.prompt:
         target.prompt = sanitize_secret_text(target.prompt)
+
+
+@event.listens_for(ExecutionPolicyDecisionRecord, "before_insert")
+@event.listens_for(ExecutionPolicyDecisionRecord, "before_update")
+def _sanitize_execution_policy_decision_listener(
+    mapper: Any,
+    connection: Any,
+    target: ExecutionPolicyDecisionRecord,
+) -> None:
+    if target.context_json:
+        target.context_json = sanitize_secrets(target.context_json)
+
 

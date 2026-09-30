@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -18,9 +19,14 @@ from core.automation.contracts import (
 )
 from core.automation.persistence import AutomationRepository, canonical_params_hash
 from core.automation.runner import RunnerState, WorkflowRunner
+from core.automation.service_routing import (
+    ServiceCompatibilityDecision,
+    ServiceCompatibilityState,
+    ServiceRouteBinding,
+)
 from core.automation.workflows import get_default_workflow_registry
 from core.database.base import Base
-from core.database.models import ActionPreflightRecord
+from core.database.models import ActionPreflightRecord, ExecutionPolicyDecisionRecord
 
 SNAPSHOT_HASH = "f" * 64
 
@@ -35,6 +41,7 @@ async def session_factory() -> AsyncGenerator[async_sessionmaker[AsyncSession], 
 
 
 def _two_action_aggregate():
+    cat_hash = "c" * 64
     frame = CaseFrame(
         task_id=99,
         snapshot_hash=SNAPSHOT_HASH,
@@ -50,8 +57,27 @@ def _two_action_aggregate():
         primary_case_type="printer_connection_request",
         candidates=[CaseCandidate(case_type="printer_connection_request", case_type_version="1.0.0")],
     )
+    binding = ServiceRouteBinding(
+        key="printer_connection",
+        version="1.0.0",
+        service_ids=(42,),
+        allowed_case_types=("printer_connection_request",),
+        allowed_workflows=("printer_connection_workflow",),
+        allowed_capabilities=("install_printer", "reset_print_spooler"),
+        is_active=True,
+        is_validated=True,
+        catalog_hash=cat_hash,
+    )
+    compat = ServiceCompatibilityDecision(
+        task_id=99,
+        snapshot_hash=SNAPSHOT_HASH,
+        case_decision_id=decision.id,
+        source_service_id=42,
+        catalog_hash=cat_hash,
+        state=ServiceCompatibilityState.compatible,
+    )
     compiler = WorkflowCompiler(get_default_workflow_registry(), get_default_capability_registry())
-    workflow, plan = compiler.compile(frame=frame, decision=decision)
+    workflow, plan = compiler.compile(frame=frame, decision=decision, compatibility=compat, binding=binding)
     assert plan is not None
     first = plan.actions[0]
     second = ActionProposal(
@@ -90,6 +116,23 @@ async def _persist_and_approve(session_factory):
                     params_hash=canonical_params_hash(action.params),
                     status="passed",
                     expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                )
+            )
+            session.add(
+                ExecutionPolicyDecisionRecord(
+                    id=uuid4(),
+                    phase="authorization",
+                    capability_key=action.capability_key,
+                    action_id=action.id,
+                    authorization_kind="operator",
+                    allowed=True,
+                    policy_revision=1,
+                    workflow_policy_revision=1,
+                    engine_version="2.0.0",
+                    context_hash="0" * 64,
+                    decision_hash="1" * 64,
+                    ticket_id=plan.task_id,
+                    action_plan_id=plan.id,
                 )
             )
     async with session_factory() as session, session.begin():

@@ -24,13 +24,14 @@ import {
   Wrench,
 } from "lucide-react";
 
-import { adminApi, type CapabilityExecutionPolicyStatusDTO } from "@/shared/api";
+import { adminApi, type CapabilityExecutionPolicyStatusDTO, type WorkflowExecutionModeDTO } from "@/shared/api";
 import { Badge, Button, Card, Input, Modal, Textarea, useToast } from "@/shared/ui";
 
 const statusKey = ["admin", "service-credentials"] as const;
 const adStatusKey = ["admin", "ad-credentials"] as const;
 const bindingKey = ["admin", "ad-account-binding"] as const;
 const executionPoliciesKey = ["admin", "execution-policies"] as const;
+const workflowModesKey = ["admin", "workflow-modes"] as const;
 
 const REASON_LABELS: Record<string, string> = {
   policy_disabled: "Политика выполнения отключена администратором",
@@ -132,6 +133,47 @@ export const AdminCredentials: React.FC = () => {
     setSelectedPolicy(policy);
     setEditDesiredState(policy.desired_state === "enabled" ? "disabled" : "enabled");
     setEditReason("");
+  };
+
+  const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowExecutionModeDTO | null>(null);
+  const [editWorkflowMode, setEditWorkflowMode] = useState<"ASSISTED" | "FULL_AUTO">("ASSISTED");
+  const [editWorkflowReason, setEditWorkflowReason] = useState("");
+
+  const workflowModesQuery = useQuery({
+    queryKey: workflowModesKey,
+    queryFn: ({ signal }) => adminApi.getWorkflowExecutionModes(signal),
+    retry: false,
+    refetchInterval: 15000,
+  });
+
+  const updateWorkflowModeMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedWorkflow) throw new Error("Сценарий не выбран");
+      return adminApi.updateWorkflowExecutionMode(
+        selectedWorkflow.workflow_key,
+        editWorkflowMode,
+        selectedWorkflow.policy_revision,
+        editWorkflowReason.trim()
+      );
+    },
+    onSuccess: (updated) => {
+      setSelectedWorkflow(null);
+      setEditWorkflowReason("");
+      queryClient.setQueryData<WorkflowExecutionModeDTO[]>(workflowModesKey, (old) =>
+        old ? old.map((w) => (w.workflow_key === updated.workflow_key ? updated : w)) : [updated]
+      );
+      toast.success(`Режим сценария «${updated.name}» изменен на ${updated.desired_mode}`);
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Не удалось обновить режим сценария");
+      workflowModesQuery.refetch();
+    },
+  });
+
+  const openEditWorkflow = (wf: WorkflowExecutionModeDTO) => {
+    setSelectedWorkflow(wf);
+    setEditWorkflowMode(wf.desired_mode === "FULL_AUTO" ? "ASSISTED" : "FULL_AUTO");
+    setEditWorkflowReason("");
   };
 
   useEffect(() => {
@@ -717,6 +759,61 @@ export const AdminCredentials: React.FC = () => {
         </div>
       </Card>
 
+      {/* Карточка 5: Режимы выполнения сценариев (Workflows) */}
+      <Card
+        title="5. Режимы выполнения сценариев (Workflows)"
+        subtitle="Управление степенью автономности: ASSISTED (требует подтверждения оператора) или FULL_AUTO (полная автономия при соблюдении политик допуска)"
+        action={<Sliders className="h-4 w-4 text-neutral-500" />}
+      >
+        <div className="space-y-3 text-xs">
+          <div className="divide-y divide-neutral-800/80">
+            {workflowModesQuery.data?.map((wf) => {
+              const isFullAuto = wf.desired_mode === "FULL_AUTO";
+              const isEligible = wf.auto_execution_eligible;
+
+              return (
+                <div key={wf.workflow_key} className="py-3 space-y-2 first:pt-0 last:pb-0">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-neutral-200">{wf.name}</span>
+                      <span className="font-mono text-[10px] text-neutral-500">{wf.workflow_key}</span>
+                      {!isEligible && (
+                        <Badge variant="neutral" className="text-[10px]">
+                          Только ASSISTED (ineligible)
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={isFullAuto ? "success" : "neutral"} dot>
+                        {isFullAuto ? "FULL_AUTO" : "ASSISTED"}
+                      </Badge>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={!isEligible && !isFullAuto}
+                        onClick={() => openEditWorkflow(wf)}
+                        icon={<Sliders className="h-3 w-3" />}
+                      >
+                        Изменить режим
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-3 text-neutral-400">
+                    <StatusRow label="Ревизия политики" value={`v${wf.policy_revision}`} mono />
+                    <StatusRow
+                      label="Допуск к FULL_AUTO"
+                      value={isEligible ? "Разрешён архитектурой" : "Запрещён (мутирующий сценарий)"}
+                      ok={isEligible}
+                    />
+                    <StatusRow label="Изменил" value={wf.updated_by || "system"} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </Card>
+
       {/* Модальное окно изменения политики */}
       <Modal
         isOpen={selectedPolicy !== null}
@@ -781,6 +878,81 @@ export const AdminCredentials: React.FC = () => {
               onClick={() => updatePolicyMutation.mutate()}
             >
               Сохранить политику
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Модальное окно изменения режима сценария */}
+      <Modal
+        isOpen={selectedWorkflow !== null}
+        onClose={() => setSelectedWorkflow(null)}
+        title={`Режим сценария: ${selectedWorkflow?.name}`}
+        description={`Управление режимом автономности для сценария «${selectedWorkflow?.workflow_key}».`}
+      >
+        <div className="space-y-4 text-xs">
+          <div className="space-y-2">
+            <label className="text-neutral-300 font-medium block">Целевой режим выполнения</label>
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 cursor-pointer text-neutral-200">
+                <input
+                  type="radio"
+                  name="editWorkflowMode"
+                  value="ASSISTED"
+                  checked={editWorkflowMode === "ASSISTED"}
+                  onChange={() => setEditWorkflowMode("ASSISTED")}
+                  className="accent-neutral-500"
+                />
+                <span className="font-semibold text-neutral-300">ASSISTED (с подтверждением человека)</span>
+              </label>
+              <label className={`flex items-center gap-2 ${selectedWorkflow?.auto_execution_eligible ? "cursor-pointer text-neutral-200" : "cursor-not-allowed opacity-50"}`}>
+                <input
+                  type="radio"
+                  name="editWorkflowMode"
+                  value="FULL_AUTO"
+                  disabled={!selectedWorkflow?.auto_execution_eligible}
+                  checked={editWorkflowMode === "FULL_AUTO"}
+                  onChange={() => setEditWorkflowMode("FULL_AUTO")}
+                  className="accent-emerald-500"
+                />
+                <span className="font-semibold text-emerald-400">FULL_AUTO (полная автономия)</span>
+              </label>
+            </div>
+            {!selectedWorkflow?.auto_execution_eligible && (
+              <p className="text-[11px] text-amber-400">
+                ⚠️ Данный сценарий содержит мутирующие шаги и не аттестован для FULL_AUTO (ADR 0006). Переключение невозможно.
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-neutral-300 font-medium block">
+              Причина изменения <span className="text-neutral-500 font-normal">(обязательно, от 5 до 500 символов)</span>
+            </label>
+            <textarea
+              value={editWorkflowReason}
+              onChange={(e) => setEditWorkflowReason(e.target.value)}
+              placeholder="Укажите обоснование (например: Включение сквозной автономии для беспроводного гостевого доступа...)"
+              className="w-full h-24 rounded-md border border-neutral-800 bg-[#0e1013] p-2.5 text-neutral-100 placeholder:text-neutral-600 focus:outline-none focus:border-neutral-600"
+              maxLength={500}
+            />
+            <div className="flex justify-between text-[10px] text-neutral-500">
+              <span>Символов: {editWorkflowReason.trim().length} / 500 (минимум 5)</span>
+              <span>Ожидаемая ревизия: {selectedWorkflow?.policy_revision}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t border-neutral-800 pt-3">
+            <Button variant="ghost" onClick={() => setSelectedWorkflow(null)}>
+              Отмена
+            </Button>
+            <Button
+              variant="primary"
+              loading={updateWorkflowModeMutation.isPending}
+              disabled={editWorkflowReason.trim().length < 5 || editWorkflowReason.trim().length > 500 || (editWorkflowMode === "FULL_AUTO" && !selectedWorkflow?.auto_execution_eligible)}
+              onClick={() => updateWorkflowModeMutation.mutate()}
+            >
+              Сохранить режим
             </Button>
           </div>
         </div>

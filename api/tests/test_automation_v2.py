@@ -14,8 +14,8 @@ from api.src.features.autopilot.schemas import (
     ApproveActionPlanRequest,
     CorrectActionPlanRequest,
     CorrectCaseDecisionRequest,
-    CorrectFactsRequest,
     CorrectedActionRequest,
+    CorrectFactsRequest,
     CorrectTargetServiceRequest,
     RedirectPlanRequest,
     RetryClarificationRequest,
@@ -43,7 +43,6 @@ from core.database.models import (
     ServiceRouteBindingRecord,
     ServiceRoutingFeedbackRecord,
 )
-
 from core.intraservice.auth import ServiceAuthCredentials, ServiceAuthError
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO, TaskLifetimeEventDTO
 
@@ -210,6 +209,8 @@ def _capabilities() -> CapabilityRegistry:
                 risk=CapabilityRisk.medium,
                 idempotency=IdempotencyMode.naturally_idempotent,
                 is_mutating=True,
+                requires_service_binding=True,
+                auto_execution_eligible=True,
             ),
         )
     )

@@ -9,8 +9,6 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from core.automation.capabilities import (
-    CapabilityRisk,
-    CapabilityRegistry,
     get_default_capability_registry,
 )
 from core.automation.contracts import (
@@ -25,13 +23,9 @@ from core.automation.execution_policy import (
     ExecutionPolicyEvaluator,
     compute_context_hash,
     compute_decision_hash,
-    is_deployment_force_disabled,
 )
 from core.automation.persistence import canonical_params_hash
 from core.automation.worker_attestation import (
-    POLICY_ENGINE_VERSION,
-    WORKER_HEARTBEAT_TTL_SECONDS,
-    WorkerAttestationService,
     WorkerHeartbeat,
 )
 from core.database.base import Base
@@ -642,6 +636,7 @@ def test_ci_invariant_all_mutating_capabilities_have_policy_in_registry():
 async def test_optimistic_locking_revision_conflict(session_factory):
     """Updating capability policy with stale revision returns 409 Conflict."""
     from fastapi import HTTPException
+
     from api.src.features.admin.schemas import UpdateCapabilityExecutionPolicyRequest
     from api.src.features.admin.service import AdminCredentialsService
 

@@ -1,7 +1,7 @@
 # ADR 0006: CaseFrame, прикладные процессы и технические capabilities
 
-- **Статус:** Implemented / offline acceptance in progress
-- **Дата:** 2026-09-27
+- **Статус:** Accepted / Implemented
+- **Дата:** 2026-09-27 (обновлено: 2026-09-30)
 - **Авторы:** IntraLink Core Architecture Team
 - **Заменяет:** объект маршрутизации и ограничение роли LLM из разделов 2.1 и 2.3 ADR 0005
 - **Сохраняет:** доказательную модель, DLP, immutable provenance, fail-closed policy, операторское подтверждение и безопасное исполнение ADR 0005
@@ -199,10 +199,10 @@ Feedback фиксируется отдельно для:
 
 - HTTP API использует только вложенную модель `TicketAutomationDTO` и маршруты `/api/v2/autopilot/tickets/{id}/...`.
 - Poller выполняет только read-only наблюдение и не запускает анализ либо исполнение по факту назначения сервисной учётной записи.
-- Анализ запускается оператором явно; исполнение начинается только после подтверждения конкретного `ActionPlan`.
-- Worker принимает только команду, связанную с `action_plan_id`, `action_id`, capability, snapshot hash, plan hash и params hash.
+- Анализ запускается оператором явно; исполнение начинается только после авторизации конкретного `ActionPlan` через единый `PlanAuthorizationService`.
+- Worker принимает только команду, связанную с `action_plan_id`, `action_id`, capability, snapshot hash, plan hash, params hash и неизменяемым `authorization_decision_id`.
 - Старые `ScenarioRouter`, `BaseScenario`, `ScenarioRegistry`, scenario workers и policy API удалены из runtime.
-- Все workflow работают только в `ASSISTED`. Переключатель `FULL_AUTO` в текущем движке отсутствует.
+- Режимы исполнения версионируются через `WorkflowExecutionModeRecord` с ревизиями (`ASSISTED` / `FULL_AUTO`). По умолчанию fail-closed: все сценарии создаются в `ASSISTED`. Перевод в `FULL_AUTO` разрешен только для сценариев со статической пригодностью (`auto_execution_eligible = True`).
 - Проверка версии выполняется закрытым offline replay. Параллельный shadow-контур не создаётся.
 
 ---
@@ -212,7 +212,10 @@ Feedback фиксируется отдельно для:
 - Intake Router не выбирает техническую capability.
 - Диагностическое предположение не считается доказанным результатом.
 - LLM предлагает, но не разрешает и не подтверждает выполнение.
-- Любая инфраструктурная мутация создаётся только из валидированного ActionPlan.
+- `requires_approval` вычисляется строго из статической eligibility: `not (definition.auto_execution_eligible and capability.auto_execution_eligible)`.
+- Единый сервис авторизации `PlanAuthorizationService` для оператора (`operator`) и автопилота (`policy_auto`): атомарная блокировка `FOR UPDATE`, валидация preflight для всех шагов плана, создание решений допуска `ExecutionPolicyDecisionRecord` с фиксацией ревизий политики и снимка тикета.
+- Внешние контуры безопасности (Active Directory catalog binding) валидируются до вызова policy evaluator и включаются в `decision_hash`. При нарушении контура создается `ExecutionFeedbackRecord(outcome="denied")`, команда переводится в `failed`, а план — в `needs_review` без обращений к целевой инфраструктуре.
+- Любая инфраструктурная мутация создаётся только из авторизованного ActionPlan (`state = authorized`).
 - Неизвестные и многозначные случаи сохраняются как таковые.
 - Feedback не изменяет активное поведение без offline replay и явной атомарной замены версии.
 - Dataset размечает только информацию, доступную на соответствующем этапе процесса.

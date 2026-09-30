@@ -185,7 +185,11 @@ export interface TicketAutomation {
     error?: string | null;
     expires_at: string;
   }>;
-  approval: { state?: string; operator?: string | null };
+  approval: {
+    state?: string;
+    operator?: string | null;
+    kind?: "operator" | "policy_auto" | null;
+  };
   execution_policy?: ExecutionPolicy | null;
 
   execution: Array<{
@@ -298,4 +302,21 @@ export interface ApprovalResponse {
 export interface CorrectedActionInput {
   capability_key: string;
   params: Record<string, unknown>;
+}
+
+export interface WorkflowExecutionModeDTO {
+  workflow_key: string;
+  name: string;
+  description: string;
+  auto_execution_eligible: boolean;
+  desired_mode: "ASSISTED" | "FULL_AUTO";
+  policy_revision: number;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface UpdateWorkflowExecutionModeRequest {
+  mode: "ASSISTED" | "FULL_AUTO";
+  expected_revision: number;
+  reason: string;
 }

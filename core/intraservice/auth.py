@@ -117,19 +117,23 @@ class ServiceAuthBootstrap:
                 if cached_enc_token and cached_user_id:
                     if not env_login or cached_login == env_login:
                         plain_token = decrypt_token(cached_enc_token)
-                        user_id_int = int(cached_user_id)
-                        creds = ServiceAuthCredentials(
-                            auth_b64=plain_token,
-                            bot_user_id=user_id_int,
-                            login=cached_login,
-                        )
-                        self._cached_credentials = creds
-                        logger.info(
-                            "Restored service bot credentials from Redis vault (User ID: %d, Login: '%s')",
-                            user_id_int,
-                            cached_login,
-                        )
-                        return creds
+                        if not plain_token or plain_token.startswith("gAAAAA"):
+                            logger.warning("Decrypted Redis service token is invalid or corrupted. Evicting from Redis.")
+                            await r_client.delete(self.KEY_SERVICE_AUTH_B64, self.KEY_SERVICE_USER_ID, self.KEY_SERVICE_LOGIN)
+                        else:
+                            user_id_int = int(cached_user_id)
+                            creds = ServiceAuthCredentials(
+                                auth_b64=plain_token,
+                                bot_user_id=user_id_int,
+                                login=cached_login,
+                            )
+                            self._cached_credentials = creds
+                            logger.info(
+                                "Restored service bot credentials from Redis vault (User ID: %d, Login: '%s')",
+                                user_id_int,
+                                cached_login,
+                            )
+                            return creds
             except Exception as exc:
                 logger.warning("Failed to restore credentials from Redis: %s. Falling back to L3 DB.", exc)
 
@@ -148,27 +152,32 @@ class ServiceAuthBootstrap:
                         if enc_token and bot_user_id:
                             if not env_login or login == env_login:
                                 plain_token = decrypt_token(enc_token)
-                                user_id_int = int(bot_user_id)
-                                creds = ServiceAuthCredentials(
-                                    auth_b64=plain_token,
-                                    bot_user_id=user_id_int,
-                                    login=login,
-                                )
-                                self._cached_credentials = creds
-                                # Warm up L2 (Redis)
-                                if r_client is not None:
-                                    try:
-                                        await r_client.set(self.KEY_SERVICE_AUTH_B64, enc_token)
-                                        await r_client.set(self.KEY_SERVICE_USER_ID, str(user_id_int))
-                                        await r_client.set(self.KEY_SERVICE_LOGIN, login)
-                                    except Exception as exc:
-                                        logger.debug("Failed to warm up Redis from L3: %s", exc)
-                                logger.info(
-                                    "Restored service bot credentials from PostgreSQL L3 Vault (User ID: %d, Login: '%s')",
-                                    user_id_int,
-                                    login,
-                                )
-                                return creds
+                                if not plain_token or plain_token.startswith("gAAAAA"):
+                                    logger.warning(
+                                        "PostgreSQL L3 credentials contain corrupted token (key mismatch). Falling back."
+                                    )
+                                else:
+                                    user_id_int = int(bot_user_id)
+                                    creds = ServiceAuthCredentials(
+                                        auth_b64=plain_token,
+                                        bot_user_id=user_id_int,
+                                        login=login,
+                                    )
+                                    self._cached_credentials = creds
+                                    # Warm up L2 (Redis)
+                                    if r_client is not None:
+                                        try:
+                                            await r_client.set(self.KEY_SERVICE_AUTH_B64, enc_token)
+                                            await r_client.set(self.KEY_SERVICE_USER_ID, str(user_id_int))
+                                            await r_client.set(self.KEY_SERVICE_LOGIN, login)
+                                        except Exception as exc:
+                                            logger.debug("Failed to warm up Redis from L3: %s", exc)
+                                    logger.info(
+                                        "Restored service bot credentials from PostgreSQL L3 Vault (User ID: %d, Login: '%s')",
+                                        user_id_int,
+                                        login,
+                                    )
+                                    return creds
             except Exception as exc:
                 logger.debug("PostgreSQL L3 credentials lookup failed: %s. Falling back to env.", exc)
 

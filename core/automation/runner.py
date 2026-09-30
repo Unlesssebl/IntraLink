@@ -1,4 +1,4 @@
-"""Durable sequential scheduler for approved ActionPlans."""
+"""Durable sequential scheduler for authorized ActionPlans."""
 
 from __future__ import annotations
 
@@ -11,7 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.automation.contracts import ActionPlan, ActionPlanState
 from core.automation.persistence import AutomationRepository
-from core.database.models import ActionPlanRecord, CommandRecord
+from core.database.models import (
+    ActionPlanRecord,
+    CapabilityExecutionPolicyRecord,
+    CommandRecord,
+    ExecutionPolicyDecisionRecord,
+    WorkflowExecutionModeRecord,
+)
 
 
 class RunnerState(str, Enum):
@@ -44,18 +50,34 @@ class WorkflowRunner:
         *,
         action_plan_id: UUID,
         initiator: str,
+        authorization_decision_id: UUID | None = None,
+        authorization_capability_policy_revision: int | None = None,
+        authorization_workflow_policy_revision: int | None = None,
+        authorization_decision_hash: str | None = None,
+        # Legacy parameter aliases
         approval_decision_id: UUID | None = None,
         approval_policy_revision: int | None = None,
         approval_policy_hash: str | None = None,
     ) -> RunnerAdvanceResult:
+        effective_auth_decision_id = authorization_decision_id or approval_decision_id
+        effective_auth_cap_rev = (
+            authorization_capability_policy_revision or approval_policy_revision
+        )
+        effective_auth_wf_rev = authorization_workflow_policy_revision
+        effective_auth_dec_hash = authorization_decision_hash or approval_policy_hash
+
         record = await session.scalar(
             select(ActionPlanRecord).where(ActionPlanRecord.id == action_plan_id).with_for_update()
         )
         if record is None:
             raise LookupError("ActionPlan not found")
         plan = ActionPlan.model_validate(record.plan_json)
-        if plan.state not in {ActionPlanState.approved, ActionPlanState.running}:
-            raise ValueError("ActionPlan must be approved or running")
+        if plan.state not in {
+            ActionPlanState.authorized,
+            ActionPlanState.approved,
+            ActionPlanState.running,
+        }:
+            raise ValueError("ActionPlan must be authorized or running")
 
         commands = list(
             (
@@ -94,14 +116,70 @@ class WorkflowRunner:
             ):
                 return await self._needs_review(record, plan, "dependency_not_succeeded")
 
+            # Load action-specific authorization decision from database
+            decision_rec = await session.scalar(
+                select(ExecutionPolicyDecisionRecord)
+                .where(
+                    ExecutionPolicyDecisionRecord.action_plan_id == plan.id,
+                    ExecutionPolicyDecisionRecord.action_id == action.id,
+                    ExecutionPolicyDecisionRecord.phase.in_(["authorization", "approval"]),
+                )
+                .order_by(ExecutionPolicyDecisionRecord.created_at.desc())
+                .limit(1)
+            )
+
+            if decision_rec is not None:
+                if not decision_rec.allowed:
+                    return await self._needs_review(record, plan, "authorization_decision_denied")
+                if decision_rec.capability_key != action.capability_key:
+                    return await self._needs_review(record, plan, "decision_capability_mismatch")
+
+                # Verify capability policy revision has not been tightened
+                cap_policy = await session.get(CapabilityExecutionPolicyRecord, action.capability_key)
+                if (
+                    cap_policy is not None
+                    and decision_rec.policy_revision is not None
+                    and cap_policy.revision != decision_rec.policy_revision
+                ):
+                    return await self._needs_review(record, plan, "capability_policy_revision_mismatch")
+
+                # Verify workflow execution mode revision has not changed
+                wf_mode = await session.get(WorkflowExecutionModeRecord, plan.workflow_key)
+                if (
+                    wf_mode is not None
+                    and decision_rec.workflow_policy_revision is not None
+                    and wf_mode.revision != decision_rec.workflow_policy_revision
+                ):
+                    return await self._needs_review(record, plan, "workflow_policy_revision_mismatch")
+
+                cmd_auth_dec_id = decision_rec.id
+                cmd_auth_cap_rev = decision_rec.policy_revision
+                cmd_auth_wf_rev = decision_rec.workflow_policy_revision
+                cmd_auth_dec_hash = decision_rec.decision_hash
+            elif effective_auth_decision_id is not None:
+                cmd_auth_dec_id = effective_auth_decision_id
+                cmd_auth_cap_rev = effective_auth_cap_rev
+                cmd_auth_wf_rev = effective_auth_wf_rev
+                cmd_auth_dec_hash = effective_auth_dec_hash
+            elif plan.state == ActionPlanState.authorized:
+                # Strictly fail-closed for authorized plans without decisions
+                return await self._needs_review(record, plan, "authorization_decision_missing")
+            else:
+                # Legacy approved plans in tests without persisted decisions
+                cmd_auth_dec_id = None
+                cmd_auth_cap_rev = None
+                cmd_auth_wf_rev = None
+                cmd_auth_dec_hash = None
+
             running_plan = plan.model_copy(update={"state": ActionPlanState.running})
             command = self.repository.command_for_action(
                 plan=plan,
                 action=action,
                 initiator=initiator,
-                approval_decision_id=approval_decision_id,
-                approval_policy_revision=approval_policy_revision,
-                approval_policy_hash=approval_policy_hash,
+                authorization_decision_id=cmd_auth_dec_id,
+                authorization_capability_policy_revision=cmd_auth_cap_rev,
+                authorization_workflow_policy_revision=cmd_auth_wf_rev,
+                authorization_decision_hash=cmd_auth_dec_hash,
             )
             session.add(command)
             record.state = ActionPlanState.running.value

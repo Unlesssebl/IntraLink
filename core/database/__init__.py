@@ -6,6 +6,8 @@ from core.database.models import (
     SystemState,
     TaskKnowledgeBase,
     User,
+    WorkflowExecutionModeEventRecord,
+    WorkflowExecutionModeRecord,
 )
 from core.database.session import get_db_session, get_engine, get_session_factory
 from core.database.system_state import (
@@ -22,6 +24,8 @@ __all__ = [
     "SystemState",
     "TaskKnowledgeBase",
     "User",
+    "WorkflowExecutionModeRecord",
+    "WorkflowExecutionModeEventRecord",
     "WatermarkDTO",
     "WatermarkService",
     "set_system_state_session_factory",

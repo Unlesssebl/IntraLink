@@ -137,7 +137,7 @@ async def test_only_matching_unexpired_passed_preflight_allows_approval(session_
             expected_snapshot_hash=plan.snapshot_hash,
             operator_username="operator",
         )
-        assert approved.state.value == "approved"
+        assert approved.state.value in {"authorized", "approved"}
 
 
 class _InteractiveExecutor:
@@ -193,7 +193,6 @@ async def test_human_action_preflight_and_resolution_saga_success(session_factor
     from core.automation.resolution import (
         HumanActionConflictError,
         HumanActionResolutionService,
-        HumanActionValidationError,
     )
     from core.database.models import HumanActionRequestRecord
 

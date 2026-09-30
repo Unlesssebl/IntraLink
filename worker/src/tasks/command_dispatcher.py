@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -26,8 +25,8 @@ from core.automation.contracts import (
     WorkflowPlanState,
     compute_action_plan_hash,
 )
-from core.automation.persistence import canonical_params_hash
 from core.automation.execution_policy import ExecutionPolicyEvaluator
+from core.automation.persistence import canonical_params_hash
 from core.automation.policy import CapabilityHealthService
 from core.automation.runner import RunnerState, WorkflowRunner
 from core.automation.snapshot import TicketSnapshotFactory
@@ -160,7 +159,11 @@ async def _load_bound_plan(session: AsyncSession, command: CommandRecord) -> tup
     if record is None:
         raise ValueError("action_plan_not_found")
     plan = ActionPlan.model_validate(record.plan_json)
-    if record.state not in {ActionPlanState.approved.value, ActionPlanState.running.value}:
+    if record.state not in {
+        ActionPlanState.approved.value,
+        ActionPlanState.authorized.value,
+        ActionPlanState.running.value,
+    }:
         raise ValueError("action_plan_not_executable")
     if compute_action_plan_hash(plan) != record.plan_hash or command.plan_hash != record.plan_hash:
         raise ValueError("action_plan_hash_mismatch")
@@ -175,6 +178,20 @@ async def _load_bound_plan(session: AsyncSession, command: CommandRecord) -> tup
         or canonical_params_hash(command.params_json or {}) != expected_params_hash
     ):
         raise ValueError("command_params_binding_mismatch")
+    if command.authorization_decision_id is None:
+        raise ValueError("command_authorization_missing")
+    auth_decision = await session.get(ExecutionPolicyDecisionRecord, command.authorization_decision_id)
+    if auth_decision is None:
+        raise ValueError("command_authorization_not_found")
+    if not auth_decision.allowed:
+        raise ValueError("command_authorization_denied")
+    if (
+        auth_decision.action_id != action.id
+        or auth_decision.action_plan_id != plan.id
+        or auth_decision.capability_key != action.capability_key
+        or auth_decision.decision_hash != command.authorization_decision_hash
+    ):
+        raise ValueError("command_authorization_binding_mismatch")
     preflight = await session.scalar(
         select(ActionPreflightRecord)
         .where(
@@ -234,6 +251,28 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
         if current_snapshot.snapshot_hash != plan.snapshot_hash:
             return {"status": "skipped", "error": "stale_ticket_snapshot"}
 
+        external_guard_reasons: list[str] = []
+        exec_params = dict(action.params)
+        if action.capability_key == "create_ad_user":
+            ad_gate_error = await _validate_ad_service_gate(
+                session=session,
+                plan=plan,
+                command=command,
+                task=task,
+            )
+            if ad_gate_error:
+                external_guard_reasons.append(ad_gate_error)
+            else:
+                binding_record = await session.scalar(
+                    select(ServiceRouteBindingRecord).where(
+                        ServiceRouteBindingRecord.key == plan.service_binding_key,
+                        ServiceRouteBindingRecord.version == plan.service_binding_version,
+                        ServiceRouteBindingRecord.catalog_hash == plan.catalog_hash,
+                    )
+                )
+                if binding_record and binding_record.delivery_policy_json:
+                    exec_params["delivery_policy"] = binding_record.delivery_policy_json
+
         evaluator = ExecutionPolicyEvaluator()
         decision = await evaluator.evaluate_for_action(
             session=session,
@@ -244,15 +283,20 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
             registry=registry,
             command=command,
             current_snapshot_hash=current_snapshot.snapshot_hash,
+            external_guard_reasons=tuple(external_guard_reasons),
         )
         decision_record = ExecutionPolicyDecisionRecord(
             id=uuid.uuid4(),
             phase="execution",
             capability_key=action.capability_key,
+            action_id=action.id,
+            authorization_kind=decision.authorization_kind,
             allowed=decision.allowed,
             policy_revision=decision.policy_revision,
+            workflow_policy_revision=decision.workflow_policy_revision,
             engine_version=decision.engine_version,
             context_hash=decision.context_hash,
+            context_json=decision.context_json,
             decision_hash=decision.decision_hash,
             reasons_json=decision.reasons,
             ticket_id=plan.task_id,
@@ -281,28 +325,11 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
             session.add(feedback)
             command.status = "failed"
             command.error_message = f"execution_denied:{','.join(decision.reasons)}"
+            plan_record.state = ActionPlanState.needs_review.value
+            if plan.workflow_plan_id is not None:
+                await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.needs_review)
             await session.commit()
             return {"status": "failed", "error": f"execution_denied:{','.join(decision.reasons)}"}
-
-        exec_params = dict(action.params)
-        if action.capability_key == "create_ad_user":
-            ad_gate_error = await _validate_ad_service_gate(
-                session=session,
-                plan=plan,
-                command=command,
-                task=task,
-            )
-            if ad_gate_error:
-                return {"status": "skipped", "error": ad_gate_error}
-            binding_record = await session.scalar(
-                select(ServiceRouteBindingRecord).where(
-                    ServiceRouteBindingRecord.key == plan.service_binding_key,
-                    ServiceRouteBindingRecord.version == plan.service_binding_version,
-                    ServiceRouteBindingRecord.catalog_hash == plan.catalog_hash,
-                )
-            )
-            if binding_record and binding_record.delivery_policy_json:
-                exec_params["delivery_policy"] = binding_record.delivery_policy_json
 
         await lock.ensure_owned()
         await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.executing)

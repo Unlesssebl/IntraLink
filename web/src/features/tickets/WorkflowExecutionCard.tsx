@@ -68,6 +68,7 @@ const STAGE_LABELS: Record<string, string> = {
   ou: "Подразделение (OU)",
   hitl: "Уточнение параметров",
   preflight: "Проверки",
+  authorization: "Авторизация",
   approval: "Одобрение",
   execution: "Выполнение",
   delivery: "Выдача реквизитов",
@@ -80,6 +81,12 @@ const BLOCKER_LABELS: Record<string, string> = {
   preflight_failed: "Предварительные проверки перед выполнением не пройдены",
   ad_onboarding_execution_disabled: "Создание пользователей AD временно отключено администратором",
   capability_execution_disabled: "Автоматическое выполнение возможностей сценария отключено настройками безопасности",
+  service_binding_required: "Требуется привязка регламентного сервиса Helpdesk",
+  unbound_service_execution_denied: "Выполнение заблокировано: не привязан регламентный сервис",
+  workflow_not_eligible_for_auto_execution: "Сценарий требует обязательного согласования оператором",
+  capability_not_eligible_for_auto_execution: "Действие требует обязательного согласования оператором",
+  workflow_mode_not_full_auto: "Сценарий переведён в режим подтверждения оператором (ASSISTED)",
+  policy_auto_authorization_failed: "Автоматическая авторизация политикой отклонена",
   worker_unavailable: "Отсутствует активный воркер для выполнения операции",
   no_compatible_worker: "Нет совместимого активного воркера",
 };
@@ -286,18 +293,27 @@ export const WorkflowExecutionCard: React.FC<WorkflowExecutionCardProps> = ({
             </p>
           </div>
         </div>
-        <Badge
-          variant={isCompleted ? "success" : isReady ? "warning" : isBlocked ? "danger" : "neutral"}
-          dot
-        >
-          {isCompleted
-            ? "Выполнено"
-            : isReady
-            ? "Готово к одобрению"
-            : isBlocked
-            ? "Требуется действие"
-            : "В процессе"}
-        </Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          {data.approval?.state === "approved" && (
+            <Badge variant="success" dot>
+              {data.approval.kind === "policy_auto"
+                ? "Авторизовано: FULL_AUTO"
+                : `Одобрено: ${data.approval.operator || "оператор"}`}
+            </Badge>
+          )}
+          <Badge
+            variant={isCompleted ? "success" : isReady ? "warning" : isBlocked ? "danger" : "neutral"}
+            dot
+          >
+            {isCompleted
+              ? "Выполнено"
+              : isReady
+              ? "Готово к одобрению"
+              : isBlocked
+              ? "Требуется действие"
+              : "В процессе"}
+          </Badge>
+        </div>
       </header>
 
       {/* Metadata Overview Grid */}

@@ -167,6 +167,31 @@ class WorkflowCompiler:
             return workflow, None
 
         capability = self.capabilities.require(capability_key)
+        if capability.requires_service_binding:
+            authorized = bool(
+                compatibility
+                and compatibility.state == ServiceCompatibilityState.compatible
+                and binding
+                and binding.is_active
+                and binding.is_validated
+                and binding.catalog_hash == compatibility.catalog_hash
+                and compatibility.source_service_id in binding.service_ids
+                and definition.key in binding.allowed_workflows
+                and decision.primary_case_type in binding.allowed_case_types
+                and capability.key in binding.allowed_capabilities
+            )
+            if not authorized:
+                workflow = self._workflow_plan(
+                    frame,
+                    decision,
+                    definition,
+                    state=WorkflowPlanState.needs_review,
+                    disposition=Disposition.manual,
+                    clarification_round=clarification_round,
+                    reason_codes=["service_binding_not_authorized"],
+                )
+                return workflow, None
+
         if capability_key == "create_ad_user":
             if not self._ad_authorized(decision, definition, compatibility, binding):
                 workflow = self._workflow_plan(
@@ -197,13 +222,13 @@ class WorkflowCompiler:
             frame,
             decision,
             definition,
-            state=(
-                WorkflowPlanState.ready_for_approval
-                if definition.key == "employee_onboarding_workflow"
-                else WorkflowPlanState.awaiting_approval
-            ),
+            state=WorkflowPlanState.ready_for_authorization,
             disposition=Disposition.execute,
             clarification_round=clarification_round,
+        )
+        requires_approval = not (
+            definition.auto_execution_eligible
+            and capability.auto_execution_eligible
         )
         action_id = f"action_{capability_key}_0"
         action = ActionProposal(
@@ -214,7 +239,7 @@ class WorkflowCompiler:
                 key: facts[key] for key in (*capability.required_params, *capability.optional_params) if key in facts
             },
             risk=capability.risk.value,
-            requires_approval=True,
+            requires_approval=requires_approval,
         )
         draft = ActionPlan(
             id=uuid4(),

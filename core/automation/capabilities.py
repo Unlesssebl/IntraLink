@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CapabilityRisk(str, Enum):
@@ -110,6 +110,19 @@ class CapabilitySpec(BaseModel):
     is_mutating: bool
     verifies_result: bool = True
     summary_template: str | None = None
+    auto_execution_eligible: bool = False
+    requires_service_binding: bool = False
+
+    @model_validator(mode="after")
+    def validate_auto_execution(self) -> "CapabilitySpec":
+        if self.auto_execution_eligible:
+            if self.risk == CapabilityRisk.high:
+                raise ValueError("high_risk_capability_cannot_be_auto")
+            if self.idempotency == IdempotencyMode.never_auto_retry:
+                raise ValueError("never_auto_retry_capability_cannot_be_auto")
+            if not self.verifies_result:
+                raise ValueError("unverified_capability_cannot_be_auto")
+        return self
 
     def format_summary(self, params: dict[str, Any]) -> str:
         if self.summary_template:
@@ -190,6 +203,8 @@ DEFAULT_CAPABILITIES = (
         idempotency=IdempotencyMode.naturally_idempotent,
         is_mutating=False,
         summary_template="Проверка доступности рабочего места {pc_name}",
+        auto_execution_eligible=True,
+        requires_service_binding=False,
     ),
     CapabilitySpec(
         key="probe_printer",
@@ -202,6 +217,8 @@ DEFAULT_CAPABILITIES = (
         idempotency=IdempotencyMode.naturally_idempotent,
         is_mutating=False,
         summary_template="Проверка сетевого адреса принтера {printer_address}",
+        auto_execution_eligible=True,
+        requires_service_binding=False,
     ),
     CapabilitySpec(
         key="install_printer",
@@ -215,6 +232,8 @@ DEFAULT_CAPABILITIES = (
         idempotency=IdempotencyMode.key_guarded,
         is_mutating=True,
         summary_template="Установка принтера {printer_address} на рабочую станцию {pc_name}",
+        auto_execution_eligible=False,
+        requires_service_binding=False,
     ),
     CapabilitySpec(
         key="reset_print_spooler",
@@ -227,6 +246,8 @@ DEFAULT_CAPABILITIES = (
         idempotency=IdempotencyMode.key_guarded,
         is_mutating=True,
         summary_template="Сброс службы очереди печати на {pc_name}",
+        auto_execution_eligible=True,
+        requires_service_binding=False,
     ),
     CapabilitySpec(
         key="set_default_printer",
@@ -239,6 +260,8 @@ DEFAULT_CAPABILITIES = (
         idempotency=IdempotencyMode.key_guarded,
         is_mutating=True,
         summary_template="Назначение принтера {printer_address} по умолчанию на {pc_name}",
+        auto_execution_eligible=True,
+        requires_service_binding=False,
     ),
     CapabilitySpec(
         key="create_ad_user",
@@ -252,6 +275,8 @@ DEFAULT_CAPABILITIES = (
         idempotency=IdempotencyMode.never_auto_retry,
         is_mutating=True,
         summary_template="Создание учётной записи пользователя в Active Directory",
+        auto_execution_eligible=False,
+        requires_service_binding=True,
     ),
     CapabilitySpec(
         key="disable_ad_user",
@@ -264,6 +289,8 @@ DEFAULT_CAPABILITIES = (
         idempotency=IdempotencyMode.key_guarded,
         is_mutating=True,
         summary_template="Отключение учётной записи пользователя {target_user} в Active Directory",
+        auto_execution_eligible=False,
+        requires_service_binding=False,
     ),
     CapabilitySpec(
         key="add_wlan_group_member",
@@ -276,6 +303,8 @@ DEFAULT_CAPABILITIES = (
         idempotency=IdempotencyMode.naturally_idempotent,
         is_mutating=True,
         summary_template="Предоставление доступа к сети WLAN пользователю {target_user}",
+        auto_execution_eligible=True,
+        requires_service_binding=False,
     ),
 )
 

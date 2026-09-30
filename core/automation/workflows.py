@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from core.automation.contracts import Disposition
@@ -64,6 +66,7 @@ class WorkflowDefinition(BaseModel):
     default_disposition: Disposition
     max_clarification_rounds: int = 2
     presentation: WorkflowPresentationSpec = WorkflowPresentationSpec()
+    auto_execution_eligible: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -209,6 +212,7 @@ DEFAULT_WORKFLOWS = (
         required_facts=("target_user",),
         allowed_capabilities=("add_wlan_group_member",),
         default_disposition=Disposition.execute,
+        auto_execution_eligible=True,
         presentation=WorkflowPresentationSpec(
             icon="network",
             category_badge="Сетевой доступ",

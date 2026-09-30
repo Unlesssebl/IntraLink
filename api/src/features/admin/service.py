@@ -19,13 +19,14 @@ from core.ad.credentials import (
 )
 from core.ad.pool import ActiveDirectoryPool
 from core.ad.provisioning import DEFAULT_AD_DELIVERY_POLICY
-from core.automation.capabilities import CapabilityRisk, get_default_capability_registry
+from core.automation.capabilities import get_default_capability_registry
 from core.automation.execution_policy import is_deployment_force_disabled
 from core.automation.policy import CapabilityHealthService
 from core.automation.service_catalog import ServiceCatalogRepository
 from core.automation.service_routing import RedirectStrategy, ServiceRouteBinding
 from core.automation.worker_attestation import WorkerAttestationService
-from core.crypto import get_fernet
+from core.automation.workflows import get_default_workflow_registry
+from core.crypto import decrypt_token, get_fernet
 from core.database.models import (
     CapabilityExecutionPolicyRecord,
     ExecutionPolicyEventRecord,
@@ -33,6 +34,8 @@ from core.database.models import (
     ServiceCatalogVersionRecord,
     ServiceRouteBindingRecord,
     SystemState,
+    WorkflowExecutionModeEventRecord,
+    WorkflowExecutionModeRecord,
 )
 from core.intraservice.auth import ServiceAuthBootstrap
 from core.intraservice.client import IntraServiceClient
@@ -49,8 +52,9 @@ from .schemas import (
     ServiceCredentialsUpdate,
     ServiceCredentialsUpdateResponse,
     UpdateCapabilityExecutionPolicyRequest,
+    UpdateWorkflowExecutionModeRequest,
+    WorkflowExecutionModeDTO,
 )
-
 
 
 class AdminCredentialsService:
@@ -223,13 +227,21 @@ class AdminCredentialsService:
                 or 0
             )
 
+        enc_token = data.get("encrypted_token")
+        bot_user_id = data.get("bot_user_id")
+        decrypted_ok = False
+        if enc_token:
+            plain_token = decrypt_token(enc_token)
+            if plain_token and not plain_token.startswith("gAAAAA"):
+                decrypted_ok = True
+
         return ServiceCredentialsStatus(
-            configured=bool(data.get("encrypted_token") and data.get("bot_user_id")),
+            configured=bool(decrypted_ok and bot_user_id),
             encryption_ready=get_fernet() is not None,
-            login=data.get("login"),
-            bot_user_id=data.get("bot_user_id"),
+            login=data.get("login") if decrypted_ok else None,
+            bot_user_id=bot_user_id if decrypted_ok else None,
             updated_at=row.updated_at if row else None,
-            redis_cached=redis_cached,
+            redis_cached=redis_cached and decrypted_ok,
             catalog=CatalogStatus(
                 available=version is not None,
                 version=version.version if version else None,
@@ -452,5 +464,135 @@ class AdminCredentialsService:
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "Не удалось получить обновленный статус политики",
+        )
+
+    async def get_workflow_execution_modes(
+        self,
+        session: AsyncSession,
+    ) -> list[WorkflowExecutionModeDTO]:
+        registry = get_default_workflow_registry()
+        rows = list((await session.scalars(select(WorkflowExecutionModeRecord))).all())
+        by_key = {r.workflow_key: r for r in rows}
+
+        results: list[WorkflowExecutionModeDTO] = []
+        for definition in registry.list_all():
+            row = by_key.get(definition.key)
+            if row is not None:
+                results.append(
+                    WorkflowExecutionModeDTO(
+                        workflow_key=definition.key,
+                        name=definition.name,
+                        description="",
+                        auto_execution_eligible=definition.auto_execution_eligible,
+                        desired_mode=row.desired_mode,
+                        policy_revision=row.revision,
+                        updated_at=row.changed_at,
+                        updated_by=row.changed_by,
+                    )
+                )
+            else:
+                results.append(
+                    WorkflowExecutionModeDTO(
+                        workflow_key=definition.key,
+                        name=definition.name,
+                        description="",
+                        auto_execution_eligible=definition.auto_execution_eligible,
+                        desired_mode="ASSISTED",
+                        policy_revision=1,
+                        updated_at=datetime.now(UTC),
+                        updated_by="system",
+                    )
+                )
+        return sorted(results, key=lambda x: x.workflow_key)
+
+    async def update_workflow_execution_mode(
+        self,
+        session: AsyncSession,
+        redis_client: aioredis.Redis,
+        workflow_key: str,
+        request: UpdateWorkflowExecutionModeRequest,
+        admin_login: str,
+    ) -> WorkflowExecutionModeDTO:
+        registry = get_default_workflow_registry()
+        definition = registry.get(workflow_key)
+        if definition is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Сценарий '{workflow_key}' не найден в реестре",
+            )
+
+        if request.mode == "FULL_AUTO" and not definition.auto_execution_eligible:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "workflow_not_eligible_for_full_auto",
+            )
+
+        stmt = (
+            select(WorkflowExecutionModeRecord)
+            .where(WorkflowExecutionModeRecord.workflow_key == workflow_key)
+            .with_for_update()
+        )
+        row = await session.scalar(stmt)
+        now = datetime.now(UTC)
+        if row is None:
+            if request.expected_revision != 1:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f"Конфликт версий: ревизия политики 1 не совпадает с ожидаемой {request.expected_revision}",
+                )
+            row = WorkflowExecutionModeRecord(
+                workflow_key=workflow_key,
+                desired_mode=request.mode,
+                revision=2,
+                reason=request.reason.strip(),
+                changed_at=now,
+                changed_by=admin_login,
+            )
+            session.add(row)
+            previous_mode = "ASSISTED"
+            new_revision = 2
+        else:
+            if row.revision != request.expected_revision:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f"Конфликт версий: ревизия политики {row.revision} не совпадает с ожидаемой {request.expected_revision}",
+                )
+            previous_mode = row.desired_mode
+            new_revision = row.revision + 1
+            row.desired_mode = request.mode
+            row.revision = new_revision
+            row.reason = request.reason.strip()
+            row.changed_at = now
+            row.changed_by = admin_login
+
+        event = WorkflowExecutionModeEventRecord(
+            workflow_key=workflow_key,
+            previous_mode=previous_mode,
+            new_mode=request.mode,
+            revision=new_revision,
+            reason=request.reason.strip(),
+            changed_by=admin_login,
+            created_at=now,
+        )
+        session.add(event)
+        await session.commit()
+
+        try:
+            await redis_client.publish(
+                "workflow_mode_changed",
+                f"{workflow_key}:{request.mode}:{new_revision}",
+            )
+        except Exception:
+            pass
+
+        return WorkflowExecutionModeDTO(
+            workflow_key=definition.key,
+            name=definition.name,
+            description="",
+            auto_execution_eligible=definition.auto_execution_eligible,
+            desired_mode=row.desired_mode,
+            policy_revision=row.revision,
+            updated_at=row.changed_at,
+            updated_by=row.changed_by,
         )
 

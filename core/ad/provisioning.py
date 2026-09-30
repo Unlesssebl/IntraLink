@@ -8,7 +8,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Protocol
+from typing import Protocol
 
 import ldap3
 from ldap3.core.exceptions import LDAPNoSuchObjectResult
@@ -18,7 +18,7 @@ from ldap3.utils.dn import escape_rdn
 from core.ad.credentials import AD_USERS_ROOT_OU, ActiveDirectoryCredentialVault
 from core.ad.ou_resolver import OrganizationalUnit, OrganizationalUnitResolver, _is_descendant
 from core.ad.password import generate_secure_password
-from core.ad.pool import ADPoolConfig, ActiveDirectoryPool
+from core.ad.pool import ActiveDirectoryPool, ADPoolConfig
 from core.ad.transliteration import generate_sam_account_name
 from core.automation.contracts import (
     CredentialDeliveryField,
@@ -265,11 +265,11 @@ class AccountProvisioningService:
                         "ad_target_ou_not_found",
                         f"Selected OU '{target_ou}' does not exist in Active Directory",
                     )
-            except LDAPNoSuchObjectResult:
+            except LDAPNoSuchObjectResult as err:
                 raise AccountProvisioningError(
                     "ad_target_ou_not_found",
                     f"Selected OU '{target_ou}' does not exist in Active Directory",
-                )
+                ) from err
             return target_ou, {
                 "ou_resolution_method": "operator_confirmed",
                 "resolved_company": company.strip() or None,

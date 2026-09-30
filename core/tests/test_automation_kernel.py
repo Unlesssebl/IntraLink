@@ -91,7 +91,7 @@ def test_printer_connection_compiles_to_install_capability() -> None:
         decision=_decision(frame, "printer_connection_request"),
     )
 
-    assert workflow.state == WorkflowPlanState.awaiting_approval
+    assert workflow.state == WorkflowPlanState.ready_for_authorization
     assert action_plan is not None
     assert [item.capability_key for item in action_plan.actions] == ["install_printer"]
     assert action_plan.plan_hash == compute_action_plan_hash(action_plan)
