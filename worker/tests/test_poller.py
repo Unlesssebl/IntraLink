@@ -11,7 +11,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from core.crypto import set_fernet
 from core.database.base import Base
-from core.database.models import ClarificationRequestRecord, WorkflowPlanRecord
+from core.database.models import (
+    ActionPlanRecord,
+    ClarificationRequestRecord,
+    WorkflowPlanRecord,
+)
 from core.database.system_state import (
     WatermarkService,
     set_system_state_session_factory,
@@ -347,3 +351,85 @@ async def test_ingestion_poller_exponential_backoff_cascade(test_db):
     assert res4.next_interval_sec == 30.0
     assert res4.consecutive_errors == 0
     assert res4.error is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_assigned_bot_intake(test_db):
+    """Verify autonomous intake is dispatched when bot is assigned and ticket is not terminal/active."""
+    http_client = AsyncMock()
+    http_client.post.return_value.status_code = 200
+
+    mock_redis = AsyncMock()
+    mock_redis.get.return_value = None
+
+    poller = IngestionPoller(
+        session_factory=test_db,
+        redis_client=mock_redis,
+        worker_api_key="worker-secret-key",
+        resume_base_url="http://api/api/v2",
+        http_client=http_client,
+    )
+
+    auth = ServiceAuthCredentials(auth_b64="auth", bot_user_id=777, login="bot")
+
+    tasks = {
+        # 1. Bot assigned, status is New (1) -> should be dispatched
+        101: TaskDTO(Id=101, Name="Issue with wifi", StatusId=1, ExecutorIds="777", Changed="2026-09-30 10:00"),
+        # 2. Other user assigned (555), bot not in executor_ids -> skipped
+        102: TaskDTO(Id=102, Name="Other task", StatusId=1, ExecutorIds="555", Changed="2026-09-30 10:00"),
+        # 3. Bot assigned, but status is terminal (3 = Completed) -> skipped
+        103: TaskDTO(Id=103, Name="Done task", StatusId=3, ExecutorIds="777", Changed="2026-09-30 10:00"),
+        # 4. Bot assigned, but status is Paused (6) -> skipped (waiting for user answer)
+        104: TaskDTO(Id=104, Name="Paused task", StatusId=6, ExecutorIds="777", Changed="2026-09-30 10:00"),
+    }
+
+    async with test_db() as session:
+        await poller._dispatch_assigned_bot_intake(tasks, auth, session=session)
+
+    # Only ticket 101 should be dispatched
+    http_client.post.assert_awaited_once_with(
+        "http://api/api/v2/internal/autopilot/tickets/101/intake",
+        headers={"X-Worker-Key": "worker-secret-key"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_assigned_bot_intake_skips_running_plan(test_db):
+    """Verify autonomous intake skips ticket if action plan is already running or authorized."""
+    workflow_id = uuid.uuid4()
+    decision_id = uuid.uuid4()
+    async with test_db() as session:
+        session.add(
+            ActionPlanRecord(
+                id=uuid.uuid4(),
+                workflow_plan_id=workflow_id,
+                case_decision_id=decision_id,
+                task_id=201,
+                snapshot_hash="s" * 64,
+                workflow_key="guest_wifi_workflow",
+                workflow_version="1.0.0",
+                state="running",
+                disposition="execute",
+                plan_hash="p" * 64,
+                plan_json={},
+            )
+        )
+        await session.commit()
+
+    http_client = AsyncMock()
+    poller = IngestionPoller(
+        session_factory=test_db,
+        worker_api_key="worker-secret-key",
+        resume_base_url="http://api/api/v2",
+        http_client=http_client,
+    )
+    auth = ServiceAuthCredentials(auth_b64="auth", bot_user_id=777, login="bot")
+    tasks = {
+        201: TaskDTO(Id=201, Name="Wifi", StatusId=2, ExecutorIds="777", Changed="2026-09-30 10:00"),
+    }
+
+    async with test_db() as session:
+        await poller._dispatch_assigned_bot_intake(tasks, auth, session=session)
+
+    http_client.post.assert_not_called()
+

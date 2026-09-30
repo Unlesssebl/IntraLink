@@ -128,6 +128,27 @@ async def resume_ticket(
         await lock.release()
 
 
+@internal_router.post("/tickets/{ticket_id}/intake", response_model=TicketAutomationDTO)
+async def intake_ticket(
+    ticket_id: int,
+    db: Db,
+    service: Service,
+    redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
+    worker_key: Annotated[str | None, Header(alias="X-Worker-Key")] = None,
+) -> TicketAutomationDTO:
+    configured = settings.WORKER_API_KEY
+    if not configured or not worker_key or not hmac.compare_digest(worker_key, configured):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid_worker_key")
+    lock = DistributedTaskLock(redis_client, f"lock:analysis:{ticket_id}", ttl_seconds=60)
+    if not await lock.acquire():
+        raise HTTPException(status.HTTP_409_CONFLICT, "analysis_already_running")
+    try:
+        return await service.analyze(db, ticket_id=ticket_id, auth_b64=None, force=False)
+    finally:
+        await lock.release()
+
+
+
 @router.post("/tickets/{ticket_id}/case-decision/correct", response_model=TicketAutomationDTO)
 async def correct_case_decision(
     ticket_id: int,

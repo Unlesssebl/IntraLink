@@ -25,7 +25,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.automation.clarification import latest_human_public_event
-from core.database.models import ClarificationRequestRecord, WorkflowPlanRecord
+from core.database.models import (
+    ActionPlanRecord,
+    ClarificationRequestRecord,
+    WorkflowPlanRecord,
+)
 from core.database.system_state import (
     WatermarkService,
     _get_active_session_factory,
@@ -192,7 +196,9 @@ class IngestionPoller:
 
         # 5. Resume only an already awaiting assisted workflow when a new public human answer exists.
         await self._resume_waiting_clarifications(unique_tasks, auth, session=session)
-        # 6. Update dual watermark in PostgreSQL & Redis
+        # 6. Dispatch autonomous intake for tickets assigned to the bot.
+        await self._dispatch_assigned_bot_intake(unique_tasks, auth, session=session)
+        # 7. Update dual watermark in PostgreSQL & Redis
         max_task_id = (watermark.last_task_id if watermark else None) or 0
         if unique_tasks:
             current_max = max(unique_tasks.keys())
@@ -295,6 +301,85 @@ class IngestionPoller:
             )
             if response.status_code not in (200, 409, 422):
                 response.raise_for_status()
+        finally:
+            if owned:
+                await client.aclose()
+
+    async def _dispatch_assigned_bot_intake(
+        self,
+        tasks: Dict[int, TaskDTO],
+        auth: ServiceAuthCredentials,
+        *,
+        session: Optional[AsyncSession] = None,
+    ) -> None:
+        if not self.worker_api_key or not auth.bot_user_id or not tasks:
+            return
+
+        terminal_statuses = {3, 4, 6, 28, 29, 30}
+        candidate_ids = [
+            task_id
+            for task_id, task in tasks.items()
+            if task.status_id not in terminal_statuses and auth.bot_user_id in task.get_executor_ids()
+        ]
+        if not candidate_ids:
+            return
+
+        async def filter_and_dispatch(db: AsyncSession) -> None:
+            sem = asyncio.Semaphore(3)
+
+            async def process_candidate(task_id: int) -> None:
+                task = tasks[task_id]
+                cache_key = f"intake:seen:{task_id}:{task.changed or ''}"
+                if self.redis_client is not None:
+                    try:
+                        seen = await self.redis_client.get(cache_key)
+                        if seen:
+                            return
+                    except Exception as err:
+                        logger.debug("Redis cache check error for intake %s: %s", task_id, err)
+
+                latest_action = await db.scalar(
+                    select(ActionPlanRecord)
+                    .where(ActionPlanRecord.task_id == task_id)
+                    .order_by(ActionPlanRecord.created_at.desc(), ActionPlanRecord.id.desc())
+                    .limit(1)
+                )
+                if latest_action is not None and latest_action.state in (
+                    "authorized",
+                    "running",
+                    "succeeded",
+                ):
+                    return
+
+                async with sem:
+                    try:
+                        success = await self._post_intake(task_id)
+                        if success and self.redis_client is not None:
+                            await self.redis_client.set(cache_key, "1", ex=1800)
+                    except Exception as exc:
+                        logger.warning("Bot intake dispatch failed for task %s: %s", task_id, exc)
+
+            await asyncio.gather(*(process_candidate(tid) for tid in candidate_ids), return_exceptions=True)
+
+        if session is not None:
+            await filter_and_dispatch(session)
+        elif self.session_factory is not None:
+            async with self.session_factory() as owned_session:
+                await filter_and_dispatch(owned_session)
+
+    async def _post_intake(self, task_id: int) -> bool:
+        client = self.http_client or httpx.AsyncClient(timeout=60.0)
+        owned = self.http_client is None
+        try:
+            response = await client.post(
+                f"{self.resume_base_url}/internal/autopilot/tickets/{task_id}/intake",
+                headers={"X-Worker-Key": self.worker_api_key},
+            )
+            if response.status_code == 409:
+                return True
+            if response.status_code not in (200, 422):
+                response.raise_for_status()
+            return response.status_code == 200
         finally:
             if owned:
                 await client.aclose()
