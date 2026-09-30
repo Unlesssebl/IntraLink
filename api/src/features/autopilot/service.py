@@ -303,6 +303,22 @@ class AutomationService:
                         latest.action_plan,
                         latest.redirect_plan,
                     )
+            if (
+                latest.action_plan is not None
+                and latest.action_plan.state in (ActionPlanState.ready.value, "ready")
+            ):
+                auto_auth = await self.authorization_service.try_policy_auto_authorize(
+                    session,
+                    redis_client=get_redis_client(),
+                    action_plan_id=latest.action_plan.id,
+                    expected_plan_hash=latest.action_plan.plan_hash,
+                    expected_snapshot_hash=latest.action_plan.snapshot_hash,
+                    current_snapshot_hash=latest.action_plan.snapshot_hash,
+                )
+                if auto_auth.allowed and auto_auth.command is not None:
+                    await session.commit()
+                    await dispatch_command(auto_auth.command.id)
+                    latest = await self.repository.load_bundle_by_task(session, task_id=latest.frame.task_id) or latest
             return await self._dto(session, latest, suggested_corrections=suggested)
 
         catalog_started = perf_counter()
