@@ -17,7 +17,14 @@ from core.automation.capabilities import (
     CapabilityExecutionContext,
     CapabilityOutcome,
     CapabilityPreflight,
+    HumanActionCandidate,
+    HumanActionProposal,
     PreflightStatus,
+)
+from core.automation.contracts import (
+    CredentialDeliveryPolicy,
+    PreflightCheck,
+    PreflightCheckStatus,
 )
 
 
@@ -31,9 +38,17 @@ class CreateAdUserExecutor:
         if missing:
             return CapabilityPreflight(
                 status=PreflightStatus.failed,
+                checks=[
+                    PreflightCheck(
+                        key="required_identity_fields",
+                        status=PreflightCheckStatus.failed,
+                        details={"missing_params": missing},
+                    ).model_dump(mode="json")
+                ],
                 details={"missing_params": missing},
                 error_code="missing_identity_params",
             )
+        target_ou_dn = str(params.get("target_ou_dn", "")).strip() or None
         try:
             preview = await self.provisioner.preflight(
                 last_name=str(params["last_name"]).strip(),
@@ -41,33 +56,132 @@ class CreateAdUserExecutor:
                 middle_name=str(params.get("middle_name", "")).strip(),
                 department=str(params["department"]).strip(),
                 company=str(params.get("company", "")).strip(),
+                target_ou_dn=target_ou_dn,
             )
         except AccountProvisioningError as exc:
+            if exc.code == "ad_target_ou_ambiguous":
+                ou_candidates = exc.details.get("ou_candidates") or []
+                candidates = tuple(
+                    HumanActionCandidate(
+                        candidate_id=f"ou_{idx}",
+                        label=f"{item['name']} ({item['distinguished_name']})",
+                        score=float(item.get("score", 0.0)),
+                        evidence=tuple(item.get("evidence", ())),
+                        server_value=str(item["distinguished_name"]),
+                    )
+                    for idx, item in enumerate(ou_candidates)
+                )
+                human_action = HumanActionProposal(
+                    action_type="single_choice",
+                    target_param="target_ou_dn",
+                    prompt="Выберите подразделение (OU) в Active Directory для размещения нового сотрудника",
+                    check_key="target_ou",
+                    candidates=candidates,
+                )
+                return CapabilityPreflight(
+                    status=PreflightStatus.action_required,
+                    checks=[
+                        PreflightCheck(
+                            key="required_identity_fields",
+                            status=PreflightCheckStatus.passed,
+                        ).model_dump(mode="json"),
+                        PreflightCheck(
+                            key="ad_available",
+                            status=PreflightCheckStatus.passed,
+                        ).model_dump(mode="json"),
+                        PreflightCheck(
+                            key="target_ou",
+                            status=PreflightCheckStatus.action_required,
+                            reason_code="ad_target_ou_ambiguous",
+                            details=exc.details,
+                        ).model_dump(mode="json"),
+                    ],
+                    details=exc.details,
+                    error_code=exc.code,
+                    human_action=human_action,
+                )
             return CapabilityPreflight(
                 status=PreflightStatus.failed,
-                checks=["ad_available", "target_ou", "dn_absent", "login_preview"],
+                checks=[
+                    PreflightCheck(
+                        key="identity_preflight",
+                        status=PreflightCheckStatus.failed,
+                        reason_code=exc.code,
+                        details=exc.details,
+                    ).model_dump(mode="json")
+                ],
                 details=exc.details,
                 error_code=exc.code,
             )
         except Exception as exc:
             return CapabilityPreflight(
                 status=PreflightStatus.degraded,
-                checks=["ad_available", "intraservice_available"],
+                checks=[
+                    PreflightCheck(
+                        key="ad_available",
+                        status=PreflightCheckStatus.degraded,
+                        reason_code=type(exc).__name__,
+                    ).model_dump(mode="json")
+                ],
                 error_code=f"identity_preflight_exception:{type(exc).__name__}",
             )
+        checks = [
+            PreflightCheck(key="required_identity_fields", status=PreflightCheckStatus.passed).model_dump(mode="json"),
+            PreflightCheck(key="ad_available", status=PreflightCheckStatus.passed).model_dump(mode="json"),
+            PreflightCheck(
+                key="target_ou",
+                status=PreflightCheckStatus.passed,
+                details={"target_ou": preview.get("target_ou")},
+            ).model_dump(mode="json"),
+            PreflightCheck(
+                key="distinguished_name_absent",
+                status=PreflightCheckStatus.passed,
+                details={"preview_user_dn": preview.get("preview_user_dn")},
+            ).model_dump(mode="json"),
+            PreflightCheck(
+                key="login_preview",
+                status=PreflightCheckStatus.passed,
+                details={"login": preview.get("preview_sam_account_name")},
+            ).model_dump(mode="json"),
+            PreflightCheck(key="intraservice_available", status=PreflightCheckStatus.passed).model_dump(mode="json"),
+            PreflightCheck(key="credential_delivery_configured", status=PreflightCheckStatus.passed).model_dump(mode="json"),
+        ]
         return CapabilityPreflight(
             status=PreflightStatus.passed,
-            checks=[
-                "required_identity_fields",
-                "ad_available",
-                "target_ou_exists",
-                "distinguished_name_absent",
-                "login_preview_available",
-                "intraservice_available",
-                "credential_fields_1488_1489_configured",
-            ],
+            checks=checks,
             details=preview,
         )
+
+    async def validate_human_action(self, target_param: str, value: Any) -> bool:
+        if target_param != "target_ou_dn":
+            return False
+        if not isinstance(value, str) or not value.strip():
+            return False
+
+        from core.ad.credentials import AD_USERS_ROOT_OU
+        from core.ad.provisioning import _is_descendant
+
+        users_root_ou = getattr(self.provisioner, "users_root_ou", None) or os.getenv("AD_USERS_OU") or AD_USERS_ROOT_OU
+        if not _is_descendant(value.strip(), users_root_ou):
+            return False
+
+        try:
+            pool = getattr(self.provisioner, "ad_pool", None)
+            if pool is not None:
+                def _check_ou_exists() -> bool:
+                    with pool.connection_scope(auto_bind=True) as conn:
+                        conn.search(
+                            value.strip(),
+                            "(objectClass=organizationalUnit)",
+                            ldap3.BASE,
+                            attributes=["ou"],
+                        )
+                        return len(conn.entries) > 0
+
+                return await asyncio.to_thread(_check_ou_exists)
+        except Exception:
+            return True
+        return True
 
     async def execute(
         self, params: dict[str, Any], *, context: CapabilityExecutionContext
@@ -78,6 +192,13 @@ class CreateAdUserExecutor:
                 proof={"ad_object_created": False, "safe_to_retry": True},
                 error_code="ad_onboarding_execution_disabled",
             )
+        delivery_policy = None
+        if "delivery_policy" in params and isinstance(params["delivery_policy"], dict):
+            delivery_policy = CredentialDeliveryPolicy.model_validate(params["delivery_policy"])
+        elif isinstance(params.get("delivery_policy"), CredentialDeliveryPolicy):
+            delivery_policy = params["delivery_policy"]
+
+        target_ou_dn = str(params.get("target_ou_dn", "")).strip() or None
         try:
             receipt = await self.provisioner.provision(
                 task_id=context.task_id,
@@ -88,13 +209,21 @@ class CreateAdUserExecutor:
                 title=str(params["title"]).strip(),
                 phone=str(params.get("phone", "")).strip(),
                 company=str(params.get("company", "")).strip(),
+                delivery_policy=delivery_policy,
+                target_ou_dn=target_ou_dn,
             )
         except AccountProvisioningError as exc:
+            outcome = (
+                CapabilityOutcome.unknown_outcome
+                if exc.code == "credentials_delivery_unknown_outcome"
+                else CapabilityOutcome.failed
+            )
             return CapabilityExecution(
-                outcome=CapabilityOutcome.failed,
+                outcome=outcome,
                 proof={
                     "ad_object_created": exc.ad_object_created,
                     "safe_to_retry": not exc.ad_object_created,
+                    "error_code": exc.code,
                 },
                 error_code=exc.code,
                 error_message=str(exc),
@@ -113,8 +242,10 @@ class CreateAdUserExecutor:
                 "upn": receipt.upn,
                 "user_dn": receipt.user_dn,
                 "credentials_written": receipt.credentials_written,
+                "delivery_receipt_id": receipt.delivery_receipt_id,
             },
         )
+
 
 
 class DisableAdUserExecutor:
@@ -226,3 +357,6 @@ class DisableAdUserExecutor:
             "uac_after": verified_uac,
             "moved_to_disabled_ou": moved,
         }
+
+    async def validate_human_action(self, target_param: str, value: Any) -> bool:
+        return True

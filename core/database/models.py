@@ -278,6 +278,9 @@ class ServiceRouteBindingRecord(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     is_validated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     catalog_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    delivery_policy_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=True
+    )
 
 
 class ServiceCompatibilityDecisionRecord(Base, TimestampMixin):
@@ -428,16 +431,60 @@ class ClarificationRequestRecord(Base, TimestampMixin):
     response_facts_json: Mapped[Dict[str, Any]] = mapped_column(
         JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
     )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    resolution_source: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    resolved_snapshot_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     def __init__(self, **kwargs: Any) -> None:
         kwargs.setdefault("missing_facts_json", [])
         kwargs.setdefault("publish_attempts", 0)
+        kwargs.setdefault("generation", 1)
         kwargs["response_facts_json"] = sanitize_secrets(kwargs.get("response_facts_json", {}))
         super().__init__(**kwargs)
 
 
+class HumanActionRequestRecord(Base, TimestampMixin):
+    """Durable, bounded human-in-the-loop action request."""
+
+    __tablename__ = "human_action_requests"
+    __table_args__ = (
+        Index("ix_human_action_requests_task_state", "task_id", "state"),
+        Index("uq_human_action_requests_plan_param_gen", "action_plan_id", "action_id", "target_param", "generation", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    workflow_plan_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("workflow_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    action_plan_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("action_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    action_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    type: Mapped[str] = mapped_column(String(32), nullable=False, default="single_choice", server_default="single_choice")
+    target_param: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    candidates_json: Mapped[List[Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
+    )
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    selected_candidate_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    resolved_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("candidates_json", [])
+        kwargs.setdefault("generation", 1)
+        kwargs.setdefault("state", "pending")
+        super().__init__(**kwargs)
+
+
 class OnboardingFactCorrectionRecord(Base, TimestampMixin):
-    """Operator-confirmed canonical onboarding fact, append-only by snapshot."""
+    """Operator-confirmed canonical case fact, append-only by snapshot."""
 
     __tablename__ = "onboarding_fact_corrections"
 
@@ -448,6 +495,9 @@ class OnboardingFactCorrectionRecord(Base, TimestampMixin):
     value: Mapped[str] = mapped_column(Text, nullable=False)
     operator_username: Mapped[str] = mapped_column(String(100), nullable=False)
     reason_tag: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+CaseFactCorrectionRecord = OnboardingFactCorrectionRecord
 
 
 class ActionPlanRecord(Base, TimestampMixin):
@@ -745,3 +795,16 @@ def _sanitize_capability_health_listener(
     target: CapabilityHealthRecord,
 ) -> None:
     target.details_json = sanitize_secrets(target.details_json or {})
+
+
+@event.listens_for(HumanActionRequestRecord, "before_insert")
+@event.listens_for(HumanActionRequestRecord, "before_update")
+def _sanitize_human_action_request_listener(
+    mapper: Any,
+    connection: Any,
+    target: HumanActionRequestRecord,
+) -> None:
+    target.candidates_json = sanitize_secrets(target.candidates_json or [])
+    if target.prompt:
+        target.prompt = sanitize_secret_text(target.prompt)
+

@@ -27,6 +27,7 @@ class PreflightStatus(str, Enum):
     passed = "passed"
     failed = "failed"
     degraded = "degraded"
+    action_required = "action_required"
     not_applicable = "not_applicable"
 
 
@@ -36,13 +37,35 @@ class CapabilityOutcome(str, Enum):
     unknown_outcome = "unknown_outcome"
 
 
+class HumanActionCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    candidate_id: str
+    label: str
+    score: float = 0.0
+    evidence: tuple[str, ...] = ()
+    server_value: str
+
+
+class HumanActionProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    action_type: str = "single_choice"
+    target_param: str
+    prompt: str
+    check_key: str | None = None
+    candidates: tuple[HumanActionCandidate, ...]
+
+
 class CapabilityPreflight(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     status: PreflightStatus
-    checks: list[str] = Field(default_factory=list)
+    checks: list[Any] = Field(default_factory=list)
     details: dict[str, Any] = Field(default_factory=dict)
     error_code: str | None = None
+    human_action: HumanActionProposal | None = None
+
 
 
 class CapabilityExecution(BaseModel):
@@ -69,6 +92,8 @@ class CapabilityExecutor(Protocol):
         self, params: dict[str, Any], *, context: CapabilityExecutionContext
     ) -> CapabilityExecution: ...
 
+    async def validate_human_action(self, target_param: str, value: Any) -> bool: ...
+
 
 class CapabilitySpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -85,6 +110,22 @@ class CapabilitySpec(BaseModel):
     is_mutating: bool
     verifies_result: bool = True
     enabled: bool = True
+    summary_template: str | None = None
+
+    def format_summary(self, params: dict[str, Any]) -> str:
+        if self.summary_template:
+            try:
+                class SafeDict(dict):
+                    def __missing__(self, key: str) -> str:
+                        return f"<{key}>"
+
+                formatted = self.summary_template.format_map(
+                    SafeDict({k: v for k, v in params.items() if v is not None})
+                )
+                return " ".join(formatted.split())
+            except Exception:
+                pass
+        return self.name
 
 
 CapabilityHandler = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -149,6 +190,7 @@ DEFAULT_CAPABILITIES = (
         risk=CapabilityRisk.read_only,
         idempotency=IdempotencyMode.naturally_idempotent,
         is_mutating=False,
+        summary_template="Проверка доступности рабочего места {pc_name}",
     ),
     CapabilitySpec(
         key="probe_printer",
@@ -160,6 +202,7 @@ DEFAULT_CAPABILITIES = (
         risk=CapabilityRisk.read_only,
         idempotency=IdempotencyMode.naturally_idempotent,
         is_mutating=False,
+        summary_template="Проверка сетевого адреса принтера {printer_address}",
     ),
     CapabilitySpec(
         key="install_printer",
@@ -173,6 +216,7 @@ DEFAULT_CAPABILITIES = (
         idempotency=IdempotencyMode.key_guarded,
         is_mutating=True,
         enabled=False,
+        summary_template="Установка принтера {printer_address} на рабочую станцию {pc_name}",
     ),
     CapabilitySpec(
         key="reset_print_spooler",
@@ -184,6 +228,7 @@ DEFAULT_CAPABILITIES = (
         risk=CapabilityRisk.medium,
         idempotency=IdempotencyMode.key_guarded,
         is_mutating=True,
+        summary_template="Сброс службы очереди печати на {pc_name}",
     ),
     CapabilitySpec(
         key="set_default_printer",
@@ -195,6 +240,7 @@ DEFAULT_CAPABILITIES = (
         risk=CapabilityRisk.medium,
         idempotency=IdempotencyMode.key_guarded,
         is_mutating=True,
+        summary_template="Назначение принтера {printer_address} по умолчанию на {pc_name}",
     ),
     CapabilitySpec(
         key="create_ad_user",
@@ -207,6 +253,7 @@ DEFAULT_CAPABILITIES = (
         risk=CapabilityRisk.high,
         idempotency=IdempotencyMode.never_auto_retry,
         is_mutating=True,
+        summary_template="Создание учётной записи пользователя в Active Directory",
     ),
     CapabilitySpec(
         key="disable_ad_user",
@@ -218,6 +265,7 @@ DEFAULT_CAPABILITIES = (
         risk=CapabilityRisk.high,
         idempotency=IdempotencyMode.key_guarded,
         is_mutating=True,
+        summary_template="Отключение учётной записи пользователя {target_user} в Active Directory",
     ),
     CapabilitySpec(
         key="add_wlan_group_member",
@@ -229,6 +277,7 @@ DEFAULT_CAPABILITIES = (
         risk=CapabilityRisk.medium,
         idempotency=IdempotencyMode.naturally_idempotent,
         is_mutating=True,
+        summary_template="Предоставление доступа к сети WLAN пользователю {target_user}",
     ),
 )
 

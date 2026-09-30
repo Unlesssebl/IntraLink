@@ -4,22 +4,154 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Protocol
 
 import ldap3
 from ldap3.utils.conv import escape_filter_chars
 from ldap3.utils.dn import escape_rdn
 
 from core.ad.credentials import AD_USERS_ROOT_OU, ActiveDirectoryCredentialVault
-from core.ad.ou_resolver import OrganizationalUnit, OrganizationalUnitResolver
+from core.ad.ou_resolver import OrganizationalUnit, OrganizationalUnitResolver, _is_descendant
 from core.ad.password import generate_secure_password
-from core.ad.pool import ActiveDirectoryPool, ADPoolConfig
+from core.ad.pool import ADPoolConfig, ActiveDirectoryPool
 from core.ad.transliteration import generate_sam_account_name
+from core.automation.contracts import (
+    CredentialDeliveryField,
+    CredentialDeliveryPolicy,
+    DeliverySensitivity,
+)
 from core.intraservice.auth import ServiceAuthBootstrap
 from core.intraservice.client import IntraServiceClient
 
-LOGIN_FIELD_ID = 1488
-PASSWORD_FIELD_ID = 1489
+DEFAULT_AD_DELIVERY_POLICY = CredentialDeliveryPolicy(
+    channel="intraservice_custom_fields",
+    fields=(
+        CredentialDeliveryField(
+            key="user_login",
+            field_id=1439,
+            sensitivity=DeliverySensitivity.public,
+            required=True,
+        ),
+        CredentialDeliveryField(
+            key="initial_password",
+            field_id=1440,
+            sensitivity=DeliverySensitivity.secret,
+            required=True,
+        ),
+    ),
+    verify_after_write=True,
+)
+
+
+class CredentialDeliveryOutcome(str, Enum):
+    succeeded = "succeeded"
+    definitely_failed = "definitely_failed"
+    unknown_outcome = "unknown_outcome"
+
+
+@dataclass(frozen=True)
+class CredentialDeliveryResult:
+    outcome: CredentialDeliveryOutcome
+    receipt_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    written_fields: tuple[int, ...] = ()
+
+
+class CredentialDeliveryPort(Protocol):
+    async def deliver(
+        self,
+        *,
+        task_id: int,
+        policy: CredentialDeliveryPolicy,
+        public_values: dict[str, str],
+        secret_values: dict[str, str],
+    ) -> CredentialDeliveryResult: ...
+
+
+class IntraServiceCredentialDeliveryPort:
+    def __init__(
+        self,
+        client: IntraServiceClient | None = None,
+        auth_bootstrap: ServiceAuthBootstrap | None = None,
+    ) -> None:
+        self.client = client or IntraServiceClient()
+        self.auth_bootstrap = auth_bootstrap or ServiceAuthBootstrap()
+
+    async def deliver(
+        self,
+        *,
+        task_id: int,
+        policy: CredentialDeliveryPolicy,
+        public_values: dict[str, str],
+        secret_values: dict[str, str],
+    ) -> CredentialDeliveryResult:
+        custom_fields: dict[int, str] = {}
+        for field in policy.fields:
+            if field.key in public_values:
+                custom_fields[field.field_id] = public_values[field.key]
+            elif field.key in secret_values:
+                custom_fields[field.field_id] = secret_values[field.key]
+            elif field.required:
+                return CredentialDeliveryResult(
+                    outcome=CredentialDeliveryOutcome.definitely_failed,
+                    error_code="missing_required_delivery_value",
+                    error_message=f"Missing delivery value for required field '{field.key}'",
+                )
+
+        try:
+            credentials = await self.auth_bootstrap.bootstrap_auth(client=self.client)
+            await self.client.update_task(
+                task_id=task_id,
+                custom_fields=custom_fields,
+                auth_b64=credentials.auth_b64,
+            )
+        except Exception as exc:
+            err_str = str(exc).lower()
+            if any(term in err_str for term in ("400", "401", "403", "404", "bad request", "unauthorized")):
+                return CredentialDeliveryResult(
+                    outcome=CredentialDeliveryOutcome.definitely_failed,
+                    error_code="delivery_rejected_by_server",
+                    error_message=str(exc),
+                )
+            return CredentialDeliveryResult(
+                outcome=CredentialDeliveryOutcome.unknown_outcome,
+                error_code="delivery_network_or_server_error",
+                error_message=str(exc),
+            )
+
+        if policy.verify_after_write:
+            try:
+                task = await self.client.get_task(task_id=task_id, auth_b64=credentials.auth_b64)
+                task_fields = {str(k): str(v) for k, v in (task.custom_fields or {}).items()}
+                for field in policy.fields:
+                    if field.sensitivity == DeliverySensitivity.public and field.key in public_values:
+                        expected = public_values[field.key]
+                        actual = task_fields.get(str(field.field_id), "")
+                        if actual.strip().casefold() != expected.strip().casefold():
+                            return CredentialDeliveryResult(
+                                outcome=CredentialDeliveryOutcome.unknown_outcome,
+                                error_code="delivery_verification_failed",
+                                error_message=f"Read-back of field {field.field_id} did not match expected value",
+                                written_fields=tuple(custom_fields.keys()),
+                            )
+            except Exception as exc:
+                return CredentialDeliveryResult(
+                    outcome=CredentialDeliveryOutcome.unknown_outcome,
+                    error_code="delivery_verify_read_error",
+                    error_message=str(exc),
+                    written_fields=tuple(custom_fields.keys()),
+                )
+
+        receipt_id = f"del_{uuid.uuid4().hex[:12]}"
+        return CredentialDeliveryResult(
+            outcome=CredentialDeliveryOutcome.succeeded,
+            receipt_id=receipt_id,
+            written_fields=tuple(custom_fields.keys()),
+        )
 
 
 @dataclass(frozen=True)
@@ -29,6 +161,7 @@ class AccountProvisioningReceipt:
     user_dn: str
     full_name: str
     credentials_written: bool = True
+    delivery_receipt_id: str | None = None
 
 
 class AccountProvisioningError(RuntimeError):
@@ -38,11 +171,13 @@ class AccountProvisioningError(RuntimeError):
         message: str,
         *,
         ad_object_created: bool = False,
+        retryable: bool = False,
         details: dict | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.ad_object_created = ad_object_created
+        self.retryable = retryable
         self.details = details or {}
 
 
@@ -55,11 +190,13 @@ class AccountProvisioningService:
         client: IntraServiceClient | None = None,
         auth_bootstrap: ServiceAuthBootstrap | None = None,
         credential_vault: ActiveDirectoryCredentialVault | None = None,
+        delivery_port: CredentialDeliveryPort | None = None,
     ) -> None:
         self.ad_pool = ad_pool
         self.client = client or IntraServiceClient()
         self.auth_bootstrap = auth_bootstrap or ServiceAuthBootstrap()
         self.credential_vault = credential_vault or ActiveDirectoryCredentialVault()
+        self.delivery_port = delivery_port
         self.ou_resolver = OrganizationalUnitResolver()
 
     async def _connection_boundary(self) -> tuple[ActiveDirectoryPool, str]:
@@ -97,7 +234,34 @@ class AccountProvisioningService:
         users_root_ou: str,
         company: str,
         department: str,
+        target_ou_dn: str | None = None,
     ) -> tuple[str, dict]:
+        if target_ou_dn:
+            target_ou = target_ou_dn.strip()
+            if not _is_descendant(target_ou, users_root_ou):
+                raise AccountProvisioningError(
+                    "ad_target_ou_outside_root",
+                    f"Selected OU '{target_ou}' is not within authorized root '{users_root_ou}'",
+                )
+            conn.search(
+                target_ou,
+                "(objectClass=organizationalUnit)",
+                ldap3.BASE,
+                attributes=["ou", "distinguishedName"],
+            )
+            if not conn.entries:
+                raise AccountProvisioningError(
+                    "ad_target_ou_not_found",
+                    f"Selected OU '{target_ou}' does not exist in Active Directory",
+                )
+            return target_ou, {
+                "ou_resolution_method": "operator_confirmed",
+                "resolved_company": company.strip() or None,
+                "resolved_department": department.strip(),
+                "ou_candidates": [],
+                "target_ou": target_ou,
+            }
+
         conn.search(
             users_root_ou,
             "(objectClass=organizationalUnit)",
@@ -162,6 +326,7 @@ class AccountProvisioningService:
         password: str,
         ad_pool: ActiveDirectoryPool | None = None,
         users_root_ou: str = AD_USERS_ROOT_OU,
+        target_ou_dn: str | None = None,
     ) -> AccountProvisioningReceipt:
         full_name = f"{last_name} {first_name} {middle_name}".strip()
         pool = ad_pool or self.ad_pool
@@ -176,6 +341,7 @@ class AccountProvisioningService:
                 users_root_ou=users_root_ou,
                 company=company,
                 department=department,
+                target_ou_dn=target_ou_dn,
             )
             user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
             conn.search(
@@ -308,6 +474,7 @@ class AccountProvisioningService:
         company: str,
         ad_pool: ActiveDirectoryPool | None = None,
         users_root_ou: str = AD_USERS_ROOT_OU,
+        target_ou_dn: str | None = None,
     ) -> dict:
         """Read-only AD validation and deterministic login preview."""
         full_name = f"{last_name} {first_name} {middle_name}".strip()
@@ -322,6 +489,7 @@ class AccountProvisioningService:
                 users_root_ou=users_root_ou,
                 company=company,
                 department=department,
+                target_ou_dn=target_ou_dn,
             )
             user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
             conn.search(user_dn, "(objectClass=user)", ldap3.BASE, attributes=["distinguishedName"])
@@ -353,6 +521,7 @@ class AccountProvisioningService:
         middle_name: str,
         department: str,
         company: str,
+        target_ou_dn: str | None = None,
     ) -> dict:
         pool, users_root_ou = await self._connection_boundary()
         preview = await asyncio.to_thread(
@@ -364,6 +533,7 @@ class AccountProvisioningService:
             company=company,
             ad_pool=pool,
             users_root_ou=users_root_ou,
+            target_ou_dn=target_ou_dn,
         )
         await self.auth_bootstrap.bootstrap_auth(client=self.client)
         return preview
@@ -379,6 +549,9 @@ class AccountProvisioningService:
         title: str,
         phone: str,
         company: str,
+        delivery_policy: CredentialDeliveryPolicy | None = None,
+        delivery_port: CredentialDeliveryPort | None = None,
+        target_ou_dn: str | None = None,
     ) -> AccountProvisioningReceipt:
         pool, users_root_ou = await self._connection_boundary()
         secret = generate_secure_password(length=14)
@@ -397,6 +570,7 @@ class AccountProvisioningService:
                 password=password,
                 ad_pool=pool,
                 users_root_ou=users_root_ou,
+                target_ou_dn=target_ou_dn,
             )
         except AccountProvisioningError:
             password = ""
@@ -408,24 +582,41 @@ class AccountProvisioningService:
                 "Unexpected LDAP failure before account creation was confirmed",
             ) from exc
 
+        policy = delivery_policy or DEFAULT_AD_DELIVERY_POLICY
+        port = delivery_port or self.delivery_port or IntraServiceCredentialDeliveryPort(
+            client=self.client, auth_bootstrap=self.auth_bootstrap
+        )
+
         try:
-            credentials = await self.auth_bootstrap.bootstrap_auth(client=self.client)
-            await self.client.update_task(
+            delivery_result = await port.deliver(
                 task_id=task_id,
-                custom_fields={
-                    LOGIN_FIELD_ID: receipt.sam_account_name,
-                    PASSWORD_FIELD_ID: password,
-                },
-                auth_b64=credentials.auth_b64,
+                policy=policy,
+                public_values={"user_login": receipt.sam_account_name},
+                secret_values={"initial_password": password},
             )
         except Exception as exc:
             raise AccountProvisioningError(
-                "credentials_delivery_failed_after_ad_create",
-                "AD object was created, but ticket credential fields were not written",
+                "credentials_delivery_unknown_outcome",
+                f"Unexpected exception during credential delivery: {exc}",
                 ad_object_created=True,
             ) from exc
         finally:
             password = ""
+
+        if delivery_result.outcome == CredentialDeliveryOutcome.definitely_failed:
+            raise AccountProvisioningError(
+                "credentials_delivery_definitely_failed",
+                f"Credential delivery rejected: {delivery_result.error_message}",
+                ad_object_created=True,
+                details={"error_code": delivery_result.error_code},
+            )
+        elif delivery_result.outcome == CredentialDeliveryOutcome.unknown_outcome:
+            raise AccountProvisioningError(
+                "credentials_delivery_unknown_outcome",
+                f"Credential delivery outcome unknown: {delivery_result.error_message}",
+                ad_object_created=True,
+                details={"error_code": delivery_result.error_code},
+            )
 
         return AccountProvisioningReceipt(
             sam_account_name=receipt.sam_account_name,
@@ -433,4 +624,5 @@ class AccountProvisioningService:
             user_dn=receipt.user_dn,
             full_name=receipt.full_name,
             credentials_written=True,
+            delivery_receipt_id=delivery_result.receipt_id,
         )

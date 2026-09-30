@@ -29,12 +29,14 @@ from .schemas import (
     CatalogResponse,
     CorrectActionPlanRequest,
     CorrectCaseDecisionRequest,
+    CorrectFactsRequest,
     CorrectOnboardingFactsRequest,
     CorrectRedirectPlanRequest,
     CorrectTargetServiceRequest,
     FeedbackResponse,
     RedirectPlanRequest,
     RedirectPlanResponse,
+    ResolveHumanActionRequest,
     ResumeClarificationRequest,
     RetryClarificationRequest,
     TicketAutomationDTO,
@@ -56,9 +58,9 @@ Service = Annotated[AutomationService, Depends(get_automation_service)]
 
 @router.get("/tickets/{ticket_id}/automation", response_model=TicketAutomationDTO | None)
 async def get_ticket_automation(
-    ticket_id: int, db: Db, _auth: Auth, service: Service
+    ticket_id: int, db: Db, auth: Auth, service: Service
 ) -> TicketAutomationDTO | None:
-    return await service.get_automation(db, ticket_id)
+    return await service.get_automation(db, ticket_id, auth_b64=auth)
 
 
 async def _analyze_with_lock(
@@ -141,6 +143,30 @@ async def correct_case_decision(
         operator=extract_operator(auth),
         auth_b64=auth,
     )
+
+
+@router.post("/tickets/{ticket_id}/facts/correct", response_model=TicketAutomationDTO)
+async def correct_facts(
+    ticket_id: int,
+    request: CorrectFactsRequest,
+    db: Db,
+    auth: Auth,
+    service: Service,
+    redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
+) -> TicketAutomationDTO:
+    lock = DistributedTaskLock(redis_client, f"lock:analysis:{ticket_id}", ttl_seconds=60)
+    if not await lock.acquire():
+        raise HTTPException(status.HTTP_409_CONFLICT, "analysis_already_running")
+    try:
+        return await service.correct_facts(
+            db,
+            ticket_id=ticket_id,
+            request=request,
+            operator=extract_operator(auth),
+            auth_b64=auth,
+        )
+    finally:
+        await lock.release()
 
 
 @router.post("/tickets/{ticket_id}/onboarding-facts/correct", response_model=TicketAutomationDTO)
@@ -240,6 +266,25 @@ async def correct_action_plan(
     return await service.correct_action_plan(
         db,
         ticket_id=ticket_id,
+        request=request,
+        operator=extract_operator(auth),
+        auth_b64=auth,
+    )
+
+
+@router.post("/tickets/{ticket_id}/human-actions/{human_action_id}/resolve", response_model=TicketAutomationDTO)
+async def resolve_human_action(
+    ticket_id: int,
+    human_action_id: UUID,
+    request: ResolveHumanActionRequest,
+    db: Db,
+    auth: Auth,
+    service: Service,
+) -> TicketAutomationDTO:
+    return await service.resolve_human_action(
+        db,
+        ticket_id=ticket_id,
+        human_action_id=human_action_id,
         request=request,
         operator=extract_operator(auth),
         auth_b64=auth,

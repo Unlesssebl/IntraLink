@@ -26,10 +26,24 @@ from core.automation.contracts import (
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.automation.persistence import AutomationBundle, AutomationRepository
 from core.automation.preflight import ActionPreflightService
+from core.automation.resolution import (
+    HumanActionConflictError,
+    HumanActionNotFoundError,
+    HumanActionResolutionError,
+    HumanActionResolutionService,
+    HumanActionValidationError,
+)
 from core.automation.runner import RunnerAdvanceResult, RunnerState, WorkflowRunner
-from core.automation.workflows import WorkflowDefinition, WorkflowRegistry
+from core.automation.workflows import (
+    FactNormalization,
+    WorkflowDefinition,
+    WorkflowFactSpec,
+    WorkflowRegistry,
+)
 
 __all__ = [
+    "FactNormalization",
+    "WorkflowFactSpec",
     "ActionPlan",
     "ActionPlanState",
     "ActionPreflightService",
@@ -51,6 +65,11 @@ __all__ = [
     "CapabilitySpec",
     "Disposition",
     "ExtractionMethod",
+    "HumanActionConflictError",
+    "HumanActionNotFoundError",
+    "HumanActionResolutionError",
+    "HumanActionResolutionService",
+    "HumanActionValidationError",
     "RunnerAdvanceResult",
     "RunnerState",
     "WorkflowPlan",

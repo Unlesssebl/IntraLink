@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { autopilotApi } from "@/features/autopilot/api";
 import { Button, useToast } from "@/shared/ui";
 import { useAgentPlan } from "./queries";
-import { OnboardingWorkflowPanel } from "./OnboardingWorkflowPanel";
+import { WorkflowExecutionCard } from "./WorkflowExecutionCard";
 
 export interface AgentPlanCardProps {
   ticketId: number;
@@ -53,15 +53,13 @@ export const AgentPlanCard: React.FC<AgentPlanCardProps> = ({ ticketId, applican
     );
   }
 
-  if (data.workflow_plan.workflow_key === "employee_onboarding_workflow") {
-    return <OnboardingWorkflowPanel ticketId={ticketId} applicantName={applicantName} data={data} refetch={refetch} onExecutionStarted={onExecutionStarted} />;
-  }
-
   return (
-    <section className="rounded-xl border border-neutral-800 bg-[#101217] p-4">
-      <p className="text-sm font-medium text-neutral-100">{data.case_decision.primary_case_type || "Тип обращения не определён"}</p>
-      <p className="mt-1 text-xs text-neutral-500">Workflow: {data.workflow_plan.workflow_key}. Для этого сценария используется отдельный интерфейс.</p>
-      <Button type="button" className="mt-3" size="sm" variant="secondary" loading={busy} onClick={() => analyze(true)}>Повторить анализ</Button>
-    </section>
+    <WorkflowExecutionCard
+      ticketId={ticketId}
+      applicantName={applicantName}
+      data={data}
+      refetch={refetch}
+      onExecutionStarted={onExecutionStarted}
+    />
   );
 };

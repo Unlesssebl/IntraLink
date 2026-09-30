@@ -42,6 +42,40 @@ class PreflightReadinessDTO(BaseModel):
     checks: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class HumanActionCandidateDTO(BaseModel):
+    candidate_id: str
+    label: str
+    score: float = 0.0
+    evidence: list[str] = Field(default_factory=list)
+
+
+class HumanActionRequestDTO(BaseModel):
+    id: UUID
+    task_id: int
+    action_id: str
+    target_param: str
+    type: str
+    prompt: str
+    candidates: list[HumanActionCandidateDTO] = Field(default_factory=list)
+    state: str
+    selected_candidate_id: str | None = None
+    expires_at: datetime
+
+
+class ResolveHumanActionRequest(BaseModel):
+    candidate_id: str = Field(min_length=1, max_length=64)
+    snapshot_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    plan_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    generation: int | None = Field(default=None, ge=1)
+
+
+class ResolveHumanActionResponse(BaseModel):
+    status: str
+    human_action_id: UUID
+    selected_candidate_id: str
+    action_plan_id: UUID | None = None
+
+
 class AutomationReadinessDTO(BaseModel):
     state: str
     current_stage: str
@@ -50,6 +84,30 @@ class AutomationReadinessDTO(BaseModel):
     actions: list[str] = Field(default_factory=list)
     clarification: ClarificationReadinessDTO | None = None
     preflight: PreflightReadinessDTO
+
+
+class WorkflowContextHeaderDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    workflow_key: str
+    category_badge: str
+    icon: str
+    subject_label: str
+    subject_value: str
+    subject_caption: str | None = None
+
+
+class SuggestedCorrectionDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    param_key: str
+    param_label: str
+    current_value: str
+    suggested_value: str
+    reason: str
+    text_span: str
+    comment_id: int | None = None
 
 
 class TicketAutomationDTO(BaseModel):
@@ -67,6 +125,11 @@ class TicketAutomationDTO(BaseModel):
     approval: dict[str, Any] = Field(default_factory=dict)
     execution: list[dict[str, Any]] = Field(default_factory=list)
     readiness: AutomationReadinessDTO | None = None
+    human_actions: list[HumanActionRequestDTO] = Field(default_factory=list)
+    context_header: WorkflowContextHeaderDTO | None = None
+    execution_summary: list[str] = Field(default_factory=list)
+    suggested_corrections: list[SuggestedCorrectionDTO] = Field(default_factory=list)
+
 
 
 class ApproveActionPlanRequest(BaseModel):
@@ -149,10 +212,14 @@ class RetryClarificationRequest(BaseModel):
     snapshot_hash: str = Field(min_length=64, max_length=64)
 
 
-class CorrectOnboardingFactsRequest(BaseModel):
+class CorrectFactsRequest(BaseModel):
     snapshot_hash: str = Field(min_length=64, max_length=64)
     facts: dict[str, str] = Field(min_length=1)
     reason_tag: str = Field(default="operator_fact_confirmation", min_length=1, max_length=64)
+
+
+class CorrectOnboardingFactsRequest(CorrectFactsRequest):
+    pass
 
 
 class FeedbackResponse(BaseModel):

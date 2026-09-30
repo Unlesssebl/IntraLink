@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -16,7 +17,8 @@ from core.automation.capabilities import (
 from core.automation.contracts import ActionPlan, ActionPlanState, ActionProposal, compute_action_plan_hash
 from core.automation.persistence import canonical_params_hash
 from core.automation.policy import CapabilityHealthService
-from core.database.models import ActionPlanRecord, ActionPreflightRecord
+from core.database.models import ActionPlanRecord, ActionPreflightRecord, HumanActionRequestRecord
+
 
 
 class ActionPreflightService:
@@ -48,9 +50,87 @@ class ActionPreflightService:
         if compute_action_plan_hash(plan) != plan_record.plan_hash:
             raise ValueError("action_plan_hash_mismatch")
 
+        # Invalidate obsolete pending human actions from previous action plans for this ticket (EC-4)
+        obsolete_reqs = (
+            await session.scalars(
+                select(HumanActionRequestRecord).where(
+                    HumanActionRequestRecord.task_id == plan.task_id,
+                    HumanActionRequestRecord.action_plan_id != plan.id,
+                    HumanActionRequestRecord.state == "pending",
+                )
+            )
+        ).all()
+        for obsolete in obsolete_reqs:
+            obsolete.state = "cancelled"
+
         records: list[ActionPreflightRecord] = []
         for action in sorted(plan.actions, key=lambda item: item.sequence_no):
             result = await self._run_action(session, action)
+            human_action_id = None
+            if result.status == PreflightStatus.action_required and result.human_action:
+                proposal = result.human_action
+                existing_req = await session.scalar(
+                    select(HumanActionRequestRecord).where(
+                        HumanActionRequestRecord.action_plan_id == plan.id,
+                        HumanActionRequestRecord.action_id == action.id,
+                        HumanActionRequestRecord.target_param == proposal.target_param,
+                        HumanActionRequestRecord.state == "pending",
+                    )
+                )
+                if existing_req is not None:
+                    human_action_id = existing_req.id
+                else:
+                    candidates_json = [
+                        {
+                            "candidate_id": cand.candidate_id,
+                            "label": cand.label,
+                            "score": cand.score,
+                            "evidence": list(cand.evidence),
+                            "server_value": cand.server_value,
+                        }
+                        for cand in proposal.candidates
+                    ]
+                    human_req = HumanActionRequestRecord(
+                        task_id=plan.task_id,
+                        workflow_plan_id=plan.workflow_plan_id,
+                        action_plan_id=plan.id,
+                        action_id=action.id,
+                        snapshot_hash=plan.snapshot_hash,
+                        plan_hash=plan.plan_hash,
+                        generation=1,
+                        type=proposal.action_type,
+                        target_param=proposal.target_param,
+                        prompt=proposal.prompt,
+                        candidates_json=candidates_json,
+                        state="pending",
+                        expires_at=datetime.now(UTC) + timedelta(seconds=max(self.ttl_seconds * 12, 3600)),
+                    )
+                    session.add(human_req)
+                    await session.flush()
+                    human_action_id = human_req.id
+
+                updated_checks = []
+                for check in result.checks:
+                    is_target_check = False
+                    if isinstance(check, dict):
+                        if proposal.check_key and check.get("key") == proposal.check_key:
+                            is_target_check = True
+                        elif not proposal.check_key and check.get("status") == "action_required":
+                            is_target_check = True
+
+                    if is_target_check and isinstance(check, dict):
+                        updated_checks.append({**check, "human_action_id": str(human_action_id)})
+                    else:
+                        updated_checks.append(check)
+
+                result = CapabilityPreflight(
+                    status=result.status,
+                    checks=updated_checks,
+                    details={**result.details, "human_action_id": str(human_action_id)},
+                    error_code=result.error_code,
+                    human_action=proposal,
+                )
+
             record = ActionPreflightRecord(
                 action_plan_id=plan.id,
                 task_id=plan.task_id,

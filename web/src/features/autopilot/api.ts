@@ -77,8 +77,8 @@ export const autopilotApi = {
       }),
     });
   },
-  correctOnboardingFacts(ticketId: number, automation: TicketAutomation, facts: Record<string, string>) {
-    return request<TicketAutomation>(`/api/v2/autopilot/tickets/${ticketId}/onboarding-facts/correct`, {
+  correctFacts(ticketId: number, automation: TicketAutomation, facts: Record<string, string>) {
+    return request<TicketAutomation>(`/api/v2/autopilot/tickets/${ticketId}/facts/correct`, {
       method: "POST",
       body: JSON.stringify({
         snapshot_hash: automation.snapshot_hash,
@@ -86,6 +86,9 @@ export const autopilotApi = {
         reason_tag: "operator_fact_confirmation",
       }),
     });
+  },
+  correctOnboardingFacts(ticketId: number, automation: TicketAutomation, facts: Record<string, string>) {
+    return this.correctFacts(ticketId, automation, facts);
   },
   retryClarification(ticketId: number, automation: TicketAutomation, clarificationId: string) {
     return request<TicketAutomation>(
@@ -122,6 +125,27 @@ export const autopilotApi = {
         notes,
       }),
     });
+  },
+  resolveHumanAction(
+    ticketId: number,
+    humanActionId: string,
+    candidateId: string,
+    snapshotHash?: string,
+    planHash?: string,
+    generation?: number
+  ) {
+    return request<TicketAutomation>(
+      `/api/v2/autopilot/tickets/${ticketId}/human-actions/${humanActionId}/resolve`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          candidate_id: candidateId,
+          snapshot_hash: snapshotHash,
+          plan_hash: planHash,
+          generation,
+        }),
+      }
+    );
   },
   manualTakeover(ticketId: number, automation: TicketAutomation, notes?: string) {
     if (!automation.action_plan) throw new Error("ActionPlan отсутствует");

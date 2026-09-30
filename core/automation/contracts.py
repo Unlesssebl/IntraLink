@@ -7,12 +7,85 @@ import json
 import re
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MACHINE_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
+
+
+class DeliverySensitivity(str, Enum):
+    public = "public"
+    secret = "secret"
+
+
+class CredentialDeliveryField(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    key: str
+    field_id: int = Field(gt=0)
+    sensitivity: DeliverySensitivity
+    required: bool = True
+
+
+class CredentialDeliveryPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    channel: Literal["intraservice_custom_fields"] = "intraservice_custom_fields"
+    fields: tuple[CredentialDeliveryField, ...]
+    verify_after_write: bool = True
+
+
+class HumanActionCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    candidate_id: str
+    label: str
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence: tuple[str, ...] = ()
+    server_value: str | None = None
+
+
+class HumanActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: UUID = Field(default_factory=uuid4)
+    task_id: int
+    workflow_plan_id: UUID
+    action_plan_id: UUID
+    action_id: str
+    snapshot_hash: str = Field(min_length=64, max_length=64)
+    plan_hash: str = Field(min_length=64, max_length=64)
+    generation: int = Field(default=1, ge=1)
+    type: Literal["single_choice"] = "single_choice"
+    target_param: str
+    prompt: str
+    candidates: tuple[HumanActionCandidate, ...] = ()
+    state: Literal["pending", "resolved", "expired", "superseded"] = "pending"
+    selected_candidate_id: str | None = None
+    resolved_by: str | None = None
+    resolved_at: datetime | None = None
+    expires_at: datetime
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PreflightCheckStatus(str, Enum):
+    passed = "passed"
+    failed = "failed"
+    degraded = "degraded"
+    action_required = "action_required"
+    not_applicable = "not_applicable"
+
+
+class PreflightCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    key: str
+    status: PreflightCheckStatus
+    reason_code: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+    human_action_id: UUID | None = None
 
 
 class FrozenModel(BaseModel):
@@ -303,6 +376,7 @@ class ActionPlan(FrozenModel):
     service_binding_key: str | None = None
     service_binding_version: str | None = None
     catalog_hash: str | None = None
+    delivery_policy: CredentialDeliveryPolicy | None = None
     state: ActionPlanState
     disposition: Disposition
     actions: list[ActionProposal] = Field(default_factory=list)
@@ -350,5 +424,8 @@ def compute_action_plan_hash(plan: ActionPlan | dict[str, Any]) -> str:
         "disposition": data.get("disposition"),
         "actions": data.get("actions", []),
     }
+    if data.get("delivery_policy") is not None:
+        canonical["delivery_policy"] = data.get("delivery_policy")
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+

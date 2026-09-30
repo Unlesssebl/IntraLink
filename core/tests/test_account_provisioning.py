@@ -49,6 +49,10 @@ async def test_provisioning_writes_credentials_but_returns_secret_free_receipt()
     provisioner, conn, client = _provisioner_with_verified_ldap()
     known_password = "Known-Secret-93!"
 
+    task_mock = MagicMock()
+    task_mock.custom_fields = {1439: "ivanov.i", 1440: known_password}
+    client.get_task.return_value = task_mock
+
     with patch(
         "core.ad.provisioning.generate_secure_password",
         return_value=SecretPassword(known_password),
@@ -65,9 +69,10 @@ async def test_provisioning_writes_credentials_but_returns_secret_free_receipt()
         )
 
     assert receipt.credentials_written is True
+    assert receipt.delivery_receipt_id is not None
     assert known_password not in repr(receipt)
     update = client.update_task.await_args.kwargs
-    assert update["custom_fields"] == {1488: "ivanov.i", 1489: known_password}
+    assert update["custom_fields"] == {1439: "ivanov.i", 1440: known_password}
     assert conn.modify.call_count == 3
 
 
@@ -88,9 +93,9 @@ async def test_provisioning_field_write_failure_is_partial_and_not_retryable():
             company="",
         )
 
-    assert exc_info.value.code == "credentials_delivery_failed_after_ad_create"
+    assert exc_info.value.code == "credentials_delivery_unknown_outcome"
     assert exc_info.value.ad_object_created is True
-    assert "IntraService unavailable" not in str(exc_info.value)
+    assert exc_info.value.retryable is False
 
 
 def test_provisioning_checks_every_ldap_step():

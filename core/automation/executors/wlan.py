@@ -121,3 +121,6 @@ class AddWlanGroupMemberExecutor:
             if user_dn.casefold() not in verified:
                 raise RuntimeError("wlan_membership_not_verified")
         return {**identity, "already_member": already_member}
+
+    async def validate_human_action(self, target_param: str, value: Any) -> bool:
+        return True

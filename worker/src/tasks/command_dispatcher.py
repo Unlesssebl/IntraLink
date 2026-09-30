@@ -229,6 +229,7 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
         current_snapshot = TicketSnapshotFactory.create(task=task, comments=lifetime)
         if current_snapshot.snapshot_hash != plan.snapshot_hash:
             return {"status": "skipped", "error": "stale_ticket_snapshot"}
+        exec_params = dict(action.params)
         if action.capability_key == "create_ad_user":
             if os.getenv("AD_ONBOARDING_EXECUTION_ENABLED", "false").lower() not in {"1", "true", "yes"}:
                 return {"status": "skipped", "error": "ad_onboarding_execution_disabled"}
@@ -240,12 +241,21 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
             )
             if ad_gate_error:
                 return {"status": "skipped", "error": ad_gate_error}
+            binding_record = await session.scalar(
+                select(ServiceRouteBindingRecord).where(
+                    ServiceRouteBindingRecord.key == plan.service_binding_key,
+                    ServiceRouteBindingRecord.version == plan.service_binding_version,
+                    ServiceRouteBindingRecord.catalog_hash == plan.catalog_hash,
+                )
+            )
+            if binding_record and binding_record.delivery_policy_json:
+                exec_params["delivery_policy"] = binding_record.delivery_policy_json
 
         await lock.ensure_owned()
         await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.executing)
         mutation_started = spec.is_mutating
         execution = await executor.execute(
-            action.params,
+            exec_params,
             context=CapabilityExecutionContext(
                 task_id=plan.task_id,
                 action_plan_id=plan.id,
@@ -385,6 +395,8 @@ async def _validate_ad_service_gate(
     )
     if binding is None:
         return "service_binding_changed"
+    if not binding.delivery_policy_json:
+        return "ad_delivery_policy_missing"
     if (
         task.service_id not in binding.service_ids_json
         or "employee_onboarding" not in binding.allowed_case_types_json

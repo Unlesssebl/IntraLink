@@ -209,6 +209,50 @@ export interface TicketAutomation {
       checks: Array<Record<string, unknown>>;
     };
   } | null;
+  human_actions?: HumanActionRequest[];
+  context_header?: WorkflowContextHeader | null;
+  execution_summary?: string[];
+  suggested_corrections?: SuggestedCorrection[];
+}
+
+export interface SuggestedCorrection {
+  param_key: string;
+  param_label: string;
+  current_value: string;
+  suggested_value: string;
+  reason: string;
+  text_span: string;
+  comment_id?: number | null;
+}
+
+export interface WorkflowContextHeader {
+  title: string;
+  workflow_key: string;
+  category_badge: string;
+  icon: string;
+  subject_label: string;
+  subject_value: string;
+  subject_caption?: string | null;
+}
+
+export interface HumanActionCandidate {
+  candidate_id: string;
+  label: string;
+  score: number;
+  evidence: string[];
+}
+
+export interface HumanActionRequest {
+  id: string;
+  task_id: number;
+  action_id: string;
+  target_param: string;
+  type: string;
+  prompt: string;
+  candidates: HumanActionCandidate[];
+  state: string;
+  selected_candidate_id?: string | null;
+  expires_at: string;
 }
 
 export interface AutomationCommand {

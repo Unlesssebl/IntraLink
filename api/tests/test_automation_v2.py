@@ -14,6 +14,7 @@ from api.src.features.autopilot.schemas import (
     ApproveActionPlanRequest,
     CorrectActionPlanRequest,
     CorrectCaseDecisionRequest,
+    CorrectFactsRequest,
     CorrectedActionRequest,
     CorrectTargetServiceRequest,
     RedirectPlanRequest,
@@ -103,6 +104,36 @@ async def session_factory() -> AsyncGenerator[async_sessionmaker[AsyncSession], 
                 is_active=True,
                 form_metadata_json={},
                 field_metadata_json=[],
+                catalog_hash=catalog_hash,
+            )
+        )
+        session.add(
+            ServiceCatalogEntryRecord(
+                catalog_version_id=version.id,
+                service_id=183,
+                service_path="Оргтехника → Подключение принтера",
+                task_type_id=1001,
+                is_active=True,
+                form_metadata_json={},
+                field_metadata_json=[],
+                catalog_hash=catalog_hash,
+            )
+        )
+        session.add(
+            ServiceRouteBindingRecord(
+                key="printer_connection",
+                version="test",
+                service_ids_json=[183],
+                allowed_case_types_json=["printer_connection_request"],
+                default_case_type="printer_connection_request",
+                allowed_workflows_json=["printer_connection_workflow"],
+                allowed_capabilities_json=["install_printer"],
+                required_task_type_id=1001,
+                required_fields_json=[],
+                redirect_strategy="manual",
+                risk="medium",
+                is_active=True,
+                is_validated=True,
                 catalog_hash=catalog_hash,
             )
         )
@@ -733,4 +764,198 @@ async def test_reanalyze_action_is_available_when_awaiting_facts(session_factory
         assert analyzed.readiness is not None
         assert "reanalyze" in analyzed.readiness.actions
         assert "edit_facts" in analyzed.readiness.actions
+
+
+async def test_human_action_request_generation_and_resolution(session_factory) -> None:
+    from api.src.features.autopilot.schemas import ResolveHumanActionRequest
+    from core.automation.capabilities import HumanActionCandidate, HumanActionProposal
+    from core.automation.contracts import PreflightCheck, PreflightCheckStatus
+
+    client = AsyncMock()
+    client.get_task.return_value = TaskDTO(
+        Id=63010,
+        Name="Создать учетную запись нового сотрудника",
+        Description="Иванов Иван Иванович, Инженер, Департамент ИТ, ООО Компания",
+        ServiceId=900001,
+        ServiceName="Создание пользователя сети",
+        TaskTypeId=1001,
+        StatusId=1,
+    )
+    client.get_task_lifetime.return_value = []
+
+    class _MockIdentityExecutor:
+        users_root_ou = "OU=Corp,DC=corp,DC=loc"
+
+        async def preflight(self, params: dict[str, Any]) -> CapabilityPreflight:
+            target_ou_dn = params.get("target_ou_dn")
+            if not target_ou_dn:
+                proposal = HumanActionProposal(
+                    action_type="single_choice",
+                    target_param="target_ou_dn",
+                    prompt="Выберите подразделение (OU) в Active Directory для размещения нового сотрудника",
+                    check_key="target_ou",
+                    candidates=(
+                        HumanActionCandidate(
+                            candidate_id="cand_it",
+                            label="IT Dept",
+                            score=0.9,
+                            evidence=("Отдел ИТ",),
+                            server_value="OU=IT,OU=Corp,DC=corp,DC=loc",
+                        ),
+                    ),
+                )
+                return CapabilityPreflight(
+                    status=PreflightStatus.action_required,
+                    checks=[
+                        PreflightCheck(
+                            key="target_ou",
+                            status=PreflightCheckStatus.action_required,
+                            details={"candidates": ["OU=IT,OU=Corp,DC=corp,DC=loc"]},
+                        ).model_dump(mode="json")
+                    ],
+                    details={
+                        "ou_candidates": [
+                            {
+                                "candidate_id": "cand_it",
+                                "name": "IT Dept",
+                                "distinguished_name": "OU=IT,OU=Corp,DC=corp,DC=loc",
+                                "score": 0.9,
+                                "evidence": ["Отдел ИТ"],
+                            }
+                        ]
+                    },
+                    error_code="ambiguous_ou",
+                    human_action=proposal,
+                )
+            return CapabilityPreflight(
+                status=PreflightStatus.passed,
+                checks=[
+                    PreflightCheck(
+                        key="target_ou",
+                        status=PreflightCheckStatus.passed,
+                        details={"target_ou": target_ou_dn},
+                    ).model_dump(mode="json")
+                ],
+                details={"target_ou": target_ou_dn, "preview_sam_account_name": "ivanov.i"},
+            )
+
+        async def validate_human_action(self, target_param: str, value: Any) -> bool:
+            return target_param == "target_ou_dn" and str(value).endswith("OU=Corp,DC=corp,DC=loc")
+
+        async def execute(self, params: dict[str, Any], *, context: CapabilityExecutionContext) -> CapabilityExecution:
+            return CapabilityExecution(outcome=CapabilityOutcome.succeeded)
+
+    service = AutomationService(client=client, extractor=CaseFrameExtractor(), router=CaseRouter())
+    service.capabilities._executors["create_ad_user"] = _MockIdentityExecutor()
+    service.auth_bootstrap = AsyncMock()
+    service.auth_bootstrap.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="service-auth", bot_user_id=999, login="bot"
+    )
+
+    async with session_factory() as session:
+        automation = await service.analyze(session, ticket_id=63010, auth_b64="operator-auth", force=True)
+        assert automation.readiness is not None
+        assert automation.readiness.state == "blocked"
+        assert len(automation.human_actions) == 1
+
+        action_req = automation.human_actions[0]
+        assert action_req.state == "pending"
+        assert action_req.target_param == "target_ou_dn"
+        assert len(action_req.candidates) == 1
+        cand = action_req.candidates[0]
+
+        # Resolve human action
+        resolved = await service.resolve_human_action(
+            session,
+            ticket_id=63010,
+            human_action_id=action_req.id,
+            request=ResolveHumanActionRequest(
+                candidate_id=cand.candidate_id,
+                snapshot_hash=automation.snapshot_hash,
+            ),
+            operator="admin_operator",
+            auth_b64="operator-auth",
+        )
+
+        assert resolved.readiness is not None
+        assert resolved.readiness.current_stage in {"approval", "execution", "delivery"}
+        assert any(s.key == "ou" and s.state == "completed" for s in resolved.readiness.stages)
+        assert any(ha.id == action_req.id and ha.state == "resolved" for ha in resolved.human_actions)
+
+
+async def test_printer_readiness_and_polymorphic_facts(session_factory) -> None:
+    client = AsyncMock()
+    client.get_task.return_value = TaskDTO(
+        Id=64001,
+        Name="Подключить сетевой принтер HP",
+        Description="Прошу подключить принтер HP LaserJet в кабинете 305 к рабочему компьютеру",
+        ServiceId=183,
+        ServiceName="Подключение принтера",
+        TaskTypeId=1001,
+        StatusId=1,
+    )
+    client.get_task_lifetime.return_value = []
+
+    service = AutomationService(client=client, extractor=CaseFrameExtractor(), router=CaseRouter())
+    service.capabilities.bind_executor("install_printer", _Executor())
+    # Разрешаем выполнение возможности для теста
+    service.capabilities._specs["install_printer"] = service.capabilities._specs["install_printer"].model_copy(
+        update={"enabled": True}
+    )
+    service.auth_bootstrap = AsyncMock()
+    service.auth_bootstrap.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="service-auth", bot_user_id=999, login="bot"
+    )
+
+    async with session_factory() as session:
+        automation = await service.analyze(session, ticket_id=64001, auth_b64="operator-auth", force=True)
+        assert automation.context_header is not None
+        assert automation.context_header.icon == "printer"
+        assert automation.context_header.title == "Подключение и настройка принтера"
+        assert automation.context_header.subject_label == "Рабочее место"
+
+        # Проверяем динамический расчет стадий readiness (нет delivery и нет ou!)
+        assert automation.readiness is not None
+        stage_keys = [s.key for s in automation.readiness.stages]
+        assert "delivery" not in stage_keys, "Стадия доставки реквизитов не должна присутствовать для принтера"
+        assert "ou" not in stage_keys, "Стадия выбора OU не должна присутствовать для принтера"
+        assert "facts" in stage_keys
+        assert "preflight" in stage_keys
+        assert "approval" in stage_keys
+        assert "execution" in stage_keys
+
+        # До ввода параметров план еще не скомпилирован (awaiting_facts)
+        assert automation.workflow_plan.state.value == "awaiting_facts"
+        assert set(automation.workflow_plan.missing_facts) == {"pc_name", "connection_type"}
+        assert automation.action_plan is None
+        assert automation.execution_summary == []
+
+        # Проверяем универсальное сохранение фактов оператором (correct_facts)
+        corrected = await service.correct_facts(
+            session,
+            ticket_id=64001,
+            request=CorrectFactsRequest(
+                snapshot_hash=automation.snapshot_hash,
+                facts={
+                    "pc_name": "WS-305",
+                    "connection_type": "network",
+                    "printer_address": "192.168.1.150",
+                },
+            ),
+            operator="test_operator",
+            auth_b64="operator-auth",
+        )
+        assert corrected.case_frame.entities.get("pc_name") == "WS-305"
+        assert corrected.case_frame.entities.get("connection_type") == "network"
+        assert corrected.case_frame.entities.get("printer_address") == "192.168.1.150"
+
+        # После заполнения обязательных параметров скомпилирован ActionPlan и сформирован регламент
+        assert corrected.action_plan is not None
+        assert corrected.context_header is not None
+        assert corrected.context_header.subject_value == "WS-305"
+        assert corrected.context_header.subject_caption == "192.168.1.150"
+        assert corrected.execution_summary is not None
+        assert len(corrected.execution_summary) == 1
+        assert "Установка принтера 192.168.1.150 на рабочую станцию WS-305" in corrected.execution_summary[0]
+
 

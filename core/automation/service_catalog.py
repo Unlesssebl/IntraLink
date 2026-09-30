@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.automation.contracts import CredentialDeliveryPolicy
 from core.automation.service_routing import (
     CatalogValidationState,
     RedirectStrategy,
@@ -95,6 +96,11 @@ class ServiceCatalogRepository:
                 is_active=item.is_active,
                 is_validated=item.is_validated,
                 catalog_hash=item.catalog_hash,
+                delivery_policy=(
+                    CredentialDeliveryPolicy.model_validate(item.delivery_policy_json)
+                    if item.delivery_policy_json
+                    else None
+                ),
             )
             for item in binding_records
         ]
@@ -210,6 +216,10 @@ class ServiceCatalogRepository:
             }
             if not set(binding.required_fields).issubset(available_fields):
                 raise ValueError("ad_required_form_fields_missing")
+            if binding.delivery_policy is not None:
+                policy_fields = {str(field.field_id) for field in binding.delivery_policy.fields}
+                if not policy_fields.issubset(available_fields):
+                    raise ValueError("delivery_policy_fields_missing_in_service")
         validated = binding.model_copy(update={"is_validated": True, "is_active": True})
         existing = await session.scalar(
             select(ServiceRouteBindingRecord).where(
@@ -230,6 +240,11 @@ class ServiceCatalogRepository:
             "risk": validated.risk,
             "is_active": True,
             "is_validated": True,
+            "delivery_policy_json": (
+                validated.delivery_policy.model_dump(mode="json")
+                if validated.delivery_policy
+                else None
+            ),
         }
         if existing is None:
             session.add(
@@ -307,5 +322,14 @@ class ServiceCatalogRepository:
                 is_active=False,
                 is_validated=False,
                 catalog_hash=catalog_hash,
+                delivery_policy_json={
+                    "channel": "intraservice_custom_fields",
+                    "fields": [
+                        {"key": "user_login", "field_id": 1439, "sensitivity": "public", "required": True},
+                        {"key": "initial_password", "field_id": 1440, "sensitivity": "secret", "required": True},
+                    ],
+                    "verify_after_write": True,
+                },
             )
         )
+

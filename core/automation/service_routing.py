@@ -18,7 +18,7 @@ from uuid import UUID, uuid4
 from pydantic import Field, model_validator
 
 from core.automation.case_profiles import CaseProfileRegistry
-from core.automation.contracts import CaseDecision, FrozenModel, TicketSnapshot
+from core.automation.contracts import CaseDecision, CredentialDeliveryPolicy, FrozenModel, TicketSnapshot
 from core.automation.llm_transport import LLMTransport, LLMTransportError
 from core.rag.sanitizer import PIISanitizer
 
@@ -99,6 +99,7 @@ class ServiceRouteBinding(FrozenModel):
     is_active: bool = False
     is_validated: bool = False
     catalog_hash: str
+    delivery_policy: CredentialDeliveryPolicy | None = None
 
 
 class RedirectCandidate(FrozenModel):

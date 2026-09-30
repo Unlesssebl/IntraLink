@@ -49,6 +49,9 @@ class _WinRMCapability:
             details={"pc_name": pc_name, "is_online": True, "winrm_open": True},
         )
 
+    async def validate_human_action(self, target_param: str, value: Any) -> bool:
+        return True
+
 
 class HostProbeExecutor:
     def __init__(self, probe: FastSocketProbe | None = None) -> None:
@@ -58,6 +61,9 @@ class HostProbeExecutor:
         if not str(params.get("pc_name", "")).strip():
             return CapabilityPreflight(status=PreflightStatus.failed, error_code="missing_pc_name")
         return CapabilityPreflight(status=PreflightStatus.not_applicable)
+
+    async def validate_human_action(self, target_param: str, value: Any) -> bool:
+        return True
 
     async def execute(
         self, params: dict[str, Any], *, context: CapabilityExecutionContext
@@ -78,6 +84,9 @@ class PrinterProbeExecutor:
         if not str(params.get("printer_address", "")).strip():
             return CapabilityPreflight(status=PreflightStatus.failed, error_code="missing_printer_address")
         return CapabilityPreflight(status=PreflightStatus.not_applicable)
+
+    async def validate_human_action(self, target_param: str, value: Any) -> bool:
+        return True
 
     async def execute(
         self, params: dict[str, Any], *, context: CapabilityExecutionContext

@@ -6,8 +6,8 @@ import asyncio
 import base64
 from datetime import UTC, datetime
 from time import perf_counter
-from typing import Any
-from uuid import uuid4
+import uuid
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -23,10 +23,14 @@ from core.automation.case_router import CaseRouter
 from core.automation.case_verifier import LLMCaseVerifier
 from core.automation.clarification import (
     ONBOARDING_FACTS,
+    ClarificationConvergenceService,
     ClarificationFactExtractor,
+    FactCorrectionProposal,
+    UniversalIntentExtractor,
     clarification_fingerprint,
     extract_labeled_facts,
     latest_human_public_event,
+    merge_case_facts,
     merge_onboarding_facts,
     render_clarification,
 )
@@ -50,6 +54,12 @@ from core.automation.llm_transport import LiteLLMVerifierTransport
 from core.automation.persistence import AutomationBundle, AutomationRepository
 from core.automation.policy import WorkflowPolicyService
 from core.automation.preflight import ActionPreflightService
+from core.automation.resolution import (
+    HumanActionConflictError,
+    HumanActionNotFoundError,
+    HumanActionResolutionService,
+    HumanActionValidationError,
+)
 from core.automation.runner import WorkflowRunner
 from core.automation.service_catalog import ServiceCatalogRepository
 from core.automation.service_routing import (
@@ -66,7 +76,11 @@ from core.automation.service_routing import (
     compute_redirect_plan_hash,
 )
 from core.automation.snapshot import TicketSnapshotFactory
-from core.automation.workflows import WorkflowRegistry, get_default_workflow_registry
+from core.automation.workflows import (
+    WorkflowFactSpec,
+    WorkflowRegistry,
+    get_default_workflow_registry,
+)
 from core.database.models import (
     ActionPlanRecord,
     ActionPreflightRecord,
@@ -75,6 +89,7 @@ from core.database.models import (
     ClarificationRequestRecord,
     CommandRecord,
     ExecutionFeedbackRecord,
+    HumanActionRequestRecord,
     OnboardingFactCorrectionRecord,
     PlanFeedbackRecord,
     RedirectFeedbackRecord,
@@ -93,17 +108,24 @@ from .schemas import (
     ClarificationReadinessDTO,
     CorrectActionPlanRequest,
     CorrectCaseDecisionRequest,
+    CorrectFactsRequest,
     CorrectOnboardingFactsRequest,
     CorrectRedirectPlanRequest,
     CorrectTargetServiceRequest,
     FeedbackResponse,
+    HumanActionCandidateDTO,
+    HumanActionRequestDTO,
     PreflightReadinessDTO,
     ReadinessBlockerDTO,
     ReadinessStageDTO,
     RedirectPlanRequest,
     RedirectPlanResponse,
+    ResolveHumanActionRequest,
+    ResolveHumanActionResponse,
     RetryClarificationRequest,
+    SuggestedCorrectionDTO,
     TicketAutomationDTO,
+    WorkflowContextHeaderDTO,
 )
 
 
@@ -148,6 +170,11 @@ class AutomationService:
         self.compiler = WorkflowCompiler(self.workflows, self.capabilities)
         self.repository = repository or AutomationRepository()
         self.preflight = ActionPreflightService(self.capabilities)
+        self.human_action_resolution = HumanActionResolutionService(
+            self.capabilities,
+            self.repository,
+            self.preflight,
+        )
         self.runner = WorkflowRunner(self.repository)
         self.workflow_policy = WorkflowPolicyService()
         self.catalog_repository = ServiceCatalogRepository()
@@ -156,15 +183,69 @@ class AutomationService:
             transport,
             model_alias=settings.LITELLM_MODEL_FAST,
         )
-        self.clarification_extractor = ClarificationFactExtractor(
+        self.clarification_extractor = UniversalIntentExtractor(
             transport,
             model_alias=settings.LITELLM_MODEL_FAST,
         )
+        self.clarification_convergence = ClarificationConvergenceService()
 
-    async def get_automation(self, session: AsyncSession, ticket_id: int) -> TicketAutomationDTO | None:
+    async def _safe_bot_user_id(self) -> int | None:
+        try:
+            bot_credentials = await self.auth_bootstrap.bootstrap_auth(
+                client=self.client,
+                redis_client=get_redis_client(),
+                session_factory=async_session_factory,
+            )
+            return bot_credentials.bot_user_id
+        except Exception:
+            return None
+
+    async def _compute_suggested_corrections(
+        self,
+        snapshot,
+        entities: dict[str, str],
+        case_type: str | None,
+        bot_user_id: int | None,
+    ) -> list[SuggestedCorrectionDTO]:
+        wf_def = self.workflows.for_case_type(case_type or "")
+        if wf_def is None or not wf_def.facts or not snapshot.public_comments:
+            return []
+        proposals, _ = await self.clarification_extractor.detect_corrections_with_trace(
+            snapshot.public_comments,
+            entities,
+            fact_specs=wf_def.facts,
+            applicant_id=snapshot.applicant_id,
+            bot_user_id=bot_user_id,
+        )
+        return [
+            SuggestedCorrectionDTO(
+                param_key=p.param_key,
+                param_label=(
+                    wf_def.fact_spec(p.param_key).label
+                    if wf_def.fact_spec(p.param_key)
+                    else p.param_key
+                ),
+                current_value=p.old_value,
+                suggested_value=p.new_value,
+                reason=p.reason,
+                text_span=p.text_span,
+                comment_id=p.comment_id,
+            )
+            for p in proposals
+        ]
+
+    async def get_automation(
+        self, session: AsyncSession, ticket_id: int, auth_b64: str | None = None
+    ) -> TicketAutomationDTO | None:
         bundle = await self.repository.latest_for_task(session, ticket_id)
         if bundle is None:
             return None
+        diag = bundle.workflow_plan.fact_extraction_diagnostics or {}
+        if "suggested_corrections" not in diag:
+            try:
+                return await self.analyze(session, ticket_id=ticket_id, auth_b64=auth_b64, force=False)
+            except Exception:
+                pass
         return await self._dto(session, bundle)
 
     async def analyze(
@@ -186,7 +267,37 @@ class AutomationService:
         snapshot = TicketSnapshotFactory.create(task, comments=lifetime)
         latest = await self.repository.latest_for_task(session, ticket_id)
         if not force and latest is not None and latest.frame.snapshot_hash == snapshot.snapshot_hash:
-            return await self._dto(session, latest)
+            bot_user_id = await self._safe_bot_user_id()
+            suggested = await self._compute_suggested_corrections(
+                snapshot=snapshot,
+                entities=latest.frame.entities,
+                case_type=latest.decision.primary_case_type,
+                bot_user_id=bot_user_id,
+            )
+            existing_diag = latest.workflow_plan.fact_extraction_diagnostics or {}
+            suggested_dicts = [c.model_dump(mode="json") for c in suggested]
+            if existing_diag.get("suggested_corrections") != suggested_dicts:
+                plan_rec = await session.get(WorkflowPlanRecord, latest.workflow_plan.id)
+                if plan_rec is not None:
+                    updated_plan = latest.workflow_plan.model_copy(
+                        update={
+                            "fact_extraction_diagnostics": {
+                                **existing_diag,
+                                "suggested_corrections": suggested_dicts,
+                            }
+                        }
+                    )
+                    plan_rec.plan_json = updated_plan.model_dump(mode="json")
+                    await session.commit()
+                    latest = AutomationBundle(
+                        latest.frame,
+                        latest.decision,
+                        latest.compatibility,
+                        updated_plan,
+                        latest.action_plan,
+                        latest.redirect_plan,
+                    )
+            return await self._dto(session, latest, suggested_corrections=suggested)
 
         catalog_started = perf_counter()
         version, entries, bindings = await self.catalog_repository.current(session)
@@ -210,30 +321,39 @@ class AutomationService:
             target_resolution=target_resolution,
         )
         extraction_diag: dict[str, Any] = {}
-        if decision.primary_case_type == "employee_onboarding":
-            bot_user_id: int | None = None
-            bot_identity_error: str | None = None
-            try:
-                bot_credentials = await self.auth_bootstrap.bootstrap_auth(
-                    client=self.client,
-                    redis_client=get_redis_client(),
-                    session_factory=async_session_factory,
-                )
-                bot_user_id = bot_credentials.bot_user_id
-            except Exception as exc:
-                # Without a trusted bot identity, comments are not valid fact
-                # sources. Structured fields and ticket text remain usable.
-                bot_identity_error = type(exc).__name__
-            initial_facts, extraction_diag = await self._extract_onboarding_snapshot_facts(
+        suggested_corrections: list[SuggestedCorrectionDTO] = []
+        bot_user_id = await self._safe_bot_user_id()
+        bot_identity_error = None if bot_user_id is not None else "bot_identity_unavailable"
+
+        wf_def = self.workflows.for_case_type(decision.primary_case_type or "")
+        fact_specs: tuple[WorkflowFactSpec, ...] = ()
+        allowed_wf_facts: set[str] = set()
+        if wf_def is not None:
+            fact_specs = wf_def.facts
+            if not fact_specs and wf_def.required_facts:
+                fact_specs = tuple(WorkflowFactSpec(key=k, label=k) for k in wf_def.required_facts)
+            allowed_wf_facts = set(wf_def.required_facts) | {f.key for f in fact_specs}
+            for cap_key in (*wf_def.diagnostic_capabilities, *wf_def.allowed_capabilities):
+                spec = self.capabilities.get(cap_key)
+                if spec is not None:
+                    allowed_wf_facts.update(spec.required_params)
+                    allowed_wf_facts.update(spec.optional_params)
+
+        initial_facts: dict[str, Any] = {}
+        if fact_specs:
+            initial_facts, extraction_diag = await self._extract_workflow_snapshot_facts(
                 snapshot,
                 frame.entities,
+                fact_specs=fact_specs,
                 bot_user_id=bot_user_id,
                 applicant_id=snapshot.applicant_id,
                 bot_identity_error=bot_identity_error,
             )
-            fact_merge = await self._merge_onboarding_facts(
-                session, frame.entities, ticket_id, initial_facts=initial_facts
-            )
+
+        fact_merge = await self._merge_case_facts(
+            session, frame.entities, ticket_id, initial_facts=initial_facts, allowed_keys=allowed_wf_facts or None
+        )
+        if fact_merge.values or fact_merge.conflicts or extraction_diag.get("llm_attempted"):
             frame = frame.model_copy(
                 update={
                     "entities": {**frame.entities, **fact_merge.values},
@@ -242,8 +362,14 @@ class AutomationService:
                 }
             )
             decision = decision.model_copy(update={"frame_id": frame.id})
-        else:
-            fact_merge = merge_onboarding_facts({}, [])
+
+        if fact_specs:
+            suggested_corrections = await self._compute_suggested_corrections(
+                snapshot=snapshot,
+                entities=frame.entities,
+                case_type=decision.primary_case_type,
+                bot_user_id=bot_user_id,
+            )
         timings["case_classification"] = round((perf_counter() - intake_started) * 1000)
         compatibility, binding = self._compatibility_from_catalog(
             snapshot=snapshot,
@@ -268,17 +394,20 @@ class AutomationService:
         )
         clarification_round = await self._published_clarification_count(session, ticket_id)
         workflow, action_plan = self._compile(frame, decision, compatibility, binding, clarification_round)
-        if workflow.workflow_key == "employee_onboarding_workflow":
-            workflow = workflow.model_copy(
-                update={
-                    "fact_provenance": fact_merge.provenance,
-                    "fact_conflicts": fact_merge.conflicts,
-                    "fact_extraction_diagnostics": extraction_diag,
-                }
-            )
-            if action_plan is not None:
-                action_plan = action_plan.model_copy(update={"workflow_plan_id": workflow.id})
-                action_plan = action_plan.model_copy(update={"plan_hash": compute_action_plan_hash(action_plan)})
+        extraction_diag_with_suggestions = {
+            **extraction_diag,
+            "suggested_corrections": [c.model_dump(mode="json") for c in suggested_corrections],
+        }
+        workflow = workflow.model_copy(
+            update={
+                "fact_provenance": fact_merge.provenance,
+                "fact_conflicts": fact_merge.conflicts,
+                "fact_extraction_diagnostics": extraction_diag_with_suggestions,
+            }
+        )
+        if action_plan is not None:
+            action_plan = action_plan.model_copy(update={"workflow_plan_id": workflow.id})
+            action_plan = action_plan.model_copy(update={"plan_hash": compute_action_plan_hash(action_plan)})
         timings["total_before_persistence"] = round((perf_counter() - analysis_started) * 1000)
         compatibility = compatibility.model_copy(update={"analysis_timings_ms": timings})
         redirect_plan = (
@@ -308,7 +437,16 @@ class AutomationService:
                 lifetime=lifetime,
                 auth_b64=token,
             )
-        return await self._dto(session, bundle)
+        elif workflow.workflow_key == "employee_onboarding_workflow":
+            await self.clarification_convergence.converge(
+                session,
+                task_id=workflow.task_id,
+                missing_facts=workflow.missing_facts,
+                snapshot_hash=workflow.snapshot_hash,
+            )
+            await session.commit()
+        return await self._dto(session, bundle, suggested_corrections=suggested_corrections)
+
 
     async def resume(
         self,
@@ -370,23 +508,22 @@ class AutomationService:
         await session.commit()
         return await self.analyze(session, ticket_id=ticket_id, auth_b64=credentials.auth_b64, force=True)
 
-    async def correct_onboarding_facts(
+    async def correct_facts(
         self,
         session: AsyncSession,
         *,
         ticket_id: int,
-        request: CorrectOnboardingFactsRequest,
+        request: CorrectFactsRequest,
         operator: str,
         auth_b64: str | None,
     ) -> TicketAutomationDTO:
         await self._verify_current_snapshot(ticket_id, request.snapshot_hash, auth_b64)
         latest = await self.repository.latest_for_task(session, ticket_id)
-        if latest is None or latest.workflow_plan.workflow_key != "employee_onboarding_workflow":
-            raise HTTPException(status.HTTP_409_CONFLICT, "employee_onboarding_not_active")
-        invalid = sorted(set(request.facts) - set(ONBOARDING_FACTS))
+        if latest is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "ticket_automation_not_found")
         cleaned = {key: " ".join(value.split()) for key, value in request.facts.items()}
-        if invalid or any(not value for value in cleaned.values()):
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_onboarding_fact_correction")
+        if any(not value for value in cleaned.values()):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_fact_correction_empty_value")
         for key, value in cleaned.items():
             session.add(
                 OnboardingFactCorrectionRecord(
@@ -401,16 +538,40 @@ class AutomationService:
         await session.commit()
         return await self.analyze(session, ticket_id=ticket_id, auth_b64=auth_b64, force=True)
 
-    async def _extract_onboarding_snapshot_facts(
+    async def correct_onboarding_facts(
+        self,
+        session: AsyncSession,
+        *,
+        ticket_id: int,
+        request: CorrectOnboardingFactsRequest,
+        operator: str,
+        auth_b64: str | None,
+    ) -> TicketAutomationDTO:
+        latest = await self.repository.latest_for_task(session, ticket_id)
+        if latest is not None and latest.workflow_plan.workflow_key == "employee_onboarding_workflow":
+            invalid = sorted(set(request.facts) - set(ONBOARDING_FACTS))
+            if invalid:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_onboarding_fact_correction")
+        return await self.correct_facts(
+            session,
+            ticket_id=ticket_id,
+            request=request,
+            operator=operator,
+            auth_b64=auth_b64,
+        )
+
+    async def _extract_workflow_snapshot_facts(
         self,
         snapshot,
         existing: dict[str, str],
         *,
+        fact_specs: Iterable[WorkflowFactSpec],
         bot_user_id: int | None,
         applicant_id: int | None,
         bot_identity_error: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        missing = [key for key in ONBOARDING_FACTS if not str(existing.get(key, "")).strip()]
+        specs_list = list(fact_specs)
+        missing = [key for key in (s.key for s in specs_list) if not str(existing.get(key, "")).strip()]
         diag: dict[str, Any] = {"llm_attempted": False, "llm_used": False, "trace": []}
         if bot_identity_error:
             diag["trace"].append({"stage": "bot_identity", "error": bot_identity_error})
@@ -424,7 +585,7 @@ class AutomationService:
         # 1. Deterministic extraction from ticket title & description
         ticket_body = f"{snapshot.title}\n{snapshot.description}".strip()
         if ticket_body:
-            body_facts = extract_labeled_facts(ticket_body, missing)
+            body_facts = extract_labeled_facts(ticket_body, missing, fact_specs=specs_list)
             for k, v in body_facts.items():
                 extracted_facts[k] = v
             missing = [k for k in missing if k not in extracted_facts]
@@ -448,7 +609,7 @@ class AutomationService:
                 continue
             if any(marker in text for marker in bot_markers):
                 continue
-            comment_facts = extract_labeled_facts(text, missing)
+            comment_facts = extract_labeled_facts(text, missing, fact_specs=specs_list)
             for k, v in comment_facts.items():
                 if isinstance(v, dict):
                     v = {**v, "comment_id": comment.id}
@@ -477,7 +638,7 @@ class AutomationService:
                     break
                 try:
                     llm_facts, llm_diag = await self.clarification_extractor.extract_with_trace(
-                        cand_text[:4000], missing
+                        cand_text[:4000], missing, fact_specs=specs_list
                     )
                     diag["trace"].append(llm_diag)
                     if llm_diag.get("llm_attempted"):
@@ -492,13 +653,35 @@ class AutomationService:
 
         return extracted_facts, diag
 
-    async def _merge_onboarding_facts(
+    async def _extract_onboarding_snapshot_facts(
+        self,
+        snapshot,
+        existing: dict[str, str],
+        *,
+        bot_user_id: int | None,
+        applicant_id: int | None,
+        bot_identity_error: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        wf_def = self.workflows.for_case_type("employee_onboarding")
+        specs = wf_def.facts if wf_def else ()
+        return await self._extract_workflow_snapshot_facts(
+            snapshot,
+            existing,
+            fact_specs=specs,
+            bot_user_id=bot_user_id,
+            applicant_id=applicant_id,
+            bot_identity_error=bot_identity_error,
+        )
+
+
+    async def _merge_case_facts(
         self,
         session: AsyncSession,
         structured: dict[str, str],
         task_id: int,
         *,
         initial_facts: dict[str, Any] | None = None,
+        allowed_keys: Iterable[str] | None = None,
     ):
         records = list(
             (
@@ -542,7 +725,19 @@ class AutomationService:
             }
             for item in corrections
         )
-        return merge_onboarding_facts(structured, responses)
+        return merge_case_facts(structured, responses, allowed_keys=allowed_keys)
+
+    async def _merge_onboarding_facts(
+        self,
+        session: AsyncSession,
+        structured: dict[str, str],
+        task_id: int,
+        *,
+        initial_facts: dict[str, Any] | None = None,
+    ):
+        return await self._merge_case_facts(
+            session, structured, task_id, initial_facts=initial_facts, allowed_keys=ONBOARDING_FACTS
+        )
 
     @staticmethod
     async def _published_clarification_count(session: AsyncSession, task_id: int) -> int:
@@ -1576,7 +1771,19 @@ class AutomationService:
             ) from exc
         return credentials.auth_b64
 
-    async def _dto(self, session: AsyncSession, bundle: AutomationBundle) -> TicketAutomationDTO:
+    async def _dto(
+        self,
+        session: AsyncSession,
+        bundle: AutomationBundle,
+        *,
+        suggested_corrections: list[SuggestedCorrectionDTO] | None = None,
+    ) -> TicketAutomationDTO:
+        if suggested_corrections is None:
+            diag = bundle.workflow_plan.fact_extraction_diagnostics or {}
+            diag_items = diag.get("suggested_corrections") or []
+            suggested_corrections = [
+                SuggestedCorrectionDTO.model_validate(c) for c in diag_items
+            ]
         approval: dict[str, Any] = {}
         execution: list[dict[str, Any]] = []
         preflight: list[dict[str, Any]] = []
@@ -1672,13 +1879,81 @@ class AutomationService:
                     "authorization_state": projected.authorization_state,
                 }
             )
+        human_action_records = list(
+            (
+                await session.scalars(
+                    select(HumanActionRequestRecord)
+                    .where(HumanActionRequestRecord.task_id == bundle.frame.task_id)
+                    .order_by(HumanActionRequestRecord.created_at.desc())
+                )
+            ).all()
+        )
+        human_actions_dto = [
+            HumanActionRequestDTO(
+                id=rec.id,
+                task_id=rec.task_id,
+                action_id=rec.action_id,
+                target_param=rec.target_param,
+                type=rec.type,
+                prompt=rec.prompt,
+                candidates=[
+                    HumanActionCandidateDTO(
+                        candidate_id=str(c.get("candidate_id", "")),
+                        label=str(c.get("label", "")),
+                        score=float(c.get("score", 0.0)),
+                        evidence=list(c.get("evidence", [])),
+                    )
+                    for c in (rec.candidates_json or [])
+                ],
+                state=rec.state,
+                selected_candidate_id=rec.selected_candidate_id,
+                expires_at=rec.expires_at,
+            )
+            for rec in human_action_records
+        ]
         readiness = await self._build_readiness(
             session,
             bundle=bundle,
             preflight=preflight,
             approval=approval,
             execution=execution,
+            human_actions=human_action_records,
         )
+        wf_def = self.workflows.get(bundle.workflow_plan.workflow_key)
+        context_header: WorkflowContextHeaderDTO | None = None
+        if wf_def is not None:
+            pres = wf_def.presentation
+            entities = bundle.frame.entities
+
+            class SafeDict(dict):
+                def __missing__(self, key: str) -> str:
+                    return ""
+
+            safe_entities = SafeDict(entities)
+            subj_val = " ".join(pres.subject_template.format_map(safe_entities).split()).strip()
+            subj_caption = (
+                " ".join(pres.subject_caption_template.format_map(safe_entities).split()).strip()
+                or None
+            )
+            context_header = WorkflowContextHeaderDTO(
+                title=wf_def.name,
+                workflow_key=wf_def.key,
+                category_badge=pres.category_badge,
+                icon=pres.icon,
+                subject_label=pres.subject_label,
+                subject_value=subj_val or "Не указан",
+                subject_caption=subj_caption,
+            )
+
+        execution_summary: list[str] = []
+        if bundle.action_plan and bundle.action_plan.actions:
+            for action in bundle.action_plan.actions:
+                spec = self.capabilities.get(action.capability_key)
+                if spec is not None:
+                    execution_summary.append(spec.format_summary(action.params))
+                else:
+                    execution_summary.append(action.capability_key)
+
         return TicketAutomationDTO(
             task_id=bundle.frame.task_id,
             snapshot_hash=bundle.frame.snapshot_hash,
@@ -1692,6 +1967,10 @@ class AutomationService:
             approval=approval,
             execution=execution,
             readiness=readiness,
+            human_actions=human_actions_dto,
+            context_header=context_header,
+            execution_summary=execution_summary,
+            suggested_corrections=suggested_corrections or [],
         )
 
     async def _build_readiness(
@@ -1702,10 +1981,8 @@ class AutomationService:
         preflight: list[dict[str, Any]],
         approval: dict[str, Any],
         execution: list[dict[str, Any]],
+        human_actions: list[HumanActionRequestRecord] | None = None,
     ) -> AutomationReadinessDTO | None:
-        if bundle.workflow_plan.workflow_key != "employee_onboarding_workflow":
-            return None
-
         clarification = await session.scalar(
             select(ClarificationRequestRecord)
             .where(ClarificationRequestRecord.task_id == bundle.frame.task_id)
@@ -1728,23 +2005,29 @@ class AutomationService:
         for item in preflight:
             latest_preflight.setdefault(str(item["action_id"]), item)
         plan_checks = list(latest_preflight.values())
+        def _is_future(val: Any) -> bool:
+            if val is None:
+                return False
+            dt = val if isinstance(val, datetime) else datetime.fromisoformat(str(val))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            return dt > datetime.now(UTC)
+
         preflight_passed = (
             bool(bundle.action_plan)
             and len(plan_checks) == len(bundle.action_plan.actions)
             and all(
                 item["status"] in {"passed", "not_applicable"}
-                and datetime.fromisoformat(item["expires_at"]) > datetime.now(UTC)
+                and _is_future(item.get("expires_at"))
                 for item in plan_checks
             )
         )
-        preflight_failed = any(item["status"] not in {"passed", "not_applicable"} for item in plan_checks)
+        has_action_required = any(item.get("status") == "action_required" for item in plan_checks)
+        preflight_failed = any(
+            item["status"] not in {"passed", "not_applicable", "action_required"} for item in plan_checks
+        )
         missing_facts = list(bundle.workflow_plan.missing_facts)
-        if (
-            not missing_facts
-            and clarification is not None
-            and clarification.state in {"failed", "pending_publish", "published"}
-        ):
-            missing_facts = list(clarification.missing_facts_json or [])
+        pending_human_actions = [ha for ha in (human_actions or []) if ha.state == "pending"]
 
         blockers: list[ReadinessBlockerDTO] = []
         actions: list[str] = []
@@ -1755,7 +2038,7 @@ class AutomationService:
                     stage="facts",
                     fact_keys=missing_facts,
                     retryable=True,
-                    detail="Не получены обязательные данные нового сотрудника.",
+                    detail="Не получены обязательные данные.",
                 )
             )
             actions.append("edit_facts")
@@ -1770,6 +2053,17 @@ class AutomationService:
                 )
             )
             actions.append("retry_clarification")
+        if pending_human_actions:
+            for ha in pending_human_actions:
+                blockers.append(
+                    ReadinessBlockerDTO(
+                        code="human_action_required",
+                        stage="ou" if "ou" in ha.target_param else "hitl",
+                        retryable=False,
+                        detail=ha.prompt,
+                    )
+                )
+            actions.append("resolve_human_action")
         if preflight_failed:
             blockers.append(
                 ReadinessBlockerDTO(
@@ -1781,11 +2075,16 @@ class AutomationService:
             )
         execution_disabled = bool(bundle.action_plan) and approval.get("execution_enabled") is False
         if execution_disabled:
+            is_ad = any(item.capability_key == "create_ad_user" for item in bundle.action_plan.actions)
             blockers.append(
                 ReadinessBlockerDTO(
-                    code="ad_onboarding_execution_disabled",
+                    code="ad_onboarding_execution_disabled" if is_ad else "capability_execution_disabled",
                     stage="execution",
-                    detail="Создание в AD отключено настройкой AD_ONBOARDING_EXECUTION_ENABLED.",
+                    detail=(
+                        "Создание в AD отключено настройкой AD_ONBOARDING_EXECUTION_ENABLED."
+                        if is_ad
+                        else "Автоматическое выполнение возможностей сценария отключено настройками безопасности."
+                    ),
                 )
             )
 
@@ -1794,10 +2093,74 @@ class AutomationService:
             bool(command_states) and command_states <= {"succeeded"}
         )
         running = bool(command_states & {"pending", "queued", "running"})
+
+        is_onboarding = bundle.workflow_plan.workflow_key == "employee_onboarding_workflow"
+        hitl_key = "ou" if is_onboarding else "hitl"
+        has_delivery = (
+            bool(bundle.action_plan and getattr(bundle.action_plan, "delivery_policy", None) is not None)
+            or is_onboarding
+        )
+        has_hitl = is_onboarding or bool(pending_human_actions) or any(
+            ha.state == "resolved" for ha in (human_actions or [])
+        )
+
+        stage_order: list[str] = ["facts"]
+        if has_hitl:
+            stage_order.append(hitl_key)
+        stage_order.extend(["preflight", "approval", "execution"])
+        if has_delivery:
+            stage_order.append("delivery")
+
+        stages = []
+        for key in stage_order:
+            if key == "facts":
+                stage_state = "completed" if not missing_facts else "blocked"
+            elif key in {"ou", "hitl"}:
+                if pending_human_actions:
+                    stage_state = "blocked"
+                elif any(ha.state == "resolved" for ha in (human_actions or [])):
+                    stage_state = "completed"
+                elif missing_facts:
+                    stage_state = "not_started"
+                else:
+                    stage_state = "completed"
+            elif key == "preflight":
+                if missing_facts or pending_human_actions:
+                    stage_state = "not_started"
+                elif preflight_passed:
+                    stage_state = "completed"
+                elif preflight_failed or has_action_required:
+                    stage_state = "blocked"
+                else:
+                    stage_state = "active"
+            elif key == "approval":
+                if approval.get("state") == "approved":
+                    stage_state = "completed"
+                elif preflight_passed and approval.get("state") == "pending":
+                    stage_state = "active"
+                else:
+                    stage_state = "not_started"
+            elif key == "execution":
+                if completed:
+                    stage_state = "completed"
+                elif running:
+                    stage_state = "running"
+                else:
+                    stage_state = "not_started"
+            elif key == "delivery":
+                stage_state = "completed" if completed else "not_started"
+            else:
+                stage_state = "not_started"
+            stages.append(ReadinessStageDTO(key=key, state=stage_state))
+
         if completed:
-            state, current_stage = "completed", "delivery"
+            state, current_stage = "completed", ("delivery" if has_delivery else "execution")
         elif running:
             state, current_stage = "running", "execution"
+        elif missing_facts:
+            state, current_stage = "blocked", "facts"
+        elif pending_human_actions:
+            state, current_stage = "blocked", (hitl_key if has_hitl else "facts")
         elif bundle.action_plan is None:
             state, current_stage = "blocked", "facts"
         elif not preflight_passed:
@@ -1813,22 +2176,14 @@ class AutomationService:
         if not completed and not running and "reanalyze" not in actions:
             actions.append("reanalyze")
 
-        stage_order = ["facts", "ou", "preflight", "approval", "execution", "delivery"]
-        current_index = stage_order.index(current_stage)
-        stages = []
-        for index, key in enumerate(stage_order):
-            if completed:
-                stage_state = "completed"
-            elif index < current_index:
-                stage_state = "completed"
-            elif index == current_index:
-                stage_state = "blocked" if blockers and state == "blocked" else ("running" if running else "active")
-            else:
-                stage_state = "not_started"
-            stages.append(ReadinessStageDTO(key=key, state=stage_state))
-
         readiness_preflight = PreflightReadinessDTO(
-            state=("passed" if preflight_passed else "failed" if preflight_failed else "not_started"),
+            state=(
+                "passed"
+                if preflight_passed
+                else "failed"
+                if (preflight_failed or has_action_required)
+                else "not_started"
+            ),
             reason_code=("blocked_by_missing_facts" if bundle.action_plan is None and missing_facts else None),
             checks=[
                 {
@@ -1851,6 +2206,41 @@ class AutomationService:
             clarification=clarification_dto,
             preflight=readiness_preflight,
         )
+
+    async def resolve_human_action(
+        self,
+        session: AsyncSession,
+        *,
+        ticket_id: int,
+        human_action_id: UUID,
+        request: ResolveHumanActionRequest,
+        operator: str,
+        auth_b64: str | None,
+    ) -> TicketAutomationDTO:
+        await self._verify_current_snapshot(ticket_id, request.snapshot_hash, auth_b64)
+        try:
+            await self.human_action_resolution.resolve(
+                session,
+                ticket_id=ticket_id,
+                human_action_id=human_action_id,
+                candidate_id=request.candidate_id,
+                operator=operator,
+                generation=request.generation,
+                snapshot_hash=request.snapshot_hash,
+                plan_hash=request.plan_hash,
+            )
+        except HumanActionNotFoundError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        except HumanActionConflictError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        except HumanActionValidationError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+        await session.commit()
+        refreshed_bundle = await self.repository.latest_for_task(session, ticket_id)
+        if refreshed_bundle is None:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "automation_bundle_missing")
+        return await self._dto(session, refreshed_bundle)
 
 
 def extract_operator(auth_b64: str | None) -> str:
