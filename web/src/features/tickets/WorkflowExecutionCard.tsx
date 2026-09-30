@@ -80,9 +80,12 @@ const BLOCKER_LABELS: Record<string, string> = {
   preflight_failed: "Предварительные проверки перед выполнением не пройдены",
   ad_onboarding_execution_disabled: "Создание пользователей AD временно отключено администратором",
   capability_execution_disabled: "Автоматическое выполнение возможностей сценария отключено настройками безопасности",
+  worker_unavailable: "Отсутствует активный воркер для выполнения операции",
+  no_compatible_worker: "Нет совместимого активного воркера",
 };
 
 const CHECK_LABELS: Record<string, string> = {
+  identity_preflight: "Подключение к Active Directory",
   required_identity_fields: "Обязательные данные сотрудника",
   ad_available: "Подключение к Active Directory",
   target_ou: "Целевое подразделение (OU)",

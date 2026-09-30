@@ -67,6 +67,8 @@ export function DecisionOutcome({
         deployment_force_disabled: "Мутирующие операции принудительно отключены на сервере",
         circuit_breaker_open: "Предохранитель (circuit breaker) открыт",
         no_compatible_worker: "Нет совместимого активного воркера",
+        worker_unavailable: "Отсутствует активный воркер для выполнения операции",
+        worker_incompatible: "Несовпадение версии воркера",
         stale_worker_heartbeat: "Связь с воркером потеряна (heartbeat timeout)",
         worker_engine_version_mismatch: "Несовпадение версии движка на воркере",
         worker_deployment_force_disabled: "Воркер работает в режиме запрета мутаций",

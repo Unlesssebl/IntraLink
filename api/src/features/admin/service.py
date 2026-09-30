@@ -18,6 +18,7 @@ from core.ad.credentials import (
     ActiveDirectoryCredentialVault,
 )
 from core.ad.pool import ActiveDirectoryPool
+from core.ad.provisioning import DEFAULT_AD_DELIVERY_POLICY
 from core.automation.capabilities import CapabilityRisk, get_default_capability_registry
 from core.automation.execution_policy import is_deployment_force_disabled
 from core.automation.policy import CapabilityHealthService
@@ -163,6 +164,7 @@ class AdminCredentialsService:
             is_active=True,
             is_validated=False,
             catalog_hash=version.catalog_hash,
+            delivery_policy=DEFAULT_AD_DELIVERY_POLICY,
         )
         try:
             await self.catalog_repository.validate_and_store_binding(session, binding)

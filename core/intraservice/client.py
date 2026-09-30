@@ -82,6 +82,24 @@ def _parse_api_date(val: Any) -> Optional[datetime]:
         return None
 
 
+# Canonical and instance-specific IntraService status IDs
+STATUS_OPEN = 31           # Instance: 31 ("Открыта"), Standard: 1 ("Новая")
+STATUS_IN_PROGRESS = 27    # Instance: 27 ("В работе"), Standard: 2 ("В работе")
+STATUS_RESOLVED = 29       # Instance: 29 ("Выполнена"), Standard: 3 ("Выполнена")
+STATUS_CLOSED = 28         # Instance: 28 ("Закрыта"), Standard: 4 ("Закрыта")
+STATUS_CANCELLED = 30      # Both: 30 ("Отменена")
+STATUS_SUSPENDED = 41      # Instance: 41 ("Временно приостановлена"), Standard: 6 ("Приостановлена")
+STATUS_CLARIFICATION = 35  # Instance: 35 ("Требует уточнения")
+
+# Canonical status fallback mapping (maps standard 1..7 to instance IDs when instance lacks 1..7)
+CANONICAL_STATUS_FALLBACKS: Dict[int, int] = {
+    1: 31,  # Новая -> Открыта
+    2: 27,  # В работе -> В работе (27)
+    3: 29,  # Выполнена -> Выполнена (29)
+    4: 28,  # Закрыта -> Закрыта (28)
+    6: 41,  # Приостановлена -> Временно приостановлена (41)
+}
+
 DEFAULT_STATUS_MAP: Dict[int, str] = {
     1: "Новая",
     2: "В работе",
@@ -90,7 +108,26 @@ DEFAULT_STATUS_MAP: Dict[int, str] = {
     5: "Отклонена",
     6: "Приостановлена",
     7: "Переоткрыта",
+    26: "В ремонте",
+    27: "В работе",
+    28: "Закрыта",
+    29: "Выполнена",
     30: "Отменена",
+    31: "Открыта",
+    35: "Требует уточнения",
+    36: "Согласование",
+    38: "1 стадия",
+    39: "подрядчик",
+    40: "На доработку",
+    41: "Временно приостановлена",
+    42: "В ремонте в СЦ",
+    43: "Обработано 1-й линией",
+    44: "Ожидание работ",
+    45: "Подготовка оборудования заказчиком",
+    46: "Закупка / Изготовление",
+    47: "Подготовка оснастки заказчиком",
+    48: "ожидание устройства",
+    50: "на тестировании у заказчика",
 }
 
 
@@ -644,8 +681,9 @@ class IntraServiceClient:
     ) -> bool:
         """Atomically update ticket status, comment, assignees, or custom fields."""
         payload: Dict[str, Any] = {"Id": task_id}
-        if status_id is not None:
-            payload["StatusId"] = status_id
+        effective_status_id = CANONICAL_STATUS_FALLBACKS.get(status_id, status_id) if status_id is not None else None
+        if effective_status_id is not None:
+            payload["StatusId"] = effective_status_id
         if comment:
             payload["Comment"] = comment
             payload["IsPrivateComment"] = is_private
@@ -665,12 +703,24 @@ class IntraServiceClient:
                 auth_b64=auth_b64,
             )
             return True
-        except IntraServiceValidationError:
-            # Fallback if executor_ids rejected by role permissions
-            if executor_ids and (status_id is not None or comment is not None):
+        except IntraServiceValidationError as exc:
+            # 1. Fallback if rejected due to mandatory expenses ("Ввод трудозатрат обязателен")
+            if "трудозатрат" in str(exc).lower():
+                logger.info("Mandatory expenses required for task %s; recording default 10m expenses", task_id)
+                await self.add_task_expenses(task_id=task_id, minutes=10, auth_b64=auth_b64)
+                await self._request(
+                    method="PUT",
+                    endpoint=f"task/{task_id}",
+                    json_data=payload,
+                    auth_b64=auth_b64,
+                )
+                return True
+
+            # 2. Fallback if executor_ids rejected by role permissions
+            if executor_ids and (effective_status_id is not None or comment is not None):
                 fb_payload = {"Id": task_id}
-                if status_id is not None:
-                    fb_payload["StatusId"] = status_id
+                if effective_status_id is not None:
+                    fb_payload["StatusId"] = effective_status_id
                 if comment:
                     fb_payload["Comment"] = comment
                     fb_payload["IsPrivateComment"] = is_private
@@ -685,6 +735,35 @@ class IntraServiceClient:
                 )
                 return True
             raise
+
+    async def add_task_expenses(
+        self,
+        task_id: int,
+        minutes: int = 10,
+        user_id: Optional[int] = None,
+        comment: Optional[str] = None,
+        auth_b64: Optional[str] = None,
+    ) -> bool:
+        """Record work expenses (time spent) for a ticket."""
+        payload: Dict[str, Any] = {
+            "TaskId": task_id,
+            "Minutes": minutes,
+        }
+        if user_id is not None:
+            payload["UserId"] = user_id
+        if comment:
+            payload["Comments"] = comment
+        try:
+            res = await self._request(
+                method="POST",
+                endpoint="taskexpenses",
+                json_data=payload,
+                auth_b64=auth_b64,
+            )
+            return res is not None
+        except Exception as exc:
+            logger.warning("Failed to record task expenses for task %s: %s", task_id, exc)
+            return False
 
     async def add_task_comment(
         self,

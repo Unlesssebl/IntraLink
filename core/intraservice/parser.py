@@ -568,6 +568,7 @@ def parse_custom_fields(
     for fid, v in raw_fields.items():
         f_name = FIELD_NAME_MAP.get(fid, f"Поле_{fid}")
         friendly_fields[f_name] = v
+        friendly_fields[fid] = v
 
         if fid in ("1089", "1112", "1203", "1120", "1176", "1068", "1016", "1132"):
             norm = normalize_pc_name(v)

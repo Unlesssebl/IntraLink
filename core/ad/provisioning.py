@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from enum import Enum
@@ -131,7 +132,15 @@ class IntraServiceCredentialDeliveryPort:
                 for field in policy.fields:
                     if field.sensitivity == DeliverySensitivity.public and field.key in public_values:
                         expected = public_values[field.key]
-                        actual = task_fields.get(str(field.field_id), "")
+                        actual = task_fields.get(str(field.field_id)) or task_fields.get(f"Поле_{field.field_id}")
+                        if actual is None and task.custom_field_data:
+                            match = re.search(
+                                rf"""<field id=['"]{field.field_id}['"]>([^<]*)</field>""",
+                                task.custom_field_data,
+                            )
+                            if match:
+                                actual = match.group(1).strip()
+                        actual = actual or ""
                         if actual.strip().casefold() != expected.strip().casefold():
                             return CredentialDeliveryResult(
                                 outcome=CredentialDeliveryOutcome.unknown_outcome,
@@ -442,8 +451,22 @@ class AccountProvisioningService:
                         "Created AD account is still disabled",
                         ad_object_created=True,
                     )
-                verified_pwd_last_set = int(entry.pwdLastSet.value)
-                if verified_pwd_last_set != 0:
+                pwd_attr = getattr(entry, "pwdLastSet", None)
+                is_pwd_zero = False
+                if pwd_attr is not None:
+                    raw = getattr(pwd_attr, "raw_values", [])
+                    if raw and raw[0] in (b"0", "0", 0):
+                        is_pwd_zero = True
+                    else:
+                        val = getattr(pwd_attr, "value", pwd_attr)
+                        if isinstance(val, (int, str)):
+                            try:
+                                is_pwd_zero = int(val) == 0
+                            except ValueError:
+                                is_pwd_zero = False
+                        elif hasattr(val, "year") and getattr(val, "year", None) == 1601:
+                            is_pwd_zero = True
+                if not is_pwd_zero:
                     raise AccountProvisioningError(
                         "ldap_verify_failed",
                         "Created AD account does not require a password change at first logon",

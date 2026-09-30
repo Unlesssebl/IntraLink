@@ -21,8 +21,22 @@ export const STATUS_MAP: Record<number, StatusMeta> = {
     variant: "info",
     pulse: true,
   },
+  31: {
+    id: 31,
+    name: "Открыта",
+    dotColor: "bg-blue-500",
+    variant: "info",
+    pulse: true,
+  },
   2: {
     id: 2,
+    name: "В работе",
+    dotColor: "bg-amber-500",
+    variant: "warning",
+    pulse: false,
+  },
+  27: {
+    id: 27,
     name: "В работе",
     dotColor: "bg-amber-500",
     variant: "warning",
@@ -35,8 +49,22 @@ export const STATUS_MAP: Record<number, StatusMeta> = {
     variant: "success",
     pulse: false,
   },
+  29: {
+    id: 29,
+    name: "Выполнена",
+    dotColor: "bg-emerald-500",
+    variant: "success",
+    pulse: false,
+  },
   4: {
     id: 4,
+    name: "Закрыта",
+    dotColor: "bg-neutral-500",
+    variant: "neutral",
+    pulse: false,
+  },
+  28: {
+    id: 28,
     name: "Закрыта",
     dotColor: "bg-neutral-500",
     variant: "neutral",
@@ -54,6 +82,20 @@ export const STATUS_MAP: Record<number, StatusMeta> = {
     name: "Приостановлена",
     dotColor: "bg-neutral-400",
     variant: "neutral",
+    pulse: false,
+  },
+  41: {
+    id: 41,
+    name: "Временно приостановлена",
+    dotColor: "bg-neutral-400",
+    variant: "neutral",
+    pulse: false,
+  },
+  35: {
+    id: 35,
+    name: "Требует уточнения",
+    dotColor: "bg-amber-400",
+    variant: "warning",
     pulse: false,
   },
   7: {
@@ -116,13 +158,17 @@ export function getStatusMeta(
 }
 
 export function isStatusInWork(statusId?: number | null): boolean {
-  return statusId === 2;
+  return statusId === 2 || statusId === 27;
 }
 
 export function isStatusResolved(statusId?: number | null): boolean {
-  return statusId === 3 || statusId === 4;
+  return statusId === 3 || statusId === 4 || statusId === 29 || statusId === 28;
 }
 
 export function isStatusCancelled(statusId?: number | null): boolean {
   return statusId === 30 || statusId === 5;
+}
+
+export function isStatusSuspended(statusId?: number | null): boolean {
+  return statusId === 6 || statusId === 41 || statusId === 35;
 }

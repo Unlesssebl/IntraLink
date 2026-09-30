@@ -106,7 +106,16 @@ class CreateAdUserExecutor:
                 else (
                     "target_ou"
                     if exc.code in {"ad_target_ou_not_found", "ad_target_ou_outside_root"}
-                    else "identity_preflight"
+                    else (
+                        "ad_available"
+                        if exc.code in {
+                            "ad_credentials_unavailable",
+                            "ad_secure_channel_required",
+                            "ad_connection_failed",
+                            "ad_pool_exhausted",
+                        }
+                        else "identity_preflight"
+                    )
                 )
             )
             return CapabilityPreflight(

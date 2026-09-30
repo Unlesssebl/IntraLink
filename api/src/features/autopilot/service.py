@@ -988,8 +988,7 @@ class AutomationService:
 
         redis_client = None
         try:
-            from api.src.core.redis import get_redis
-            redis_client = await get_redis()
+            redis_client = get_redis_client()
         except Exception:
             pass
 
@@ -1955,8 +1954,7 @@ class AutomationService:
         if bundle.action_plan and bundle.action_plan.actions:
             redis_client = None
             try:
-                from api.src.core.redis import get_redis
-                redis_client = await get_redis()
+                redis_client = get_redis_client()
             except Exception:
                 pass
             first_action = bundle.action_plan.actions[0]

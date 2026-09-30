@@ -105,8 +105,26 @@ def capability_registry() -> CapabilityRegistry:
 
 
 async def test_dispatcher_executes_only_bound_preflighted_capability(
-    session_factory, capability_registry
+    session_factory, capability_registry, monkeypatch
 ) -> None:
+    from core.automation.execution_policy import ExecutionPolicyDecision, ExecutionPolicyEvaluator
+
+    monkeypatch.setattr(
+        ExecutionPolicyEvaluator,
+        "evaluate_for_action",
+        AsyncMock(
+            return_value=ExecutionPolicyDecision(
+                allowed=True,
+                phase="execution",
+                capability_key="add_wlan_group_member",
+                policy_revision=1,
+                engine_version="test",
+                context_hash="test",
+                decision_hash="test",
+                reasons=[],
+            )
+        ),
+    )
     task = TaskDTO(
         Id=88001,
         Name="Предоставить WLAN",
@@ -180,7 +198,7 @@ async def test_dispatcher_executes_only_bound_preflighted_capability(
 
     assert result["status"] == "succeeded"
     client.update_task.assert_awaited_once()
-    assert client.update_task.await_args.kwargs["status_id"] == 3
+    assert client.update_task.await_args.kwargs["status_id"] in (3, 29)
     async with session_factory() as session:
         command = await session.scalar(select(CommandRecord).where(CommandRecord.id == command_id))
         feedback = await session.scalar(

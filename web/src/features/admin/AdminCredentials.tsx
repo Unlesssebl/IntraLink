@@ -37,6 +37,7 @@ const REASON_LABELS: Record<string, string> = {
   policy_not_found: "Политика выполнения не найдена в базе данных",
   deployment_force_disabled: "Мутирующие операции принудительно отключены на сервере (MUTATING_AUTOMATION_FORCE_DISABLED)",
   circuit_breaker_open: "Предохранитель (circuit breaker) открыт из-за предыдущих сбоев",
+  worker_unavailable: "Отсутствует активный воркер для выполнения действия",
   no_compatible_worker: "Отсутствует активный совместимый воркер для выполнения действия",
   stale_worker_heartbeat: "Связь с воркером потеряна (heartbeat timeout > 30с)",
   worker_engine_version_mismatch: "Версия движка политик на воркере не совпадает с API",

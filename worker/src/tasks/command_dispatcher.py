@@ -223,9 +223,11 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
     try:
         auth = await _service_auth().bootstrap_auth(client=_client(), redis_client=redis_client)
         task = await _client().get_task(task_id=plan.task_id, auth_b64=auth.auth_b64)
-        if task.status_id in {3, 4, 30}:
+        if task.status_id in {3, 4, 30, 28, 29}:
             return {"status": "skipped", "error": "ticket_already_terminal"}
-        if auth.bot_user_id is not None and auth.bot_user_id not in task.get_executor_ids():
+        executor_ids = task.get_executor_ids()
+        is_operator_approved = bool(plan_record.approved_by or (command.initiator and command.initiator != "autopilot"))
+        if not is_operator_approved and executor_ids and auth.bot_user_id is not None and auth.bot_user_id not in executor_ids:
             return {"status": "skipped", "error": "assigned_to_human"}
         lifetime = await _client().get_task_lifetime(task_id=plan.task_id, auth_b64=auth.auth_b64)
         current_snapshot = TicketSnapshotFactory.create(task=task, comments=lifetime)
@@ -354,7 +356,7 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
                         "error": f"ad_completion_pending:{type(exc).__name__}",
                     }
             else:
-                status_id = 3 if is_last else 2
+                status_id = 29 if is_last else 27
                 await _client().update_task(
                     task_id=plan.task_id,
                     status_id=status_id,
@@ -365,13 +367,16 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
             if is_last:
                 await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.completed)
         else:
-            await _client().update_task(
-                task_id=plan.task_id,
-                status_id=2,
-                comment=_failure_note(action.capability_key, execution.error_code, execution.error_message, proof),
-                is_private=True,
-                auth_b64=auth.auth_b64,
-            )
+            try:
+                await _client().update_task(
+                    task_id=plan.task_id,
+                    status_id=27,
+                    comment=_failure_note(action.capability_key, execution.error_code, execution.error_message, proof),
+                    is_private=True,
+                    auth_b64=auth.auth_b64,
+                )
+            except Exception as note_exc:
+                logger.warning("Failed to record failure note on task %s: %s", plan.task_id, note_exc)
             await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.needs_review)
 
         command_status = execution.outcome.value
@@ -567,12 +572,13 @@ async def _complete_ad_onboarding(
     comments = {(item.comment or "").strip() for item in events if item.comment}
     if audit not in comments:
         await client.add_task_comment(task_id=plan.task_id, comment=audit, is_private=True, auth_b64=auth_b64)
+    await client.add_task_expenses(task_id=plan.task_id, minutes=10, auth_b64=auth_b64)
     if public in comments:
-        await client.update_task(task_id=plan.task_id, status_id=3, auth_b64=auth_b64)
+        await client.update_task(task_id=plan.task_id, status_id=29, auth_b64=auth_b64)
     else:
         await client.update_task(
             task_id=plan.task_id,
-            status_id=3,
+            status_id=29,
             comment=public,
             is_private=False,
             auth_b64=auth_b64,
