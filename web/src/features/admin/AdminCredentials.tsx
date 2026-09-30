@@ -1,26 +1,53 @@
 import React, { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  CheckCircle2,
+  Activity,
+  AlertOctagon,
+  AlertTriangle,
   Building2,
+  CheckCircle2,
+  Cpu,
   Database,
   Eye,
   EyeOff,
+  GitBranch,
   KeyRound,
   LockKeyhole,
   Network,
+  Power,
   RefreshCw,
   ServerCog,
+  ShieldAlert,
   ShieldCheck,
+  Sliders,
   UserRound,
+  Wrench,
 } from "lucide-react";
 
-import { adminApi } from "@/shared/api";
-import { Badge, Button, Card, Input, Textarea, useToast } from "@/shared/ui";
+import { adminApi, type CapabilityExecutionPolicyStatusDTO } from "@/shared/api";
+import { Badge, Button, Card, Input, Modal, Textarea, useToast } from "@/shared/ui";
 
 const statusKey = ["admin", "service-credentials"] as const;
 const adStatusKey = ["admin", "ad-credentials"] as const;
 const bindingKey = ["admin", "ad-account-binding"] as const;
+const executionPoliciesKey = ["admin", "execution-policies"] as const;
+
+const REASON_LABELS: Record<string, string> = {
+  policy_disabled: "Политика выполнения отключена администратором",
+  policy_not_found: "Политика выполнения не найдена в базе данных",
+  deployment_force_disabled: "Мутирующие операции принудительно отключены на сервере (MUTATING_AUTOMATION_FORCE_DISABLED)",
+  circuit_breaker_open: "Предохранитель (circuit breaker) открыт из-за предыдущих сбоев",
+  no_compatible_worker: "Отсутствует активный совместимый воркер для выполнения действия",
+  stale_worker_heartbeat: "Связь с воркером потеряна (heartbeat timeout > 30с)",
+  worker_engine_version_mismatch: "Версия движка политик на воркере не совпадает с API",
+  worker_deployment_force_disabled: "Воркер запущен с флагом принудительного запрета мутаций",
+  missing_service_binding: "Нет активной валидированной привязки сервиса в каталоге",
+  unsupported_capability_in_binding: "Возможность не разрешена в привязке сервиса",
+  invalid_service_binding: "Привязка сервиса не прошла валидацию",
+  preflight_not_passed: "Предварительные проверки не пройдены",
+  preflight_expired: "Срок действия предварительных проверок истек",
+};
+
 
 export const AdminCredentials: React.FC = () => {
   const toast = useToast();
@@ -64,6 +91,47 @@ export const AdminCredentials: React.FC = () => {
     },
     onError: (error: Error) => toast.error(error.message || "Не удалось активировать привязку"),
   });
+
+  const [selectedPolicy, setSelectedPolicy] = useState<CapabilityExecutionPolicyStatusDTO | null>(null);
+  const [editDesiredState, setEditDesiredState] = useState<"enabled" | "disabled">("disabled");
+  const [editReason, setEditReason] = useState("");
+
+  const policiesQuery = useQuery({
+    queryKey: executionPoliciesKey,
+    queryFn: ({ signal }) => adminApi.getExecutionPolicies(signal),
+    retry: false,
+    refetchInterval: 10000,
+  });
+
+  const updatePolicyMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedPolicy) throw new Error("Политика не выбрана");
+      return adminApi.updateExecutionPolicy(
+        selectedPolicy.capability_key,
+        editDesiredState,
+        selectedPolicy.revision,
+        editReason.trim()
+      );
+    },
+    onSuccess: (updated) => {
+      setSelectedPolicy(null);
+      setEditReason("");
+      queryClient.setQueryData<CapabilityExecutionPolicyStatusDTO[]>(executionPoliciesKey, (old) =>
+        old ? old.map((p) => (p.capability_key === updated.capability_key ? updated : p)) : [updated]
+      );
+      toast.success(`Политика для «${updated.name}» успешно обновлена`);
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Не удалось обновить политику");
+      policiesQuery.refetch();
+    },
+  });
+
+  const openEditPolicy = (policy: CapabilityExecutionPolicyStatusDTO) => {
+    setSelectedPolicy(policy);
+    setEditDesiredState(policy.desired_state === "enabled" ? "disabled" : "enabled");
+    setEditReason("");
+  };
 
   useEffect(() => {
     if (statusQuery.data?.login && !login) setLogin(statusQuery.data.login);
@@ -455,12 +523,24 @@ export const AdminCredentials: React.FC = () => {
         </div>
       </Card>
 
+      {/* Карточка 1: Привязка сервиса */}
       <Card
-        title="Создание учётной записи AD"
-        subtitle="Фиксированная привязка: сервис #53 → employee_onboarding → create_ad_user"
-        action={<Badge variant={bindingQuery.data?.active ? "success" : "warning"} dot>{bindingQuery.data?.active ? "Активна" : "Требует подтверждения"}</Badge>}
+        title="1. Привязка сервиса (Service Route Binding)"
+        subtitle="Авторизация маршрута в каталоге услуг IntraService: сервис #53 → employee_onboarding → create_ad_user"
+        action={
+          <Badge variant={bindingQuery.data?.active ? "success" : "warning"} dot>
+            {bindingQuery.data?.active ? "Маршрут активен" : "Требует подтверждения"}
+          </Badge>
+        }
       >
         <div className="space-y-4 text-xs">
+          <div className="rounded-md border border-blue-900/40 bg-blue-950/20 p-3 text-[11px] text-blue-200 flex items-start gap-2.5">
+            <GitBranch className="h-4 w-4 shrink-0 text-blue-400 mt-0.5" />
+            <div>
+              <span className="font-semibold text-neutral-100">Принцип архитектурного разделения:</span> Зелёный статус привязки подтверждает корректность маршрута услуги в каталоге IntraService, но <strong className="text-amber-300 font-semibold">НЕ является разрешением на исполнение</strong>. Мутации в AD требуют включенной политики capability и активного воркера.
+            </div>
+          </div>
+
           <div className="rounded-md border border-neutral-800 bg-[#0e1013] p-3">
             <div className="text-[10px] uppercase tracking-wider text-neutral-500">Полный путь сервиса</div>
             <div className="mt-1 text-neutral-100">{bindingQuery.data?.service_path || "Сервис #53 отсутствует в активном каталоге"}</div>
@@ -490,6 +570,220 @@ export const AdminCredentials: React.FC = () => {
           )}
         </div>
       </Card>
+
+      {/* Карточка 2: Политика выполнения capability */}
+      <Card
+        title="2. Политика выполнения capability"
+        subtitle="Административный допуск к исполнению мутирующих операций в инфраструктуре"
+        action={
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label="Обновить политики"
+            onClick={() => policiesQuery.refetch()}
+            loading={policiesQuery.isFetching}
+            icon={<RefreshCw className="h-3.5 w-3.5" />}
+          >
+            Обновить
+          </Button>
+        }
+      >
+        <div className="space-y-3 text-xs">
+          {policiesQuery.isError && (
+            <div className="rounded border border-rose-800/60 bg-rose-950/30 px-3 py-2 text-[11px] text-rose-300">
+              {(policiesQuery.error as Error).message}
+            </div>
+          )}
+          {policiesQuery.data && policiesQuery.data.length === 0 && (
+            <p className="text-neutral-500 py-2">Нет зарегистрированных мутирующих возможностей.</p>
+          )}
+          <div className="divide-y divide-neutral-800/80">
+            {policiesQuery.data?.map((pol) => (
+              <div key={pol.capability_key} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 first:pt-0 last:pb-0">
+                <div className="space-y-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-neutral-100">{pol.name}</span>
+                    <Badge variant={pol.desired_state === "enabled" ? "success" : "neutral"} dot>
+                      {pol.desired_state === "enabled" ? "Включено" : "Отключено"} (rev: {pol.revision})
+                    </Badge>
+                    <span className="font-mono text-[10px] text-neutral-500">{pol.capability_key}</span>
+                  </div>
+                  <p className="text-neutral-400 text-[11px] leading-4">{pol.description}</p>
+                  <div className="text-[10px] text-neutral-500 flex flex-wrap items-center gap-x-2">
+                    <span>Изменил: <strong className="text-neutral-300">{pol.changed_by}</strong></span>
+                    <span>•</span>
+                    <span>{new Date(pol.changed_at).toLocaleString("ru-RU")}</span>
+                    <span>•</span>
+                    <span>Причина: «{pol.reason}»</span>
+                  </div>
+                </div>
+                <div className="shrink-0">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => openEditPolicy(pol)}
+                    icon={<Sliders className="h-3.5 w-3.5" />}
+                  >
+                    Изменить политику
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      {/* Карточка 3: Состояние исполнителя */}
+      <Card
+        title="3. Состояние исполнителя"
+        subtitle="Мониторинг Attestation воркеров (TTL 30с), предохранителей (Circuit Breaker) и потолка развертывания"
+        action={<Cpu className="h-4 w-4 text-neutral-500" />}
+      >
+        <div className="space-y-3 text-xs">
+          <div className="divide-y divide-neutral-800/80">
+            {policiesQuery.data?.map((pol) => (
+              <div key={`runtime-${pol.capability_key}`} className="py-3 space-y-2 first:pt-0 last:pb-0">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-neutral-200">{pol.name}</span>
+                  <span className="font-mono text-[10px] text-neutral-500">{pol.capability_key}</span>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <StatusRow
+                    label="Воркер (Attestation)"
+                    value={pol.worker_available ? "Активен (OK, v2.0.0)" : "Недоступен / Timeout"}
+                    ok={pol.worker_available}
+                  />
+                  <StatusRow
+                    label="Предохранитель"
+                    value={pol.circuit_state === "closed" ? "Закрыт (исправен)" : "Открыт (сбои)"}
+                    ok={pol.circuit_state === "closed"}
+                  />
+                  <StatusRow
+                    label="Deployment Ceiling"
+                    value={pol.deployment_ceiling ? "Разрешено" : "MUTATING_AUTOMATION_FORCE_DISABLED"}
+                    ok={pol.deployment_ceiling}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      {/* Карточка 4: Эффективный допуск */}
+      <Card
+        title="4. Эффективный допуск"
+        subtitle="Итоговое конъюнктивное решение Execution Policy Evaluator для мутирующих возможностей"
+        action={<ShieldAlert className="h-4 w-4 text-neutral-500" />}
+      >
+        <div className="space-y-3 text-xs">
+          <div className="divide-y divide-neutral-800/80">
+            {policiesQuery.data?.map((pol) => {
+              const isAllowed = pol.effective_state === "allowed";
+              return (
+                <div key={`effective-${pol.capability_key}`} className="py-3 space-y-2 first:pt-0 last:pb-0">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-neutral-200">{pol.name}</span>
+                    <Badge variant={isAllowed ? "success" : "danger"} dot>
+                      {isAllowed ? "Разрешено к выполнению" : "Выполнение заблокировано"}
+                    </Badge>
+                  </div>
+                  {isAllowed ? (
+                    <div className="flex items-center gap-2 text-emerald-400 text-[11px] bg-emerald-950/20 border border-emerald-900/40 rounded p-2">
+                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                      <span>Все условия соблюдены: политика включена, воркер доступен, маршрут подтвержден.</span>
+                    </div>
+                  ) : (
+                    <div className="space-y-1 bg-amber-950/20 border border-amber-900/40 rounded p-2.5">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        Блокирующие причины:
+                      </div>
+                      <ul className="space-y-1 pt-1">
+                        {pol.reason_codes.map((code) => (
+                          <li key={code} className="text-[11px] text-amber-200 flex items-start gap-1.5">
+                            <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-amber-400" />
+                            <span>{REASON_LABELS[code] || `Код причины: ${code}`}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </Card>
+
+      {/* Модальное окно изменения политики */}
+      <Modal
+        isOpen={selectedPolicy !== null}
+        onClose={() => setSelectedPolicy(null)}
+        title={`Изменение политики: ${selectedPolicy?.name}`}
+        description={`Управление административным допуском к выполнению capability «${selectedPolicy?.capability_key}».`}
+      >
+        <div className="space-y-4 text-xs">
+          <div className="space-y-2">
+            <label className="text-neutral-300 font-medium block">Целевое состояние политики</label>
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 cursor-pointer text-neutral-200">
+                <input
+                  type="radio"
+                  name="desiredState"
+                  value="enabled"
+                  checked={editDesiredState === "enabled"}
+                  onChange={() => setEditDesiredState("enabled")}
+                  className="accent-emerald-500"
+                />
+                <span className="font-semibold text-emerald-400">Включено (enabled)</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer text-neutral-200">
+                <input
+                  type="radio"
+                  name="desiredState"
+                  value="disabled"
+                  checked={editDesiredState === "disabled"}
+                  onChange={() => setEditDesiredState("disabled")}
+                  className="accent-rose-500"
+                />
+                <span className="font-semibold text-rose-400">Отключено (disabled)</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-neutral-300 font-medium block">
+              Причина изменения <span className="text-neutral-500 font-normal">(обязательно, от 10 до 500 символов)</span>
+            </label>
+            <textarea
+              value={editReason}
+              onChange={(e) => setEditReason(e.target.value)}
+              placeholder="Укажите обоснование (например: Плановое включение автоматизации онбординга сотрудников...)"
+              className="w-full h-24 rounded-md border border-neutral-800 bg-[#0e1013] p-2.5 text-neutral-100 placeholder:text-neutral-600 focus:outline-none focus:border-neutral-600"
+              maxLength={500}
+            />
+            <div className="flex justify-between text-[10px] text-neutral-500">
+              <span>Символов: {editReason.trim().length} / 500 (минимум 10)</span>
+              <span>Ожидаемая ревизия: {selectedPolicy?.revision}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t border-neutral-800 pt-3">
+            <Button variant="ghost" onClick={() => setSelectedPolicy(null)}>
+              Отмена
+            </Button>
+            <Button
+              variant="primary"
+              loading={updatePolicyMutation.isPending}
+              disabled={editReason.trim().length < 10 || editReason.trim().length > 500}
+              onClick={() => updatePolicyMutation.mutate()}
+            >
+              Сохранить политику
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };
@@ -508,3 +802,4 @@ const StatusRow: React.FC<{ label: string; value: string; ok?: boolean; mono?: b
     </dd>
   </div>
 );
+

@@ -23,8 +23,18 @@ from core.automation.contracts import (
     WorkflowStepKind,
     compute_action_plan_hash,
 )
+from core.automation.execution_policy import (
+    POLICY_ENGINE_VERSION,
+    ExecutionPhase,
+    ExecutionPolicyContext,
+    ExecutionPolicyDecision,
+    ExecutionPolicyEvaluator,
+    compute_context_hash,
+    compute_decision_hash,
+)
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.automation.persistence import AutomationBundle, AutomationRepository
+from core.automation.policy import CapabilityHealthService
 from core.automation.preflight import ActionPreflightService
 from core.automation.resolution import (
     HumanActionConflictError,
@@ -34,6 +44,11 @@ from core.automation.resolution import (
     HumanActionValidationError,
 )
 from core.automation.runner import RunnerAdvanceResult, RunnerState, WorkflowRunner
+from core.automation.worker_attestation import (
+    WorkerAttestationResult,
+    WorkerAttestationService,
+    WorkerHeartbeat,
+)
 from core.automation.workflows import (
     FactNormalization,
     WorkflowDefinition,
@@ -51,6 +66,7 @@ __all__ = [
     "AssertionKind",
     "AutomationBundle",
     "AutomationRepository",
+    "CapabilityHealthService",
     "CaseAssertion",
     "CaseCandidate",
     "CaseDecision",
@@ -64,14 +80,22 @@ __all__ = [
     "CapabilityRegistry",
     "CapabilitySpec",
     "Disposition",
+    "ExecutionPhase",
+    "ExecutionPolicyContext",
+    "ExecutionPolicyDecision",
+    "ExecutionPolicyEvaluator",
     "ExtractionMethod",
     "HumanActionConflictError",
     "HumanActionNotFoundError",
     "HumanActionResolutionError",
     "HumanActionResolutionService",
     "HumanActionValidationError",
+    "POLICY_ENGINE_VERSION",
     "RunnerAdvanceResult",
     "RunnerState",
+    "WorkerAttestationResult",
+    "WorkerAttestationService",
+    "WorkerHeartbeat",
     "WorkflowPlan",
     "WorkflowPlanState",
     "WorkflowStep",
@@ -81,4 +105,6 @@ __all__ = [
     "WorkflowRegistry",
     "WorkflowRunner",
     "compute_action_plan_hash",
+    "compute_context_hash",
+    "compute_decision_hash",
 ]

@@ -131,24 +131,16 @@ async def test_execute_ticket_action_enqueues_taskiq():
     app.dependency_overrides[get_db_session] = override_db
 
     transport = ASGITransport(app=app)
-    with patch("api.src.core.task_dispatch.dispatch_command_task.kiq", new_callable=AsyncMock) as mock_kiq:
-        mock_kiq.return_value = None
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post(
-                "/api/v2/tickets/1001/actions",
-                json={
-                    "action": "install_printer",
-                    "params": {"printer_name": "HP LaserJet"},
-                    "idempotency_key": "test-key-001",
-                },
-            )
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["action"] == "install_printer"
-            assert data["status"] == "pending"
-            assert data["idempotency_key"] == "test-key-001"
-            assert mock_kiq.await_count == 1
-
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v2/tickets/1001/actions",
+            json={
+                "action": "install_printer",
+                "params": {"printer_name": "HP LaserJet"},
+                "idempotency_key": "test-key-001",
+            },
+        )
+        assert resp.status_code in (404, 405)
     app.dependency_overrides.clear()
 
 

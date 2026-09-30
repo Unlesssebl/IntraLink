@@ -54,8 +54,33 @@ export function DecisionOutcome({
     const error = onboardingPreflight?.error;
     blockers.push(error ? PREFLIGHT_ERROR_NAMES[error] || error : "Проверка перед выполнением не пройдена или истекла");
   }
-  if (!executionFinished && !commandRunning && data.approval.execution_enabled === false) {
-    blockers.push("Реальное создание в AD отключено администратором системы");
+  const isPolicyBlocked = Boolean(data.execution_policy && !data.execution_policy.allowed);
+  if (!executionFinished && !commandRunning && isPolicyBlocked) {
+    if (data.execution_policy?.reasons?.length) {
+      const reasonLabels: Record<string, string> = {
+        missing_executor: "Не зарегистрирован исполнитель",
+        missing_service_binding: "Нет активной привязки сервиса",
+        unsupported_capability_in_binding: "Действие не разрешено привязкой сервиса",
+        invalid_service_binding: "Привязка сервиса не прошла валидацию",
+        policy_not_found: "Политика выполнения не найдена",
+        policy_disabled: "Выполнение отключено администратором",
+        deployment_force_disabled: "Мутирующие операции принудительно отключены на сервере",
+        circuit_breaker_open: "Предохранитель (circuit breaker) открыт",
+        no_compatible_worker: "Нет совместимого активного воркера",
+        stale_worker_heartbeat: "Связь с воркером потеряна (heartbeat timeout)",
+        worker_engine_version_mismatch: "Несовпадение версии движка на воркере",
+        worker_deployment_force_disabled: "Воркер работает в режиме запрета мутаций",
+        preflight_not_passed: "Предварительные проверки не пройдены",
+        preflight_expired: "Срок действия предварительных проверок истек",
+        snapshot_hash_mismatch: "Данные тикета изменились",
+        params_hash_mismatch: "Параметры действия изменились",
+      };
+      data.execution_policy.reasons.forEach((code) => {
+        blockers.push(reasonLabels[code] || `Политика: ${code}`);
+      });
+    } else {
+      blockers.push("Выполнение действия заблокировано политикой безопасности");
+    }
   }
 
   let title = "Решение требует проверки оператора";
@@ -87,10 +112,11 @@ export function DecisionOutcome({
     description = "Все обязательные данные и технические проверки подтверждены. До нажатия кнопки AD не изменяется.";
     badge = "Можно одобрить";
     tone = "success";
-  } else if (onboardingAction && data.approval.execution_enabled === false && preflightPassed) {
-    title = "План корректен, но реальное выполнение выключено";
-    description = "Выбранный OU и логин проверены, однако запуск временно отключён администратором системы.";
-    badge = "Запуск отключён";
+  } else if (onboardingAction && isPolicyBlocked && preflightPassed) {
+    title = "План корректен, но выполнение заблокировано политикой";
+    description = "Выбранный OU и логин проверены, однако запуск заблокирован политикой безопасности или отсутствием воркера.";
+    badge = "Заблокировано политикой";
+    tone = "warning";
   } else if (data.redirect_plan) {
     title = "Предложено перенаправление заявки";
     description = `После подтверждения заявка будет направлена в «${data.redirect_plan.target_service_path}».`;

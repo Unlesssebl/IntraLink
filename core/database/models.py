@@ -10,7 +10,7 @@ Active entities include:
 
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from pgvector.sqlalchemy import Vector
@@ -25,6 +25,7 @@ from sqlalchemy import (
     String,
     Text,
     event,
+    func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -154,6 +155,14 @@ class CommandRecord(Base, TimestampMixin):
         nullable=True,
     )
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    approval_policy_decision_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID,
+        ForeignKey("execution_policy_decisions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    approval_policy_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    approval_policy_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     def __init__(self, **kwargs: Any) -> None:
         kwargs.setdefault("status", "pending")
@@ -631,14 +640,69 @@ class ExecutionFeedbackRecord(Base, TimestampMixin):
     )
 
 
-class WorkflowPolicyRecord(Base, TimestampMixin):
-    """Execution mode belongs to business workflows, never to case routing."""
+class CapabilityExecutionPolicyRecord(Base):
+    """Clean-cutover capability administrative execution policy."""
 
-    __tablename__ = "workflow_policies"
+    __tablename__ = "capability_execution_policies"
 
-    workflow_key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    mode: Mapped[str] = mapped_column(String(32), nullable=False, default="ASSISTED", server_default="ASSISTED")
-    description: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    capability_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    desired_state: Mapped[str] = mapped_column(String(32), nullable=False, default="disabled", server_default="disabled")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    changed_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+
+class ExecutionPolicyEventRecord(Base):
+    """Append-only audit trail of execution policy mutations."""
+
+    __tablename__ = "execution_policy_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    capability_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    previous_state: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    new_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    changed_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+
+class ExecutionPolicyDecisionRecord(Base):
+    """Append-only ledger of approval and execution phase evaluator decisions."""
+
+    __tablename__ = "execution_policy_decisions"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    capability_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, index=True)
+    policy_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    engine_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    context_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    reasons_json: Mapped[List[str]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
+    )
+    ticket_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    action_plan_id: Mapped[Optional[uuid.UUID]] = mapped_column(GUID, nullable=True, index=True)
+    command_id: Mapped[Optional[uuid.UUID]] = mapped_column(GUID, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
 
 
 class CapabilityHealthRecord(Base, TimestampMixin):

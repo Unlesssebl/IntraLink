@@ -311,6 +311,9 @@ class AutomationRepository:
         action: ActionProposal,
         initiator: str,
         executor: str = "worker",
+        approval_decision_id: UUID | None = None,
+        approval_policy_revision: int | None = None,
+        approval_policy_hash: str | None = None,
     ) -> CommandRecord:
         if plan.state not in {ActionPlanState.approved, ActionPlanState.running}:
             raise ValueError("Only an approved or running ActionPlan can create commands")
@@ -334,6 +337,9 @@ class AutomationRepository:
             params_hash=params_hash,
             plan_hash=plan.plan_hash,
             snapshot_hash=plan.snapshot_hash,
+            approval_policy_decision_id=approval_decision_id,
+            approval_policy_revision=approval_policy_revision,
+            approval_policy_hash=approval_policy_hash,
         )
 
     @staticmethod

@@ -51,8 +51,9 @@ from core.automation.contracts import (
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.automation.intake import CaseIntakeEngine
 from core.automation.llm_transport import LiteLLMVerifierTransport
+from core.automation.execution_policy import ExecutionPolicyEvaluator
 from core.automation.persistence import AutomationBundle, AutomationRepository
-from core.automation.policy import WorkflowPolicyService
+from core.automation.policy import CapabilityHealthService
 from core.automation.preflight import ActionPreflightService
 from core.automation.resolution import (
     HumanActionConflictError,
@@ -84,11 +85,13 @@ from core.automation.workflows import (
 from core.database.models import (
     ActionPlanRecord,
     ActionPreflightRecord,
+    CapabilityExecutionPolicyRecord,
     CaseDecisionRecord,
     CaseFeedbackRecord,
     ClarificationRequestRecord,
     CommandRecord,
     ExecutionFeedbackRecord,
+    ExecutionPolicyDecisionRecord,
     HumanActionRequestRecord,
     OnboardingFactCorrectionRecord,
     PlanFeedbackRecord,
@@ -112,6 +115,7 @@ from .schemas import (
     CorrectOnboardingFactsRequest,
     CorrectRedirectPlanRequest,
     CorrectTargetServiceRequest,
+    ExecutionPolicyDTO,
     FeedbackResponse,
     HumanActionCandidateDTO,
     HumanActionRequestDTO,
@@ -176,7 +180,7 @@ class AutomationService:
             self.preflight,
         )
         self.runner = WorkflowRunner(self.repository)
-        self.workflow_policy = WorkflowPolicyService()
+        self.execution_policy_evaluator = ExecutionPolicyEvaluator()
         self.catalog_repository = ServiceCatalogRepository()
         self.redirect_resolver = RedirectResolver()
         self.target_reranker = target_reranker or LLMServiceTargetReranker(
@@ -961,39 +965,71 @@ class AutomationService:
     ) -> ApprovalResponse:
         await self._verify_current_snapshot(ticket_id, request.snapshot_hash, auth_b64)
         plan_record = await session.scalar(
-            select(ActionPlanRecord).where(ActionPlanRecord.id == request.action_plan_id)
+            select(ActionPlanRecord).where(ActionPlanRecord.id == request.action_plan_id).with_for_update()
         )
         if plan_record is None or plan_record.task_id != ticket_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "action_plan_not_found")
+        if plan_record.state != ActionPlanState.ready.value:
+            raise HTTPException(status.HTTP_409_CONFLICT, "action_plan_not_ready")
         try:
             plan_for_policy = ActionPlan.model_validate(plan_record.plan_json)
-            await self.workflow_policy.require_assisted(session, workflow_key=plan_for_policy.workflow_key)
-            if (
-                any(item.capability_key == "create_ad_user" for item in plan_for_policy.actions)
-                and not settings.AD_ONBOARDING_EXECUTION_ENABLED
-            ):
-                raise ValueError("ad_onboarding_execution_disabled")
-            if any(item.capability_key == "create_ad_user" for item in plan_for_policy.actions):
-                version, _entries, bindings = await self.catalog_repository.current(session)
-                binding = next(
-                    (
-                        item
-                        for item in bindings
-                        if item.key == plan_for_policy.service_binding_key
-                        and item.version == plan_for_policy.service_binding_version
-                    ),
-                    None,
+        except Exception as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"invalid_plan_json:{exc}") from exc
+
+        # Lock policy rows for mutating capabilities to ensure atomic approval
+        for action in plan_for_policy.actions:
+            spec = self.capabilities.get(action.capability_key)
+            if spec and spec.is_mutating:
+                await session.scalar(
+                    select(CapabilityExecutionPolicyRecord)
+                    .where(CapabilityExecutionPolicyRecord.capability_key == action.capability_key)
+                    .with_for_update()
                 )
-                if (
-                    version is None
-                    or version.catalog_hash != plan_for_policy.catalog_hash
-                    or binding is None
-                    or not binding.is_active
-                    or not binding.is_validated
-                ):
-                    raise ValueError("ad_service_binding_changed")
-        except ValueError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+        redis_client = None
+        try:
+            from api.src.core.redis import get_redis
+            redis_client = await get_redis()
+        except Exception:
+            pass
+
+        action = plan_for_policy.actions[0] if plan_for_policy.actions else None
+        if action is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "action_plan_empty")
+
+        decision = await self.execution_policy_evaluator.evaluate_for_action(
+            session=session,
+            redis_client=redis_client,
+            phase="approval",
+            plan=plan_for_policy,
+            action=action,
+            registry=self.capabilities,
+            operator_approved=True,
+            current_snapshot_hash=request.snapshot_hash,
+        )
+        if not decision.allowed:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"execution_policy_denied:{','.join(decision.reasons)}",
+            )
+
+        decision_id = uuid.uuid4()
+        decision_record = ExecutionPolicyDecisionRecord(
+            id=decision_id,
+            phase="approval",
+            capability_key=action.capability_key,
+            allowed=True,
+            policy_revision=decision.policy_revision,
+            engine_version=decision.engine_version,
+            context_hash=decision.context_hash,
+            decision_hash=decision.decision_hash,
+            reasons_json=decision.reasons,
+            ticket_id=ticket_id,
+            action_plan_id=plan_for_policy.id,
+        )
+        session.add(decision_record)
+        await session.flush()
+
         try:
             plan = await self.repository.approve_action_plan(
                 session,
@@ -1004,6 +1040,7 @@ class AutomationService:
             )
         except (LookupError, ValueError) as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
         feedback = PlanFeedbackRecord(
             action_plan_id=plan.id,
             task_id=ticket_id,
@@ -1012,7 +1049,17 @@ class AutomationService:
             original_plan_hash=plan.plan_hash,
         )
         session.add(feedback)
-        advanced = await self.runner.advance(session, action_plan_id=plan.id, initiator=operator)
+        advanced = await self.runner.advance(
+            session,
+            action_plan_id=plan.id,
+            initiator=operator,
+            approval_decision_id=decision_id,
+            approval_policy_revision=decision.policy_revision,
+            approval_policy_hash=decision.decision_hash,
+        )
+        if advanced.command is not None:
+            decision_record.command_id = advanced.command.id
+
         await session.commit()
         command_id = advanced.command.id if advanced.command is not None else None
         if command_id is not None:
@@ -1093,8 +1140,6 @@ class AutomationService:
             if corrected.capability_key not in allowed:
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "capability_not_allowed_by_workflow")
             spec = self.capabilities.require(corrected.capability_key)
-            if not spec.enabled:
-                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "capability_disabled")
             accepted_params = set((*spec.required_params, *spec.optional_params))
             if set(corrected.params) - accepted_params:
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "unknown_capability_params")
@@ -1815,11 +1860,6 @@ class AutomationService:
             approval = {
                 "state": feedback.verdict if feedback else "pending",
                 "operator": feedback.operator_username if feedback else None,
-                "execution_enabled": (
-                    settings.AD_ONBOARDING_EXECUTION_ENABLED
-                    if any(item.capability_key == "create_ad_user" for item in bundle.action_plan.actions)
-                    else True
-                ),
             }
             commands = list(
                 (
@@ -1911,6 +1951,35 @@ class AutomationService:
             )
             for rec in human_action_records
         ]
+        execution_policy_dto: ExecutionPolicyDTO | None = None
+        if bundle.action_plan and bundle.action_plan.actions:
+            redis_client = None
+            try:
+                from api.src.core.redis import get_redis
+                redis_client = await get_redis()
+            except Exception:
+                pass
+            first_action = bundle.action_plan.actions[0]
+            policy_decision = await self.execution_policy_evaluator.evaluate_for_action(
+                session=session,
+                redis_client=redis_client,
+                phase="approval",
+                plan=bundle.action_plan,
+                action=first_action,
+                registry=self.capabilities,
+                current_snapshot_hash=bundle.frame.snapshot_hash,
+            )
+            execution_policy_dto = ExecutionPolicyDTO(
+                allowed=policy_decision.allowed,
+                phase=policy_decision.phase,
+                capability_key=policy_decision.capability_key,
+                policy_revision=policy_decision.policy_revision,
+                engine_version=policy_decision.engine_version,
+                context_hash=policy_decision.context_hash,
+                decision_hash=policy_decision.decision_hash,
+                reasons=policy_decision.reasons,
+            )
+
         readiness = await self._build_readiness(
             session,
             bundle=bundle,
@@ -1918,6 +1987,7 @@ class AutomationService:
             approval=approval,
             execution=execution,
             human_actions=human_action_records,
+            execution_policy=execution_policy_dto,
         )
         wf_def = self.workflows.get(bundle.workflow_plan.workflow_key)
         context_header: WorkflowContextHeaderDTO | None = None
@@ -1971,6 +2041,7 @@ class AutomationService:
             context_header=context_header,
             execution_summary=execution_summary,
             suggested_corrections=suggested_corrections or [],
+            execution_policy=execution_policy_dto,
         )
 
     async def _build_readiness(
@@ -1982,6 +2053,7 @@ class AutomationService:
         approval: dict[str, Any],
         execution: list[dict[str, Any]],
         human_actions: list[HumanActionRequestRecord] | None = None,
+        execution_policy: ExecutionPolicyDTO | None = None,
     ) -> AutomationReadinessDTO | None:
         clarification = await session.scalar(
             select(ClarificationRequestRecord)
@@ -2073,20 +2145,38 @@ class AutomationService:
                     detail="Одна или несколько проверок перед созданием не пройдены.",
                 )
             )
-        execution_disabled = bool(bundle.action_plan) and approval.get("execution_enabled") is False
-        if execution_disabled:
-            is_ad = any(item.capability_key == "create_ad_user" for item in bundle.action_plan.actions)
-            blockers.append(
-                ReadinessBlockerDTO(
-                    code="ad_onboarding_execution_disabled" if is_ad else "capability_execution_disabled",
-                    stage="execution",
-                    detail=(
-                        "Создание в AD отключено настройкой AD_ONBOARDING_EXECUTION_ENABLED."
-                        if is_ad
-                        else "Автоматическое выполнение возможностей сценария отключено настройками безопасности."
-                    ),
+        execution_blocked = bool(bundle.action_plan) and execution_policy is not None and not execution_policy.allowed
+        if execution_blocked and execution_policy is not None:
+            reason_map = {
+                "missing_executor": "Для данной возможности не зарегистрирован исполнитель.",
+                "missing_service_binding": "Маршрут действия не привязан к активному сервису.",
+                "unsupported_capability_in_binding": "Возможность не разрешена в привязке сервиса.",
+                "invalid_service_binding": "Привязка сервиса не прошла валидацию.",
+                "policy_not_found": "Политика выполнения возможности не найдена в базе данных.",
+                "policy_disabled": "Выполнение возможности отключено администратором.",
+                "deployment_force_disabled": "Мутирующие операции принудительно отключены на уровне сервера (MUTATING_AUTOMATION_FORCE_DISABLED).",
+                "circuit_breaker_open": "Предохранитель (circuit breaker) возможности открыт из-за предыдущих ошибок.",
+                "no_compatible_worker": "Отсутствует активный совместимый воркер для выполнения возможности.",
+                "stale_worker_heartbeat": "Связь с воркером потеряна (устаревший heartbeat).",
+                "worker_engine_version_mismatch": "Версия движка политик на воркере не совпадает с API.",
+                "worker_deployment_force_disabled": "Воркер работает в режиме принудительного запрета мутаций.",
+                "plan_not_approved": "План действий еще не утвержден оператором.",
+                "snapshot_hash_mismatch": "Данные заявки изменились с момента утверждения плана.",
+                "params_hash_mismatch": "Параметры действия изменились с момента утверждения.",
+                "preflight_not_passed": "Предварительные проверки (preflight) не пройдены.",
+                "preflight_expired": "Срок действия предварительных проверок (preflight) истек.",
+                "policy_tightened_after_approval": "Политика выполнения была ужесточена после утверждения плана.",
+                "policy_hash_mismatch": "Хэш политики при утверждении не совпадает с текущим.",
+            }
+            for code in execution_policy.reasons:
+                detail = reason_map.get(code, f"Политика выполнения запрещает операцию ({code}).")
+                blockers.append(
+                    ReadinessBlockerDTO(
+                        code=code,
+                        stage="execution",
+                        detail=detail,
+                    )
                 )
-            )
 
         command_states = {str(item.get("status")) for item in execution}
         completed = bundle.workflow_plan.state == WorkflowPlanState.completed or (
@@ -2165,8 +2255,10 @@ class AutomationService:
             state, current_stage = "blocked", "facts"
         elif not preflight_passed:
             state, current_stage = "blocked", "preflight"
-        elif execution_disabled:
+        elif execution_blocked:
             state, current_stage = "blocked", "approval"
+            if approval.get("state") == "pending":
+                actions.append("reject_automation")
         elif approval.get("state") == "pending":
             state, current_stage = "ready_for_approval", "approval"
             actions.extend(["approve", "reject_automation"])

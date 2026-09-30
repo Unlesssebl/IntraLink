@@ -3,9 +3,9 @@
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from core.automation.policy import CapabilityHealthService, WorkflowPolicyService
+from core.automation.policy import CapabilityHealthService
 from core.database.base import Base
-from core.database.models import CapabilityHealthRecord, WorkflowPolicyRecord
+from core.database.models import CapabilityHealthRecord
 
 
 @pytest.fixture
@@ -16,18 +16,6 @@ async def session_factory():
     yield async_sessionmaker(engine, expire_on_commit=False)
     await engine.dispose()
 
-
-async def test_workflow_defaults_to_assisted_and_rejects_other_modes(session_factory) -> None:
-    service = WorkflowPolicyService()
-    async with session_factory() as session, session.begin():
-        await service.require_assisted(session, workflow_key="printing_incident_workflow")
-        record = await session.get(WorkflowPolicyRecord, "printing_incident_workflow")
-        assert record is not None and record.mode == "ASSISTED"
-        record.mode = "DISABLED"
-
-    async with session_factory() as session:
-        with pytest.raises(ValueError, match="workflow_not_assisted:DISABLED"):
-            await service.require_assisted(session, workflow_key="printing_incident_workflow")
 
 
 async def test_capability_circuit_breaks_and_verified_success_resets_it(session_factory) -> None:

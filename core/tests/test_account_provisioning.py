@@ -119,3 +119,101 @@ def test_provisioning_checks_every_ldap_step():
 
     assert exc_info.value.code == "ldap_set_password_failed"
     assert exc_info.value.ad_object_created is True
+
+
+@pytest.mark.asyncio
+async def test_preflight_succeeds_when_user_dn_raises_ldap_no_such_object():
+    from ldap3.core.exceptions import LDAPNoSuchObjectResult
+
+    provisioner, conn, _client = _provisioner_with_verified_ldap()
+
+    target_ou = MagicMock()
+    target_ou.ou.value = "ИТ"
+    target_ou.distinguishedName.value = "OU=ИТ,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+
+    def custom_search(*args, **kwargs):
+        search_base = kwargs.get("search_base") or (args[0] if args else "")
+        if "CN=Иванов Иван" in search_base:
+            raise LDAPNoSuchObjectResult()
+        if "OU=ИТ" in search_base:
+            conn.entries = [target_ou]
+            return
+        conn.entries = []
+
+    conn.search.side_effect = custom_search
+
+    preview = await provisioner.preflight(
+        last_name="Иванов",
+        first_name="Иван",
+        middle_name="",
+        department="ИТ",
+        company="",
+        target_ou_dn="OU=ИТ,OU=CORPORATE_USERS,DC=corporate,DC=loc",
+    )
+
+    assert preview["target_ou"] == "OU=ИТ,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    assert preview["preview_sam_account_name"] == "ivanov.i"
+    assert preview["preview_upn"] == "ivanov.i@corporate.loc"
+
+
+@pytest.mark.asyncio
+async def test_preflight_raises_when_ad_object_already_exists():
+    provisioner, conn, _client = _provisioner_with_verified_ldap()
+
+    existing_user = MagicMock()
+    existing_user.distinguishedName.value = "CN=Иванов Иван,OU=ИТ,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    target_ou = MagicMock()
+    target_ou.ou.value = "ИТ"
+    target_ou.distinguishedName.value = "OU=ИТ,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+
+    def custom_search(*args, **kwargs):
+        search_base = kwargs.get("search_base") or (args[0] if args else "")
+        if "CN=Иванов Иван" in search_base:
+            conn.entries = [existing_user]
+            return
+        if "OU=ИТ" in search_base:
+            conn.entries = [target_ou]
+            return
+        conn.entries = []
+
+    conn.search.side_effect = custom_search
+
+    with pytest.raises(AccountProvisioningError) as exc_info:
+        await provisioner.preflight(
+            last_name="Иванов",
+            first_name="Иван",
+            middle_name="",
+            department="ИТ",
+            company="",
+            target_ou_dn="OU=ИТ,OU=CORPORATE_USERS,DC=corporate,DC=loc",
+        )
+
+    assert exc_info.value.code == "ad_object_already_exists"
+
+
+@pytest.mark.asyncio
+async def test_preflight_raises_when_selected_ou_not_found():
+    from ldap3.core.exceptions import LDAPNoSuchObjectResult
+
+    provisioner, conn, _client = _provisioner_with_verified_ldap()
+
+    def custom_search(*args, **kwargs):
+        search_base = kwargs.get("search_base") or (args[0] if args else "")
+        if "OU=Несуществующий" in search_base:
+            raise LDAPNoSuchObjectResult()
+        conn.entries = []
+
+    conn.search.side_effect = custom_search
+
+    with pytest.raises(AccountProvisioningError) as exc_info:
+        await provisioner.preflight(
+            last_name="Иванов",
+            first_name="Иван",
+            middle_name="",
+            department="ИТ",
+            company="",
+            target_ou_dn="OU=Несуществующий,OU=CORPORATE_USERS,DC=corporate,DC=loc",
+        )
+
+    assert exc_info.value.code == "ad_target_ou_not_found"
+

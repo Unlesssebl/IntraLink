@@ -100,11 +100,20 @@ class CreateAdUserExecutor:
                     error_code=exc.code,
                     human_action=human_action,
                 )
+            failed_check_key = (
+                "distinguished_name_absent"
+                if exc.code == "ad_object_already_exists"
+                else (
+                    "target_ou"
+                    if exc.code in {"ad_target_ou_not_found", "ad_target_ou_outside_root"}
+                    else "identity_preflight"
+                )
+            )
             return CapabilityPreflight(
                 status=PreflightStatus.failed,
                 checks=[
                     PreflightCheck(
-                        key="identity_preflight",
+                        key=failed_check_key,
                         status=PreflightCheckStatus.failed,
                         reason_code=exc.code,
                         details=exc.details,
@@ -170,13 +179,16 @@ class CreateAdUserExecutor:
             if pool is not None:
                 def _check_ou_exists() -> bool:
                     with pool.connection_scope(auto_bind=True) as conn:
-                        conn.search(
-                            value.strip(),
-                            "(objectClass=organizationalUnit)",
-                            ldap3.BASE,
-                            attributes=["ou"],
-                        )
-                        return len(conn.entries) > 0
+                        try:
+                            conn.search(
+                                value.strip(),
+                                "(objectClass=organizationalUnit)",
+                                ldap3.BASE,
+                                attributes=["ou"],
+                            )
+                            return len(conn.entries) > 0
+                        except ldap3.core.exceptions.LDAPNoSuchObjectResult:
+                            return False
 
                 return await asyncio.to_thread(_check_ou_exists)
         except Exception:
@@ -186,11 +198,20 @@ class CreateAdUserExecutor:
     async def execute(
         self, params: dict[str, Any], *, context: CapabilityExecutionContext
     ) -> CapabilityExecution:
-        if os.getenv("AD_ONBOARDING_EXECUTION_ENABLED", "false").lower() not in {"1", "true", "yes"}:
+        from core.automation.execution_policy import is_deployment_force_disabled
+
+        if is_deployment_force_disabled():
             return CapabilityExecution(
                 outcome=CapabilityOutcome.failed,
                 proof={"ad_object_created": False, "safe_to_retry": True},
-                error_code="ad_onboarding_execution_disabled",
+                error_code="deployment_force_disabled",
+            )
+        policy_decision = getattr(context, "policy_decision", None)
+        if policy_decision is not None and not policy_decision.allowed:
+            return CapabilityExecution(
+                outcome=CapabilityOutcome.failed,
+                proof={"ad_object_created": False, "safe_to_retry": True},
+                error_code="execution_policy_denied",
             )
         delivery_policy = None
         if "delivery_policy" in params and isinstance(params["delivery_policy"], dict):

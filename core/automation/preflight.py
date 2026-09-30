@@ -163,12 +163,6 @@ class ActionPreflightService:
                 details={"missing_params": missing},
                 error_code="missing_capability_params",
             )
-        if not spec.enabled:
-            return CapabilityPreflight(
-                status=PreflightStatus.failed,
-                checks=["capability_enabled"],
-                error_code="capability_disabled",
-            )
         try:
             await self.health.require_available(session, capability_key=action.capability_key)
         except ValueError:

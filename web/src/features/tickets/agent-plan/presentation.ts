@@ -6,7 +6,7 @@ export const CASE_NAMES: Record<string, string> = {
   printer_connection_request: "Подключение принтера",
   printing_incident: "Инцидент печати",
   wireless_access_request: "Доступ к WLAN",
-  employee_onboarding: "Онбординг сотрудника",
+  employee_onboarding: "Создание учётной записи AD",
   access_revocation_request: "Отзыв доступа",
   workstation_unavailable_incident: "Недоступно рабочее место",
   workstation_hardware_diagnostic: "Диагностика оборудования",

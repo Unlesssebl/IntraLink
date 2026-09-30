@@ -103,3 +103,29 @@ class AdAccountBindingStatus(BaseModel):
 class ActivateAdAccountBindingRequest(BaseModel):
     catalog_hash: str = Field(min_length=64, max_length=64)
     confirmed_service_path: str = Field(min_length=1, max_length=1000)
+
+
+class CapabilityExecutionPolicyStatusDTO(BaseModel):
+    capability_key: str
+    name: str
+    description: str
+    risk_level: str
+    requires_binding: bool
+    desired_state: str
+    revision: int
+    reason: str
+    changed_by: str
+    changed_at: datetime
+    deployment_ceiling: bool
+    binding_state: str
+    circuit_state: str
+    worker_available: bool
+    effective_state: str
+    reason_codes: list[str] = Field(default_factory=list)
+
+
+class UpdateCapabilityExecutionPolicyRequest(BaseModel):
+    desired_state: str = Field(pattern="^(enabled|disabled)$")
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=10, max_length=500)
+

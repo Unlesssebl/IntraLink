@@ -12,9 +12,7 @@ from core.intraservice.exceptions import IntraServiceNotFoundError
 
 from .schemas import (
     AddCommentRequest,
-    CommandActionResponse,
     CommandStatusResponse,
-    ExecuteTicketActionRequest,
     TicketDetailDTO,
     TicketSummaryDTO,
     UpdateTicketRequest,
@@ -100,22 +98,6 @@ async def add_comment(
     """Post a comment to a ticket."""
     success = await service.add_comment(ticket_id=ticket_id, req=req, auth_b64=auth_b64)
     return {"ticket_id": ticket_id, "comment_added": success}
-
-
-@router.post("/{ticket_id}/actions", response_model=CommandActionResponse)
-async def execute_ticket_action(
-    ticket_id: int,
-    req: ExecuteTicketActionRequest,
-    service: TicketService = Depends(get_ticket_service),
-    db: AsyncSession = Depends(get_db_session),
-) -> CommandActionResponse:
-    """Enqueue an idempotent command for this ticket (Outbox pattern)."""
-    return await service.execute_action(
-        ticket_id=ticket_id,
-        req=req,
-        initiator="web-user",
-        session=db,
-    )
 
 
 @tasks_router.get("/{command_id}", response_model=CommandStatusResponse)

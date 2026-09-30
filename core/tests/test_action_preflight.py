@@ -74,7 +74,8 @@ async def test_disabled_capability_cannot_pass_preflight_or_approval(session_fac
         )
         records = await service.run_plan(session, action_plan_id=plan.id)
         assert records[0].status == "failed"
-        assert records[0].error_message == "capability_disabled"
+        assert records[0].error_message == "printer_executor_unavailable"
+
 
     async with session_factory() as session, session.begin():
         with pytest.raises(ValueError, match="action_preflight_not_passed"):

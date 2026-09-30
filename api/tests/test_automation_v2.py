@@ -36,12 +36,14 @@ from core.automation.case_router import CaseRouter
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.database.base import Base
 from core.database.models import (
+    CapabilityExecutionPolicyRecord,
     ClarificationRequestRecord,
     ServiceCatalogEntryRecord,
     ServiceCatalogVersionRecord,
     ServiceRouteBindingRecord,
     ServiceRoutingFeedbackRecord,
 )
+
 from core.intraservice.auth import ServiceAuthCredentials, ServiceAuthError
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO, TaskLifetimeEventDTO
 
@@ -356,39 +358,70 @@ async def test_failed_clarification_is_visible_and_retry_is_idempotent(session_f
     assert client.update_task.await_count == 2
 
 
-async def test_analyze_then_approve_creates_bound_first_command(session_factory) -> None:
+async def test_analyze_then_approve_creates_bound_first_command(session_factory, monkeypatch) -> None:
+    monkeypatch.setenv("MUTATING_AUTOMATION_FORCE_DISABLED", "false")
     client = AsyncMock()
     client.get_task.return_value = _task()
     client.get_task_lifetime.return_value = []
     service = _service(client)
-    async with session_factory() as session:
-        automation = await service.analyze(
-            session,
-            ticket_id=62001,
-            auth_b64="dGVzdDp0ZXN0",
-            force=False,
-        )
-    assert automation.case_decision.primary_case_type == "wireless_access_request"
-    assert automation.action_plan is not None
-    assert automation.action_plan.actions[0].capability_key == "add_wlan_group_member"
 
-    request = ApproveActionPlanRequest(
-        action_plan_id=automation.action_plan.id,
-        plan_hash=automation.action_plan.plan_hash,
-        snapshot_hash=automation.snapshot_hash,
+    now = datetime.now(UTC)
+    async with session_factory() as session, session.begin():
+        session.add(
+            CapabilityExecutionPolicyRecord(
+                capability_key="add_wlan_group_member",
+                desired_state="enabled",
+                revision=1,
+                reason="Enabled for test",
+                changed_by="admin",
+                changed_at=now,
+            )
+        )
+
+    from core.automation.worker_attestation import WorkerAttestationResult
+
+    mock_att = WorkerAttestationResult(
+        worker_available=True,
+        worker_compatible=True,
+        worker_force_disabled=False,
+        active_nodes_count=1,
+        matching_nodes=["worker-node-1"],
+        reasons=[],
     )
-    with patch("api.src.features.autopilot.service.dispatch_command", new_callable=AsyncMock) as dispatch:
+
+    with patch(
+        "core.automation.worker_attestation.WorkerAttestationService.check_capability_worker",
+        return_value=mock_att,
+    ):
         async with session_factory() as session:
-            response = await service.approve(
+            automation = await service.analyze(
                 session,
                 ticket_id=62001,
-                request=request,
-                operator="operator",
                 auth_b64="dGVzdDp0ZXN0",
+                force=False,
             )
-    assert response.status == "approved"
-    assert response.command_id is not None
-    dispatch.assert_awaited_once_with(response.command_id)
+        assert automation.case_decision.primary_case_type == "wireless_access_request"
+        assert automation.action_plan is not None
+        assert automation.action_plan.actions[0].capability_key == "add_wlan_group_member"
+
+        request = ApproveActionPlanRequest(
+            action_plan_id=automation.action_plan.id,
+            plan_hash=automation.action_plan.plan_hash,
+            snapshot_hash=automation.snapshot_hash,
+        )
+        with patch("api.src.features.autopilot.service.dispatch_command", new_callable=AsyncMock) as dispatch:
+            async with session_factory() as session:
+                response = await service.approve(
+                    session,
+                    ticket_id=62001,
+                    request=request,
+                    operator="operator",
+                    auth_b64="dGVzdDp0ZXN0",
+                )
+        assert response.status == "approved"
+        assert response.command_id is not None
+        dispatch.assert_awaited_once_with(response.command_id)
+
 
 
 async def test_operator_can_replace_action_plan_before_approval(session_factory) -> None:

@@ -44,6 +44,9 @@ class WorkflowRunner:
         *,
         action_plan_id: UUID,
         initiator: str,
+        approval_decision_id: UUID | None = None,
+        approval_policy_revision: int | None = None,
+        approval_policy_hash: str | None = None,
     ) -> RunnerAdvanceResult:
         record = await session.scalar(
             select(ActionPlanRecord).where(ActionPlanRecord.id == action_plan_id).with_for_update()
@@ -96,6 +99,9 @@ class WorkflowRunner:
                 plan=plan,
                 action=action,
                 initiator=initiator,
+                approval_decision_id=approval_decision_id,
+                approval_policy_revision=approval_policy_revision,
+                approval_policy_hash=approval_policy_hash,
             )
             session.add(command)
             record.state = ActionPlanState.running.value

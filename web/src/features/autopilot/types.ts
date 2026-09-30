@@ -156,6 +156,17 @@ export interface RedirectPlan {
   version: number;
 }
 
+export interface ExecutionPolicy {
+  allowed: boolean;
+  phase: "approval" | "execution";
+  capability_key: string;
+  policy_revision: number;
+  engine_version: string;
+  context_hash: string;
+  decision_hash: string;
+  reasons: string[];
+}
+
 export interface TicketAutomation {
   task_id: number;
   snapshot_hash: string;
@@ -174,7 +185,9 @@ export interface TicketAutomation {
     error?: string | null;
     expires_at: string;
   }>;
-  approval: { state?: string; operator?: string | null; execution_enabled?: boolean };
+  approval: { state?: string; operator?: string | null };
+  execution_policy?: ExecutionPolicy | null;
+
   execution: Array<{
     command_id: string;
     action_id?: string | null;

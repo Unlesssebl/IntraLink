@@ -16,11 +16,14 @@ from .schemas import (
     AdCredentialsStatus,
     AdCredentialsUpdate,
     AdCredentialsUpdateResponse,
+    CapabilityExecutionPolicyStatusDTO,
     ServiceCredentialsStatus,
     ServiceCredentialsUpdate,
     ServiceCredentialsUpdateResponse,
+    UpdateCapabilityExecutionPolicyRequest,
 )
 from .service import AdminCredentialsService
+
 
 router = APIRouter(prefix="/admin", tags=["Administration"])
 
@@ -86,3 +89,32 @@ async def activate_ad_account_binding(
     service: Annotated[AdminCredentialsService, Depends(get_admin_credentials_service)],
 ) -> AdAccountBindingStatus:
     return await service.activate_ad_account_binding(session, request)
+
+
+@router.get("/execution-policies", response_model=list[CapabilityExecutionPolicyStatusDTO])
+async def get_execution_policies(
+    _admin: Annotated[AdminIdentity, Depends(require_admin_intraservice_auth)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
+    service: Annotated[AdminCredentialsService, Depends(get_admin_credentials_service)],
+) -> list[CapabilityExecutionPolicyStatusDTO]:
+    return await service.get_execution_policies(session, redis_client)
+
+
+@router.put("/execution-policies/{capability_key}", response_model=CapabilityExecutionPolicyStatusDTO)
+async def update_execution_policy(
+    capability_key: str,
+    request: UpdateCapabilityExecutionPolicyRequest,
+    admin: Annotated[AdminIdentity, Depends(require_admin_intraservice_auth)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
+    service: Annotated[AdminCredentialsService, Depends(get_admin_credentials_service)],
+) -> CapabilityExecutionPolicyStatusDTO:
+    return await service.update_execution_policy(
+        session=session,
+        redis_client=redis_client,
+        capability_key=capability_key,
+        request=request,
+        admin_login=admin.login,
+    )
+

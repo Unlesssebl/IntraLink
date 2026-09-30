@@ -393,6 +393,25 @@ export interface AdAccountBindingStatus {
   requires_confirmation: boolean;
 }
 
+export interface CapabilityExecutionPolicyStatusDTO {
+  capability_key: string;
+  name: string;
+  description: string;
+  risk_level: string;
+  requires_binding: boolean;
+  desired_state: "enabled" | "disabled";
+  revision: number;
+  reason: string;
+  changed_by: string;
+  changed_at: string;
+  deployment_ceiling: boolean;
+  binding_state: "valid" | "invalid" | "not_required";
+  circuit_state: "closed" | "open";
+  worker_available: boolean;
+  effective_state: "allowed" | "blocked";
+  reason_codes: string[];
+}
+
 export const adminApi = {
   getServiceCredentialsStatus: (signal?: AbortSignal) =>
     request<ServiceCredentialsStatus>("/admin/service-credentials/status", { signal }),
@@ -426,6 +445,25 @@ export const adminApi = {
       method: "PUT",
       body: JSON.stringify({ catalog_hash: catalogHash, confirmed_service_path: confirmedServicePath }),
     }),
+
+  getExecutionPolicies: (signal?: AbortSignal) =>
+    request<CapabilityExecutionPolicyStatusDTO[]>("/admin/execution-policies", { signal }),
+
+  updateExecutionPolicy: (
+    capabilityKey: string,
+    desiredState: "enabled" | "disabled",
+    expectedRevision: number,
+    reason: string
+  ) =>
+    request<CapabilityExecutionPolicyStatusDTO>(`/admin/execution-policies/${capabilityKey}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        desired_state: desiredState,
+        expected_revision: expectedRevision,
+        reason,
+      }),
+    }),
 };
 
 export { autopilotApi } from "@/features/autopilot/api";
+

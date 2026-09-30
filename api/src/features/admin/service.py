@@ -18,10 +18,16 @@ from core.ad.credentials import (
     ActiveDirectoryCredentialVault,
 )
 from core.ad.pool import ActiveDirectoryPool
+from core.automation.capabilities import CapabilityRisk, get_default_capability_registry
+from core.automation.execution_policy import is_deployment_force_disabled
+from core.automation.policy import CapabilityHealthService
 from core.automation.service_catalog import ServiceCatalogRepository
 from core.automation.service_routing import RedirectStrategy, ServiceRouteBinding
+from core.automation.worker_attestation import WorkerAttestationService
 from core.crypto import get_fernet
 from core.database.models import (
+    CapabilityExecutionPolicyRecord,
+    ExecutionPolicyEventRecord,
     ServiceCatalogEntryRecord,
     ServiceCatalogVersionRecord,
     ServiceRouteBindingRecord,
@@ -36,11 +42,14 @@ from .schemas import (
     AdCredentialsStatus,
     AdCredentialsUpdate,
     AdCredentialsUpdateResponse,
+    CapabilityExecutionPolicyStatusDTO,
     CatalogStatus,
     ServiceCredentialsStatus,
     ServiceCredentialsUpdate,
     ServiceCredentialsUpdateResponse,
+    UpdateCapabilityExecutionPolicyRequest,
 )
+
 
 
 class AdminCredentialsService:
@@ -276,3 +285,170 @@ class AdminCredentialsService:
             catalog_sync=sync_state,
             catalog_sync_error=sync_error,
         )
+
+    async def get_execution_policies(
+        self,
+        session: AsyncSession,
+        redis_client: aioredis.Redis,
+    ) -> list[CapabilityExecutionPolicyStatusDTO]:
+        registry = get_default_capability_registry()
+        mutating_caps = [
+            spec for spec in registry.list_all()
+            if spec.is_mutating
+        ]
+
+        pol_rows = (await session.scalars(select(CapabilityExecutionPolicyRecord))).all()
+        policies_by_key = {p.capability_key: p for p in pol_rows}
+
+        binding_rows = (
+            await session.scalars(
+                select(ServiceRouteBindingRecord).where(
+                    ServiceRouteBindingRecord.is_active.is_(True),
+                    ServiceRouteBindingRecord.is_validated.is_(True),
+                )
+            )
+        ).all()
+        active_binding_cap_keys = {
+            cap
+            for b in binding_rows
+            for cap in (b.allowed_capabilities_json or [])
+        }
+
+        attestation_service = WorkerAttestationService()
+        health_service = CapabilityHealthService()
+        ceiling_enabled = not is_deployment_force_disabled()
+
+        items: list[CapabilityExecutionPolicyStatusDTO] = []
+        for spec in mutating_caps:
+            cap_key = spec.key
+            pol = policies_by_key.get(cap_key)
+
+            circuit_closed = await health_service.is_circuit_closed(session, cap_key)
+            circuit_state = "closed" if circuit_closed else "open"
+
+            worker_att = await attestation_service.verify_worker_for_capability(redis_client, cap_key)
+            worker_available = worker_att.healthy
+
+            requires_binding = cap_key in ("create_ad_user", "disable_ad_user", "add_wlan_group_member")
+            if requires_binding:
+                binding_state = "valid" if cap_key in active_binding_cap_keys else "invalid"
+            else:
+                binding_state = "not_required"
+
+            desired_state = pol.desired_state if pol else "disabled"
+            revision = pol.revision if pol else 0
+            reason = pol.reason if pol else "Политика не создана"
+            changed_by = pol.changed_by if pol else "system"
+            changed_at = pol.changed_at if pol else datetime.now(UTC)
+
+            reasons: list[str] = []
+            if pol is None:
+                reasons.append("policy_not_found")
+            elif pol.desired_state != "enabled":
+                reasons.append("policy_disabled")
+
+            if not ceiling_enabled:
+                reasons.append("deployment_force_disabled")
+
+            if circuit_state != "closed":
+                reasons.append("circuit_breaker_open")
+
+            if requires_binding and binding_state != "valid":
+                reasons.append("missing_service_binding")
+
+            if not worker_available:
+                reasons.extend(worker_att.reasons)
+
+            reasons = sorted(set(reasons))
+            effective_state = "allowed" if not reasons else "blocked"
+
+            items.append(
+                CapabilityExecutionPolicyStatusDTO(
+                    capability_key=cap_key,
+                    name=spec.name,
+                    description=spec.description,
+                    risk_level=spec.risk.value,
+                    requires_binding=requires_binding,
+                    desired_state=desired_state,
+                    revision=revision,
+                    reason=reason,
+                    changed_by=changed_by,
+                    changed_at=changed_at,
+                    deployment_ceiling=ceiling_enabled,
+                    binding_state=binding_state,
+                    circuit_state=circuit_state,
+                    worker_available=worker_available,
+                    effective_state=effective_state,
+                    reason_codes=reasons,
+                )
+            )
+
+        return sorted(items, key=lambda x: x.capability_key)
+
+    async def update_execution_policy(
+        self,
+        session: AsyncSession,
+        redis_client: aioredis.Redis,
+        capability_key: str,
+        request: UpdateCapabilityExecutionPolicyRequest,
+        admin_login: str,
+    ) -> CapabilityExecutionPolicyStatusDTO:
+        registry = get_default_capability_registry()
+        spec = registry.get(capability_key)
+        if spec is None or not spec.is_mutating:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Мутирующая возможность '{capability_key}' не найдена в реестре",
+            )
+
+
+        stmt = (
+            select(CapabilityExecutionPolicyRecord)
+            .where(CapabilityExecutionPolicyRecord.capability_key == capability_key)
+            .with_for_update()
+        )
+        row = await session.scalar(stmt)
+        if row is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Политика выполнения для '{capability_key}' не найдена в базе данных",
+            )
+
+        if row.revision != request.expected_revision:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Конфликт версий: ревизия политики {row.revision} не совпадает с ожидаемой {request.expected_revision}",
+            )
+
+        old_state = row.desired_state
+        new_revision = row.revision + 1
+        now = datetime.now(UTC)
+
+        row.desired_state = request.desired_state
+        row.revision = new_revision
+        row.reason = request.reason.strip()
+        row.changed_by = admin_login
+        row.changed_at = now
+
+        event = ExecutionPolicyEventRecord(
+            capability_key=capability_key,
+            previous_state=old_state,
+            new_state=request.desired_state,
+            revision=new_revision,
+            reason=request.reason.strip(),
+            changed_by=admin_login,
+            created_at=now,
+        )
+        session.add(event)
+        await session.commit()
+
+        all_policies = await self.get_execution_policies(session, redis_client)
+        for item in all_policies:
+            if item.capability_key == capability_key:
+                return item
+
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Не удалось получить обновленный статус политики",
+        )
+

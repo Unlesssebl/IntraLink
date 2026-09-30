@@ -28,11 +28,13 @@ GENERIC_ENGINE_FILES = [
     "capabilities.py",
     "clarification.py",
     "compiler.py",
+    "execution_policy.py",
     "persistence.py",
     "policy.py",
     "preflight.py",
     "resolution.py",
     "runner.py",
+    "worker_attestation.py",
     "workflows.py",
 ]
 

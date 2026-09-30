@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Any, Protocol
 
 import ldap3
+from ldap3.core.exceptions import LDAPNoSuchObjectResult
 from ldap3.utils.conv import escape_filter_chars
 from ldap3.utils.dn import escape_rdn
 
@@ -243,13 +244,19 @@ class AccountProvisioningService:
                     "ad_target_ou_outside_root",
                     f"Selected OU '{target_ou}' is not within authorized root '{users_root_ou}'",
                 )
-            conn.search(
-                target_ou,
-                "(objectClass=organizationalUnit)",
-                ldap3.BASE,
-                attributes=["ou", "distinguishedName"],
-            )
-            if not conn.entries:
+            try:
+                conn.search(
+                    target_ou,
+                    "(objectClass=organizationalUnit)",
+                    ldap3.BASE,
+                    attributes=["ou", "distinguishedName"],
+                )
+                if not conn.entries:
+                    raise AccountProvisioningError(
+                        "ad_target_ou_not_found",
+                        f"Selected OU '{target_ou}' does not exist in Active Directory",
+                    )
+            except LDAPNoSuchObjectResult:
                 raise AccountProvisioningError(
                     "ad_target_ou_not_found",
                     f"Selected OU '{target_ou}' does not exist in Active Directory",
@@ -344,17 +351,20 @@ class AccountProvisioningService:
                 target_ou_dn=target_ou_dn,
             )
             user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
-            conn.search(
-                search_base=user_dn,
-                search_filter="(objectClass=user)",
-                search_scope=ldap3.BASE,
-                attributes=["distinguishedName"],
-            )
-            if conn.entries:
-                raise AccountProvisioningError(
-                    "ad_object_already_exists",
-                    "AD object for this employee already exists; automatic recreation is forbidden",
+            try:
+                conn.search(
+                    search_base=user_dn,
+                    search_filter="(objectClass=user)",
+                    search_scope=ldap3.BASE,
+                    attributes=["distinguishedName"],
                 )
+                if conn.entries:
+                    raise AccountProvisioningError(
+                        "ad_object_already_exists",
+                        "AD object for this employee already exists; automatic recreation is forbidden",
+                    )
+            except LDAPNoSuchObjectResult:
+                pass
 
             collision_index = 1
             while True:
@@ -492,9 +502,12 @@ class AccountProvisioningService:
                 target_ou_dn=target_ou_dn,
             )
             user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
-            conn.search(user_dn, "(objectClass=user)", ldap3.BASE, attributes=["distinguishedName"])
-            if conn.entries:
-                raise AccountProvisioningError("ad_object_already_exists", "AD object already exists")
+            try:
+                conn.search(user_dn, "(objectClass=user)", ldap3.BASE, attributes=["distinguishedName"])
+                if conn.entries:
+                    raise AccountProvisioningError("ad_object_already_exists", "AD object already exists")
+            except LDAPNoSuchObjectResult:
+                pass
             for collision_index in range(1, 51):
                 sam = generate_sam_account_name(last_name, first_name, middle_name, collision_index)
                 conn.search(

@@ -110,6 +110,19 @@ class SuggestedCorrectionDTO(BaseModel):
     comment_id: int | None = None
 
 
+class ExecutionPolicyDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    allowed: bool
+    phase: str
+    capability_key: str
+    policy_revision: int | None = None
+    engine_version: str
+    context_hash: str
+    decision_hash: str
+    reasons: list[str] = Field(default_factory=list)
+
+
 class TicketAutomationDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -129,6 +142,7 @@ class TicketAutomationDTO(BaseModel):
     context_header: WorkflowContextHeaderDTO | None = None
     execution_summary: list[str] = Field(default_factory=list)
     suggested_corrections: list[SuggestedCorrectionDTO] = Field(default_factory=list)
+    execution_policy: ExecutionPolicyDTO | None = None
 
 
 

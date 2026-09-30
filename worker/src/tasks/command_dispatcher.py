@@ -27,6 +27,7 @@ from core.automation.contracts import (
     compute_action_plan_hash,
 )
 from core.automation.persistence import canonical_params_hash
+from core.automation.execution_policy import ExecutionPolicyEvaluator
 from core.automation.policy import CapabilityHealthService
 from core.automation.runner import RunnerState, WorkflowRunner
 from core.automation.snapshot import TicketSnapshotFactory
@@ -35,6 +36,7 @@ from core.database.models import (
     ActionPreflightRecord,
     CommandRecord,
     ExecutionFeedbackRecord,
+    ExecutionPolicyDecisionRecord,
     PlanFeedbackRecord,
     ServiceCatalogEntryRecord,
     ServiceCatalogVersionRecord,
@@ -209,7 +211,7 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
     registry = _capabilities()
     spec = registry.get(action.capability_key)
     executor = registry.get_executor(action.capability_key)
-    if spec is None or not spec.enabled or executor is None:
+    if spec is None or executor is None:
         raise ValueError("capability_unavailable")
 
     redis_client = _redis()
@@ -229,10 +231,59 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
         current_snapshot = TicketSnapshotFactory.create(task=task, comments=lifetime)
         if current_snapshot.snapshot_hash != plan.snapshot_hash:
             return {"status": "skipped", "error": "stale_ticket_snapshot"}
+
+        evaluator = ExecutionPolicyEvaluator()
+        decision = await evaluator.evaluate_for_action(
+            session=session,
+            redis_client=redis_client,
+            phase="execution",
+            plan=plan,
+            action=action,
+            registry=registry,
+            command=command,
+            current_snapshot_hash=current_snapshot.snapshot_hash,
+        )
+        decision_record = ExecutionPolicyDecisionRecord(
+            id=uuid.uuid4(),
+            phase="execution",
+            capability_key=action.capability_key,
+            allowed=decision.allowed,
+            policy_revision=decision.policy_revision,
+            engine_version=decision.engine_version,
+            context_hash=decision.context_hash,
+            decision_hash=decision.decision_hash,
+            reasons_json=decision.reasons,
+            ticket_id=plan.task_id,
+            action_plan_id=plan.id,
+            command_id=command.id,
+        )
+        session.add(decision_record)
+        await session.flush()
+
+        if not decision.allowed:
+            logger.warning(
+                "Execution gate denied capability %s for task %s (reasons: %s)",
+                action.capability_key,
+                plan.task_id,
+                decision.reasons,
+            )
+            feedback = ExecutionFeedbackRecord(
+                action_plan_id=plan.id,
+                command_id=command.id,
+                task_id=plan.task_id,
+                action_id=action.id,
+                capability_key=action.capability_key,
+                outcome="denied",
+                result_json={"reasons": decision.reasons, "decision_hash": decision.decision_hash},
+            )
+            session.add(feedback)
+            command.status = "failed"
+            command.error_message = f"execution_denied:{','.join(decision.reasons)}"
+            await session.commit()
+            return {"status": "failed", "error": f"execution_denied:{','.join(decision.reasons)}"}
+
         exec_params = dict(action.params)
         if action.capability_key == "create_ad_user":
-            if os.getenv("AD_ONBOARDING_EXECUTION_ENABLED", "false").lower() not in {"1", "true", "yes"}:
-                return {"status": "skipped", "error": "ad_onboarding_execution_disabled"}
             ad_gate_error = await _validate_ad_service_gate(
                 session=session,
                 plan=plan,

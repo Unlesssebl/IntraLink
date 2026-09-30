@@ -109,7 +109,6 @@ class CapabilitySpec(BaseModel):
     idempotency: IdempotencyMode
     is_mutating: bool
     verifies_result: bool = True
-    enabled: bool = True
     summary_template: str | None = None
 
     def format_summary(self, params: dict[str, Any]) -> str:
@@ -215,7 +214,6 @@ DEFAULT_CAPABILITIES = (
         risk=CapabilityRisk.medium,
         idempotency=IdempotencyMode.key_guarded,
         is_mutating=True,
-        enabled=False,
         summary_template="Установка принтера {printer_address} на рабочую станцию {pc_name}",
     ),
     CapabilitySpec(

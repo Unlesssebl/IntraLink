@@ -7,30 +7,16 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database.models import CapabilityHealthRecord, WorkflowPolicyRecord
-
-
-class WorkflowPolicyService:
-    """Enforce the clean-cutover execution policy at the approval boundary."""
-
-    ASSISTED = "ASSISTED"
-
-    async def require_assisted(self, session: AsyncSession, *, workflow_key: str) -> None:
-        record = await session.scalar(
-            select(WorkflowPolicyRecord)
-            .where(WorkflowPolicyRecord.workflow_key == workflow_key)
-            .with_for_update()
-        )
-        if record is None:
-            record = WorkflowPolicyRecord(
-                workflow_key=workflow_key,
-                mode=self.ASSISTED,
-                description="ADR 0006 default: explicit operator approval is required",
-            )
-            session.add(record)
-            await session.flush()
-        if record.mode != self.ASSISTED:
-            raise ValueError(f"workflow_not_assisted:{record.mode}")
+from core.automation.execution_policy import (
+    POLICY_ENGINE_VERSION,
+    ExecutionPhase,
+    ExecutionPolicyContext,
+    ExecutionPolicyDecision,
+    ExecutionPolicyEvaluator,
+    compute_context_hash,
+    compute_decision_hash,
+)
+from core.database.models import CapabilityHealthRecord
 
 
 class CapabilityHealthService:
@@ -45,9 +31,20 @@ class CapabilityHealthService:
             raise ValueError("failure_threshold must be positive")
         self.failure_threshold = failure_threshold
 
-    async def require_available(self, session: AsyncSession, *, capability_key: str) -> None:
+    async def is_circuit_closed(self, session: AsyncSession, capability_key: str) -> bool:
         record = await session.get(CapabilityHealthRecord, capability_key)
-        if record is not None and record.is_circuit_broken:
+        if record is None:
+            return True
+        return not bool(record.is_circuit_broken)
+
+    async def is_circuit_broken(self, session: AsyncSession, capability_key: str) -> bool:
+        record = await session.get(CapabilityHealthRecord, capability_key)
+        if record is None:
+            return False
+        return bool(record.is_circuit_broken)
+
+    async def require_available(self, session: AsyncSession, *, capability_key: str) -> None:
+        if await self.is_circuit_broken(session, capability_key):
             raise ValueError("capability_circuit_broken")
 
     async def record_success(self, session: AsyncSession, *, capability_key: str) -> None:
@@ -89,3 +86,15 @@ class CapabilityHealthService:
             session.add(record)
             await session.flush()
         return record
+
+
+__all__ = [
+    "CapabilityHealthService",
+    "ExecutionPolicyEvaluator",
+    "ExecutionPolicyDecision",
+    "ExecutionPolicyContext",
+    "ExecutionPhase",
+    "POLICY_ENGINE_VERSION",
+    "compute_context_hash",
+    "compute_decision_hash",
+]

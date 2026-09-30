@@ -22,6 +22,16 @@ def set_service_auth_session_factory(factory: Optional[async_sessionmaker[AsyncS
     _override_session_factory = factory
 
 
+def _get_active_session_factory() -> Optional[async_sessionmaker[AsyncSession]]:
+    if _override_session_factory is not None:
+        return _override_session_factory
+    try:
+        from core.database.session import get_engine, get_session_factory
+        return get_session_factory(get_engine())
+    except Exception:
+        return None
+
+
 class ServiceAuthError(Exception):
     """Raised when service bot authentication fails or credentials are missing."""
 
@@ -61,9 +71,7 @@ class ServiceAuthBootstrap:
     def _get_factory(self) -> Optional[async_sessionmaker[AsyncSession]]:
         if self._session_factory is not None:
             return self._session_factory
-        if _override_session_factory is not None:
-            return _override_session_factory
-        return None
+        return _get_active_session_factory()
 
     async def bootstrap_auth(
         self,
@@ -92,11 +100,19 @@ class ServiceAuthBootstrap:
                 return self._cached_credentials
 
         # 2. Tier 2: Redis cached credentials
-        if not force_refresh and redis_client is not None:
+        r_client = redis_client
+        if not force_refresh and r_client is None:
             try:
-                cached_enc_token = await redis_client.get(self.KEY_SERVICE_AUTH_B64)
-                cached_user_id = await redis_client.get(self.KEY_SERVICE_USER_ID)
-                cached_login = await redis_client.get(self.KEY_SERVICE_LOGIN) or ""
+                from core.redis_client import get_redis_client
+                r_client = get_redis_client()
+            except Exception:
+                r_client = None
+
+        if not force_refresh and r_client is not None:
+            try:
+                cached_enc_token = await r_client.get(self.KEY_SERVICE_AUTH_B64)
+                cached_user_id = await r_client.get(self.KEY_SERVICE_USER_ID)
+                cached_login = await r_client.get(self.KEY_SERVICE_LOGIN) or ""
 
                 if cached_enc_token and cached_user_id:
                     if not env_login or cached_login == env_login:
@@ -140,11 +156,11 @@ class ServiceAuthBootstrap:
                                 )
                                 self._cached_credentials = creds
                                 # Warm up L2 (Redis)
-                                if redis_client is not None:
+                                if r_client is not None:
                                     try:
-                                        await redis_client.set(self.KEY_SERVICE_AUTH_B64, enc_token)
-                                        await redis_client.set(self.KEY_SERVICE_USER_ID, str(user_id_int))
-                                        await redis_client.set(self.KEY_SERVICE_LOGIN, login)
+                                        await r_client.set(self.KEY_SERVICE_AUTH_B64, enc_token)
+                                        await r_client.set(self.KEY_SERVICE_USER_ID, str(user_id_int))
+                                        await r_client.set(self.KEY_SERVICE_LOGIN, login)
                                     except Exception as exc:
                                         logger.debug("Failed to warm up Redis from L3: %s", exc)
                                 logger.info(
