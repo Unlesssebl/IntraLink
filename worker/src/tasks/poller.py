@@ -24,10 +24,14 @@ import redis.asyncio as aioredis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from core.automation.autonomy import AutonomyFailureReporter, AutonomyRunCoordinator
 from core.automation.clarification import latest_human_public_event
 from core.database.models import (
-    ActionPlanRecord,
+    AutonomyRunRecord,
     ClarificationRequestRecord,
+    CommandRecord,
+    ExecutionPermitRecord,
+    SystemState,
     WorkflowPlanRecord,
 )
 from core.database.system_state import (
@@ -43,6 +47,7 @@ from core.intraservice.dto import TaskDTO
 from core.intraservice.polling import (
     PollerStepResult,
 )
+from core.intraservice.statuses import TaskStatusResolver
 from core.redis_client import get_redis_client
 from worker.src.broker import QUEUE_DEFAULT, broker
 
@@ -196,8 +201,8 @@ class IngestionPoller:
 
         # 5. Resume only an already awaiting assisted workflow when a new public human answer exists.
         await self._resume_waiting_clarifications(unique_tasks, auth, session=session)
-        # 6. Dispatch autonomous intake for tickets assigned to the bot.
-        await self._dispatch_assigned_bot_intake(unique_tasks, auth, session=session)
+        # 6. Project assignment edges and dispatch newly-created durable runs.
+        await self._observe_assignments(unique_tasks, auth, session=session)
         # 7. Update dual watermark in PostgreSQL & Redis
         max_task_id = (watermark.last_task_id if watermark else None) or 0
         if unique_tasks:
@@ -305,7 +310,7 @@ class IngestionPoller:
             if owned:
                 await client.aclose()
 
-    async def _dispatch_assigned_bot_intake(
+    async def _observe_assignments(
         self,
         tasks: Dict[int, TaskDTO],
         auth: ServiceAuthCredentials,
@@ -315,57 +320,203 @@ class IngestionPoller:
         if not self.worker_api_key or not auth.bot_user_id or not tasks:
             return
 
-        terminal_statuses = {3, 4, 6, 28, 29, 30}
-        candidate_ids = [
-            task_id
-            for task_id, task in tasks.items()
-            if task.status_id not in terminal_statuses and auth.bot_user_id in task.get_executor_ids()
-        ]
-        if not candidate_ids:
-            return
+        coordinator = AutonomyRunCoordinator()
+        resolver = TaskStatusResolver()
 
-        async def filter_and_dispatch(db: AsyncSession) -> None:
+        async def project_and_dispatch(db: AsyncSession) -> None:
+            baseline_state = await db.get(SystemState, "autonomy:assignment_baseline")
+            baseline = baseline_state is None or not bool((baseline_state.state_data or {}).get("completed"))
+            run_ids = []
+            for task in tasks.values():
+                try:
+                    finality = await resolver.resolve(
+                        db,
+                        self.client,
+                        status_id=task.status_id,
+                        auth_b64=auth.auth_b64,
+                    )
+                    lifetime = await self.client.get_task_lifetime(
+                        task_id=task.id,
+                        auth_b64=auth.auth_b64,
+                    )
+                    observation = await coordinator.observe(
+                        db,
+                        task=task,
+                        bot_user_id=auth.bot_user_id,
+                        is_final=bool(finality.is_final) if finality is not None else False,
+                        lifetime=lifetime,
+                        bot_display_name=auth.display_name,
+                        baseline=baseline,
+                    )
+                    if observation.run is not None and finality is None and observation.run.state != "cancelled":
+                        observation.run.state = "retry_wait"
+                        observation.run.blocker_code = "status_unknown"
+                        observation.run.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+                    if (
+                        observation.created
+                        and observation.run is not None
+                        and not observation.cancelled
+                        and finality is not None
+                    ):
+                        run_ids.append(observation.run.id)
+                    elif observation.run is not None and observation.run.state == "detected":
+                        run_ids.append(observation.run.id)
+                except Exception as exc:
+                    logger.warning("Assignment projection failed for task %s: %s", task.id, exc)
+
+            if baseline:
+                if baseline_state is None:
+                    baseline_state = SystemState(key="autonomy:assignment_baseline", state_data={})
+                    db.add(baseline_state)
+                baseline_state.state_data = {
+                    "completed": True,
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                baseline_state.last_poll_at = datetime.now(timezone.utc)
+            if run_ids:
+                dispatching_runs = list(
+                    (
+                        await db.scalars(
+                            select(AutonomyRunRecord).where(
+                                AutonomyRunRecord.id.in_(run_ids)
+                            )
+                        )
+                    ).all()
+                )
+                for item in dispatching_runs:
+                    item.state = "dispatching"
+            await db.commit()
+
+            # A worker crash after consuming a permit is never retried.  A stale
+            # running command is reconciled to unknown_outcome for safe review.
+            stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+            stale_commands = list(
+                (
+                    await db.scalars(
+                        select(CommandRecord)
+                        .join(
+                            ExecutionPermitRecord,
+                            ExecutionPermitRecord.id == CommandRecord.execution_permit_id,
+                        )
+                        .where(
+                            CommandRecord.autonomy_run_id.is_not(None),
+                            CommandRecord.status == "running",
+                            CommandRecord.updated_at < stale_cutoff,
+                            ExecutionPermitRecord.consumed_at.is_not(None),
+                        )
+                        .with_for_update(skip_locked=True)
+                    )
+                ).all()
+            )
+            for command in stale_commands:
+                command.status = "unknown_outcome"
+                command.error_message = "worker_lost_after_permit_consumption"
+                run = await db.get(AutonomyRunRecord, command.autonomy_run_id)
+                if run is not None:
+                    run.state = "unknown_outcome"
+                    run.blocker_code = "unknown_outcome"
+                    run.completed_at = datetime.now(timezone.utc)
+                    await AutonomyFailureReporter().enqueue(
+                        db,
+                        run=run,
+                        phase="execution",
+                        blocker_code="unknown_outcome",
+                    )
+            if stale_commands:
+                await db.commit()
+
+            # Pending notes are independent of run advancement and survive API outages.
+            try:
+                await AutonomyFailureReporter().deliver_pending(
+                    db,
+                    client=self.client,
+                    auth_b64=auth.auth_b64,
+                )
+                await db.commit()
+            except Exception as exc:
+                await db.rollback()
+                logger.warning("Autonomy comment outbox delivery failed: %s", exc)
+
+            stale_dispatches = list(
+                (
+                    await db.scalars(
+                        select(AutonomyRunRecord).where(
+                            AutonomyRunRecord.state == "dispatching",
+                            AutonomyRunRecord.updated_at
+                            < datetime.now(timezone.utc) - timedelta(minutes=2),
+                        )
+                    )
+                ).all()
+            )
+            for item in stale_dispatches:
+                item.state = "retry_wait"
+                item.blocker_code = "core_api_unavailable"
+                item.next_attempt_at = datetime.now(timezone.utc)
+            if stale_dispatches:
+                await db.commit()
+
+            due_runs = list(
+                (
+                    await db.scalars(
+                        select(AutonomyRunRecord).where(
+                            AutonomyRunRecord.state == "retry_wait",
+                            AutonomyRunRecord.next_attempt_at <= datetime.now(timezone.utc),
+                        )
+                    )
+                ).all()
+            )
+            for item in due_runs:
+                item.state = "dispatching"
+                item.next_attempt_at = None
+                run_ids.append(item.id)
+            if due_runs:
+                await db.commit()
             sem = asyncio.Semaphore(3)
 
-            async def process_candidate(task_id: int) -> None:
-                task = tasks[task_id]
-                cache_key = f"intake:seen:{task_id}:{task.changed or ''}"
-                if self.redis_client is not None:
-                    try:
-                        seen = await self.redis_client.get(cache_key)
-                        if seen:
-                            return
-                    except Exception as err:
-                        logger.debug("Redis cache check error for intake %s: %s", task_id, err)
-
-                latest_action = await db.scalar(
-                    select(ActionPlanRecord)
-                    .where(ActionPlanRecord.task_id == task_id)
-                    .order_by(ActionPlanRecord.created_at.desc(), ActionPlanRecord.id.desc())
-                    .limit(1)
-                )
-                if latest_action is not None and latest_action.state in (
-                    "authorized",
-                    "running",
-                    "succeeded",
-                ):
-                    return
-
+            async def dispatch(run_id: object) -> tuple[object, bool]:
                 async with sem:
                     try:
-                        success = await self._post_intake(task_id)
-                        if success and self.redis_client is not None:
-                            await self.redis_client.set(cache_key, "1", ex=1800)
+                        await self._post_run(run_id)
                     except Exception as exc:
-                        logger.warning("Bot intake dispatch failed for task %s: %s", task_id, exc)
+                        logger.warning("Autonomy run dispatch failed for %s: %s", run_id, exc)
+                        return run_id, False
+                    return run_id, True
 
-            await asyncio.gather(*(process_candidate(tid) for tid in candidate_ids), return_exceptions=True)
+            results = await asyncio.gather(
+                *(dispatch(run_id) for run_id in dict.fromkeys(run_ids))
+            )
+            for run_id, delivered in results:
+                if delivered:
+                    continue
+                failed_run = await db.get(AutonomyRunRecord, run_id)
+                if failed_run is not None and failed_run.state == "dispatching":
+                    failed_run.state = "retry_wait"
+                    failed_run.blocker_code = "core_api_unavailable"
+                    failed_run.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+            if any(not delivered for _, delivered in results):
+                await db.commit()
 
         if session is not None:
-            await filter_and_dispatch(session)
+            await project_and_dispatch(session)
         elif self.session_factory is not None:
             async with self.session_factory() as owned_session:
-                await filter_and_dispatch(owned_session)
+                await project_and_dispatch(owned_session)
+
+    async def _post_run(self, run_id: object) -> bool:
+        client = self.http_client or httpx.AsyncClient(timeout=120.0)
+        owned = self.http_client is None
+        try:
+            response = await client.post(
+                f"{self.resume_base_url}/internal/autopilot/runs/{run_id}/advance",
+                headers={"X-Worker-Key": self.worker_api_key},
+            )
+            if response.status_code == 409:
+                return True
+            response.raise_for_status()
+            return True
+        finally:
+            if owned:
+                await client.aclose()
 
     async def _post_intake(self, task_id: int) -> bool:
         client = self.http_client or httpx.AsyncClient(timeout=60.0)

@@ -24,6 +24,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     event,
     func,
 )
@@ -143,6 +144,12 @@ class CommandRecord(Base, TimestampMixin):
         ForeignKey("action_plans.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
+    )
+    autonomy_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID, ForeignKey("autonomy_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    execution_permit_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID, ForeignKey("execution_permits.id", ondelete="SET NULL"), nullable=True, index=True
     )
     action_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     capability_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
@@ -525,6 +532,9 @@ class ActionPlanRecord(Base, TimestampMixin):
     workflow_plan: Mapped["WorkflowPlanRecord"] = relationship("WorkflowPlanRecord")
     case_decision: Mapped["CaseDecisionRecord"] = relationship("CaseDecisionRecord")
     task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    autonomy_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID, ForeignKey("autonomy_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     workflow_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     workflow_version: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -740,7 +750,9 @@ class ExecutionPolicyDecisionRecord(Base):
         JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=list
     )
     ticket_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
-    action_plan_id: Mapped[Optional[uuid.UUID]] = mapped_column(GUID, nullable=True, index=True)
+    action_plan_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID, ForeignKey("action_plans.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     command_id: Mapped[Optional[uuid.UUID]] = mapped_column(GUID, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -798,6 +810,130 @@ def sanitize_secrets(data: Any) -> Any:
     elif isinstance(data, str):
         return sanitize_secret_text(data)
     return data
+
+
+class AutonomyTicketStateRecord(Base, TimestampMixin):
+    """Durable projection used to detect service-account assignment edges."""
+
+    __tablename__ = "autonomy_ticket_state"
+
+    task_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    bot_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    bot_assigned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    assignment_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_assignment_event_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    last_lifetime_event_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    status_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+
+
+class AutonomyRunRecord(Base, TimestampMixin):
+    """One durable autonomous lifecycle per service-account assignment epoch."""
+
+    __tablename__ = "autonomy_runs"
+    __table_args__ = (
+        UniqueConstraint("task_id", "bot_user_id", "assignment_epoch", name="uq_autonomy_run_assignment"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    bot_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    assignment_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    assignment_event_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="detected", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_input_event_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    blocker_code: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    snapshot_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    action_plan_id: Mapped[Optional[uuid.UUID]] = mapped_column(GUID, nullable=True, index=True)
+    next_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AutonomyRunEventRecord(Base):
+    """Append-only sanitized transition journal for an autonomy run."""
+
+    __tablename__ = "autonomy_run_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("autonomy_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    payload_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["payload_json"] = sanitize_secrets(kwargs.get("payload_json", {}))
+        super().__init__(**kwargs)
+
+
+class AutonomyCommentOutboxRecord(Base, TimestampMixin):
+    """Exactly-once logical delivery of sanitized private failure notes."""
+
+    __tablename__ = "autonomy_comment_outbox"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("autonomy_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    dedup_key: Mapped[str] = mapped_column(String(160), nullable=False, unique=True, index=True)
+    phase: Mapped[str] = mapped_column(String(64), nullable=False)
+    blocker_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    next_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["comment"] = sanitize_secret_text(str(kwargs.get("comment") or ""))
+        if kwargs.get("last_error"):
+            kwargs["last_error"] = sanitize_secret_text(str(kwargs["last_error"]))
+        super().__init__(**kwargs)
+
+
+class ExecutionPermitRecord(Base, TimestampMixin):
+    """Short-lived technical permit bound to one run, plan and action."""
+
+    __tablename__ = "execution_permits"
+    __table_args__ = (
+        UniqueConstraint("action_plan_id", "action_id", name="uq_execution_permit_action"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("autonomy_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    action_plan_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("action_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    action_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    capability_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    assignment_event_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    params_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    preflight_id: Mapped[uuid.UUID] = mapped_column(
+        GUID, ForeignKey("action_preflights.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    checks_json: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False, default=dict
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["checks_json"] = sanitize_secrets(kwargs.get("checks_json", {}))
+        super().__init__(**kwargs)
 
 
 @event.listens_for(CommandRecord, "before_insert")
@@ -927,5 +1063,3 @@ def _sanitize_execution_policy_decision_listener(
 ) -> None:
     if target.context_json:
         target.context_json = sanitize_secrets(target.context_json)
-
-

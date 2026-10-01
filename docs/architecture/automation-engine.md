@@ -6,7 +6,7 @@
 TicketSnapshot → TargetServiceResolution → CaseFrame → CaseDecision → WorkflowPlan
                                               ↓
                                 ServiceCompatibilityDecision
-                                  ├─ authorized → ActionPlan → ActionCommand
+                                  ├─ compatible → ActionPlan → ExecutionPermit → ActionCommand
                                   ├─ mismatch → RedirectPlan
                                   └─ binding unavailable → OperatorReview
 ```
@@ -20,31 +20,32 @@ TicketSnapshot → TargetServiceResolution → CaseFrame → CaseDecision → Wo
 - `ServiceCompatibilityDecision` — отдельная проверка текущего сервиса по активному каталогу и versioned binding.
 - `WorkflowPlan` — бизнес-процесс первой линии, недостающие факты, диагностика и disposition.
 - `ActionPlan` — упорядоченный список разрешённых capabilities с каноническим hash.
-- `ActionCommand` — ровно одна capability, связанная с plan/action/snapshot/params hashes.
+- `AutonomyRun` — durable-жизненный цикл одного assignment epoch сервисной учётной записи.
+- `ExecutionPermit` — короткоживущая техническая привязка run/action/preflight к plan/action/snapshot/params hashes.
+- `ActionCommand` — ровно одна capability, создаваемая по permit; старые authorization records читаются только при дренировании legacy-команд.
 - `RedirectPlan` — самостоятельный approval-bound план перенаправления; он не является CaseType, disposition или capability.
 
 Intake никогда не выбирает `reset_print_spooler`, `disable_ad_user` или другую техническую команду. Сначала определяется целевой сервис, затем смысл обращения; техническое действие появляется только после readiness и диагностики внутри workflow. Отсутствие зарегистрированного workflow даёт явный `unsupported_workflow` с ручным disposition, не стирая найденный сервис и CaseType.
 
-## Роль оператора
+## Мандат на автономное решение
 
-Текущий cutover полностью полуавтоматический:
+Единственный бизнес-триггер — переход `bot_absent → bot_present` в `ExecutorIds`, когда каталог IntraService подтверждает `TaskStatus.IsFinal=false`. Poller транзакционно увеличивает assignment epoch и создаёт ровно один `AutonomyRun`; `Changed`, повторный poll, рестарт и скрытые комментарии не создают новый run. На первом production-проходе существующие назначения записываются как baseline без запуска.
 
-1. Оператор явно запускает анализ заявки.
-2. Проверяет исходный и целевой сервисы, доказательства маршрутизации, CaseFrame, CaseDecision, workflow, недостающие факты и ActionPlan.
-3. При необходимости отдельно исправляет тип обращения либо параметры ActionPlan.
-4. Назначает сервисную учётную запись исполнителем заявки.
-5. Подтверждает конкретный ActionPlan.
-6. Worker повторяет только технические guards и исполняет capability.
+Операторского approval, режимов `ASSISTED/FULL_AUTO`, capability policy и ручного kill switch в новом пути нет. Ручной перехват — только снятие сервисной учётной записи с заявки. Коррекции фактов сохраняются, инвалидируют старый plan/permit и продолжают тот же run.
 
-Poller не запускает анализ или инфраструктурную мутацию. Назначение сервисной учётной записи само по себе ничего не исполняет. `FULL_AUTO`, shadow, canary, dual-write и legacy fallback в действующем runtime отсутствуют.
+При нехватке фактов движок публикует детерминированный публичный вопрос из `WorkflowFactSpec`. Допустимы два clarification round. Возобновляют run только новые публичные человеческие события; private, system и bot-authored события игнорируются. LLM извлекает только grounded-факты с буквальным `text_span` и не выбирает capability, retry либо безопасность мутации.
 
 ## Защитные проверки исполнения
 
-Перед побочным эффектом worker проверяет неизменность snapshot, точное соответствие plan/action/capability/params hashes, свежий успешный preflight, назначение сервисной учётной записи, нетерминальный статус заявки, отсутствие terminal feedback и владение распределённой lease. Для `create_ad_user` дополнительно заново проверяются source service, task type, активный catalog hash, binding key/version, обязательные поля формы и отсутствие успешного либо частичного предыдущего создания.
+Перед побочным эффектом worker заново читает заявку и проверяет наличие бота, `TaskStatus.IsFinal=false`, неизменность snapshot, точное соответствие assignment/plan/action/capability/params hashes, свежий `passed|not_applicable` preflight, service binding, single-use permit, idempotency, circuit breaker и владение распределённой lease. `IsFixed` не определяет конечность: статус 29 «Выполнена» остаётся незавершённым. Неизвестный либо каталог статусов старше 15 минут блокирует действие и переводит run в `retry_wait`.
+
+Для `create_ad_user` дополнительно заново проверяются source service, task type, активный catalog hash, binding key/version, обязательные поля формы, delivery policy и отсутствие `succeeded`, `partial` либо `unknown_outcome` предыдущего создания.
 
 Каталог синхронизируется read-only через `POST /api/v2/autopilot/service-catalog/sync`. Пустой или недоступный ответ не активирует новую версию. Binding `ad_account_creation` создаётся неактивным и становится исполнимым только после подтверждения фактического AD-сервиса по текущему каталогу.
 
-Следующая capability публикуется только после подтверждённого успеха предыдущей. `failed` и `unknown_outcome` переводят план в `needs_review`; заявка не закрывается.
+Следующая capability публикуется только после подтверждённого успеха предыдущей. Transient-сбои до мутации повторяются через 30 секунд, 2 и 10 минут. После входа в мутацию permit помечается использованным; потеря lease или неопределённый ответ становятся `unknown_outcome` и никогда автоматически не повторяются.
+
+Terminal failure создаёт одну санитизированную private-заметку через durable outbox и не меняет статус или исполнителей заявки. Перед повторной доставкой outbox проверяет lifetime по детерминированному тексту, поэтому timeout после фактической публикации не создаёт дубликат. Удаление бота и переход в `IsFinal=true` отменяют run без комментария.
 
 ## LLM
 

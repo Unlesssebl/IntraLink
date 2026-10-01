@@ -36,8 +36,10 @@ from core.automation.case_router import CaseRouter
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.database.base import Base
 from core.database.models import (
+    AutonomyRunRecord,
     CapabilityExecutionPolicyRecord,
     ClarificationRequestRecord,
+    CommandRecord,
     ServiceCatalogEntryRecord,
     ServiceCatalogVersionRecord,
     ServiceRouteBindingRecord,
@@ -53,6 +55,76 @@ class _Executor:
 
     async def execute(self, params: dict[str, Any], *, context: CapabilityExecutionContext) -> CapabilityExecution:
         return CapabilityExecution(outcome=CapabilityOutcome.succeeded)
+
+
+@pytest.mark.asyncio
+async def test_correction_is_rejected_after_mutation_started(session_factory):
+    async with session_factory() as session:
+        run = AutonomyRunRecord(
+            task_id=65001,
+            bot_user_id=999,
+            assignment_epoch=1,
+            assignment_event_key="assignment:65001:1",
+            state="executing",
+        )
+        session.add(run)
+        await session.flush()
+        session.add(
+            CommandRecord(
+                idempotency_key="correction-race:65001",
+                action="create_ad_user",
+                executor="worker",
+                status="running",
+                initiator="autonomy",
+                task_id=65001,
+                autonomy_run_id=run.id,
+            )
+        )
+        await session.commit()
+
+        service = AutomationService(client=AsyncMock())
+        with pytest.raises(HTTPException) as exc_info:
+            await service._prepare_run_for_correction(session, ticket_id=65001)
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == "correction_during_active_mutation"
+
+
+@pytest.mark.asyncio
+async def test_correction_invalidates_pending_command_and_continues_same_run(session_factory):
+    async with session_factory() as session:
+        run = AutonomyRunRecord(
+            task_id=65002,
+            bot_user_id=999,
+            assignment_epoch=1,
+            assignment_event_key="assignment:65002:1",
+            state="ready",
+            snapshot_hash="a" * 64,
+        )
+        session.add(run)
+        await session.flush()
+        command = CommandRecord(
+            idempotency_key="correction-pending:65002",
+            action="install_printer",
+            executor="worker",
+            status="pending",
+            initiator="autonomy",
+            task_id=65002,
+            autonomy_run_id=run.id,
+        )
+        session.add(command)
+        await session.commit()
+
+        service = AutomationService(client=AsyncMock())
+        same_run_id = await service._prepare_run_for_correction(session, ticket_id=65002)
+        await session.flush()
+        await session.refresh(command)
+
+        assert same_run_id == run.id
+        assert command.status == "aborted"
+        assert command.error_message == "superseded_by_fact_correction"
+        assert run.state == "detected"
+        assert run.snapshot_hash is None
 
 
 @pytest.fixture
@@ -360,7 +432,6 @@ async def test_failed_clarification_is_visible_and_retry_is_idempotent(session_f
 
 
 async def test_analyze_then_approve_creates_bound_first_command(session_factory, monkeypatch) -> None:
-    monkeypatch.setenv("MUTATING_AUTOMATION_FORCE_DISABLED", "false")
     client = AsyncMock()
     client.get_task.return_value = _task()
     client.get_task_lifetime.return_value = []
@@ -991,5 +1062,3 @@ async def test_printer_readiness_and_polymorphic_facts(session_factory) -> None:
         assert corrected.execution_summary is not None
         assert len(corrected.execution_summary) == 1
         assert "Установка принтера 192.168.1.150 на рабочую станцию WS-305" in corrected.execution_summary[0]
-
-

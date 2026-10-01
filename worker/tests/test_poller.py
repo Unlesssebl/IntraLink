@@ -3,7 +3,7 @@
 import os
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from cryptography.fernet import Fernet
@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from core.crypto import set_fernet
 from core.database.base import Base
 from core.database.models import (
-    ActionPlanRecord,
     ClarificationRequestRecord,
     WorkflowPlanRecord,
 )
@@ -26,7 +25,7 @@ from core.intraservice.auth import (
     ServiceAuthError,
     set_service_auth_session_factory,
 )
-from core.intraservice.dto import TaskDTO, TaskLifetimeEventDTO
+from core.intraservice.dto import TaskDTO, TaskLifetimeEventDTO, TaskStatusDTO
 from core.intraservice.polling import get_executor_ids_list
 from worker.src.broker import QUEUE_DEFAULT, broker
 from worker.src.tasks.poller import (
@@ -354,10 +353,15 @@ async def test_ingestion_poller_exponential_backoff_cascade(test_db):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_assigned_bot_intake(test_db):
-    """Verify autonomous intake is dispatched when bot is assigned and ticket is not terminal/active."""
+async def test_new_nonfinal_assignment_dispatches_one_durable_run(test_db):
     http_client = AsyncMock()
-    http_client.post.return_value.status_code = 200
+    http_client.post.return_value = Mock(status_code=200)
+    source_client = AsyncMock()
+    source_client.get_statuses.return_value = [
+        TaskStatusDTO(Id=29, Name="Выполнена", IsFinal=False, IsFixed=True),
+        TaskStatusDTO(Id=30, Name="Закрыта", IsFinal=True, IsFixed=True),
+    ]
+    source_client.get_task_lifetime.return_value = []
 
     mock_redis = AsyncMock()
     mock_redis.get.return_value = None
@@ -368,68 +372,52 @@ async def test_dispatch_assigned_bot_intake(test_db):
         worker_api_key="worker-secret-key",
         resume_base_url="http://api/api/v2",
         http_client=http_client,
+        client=source_client,
     )
 
-    auth = ServiceAuthCredentials(auth_b64="auth", bot_user_id=777, login="bot")
-
-    tasks = {
-        # 1. Bot assigned, status is New (1) -> should be dispatched
-        101: TaskDTO(Id=101, Name="Issue with wifi", StatusId=1, ExecutorIds="777", Changed="2026-09-30 10:00"),
-        # 2. Other user assigned (555), bot not in executor_ids -> skipped
-        102: TaskDTO(Id=102, Name="Other task", StatusId=1, ExecutorIds="555", Changed="2026-09-30 10:00"),
-        # 3. Bot assigned, but status is terminal (3 = Completed) -> skipped
-        103: TaskDTO(Id=103, Name="Done task", StatusId=3, ExecutorIds="777", Changed="2026-09-30 10:00"),
-        # 4. Bot assigned, but status is Paused (6) -> skipped (waiting for user answer)
-        104: TaskDTO(Id=104, Name="Paused task", StatusId=6, ExecutorIds="777", Changed="2026-09-30 10:00"),
-    }
+    auth = ServiceAuthCredentials(auth_b64="auth", bot_user_id=777, login="bot", display_name="Auto Bot")
 
     async with test_db() as session:
-        await poller._dispatch_assigned_bot_intake(tasks, auth, session=session)
+        # First production pass is baseline-only.
+        await poller._observe_assignments(
+            {101: TaskDTO(Id=101, StatusId=29, ExecutorIds="")}, auth, session=session
+        )
+        await poller._observe_assignments(
+            {
+                101: TaskDTO(Id=101, StatusId=29, ExecutorIds="777"),
+                102: TaskDTO(Id=102, StatusId=30, ExecutorIds="777"),
+            },
+            auth,
+            session=session,
+        )
 
-    # Only ticket 101 should be dispatched
-    http_client.post.assert_awaited_once_with(
-        "http://api/api/v2/internal/autopilot/tickets/101/intake",
-        headers={"X-Worker-Key": "worker-secret-key"},
-    )
+    assert http_client.post.await_count == 1
+    url = http_client.post.await_args.args[0]
+    assert url.startswith("http://api/api/v2/internal/autopilot/runs/")
 
 
 @pytest.mark.asyncio
-async def test_dispatch_assigned_bot_intake_skips_running_plan(test_db):
-    """Verify autonomous intake skips ticket if action plan is already running or authorized."""
-    workflow_id = uuid.uuid4()
-    decision_id = uuid.uuid4()
-    async with test_db() as session:
-        session.add(
-            ActionPlanRecord(
-                id=uuid.uuid4(),
-                workflow_plan_id=workflow_id,
-                case_decision_id=decision_id,
-                task_id=201,
-                snapshot_hash="s" * 64,
-                workflow_key="guest_wifi_workflow",
-                workflow_version="1.0.0",
-                state="running",
-                disposition="execute",
-                plan_hash="p" * 64,
-                plan_json={},
-            )
-        )
-        await session.commit()
-
+async def test_repeated_poll_does_not_dispatch_second_run(test_db):
     http_client = AsyncMock()
+    http_client.post.return_value = Mock(status_code=200)
+    source_client = AsyncMock()
+    source_client.get_statuses.return_value = [TaskStatusDTO(Id=2, Name="В работе", IsFinal=False)]
+    source_client.get_task_lifetime.return_value = []
     poller = IngestionPoller(
         session_factory=test_db,
         worker_api_key="worker-secret-key",
         resume_base_url="http://api/api/v2",
         http_client=http_client,
+        client=source_client,
     )
     auth = ServiceAuthCredentials(auth_b64="auth", bot_user_id=777, login="bot")
-    tasks = {
-        201: TaskDTO(Id=201, Name="Wifi", StatusId=2, ExecutorIds="777", Changed="2026-09-30 10:00"),
-    }
 
     async with test_db() as session:
-        await poller._dispatch_assigned_bot_intake(tasks, auth, session=session)
+        await poller._observe_assignments(
+            {201: TaskDTO(Id=201, StatusId=2, ExecutorIds="")}, auth, session=session
+        )
+        task = {201: TaskDTO(Id=201, StatusId=2, ExecutorIds="777")}
+        await poller._observe_assignments(task, auth, session=session)
+        await poller._observe_assignments(task, auth, session=session)
 
-    http_client.post.assert_not_called()
-
+    assert http_client.post.await_count == 1

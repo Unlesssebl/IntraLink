@@ -11,7 +11,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.src.core.config import settings
@@ -19,6 +19,12 @@ from api.src.core.db import async_session_factory
 from api.src.core.redis import get_redis_client
 from api.src.core.task_dispatch import dispatch_command
 from core.automation.authorization import PlanAuthorizationService
+from core.automation.autonomy import (
+    ACTIVE_RUN_STATES,
+    AutonomyFailureReporter,
+    AutonomyRunCoordinator,
+    ExecutionPermitService,
+)
 from core.automation.capabilities import CapabilityRegistry, get_default_capability_registry
 from core.automation.case_profiles import CaseProfileRegistry
 from core.automation.case_router import CaseRouter
@@ -83,11 +89,14 @@ from core.automation.workflows import (
 from core.database.models import (
     ActionPlanRecord,
     ActionPreflightRecord,
+    AutonomyCommentOutboxRecord,
+    AutonomyRunRecord,
     CaseDecisionRecord,
     CaseFeedbackRecord,
     ClarificationRequestRecord,
     CommandRecord,
     ExecutionFeedbackRecord,
+    ExecutionPermitRecord,
     ExecutionPolicyDecisionRecord,
     HumanActionRequestRecord,
     OnboardingFactCorrectionRecord,
@@ -99,12 +108,14 @@ from core.database.models import (
 )
 from core.intraservice.auth import ServiceAuthBootstrap, ServiceAuthError
 from core.intraservice.client import IntraServiceClient
+from core.intraservice.statuses import TaskStatusResolver
 
 from .schemas import (
     ActionPlanFeedbackRequest,
     ApprovalResponse,
     ApproveActionPlanRequest,
     AutomationReadinessDTO,
+    AutonomyRunDTO,
     ClarificationReadinessDTO,
     CorrectActionPlanRequest,
     CorrectCaseDecisionRequest,
@@ -194,6 +205,9 @@ class AutomationService:
             model_alias=settings.LITELLM_MODEL_FAST,
         )
         self.clarification_convergence = ClarificationConvergenceService()
+        self.autonomy_coordinator = AutonomyRunCoordinator()
+        self.failure_reporter = AutonomyFailureReporter()
+        self.permit_service = ExecutionPermitService()
 
     async def _safe_bot_user_id(self) -> int | None:
         try:
@@ -303,22 +317,6 @@ class AutomationService:
                         latest.action_plan,
                         latest.redirect_plan,
                     )
-            if (
-                latest.action_plan is not None
-                and latest.action_plan.state in (ActionPlanState.ready.value, "ready")
-            ):
-                auto_auth = await self.authorization_service.try_policy_auto_authorize(
-                    session,
-                    redis_client=get_redis_client(),
-                    action_plan_id=latest.action_plan.id,
-                    expected_plan_hash=latest.action_plan.plan_hash,
-                    expected_snapshot_hash=latest.action_plan.snapshot_hash,
-                    current_snapshot_hash=latest.action_plan.snapshot_hash,
-                )
-                if auto_auth.allowed and auto_auth.command is not None:
-                    await session.commit()
-                    await dispatch_command(auto_auth.command.id)
-                    latest = await self.repository.load_bundle_by_task(session, task_id=latest.frame.task_id) or latest
             return await self._dto(session, latest, suggested_corrections=suggested)
 
         catalog_started = perf_counter()
@@ -448,23 +446,8 @@ class AutomationService:
         )
         if action_plan is not None:
             await self.preflight.run_plan(session, action_plan_id=action_plan.id)
-            auto_auth = await self.authorization_service.try_policy_auto_authorize(
-                session,
-                redis_client=get_redis_client(),
-                action_plan_id=action_plan.id,
-                expected_plan_hash=action_plan.plan_hash,
-                expected_snapshot_hash=action_plan.snapshot_hash,
-                current_snapshot_hash=action_plan.snapshot_hash,
-            )
-            if auto_auth.allowed and auto_auth.command is not None:
-                await session.commit()
-                await dispatch_command(auto_auth.command.id)
-                bundle = await self.repository.load_bundle_by_task(session, task_id=frame.task_id)
         await session.commit()
-        if (
-            workflow.workflow_key == "employee_onboarding_workflow"
-            and workflow.state == WorkflowPlanState.awaiting_facts
-        ):
+        if workflow.state == WorkflowPlanState.awaiting_facts:
             bundle = await self._ensure_clarification(
                 session,
                 bundle=bundle,
@@ -480,6 +463,206 @@ class AutomationService:
             )
             await session.commit()
         return await self._dto(session, bundle, suggested_corrections=suggested_corrections)
+
+    async def advance_run(self, session: AsyncSession, *, run_id: UUID) -> dict[str, Any]:
+        """Advance one durable run without policy modes or operator approval."""
+        run = await session.scalar(
+            select(AutonomyRunRecord)
+            .where(AutonomyRunRecord.id == run_id)
+            .with_for_update()
+        )
+        if run is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "autonomy_run_not_found")
+        if run.state in {"succeeded", "blocked", "cancelled", "unknown_outcome"}:
+            return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
+        if run.next_attempt_at is not None and run.next_attempt_at > datetime.now(UTC):
+            return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
+
+        credentials = await self.auth_bootstrap.bootstrap_auth(
+            client=self.client,
+            redis_client=get_redis_client(),
+            session_factory=async_session_factory,
+        )
+        task = await self.client.get_task(task_id=run.task_id, auth_b64=credentials.auth_b64)
+        finality = await TaskStatusResolver().resolve(
+            session,
+            self.client,
+            status_id=task.status_id,
+            auth_b64=credentials.auth_b64,
+        )
+        if finality is None:
+            run.attempt_count += 1
+            if not self.autonomy_coordinator.schedule_retry(run, "status_unknown"):
+                run.state = "blocked"
+                run.blocker_code = "retries_exhausted"
+                run.completed_at = datetime.now(UTC)
+                await self.failure_reporter.enqueue(
+                    session, run=run, phase="status_resolution", blocker_code="retries_exhausted"
+                )
+            self.autonomy_coordinator.add_event(session, run, "status_unavailable")
+            await session.commit()
+            return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
+        if finality.is_final or credentials.bot_user_id not in task.get_executor_ids():
+            run.state = "cancelled"
+            run.blocker_code = "ticket_became_final" if finality.is_final else "bot_unassigned"
+            run.completed_at = datetime.now(UTC)
+            self.autonomy_coordinator.add_event(session, run, "cancelled", {"reason": run.blocker_code})
+            await session.commit()
+            return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
+
+        run.attempt_count += 1
+        run.state = "analyzing"
+        run.next_attempt_at = None
+        self.autonomy_coordinator.add_event(session, run, "analysis_started", {"attempt": run.attempt_count})
+        await session.flush()
+        try:
+            dto = await self.analyze(
+                session,
+                ticket_id=run.task_id,
+                auth_b64=credentials.auth_b64,
+                force=bool(run.snapshot_hash),
+            )
+        except Exception as exc:
+            if not self.autonomy_coordinator.schedule_retry(run, f"analysis:{type(exc).__name__}"):
+                run.state = "blocked"
+                run.blocker_code = "retries_exhausted"
+                run.completed_at = datetime.now(UTC)
+                await self.failure_reporter.enqueue(
+                    session, run=run, phase="analysis", blocker_code="retries_exhausted"
+                )
+            self.autonomy_coordinator.add_event(
+                session, run, "analysis_failed", {"error_type": type(exc).__name__}
+            )
+            await session.commit()
+            return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
+
+        run.snapshot_hash = dto.snapshot_hash
+        if dto.workflow_plan.state == WorkflowPlanState.awaiting_facts:
+            run.state = "awaiting_facts"
+            run.blocker_code = "required_facts_missing"
+            self.autonomy_coordinator.add_event(
+                session,
+                run,
+                "awaiting_facts",
+                {"round": dto.workflow_plan.clarification_round, "missing": dto.workflow_plan.missing_facts},
+            )
+            await session.commit()
+            return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
+
+        if dto.action_plan is None:
+            blocker = (
+                "ambiguous_case"
+                if dto.case_decision.state in {CaseDecisionState.ambiguous, CaseDecisionState.unknown}
+                else "clarification_exhausted"
+                if "clarification_rounds_exhausted" in dto.workflow_plan.reason_codes
+                else "unsupported_case"
+            )
+            run.state = "blocked"
+            run.blocker_code = blocker
+            run.completed_at = datetime.now(UTC)
+            await self.failure_reporter.enqueue(
+                session, run=run, phase="planning", blocker_code=blocker
+            )
+            self.autonomy_coordinator.add_event(session, run, "planning_blocked", {"blocker": blocker})
+            await session.commit()
+            return {"run_id": str(run.id), "state": run.state, "blocker": blocker}
+
+        plan_record = await session.scalar(
+            select(ActionPlanRecord)
+            .where(ActionPlanRecord.id == dto.action_plan.id)
+            .with_for_update()
+        )
+        if plan_record is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "action_plan_not_persisted")
+        plan_record.autonomy_run_id = run.id
+        run.action_plan_id = plan_record.id
+        try:
+            await self.permit_service.issue(
+                session,
+                run=run,
+                action_plan_id=plan_record.id,
+            )
+        except (LookupError, ValueError) as exc:
+            blocker = "service_binding_failed" if "binding" in str(exc) else "preflight_failed"
+            run.state = "blocked"
+            run.blocker_code = blocker
+            run.completed_at = datetime.now(UTC)
+            await self.failure_reporter.enqueue(
+                session, run=run, phase="preflight", blocker_code=blocker
+            )
+            self.autonomy_coordinator.add_event(session, run, "permit_denied", {"blocker": blocker})
+            await session.commit()
+            return {"run_id": str(run.id), "state": run.state, "blocker": blocker}
+
+        advanced = await self.runner.advance(
+            session,
+            action_plan_id=plan_record.id,
+            initiator="autopilot",
+        )
+        if advanced.command is None:
+            run.state = "blocked"
+            run.blocker_code = advanced.reason or "worker_unavailable"
+            run.completed_at = datetime.now(UTC)
+            await self.failure_reporter.enqueue(
+                session, run=run, phase="dispatch", blocker_code="worker_unavailable"
+            )
+            await session.commit()
+            return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
+        run.state = "executing"
+        run.blocker_code = None
+        self.autonomy_coordinator.add_event(
+            session, run, "command_dispatched", {"command_id": str(advanced.command.id)}
+        )
+        command_id = advanced.command.id
+        await session.commit()
+        await dispatch_command(command_id)
+        return {"run_id": str(run.id), "state": run.state, "command_id": str(command_id)}
+
+    async def autonomy_metrics(self, session: AsyncSession) -> dict[str, Any]:
+        state_rows = (
+            await session.execute(
+                select(AutonomyRunRecord.state, func.count())
+                .group_by(AutonomyRunRecord.state)
+            )
+        ).all()
+        pending_outbox = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(AutonomyCommentOutboxRecord)
+                .where(AutonomyCommentOutboxRecord.state.in_(["pending", "retry_wait"]))
+            )
+            or 0
+        )
+        unknown_statuses = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(AutonomyRunRecord)
+                .where(AutonomyRunRecord.blocker_code == "status_unknown")
+            )
+            or 0
+        )
+        completed = list(
+            (
+                await session.scalars(
+                    select(AutonomyRunRecord).where(
+                        AutonomyRunRecord.completed_at.is_not(None)
+                    )
+                )
+            ).all()
+        )
+        durations = [
+            (item.completed_at - item.created_at).total_seconds()
+            for item in completed
+            if item.completed_at is not None and item.created_at is not None
+        ]
+        return {
+            "runs_by_state": {str(state): int(count) for state, count in state_rows},
+            "retry_wait": dict(state_rows).get("retry_wait", 0),
+            "pending_outbox": pending_outbox,
+            "unknown_statuses": unknown_statuses,
+            "unknown_outcome": dict(state_rows).get("unknown_outcome", 0),
+            "average_duration_seconds": round(sum(durations) / len(durations), 3) if durations else None,
+        }
 
 
     async def resume(
@@ -540,6 +723,32 @@ class AutomationService:
         record.last_error_code = None
         record.last_error_detail = None
         await session.commit()
+        run = await session.scalar(
+            select(AutonomyRunRecord)
+            .where(
+                AutonomyRunRecord.task_id == ticket_id,
+                AutonomyRunRecord.state == "awaiting_facts",
+            )
+            .order_by(AutonomyRunRecord.assignment_epoch.desc())
+            .limit(1)
+        )
+        if run is not None:
+            run.last_input_event_key = event.event_key
+            run.state = "detected"
+            run.blocker_code = None
+            self.autonomy_coordinator.add_event(
+                session,
+                run,
+                "human_input_received",
+                {"event_id": event.id, "event_key": event.event_key},
+            )
+            await session.commit()
+            await self.advance_run(session, run_id=run.id)
+            refreshed = await self.get_automation(
+                session, ticket_id=ticket_id, auth_b64=credentials.auth_b64
+            )
+            if refreshed is not None:
+                return refreshed
         return await self.analyze(session, ticket_id=ticket_id, auth_b64=credentials.auth_b64, force=True)
 
     async def correct_facts(
@@ -558,6 +767,7 @@ class AutomationService:
         cleaned = {key: " ".join(value.split()) for key, value in request.facts.items()}
         if any(not value for value in cleaned.values()):
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_fact_correction_empty_value")
+        run_id = await self._prepare_run_for_correction(session, ticket_id=ticket_id)
         for key, value in cleaned.items():
             session.add(
                 OnboardingFactCorrectionRecord(
@@ -570,6 +780,11 @@ class AutomationService:
                 )
             )
         await session.commit()
+        if run_id is not None:
+            await self.advance_run(session, run_id=run_id)
+            refreshed = await self.get_automation(session, ticket_id, auth_b64=auth_b64)
+            if refreshed is not None:
+                return refreshed
         return await self.analyze(session, ticket_id=ticket_id, auth_b64=auth_b64, force=True)
 
     async def correct_onboarding_facts(
@@ -593,6 +808,67 @@ class AutomationService:
             operator=operator,
             auth_b64=auth_b64,
         )
+
+    async def _prepare_run_for_correction(
+        self,
+        session: AsyncSession,
+        *,
+        ticket_id: int,
+    ) -> UUID | None:
+        run = await session.scalar(
+            select(AutonomyRunRecord)
+            .where(
+                AutonomyRunRecord.task_id == ticket_id,
+                AutonomyRunRecord.state.in_(ACTIVE_RUN_STATES),
+            )
+            .order_by(AutonomyRunRecord.assignment_epoch.desc())
+            .with_for_update()
+            .limit(1)
+        )
+        if run is None:
+            return None
+        mutating_command = await session.scalar(
+            select(CommandRecord.id)
+            .outerjoin(
+                ExecutionPermitRecord,
+                ExecutionPermitRecord.id == CommandRecord.execution_permit_id,
+            )
+            .where(
+                CommandRecord.autonomy_run_id == run.id,
+                CommandRecord.status.in_(["pending", "queued", "running"]),
+                (
+                    (CommandRecord.status == "running")
+                    | (ExecutionPermitRecord.consumed_at.is_not(None))
+                ),
+            )
+            .with_for_update()
+        )
+        if mutating_command is not None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "correction_during_active_mutation")
+        now = datetime.now(UTC)
+        await session.execute(
+            update(ExecutionPermitRecord)
+            .where(
+                ExecutionPermitRecord.run_id == run.id,
+                ExecutionPermitRecord.consumed_at.is_(None),
+            )
+            .values(expires_at=now)
+        )
+        await session.execute(
+            update(CommandRecord)
+            .where(
+                CommandRecord.autonomy_run_id == run.id,
+                CommandRecord.status.in_(["pending", "queued"]),
+            )
+            .values(status="aborted", error_message="superseded_by_fact_correction")
+        )
+        run.state = "detected"
+        run.blocker_code = None
+        run.snapshot_hash = None
+        run.action_plan_id = None
+        run.next_attempt_at = None
+        self.autonomy_coordinator.add_event(session, run, "correction_applied")
+        return run.id
 
     async def _extract_workflow_snapshot_facts(
         self,
@@ -808,7 +1084,11 @@ class AutomationService:
             .limit(1)
         )
         if active is None:
-            question = render_clarification(workflow.missing_facts)
+            definition = self.workflows.get(workflow.workflow_key)
+            question = render_clarification(
+                workflow.missing_facts,
+                definition.facts if definition is not None else (),
+            )
             fingerprint = clarification_fingerprint(workflow.task_id, workflow.snapshot_hash, workflow.missing_facts)
             active = await session.scalar(
                 select(ClarificationRequestRecord).where(ClarificationRequestRecord.request_fingerprint == fingerprint)
@@ -1118,7 +1398,7 @@ class AutomationService:
                     params=corrected.params,
                     depends_on_action_ids=[previous_id] if previous_id else [],
                     risk=spec.risk.value,
-                    requires_approval=True,
+                    requires_approval=False,
                 )
             )
             previous_id = action_id
@@ -1935,33 +2215,9 @@ class AutomationService:
             )
             for rec in human_action_records
         ]
+        # Legacy policy records remain readable while old commands drain, but
+        # they are not evaluated or exposed as an admission decision for runs.
         execution_policy_dto: ExecutionPolicyDTO | None = None
-        if bundle.action_plan and bundle.action_plan.actions:
-            redis_client = None
-            try:
-                redis_client = get_redis_client()
-            except Exception:
-                pass
-            first_action = bundle.action_plan.actions[0]
-            policy_decision = await self.execution_policy_evaluator.evaluate_for_action(
-                session=session,
-                redis_client=redis_client,
-                phase="approval",
-                plan=bundle.action_plan,
-                action=first_action,
-                registry=self.capabilities,
-                current_snapshot_hash=bundle.frame.snapshot_hash,
-            )
-            execution_policy_dto = ExecutionPolicyDTO(
-                allowed=policy_decision.allowed,
-                phase=policy_decision.phase,
-                capability_key=policy_decision.capability_key,
-                policy_revision=policy_decision.policy_revision,
-                engine_version=policy_decision.engine_version,
-                context_hash=policy_decision.context_hash,
-                decision_hash=policy_decision.decision_hash,
-                reasons=policy_decision.reasons,
-            )
 
         readiness = await self._build_readiness(
             session,
@@ -2007,6 +2263,31 @@ class AutomationService:
                 else:
                     execution_summary.append(action.capability_key)
 
+        run_record = await session.scalar(
+            select(AutonomyRunRecord)
+            .where(AutonomyRunRecord.task_id == bundle.frame.task_id)
+            .order_by(AutonomyRunRecord.assignment_epoch.desc())
+            .limit(1)
+        )
+        autonomy_run = None
+        if run_record is not None:
+            note = await session.scalar(
+                select(AutonomyCommentOutboxRecord)
+                .where(AutonomyCommentOutboxRecord.run_id == run_record.id)
+                .order_by(AutonomyCommentOutboxRecord.created_at.desc())
+                .limit(1)
+            )
+            autonomy_run = AutonomyRunDTO(
+                id=run_record.id,
+                state=run_record.state,
+                assignment_epoch=run_record.assignment_epoch,
+                attempt_count=run_record.attempt_count,
+                blocker_code=run_record.blocker_code,
+                awaiting_response=run_record.state == "awaiting_facts",
+                next_attempt_at=run_record.next_attempt_at,
+                private_note_state=note.state if note is not None else None,
+            )
+
         return TicketAutomationDTO(
             task_id=bundle.frame.task_id,
             snapshot_hash=bundle.frame.snapshot_hash,
@@ -2025,6 +2306,7 @@ class AutomationService:
             execution_summary=execution_summary,
             suggested_corrections=suggested_corrections or [],
             execution_policy=execution_policy_dto,
+            autonomy_run=autonomy_run,
         )
 
     async def _build_readiness(
@@ -2137,7 +2419,6 @@ class AutomationService:
                 "invalid_service_binding": "Привязка сервиса не прошла валидацию.",
                 "policy_not_found": "Политика выполнения возможности не найдена в базе данных.",
                 "policy_disabled": "Выполнение возможности отключено администратором.",
-                "deployment_force_disabled": "Мутирующие операции принудительно отключены на уровне сервера (MUTATING_AUTOMATION_FORCE_DISABLED).",
                 "circuit_breaker_open": "Предохранитель (circuit breaker) возможности открыт из-за предыдущих ошибок.",
                 "no_compatible_worker": "Отсутствует активный совместимый воркер для выполнения возможности.",
                 "stale_worker_heartbeat": "Связь с воркером потеряна (устаревший heartbeat).",

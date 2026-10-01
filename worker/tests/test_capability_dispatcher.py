@@ -28,7 +28,7 @@ from core.automation.workflows import get_default_workflow_registry
 from core.database.base import Base
 from core.database.models import CommandRecord, ExecutionFeedbackRecord
 from core.intraservice.auth import ServiceAuthCredentials
-from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
+from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO, TaskStatusDTO
 from worker.src.tasks.command_dispatcher import (
     dispatch_command_task,
     set_dispatcher_capability_registry,
@@ -214,6 +214,7 @@ async def test_dispatcher_executes_only_bound_preflighted_capability(
     client = AsyncMock()
     client.get_task.return_value = task
     client.get_task_lifetime.return_value = []
+    client.get_statuses.return_value = [TaskStatusDTO(Id=2, Name="В работе", IsFinal=False)]
     auth = AsyncMock()
     auth.bootstrap_auth.return_value = ServiceAuthCredentials(auth_b64="dGVzdA==", bot_user_id=999, login="bot")
     set_dispatcher_client(client)
@@ -431,6 +432,7 @@ async def test_dispatcher_ad_gate_denial_stops_execution_without_mutation(
     # Task is identical (snapshot fresh), but database has no validated catalog -> AD gate denies
     client.get_task.return_value = task
     client.get_task_lifetime.return_value = []
+    client.get_statuses.return_value = [TaskStatusDTO(Id=2, Name="В работе", IsFinal=False)]
     auth = AsyncMock()
     auth.bootstrap_auth.return_value = ServiceAuthCredentials(auth_b64="dGVzdA==", bot_user_id=999, login="bot")
     set_dispatcher_client(client)

@@ -1,6 +1,7 @@
 """Tests for ServiceAuthBootstrap 3-tier credentials vault (L1 Memory, L2 Redis, L3 PostgreSQL)."""
 
 from typing import AsyncGenerator
+from unittest.mock import AsyncMock
 
 import pytest
 from cryptography.fernet import Fernet
@@ -102,6 +103,45 @@ async def test_service_auth_l2_redis_hit(mock_redis):
     assert res.login == "autopilot_bot"
     assert bootstrap._cached_credentials is not None
     assert bootstrap._cached_credentials.bot_user_id == 42
+
+
+@pytest.mark.asyncio
+async def test_service_auth_backfills_missing_display_name_across_all_tiers(
+    mock_redis, test_session_factory
+):
+    bootstrap = ServiceAuthBootstrap(session_factory=test_session_factory)
+    plain_token = "Ym90OnNlY3JldA=="
+    await mock_redis.set(ServiceAuthBootstrap.KEY_SERVICE_AUTH_B64, encrypt_token(plain_token))
+    await mock_redis.set(ServiceAuthBootstrap.KEY_SERVICE_USER_ID, "42")
+    await mock_redis.set(ServiceAuthBootstrap.KEY_SERVICE_LOGIN, "autopilot_bot")
+    client = AsyncMock()
+    client.get_current_user_info.return_value = {"Id": 42, "Name": "Автономный бот"}
+
+    credentials = await bootstrap.bootstrap_auth(client=client, redis_client=mock_redis)
+
+    assert credentials.display_name == "Автономный бот"
+    client.get_current_user_info.assert_awaited_once_with(plain_token)
+    assert await mock_redis.get(ServiceAuthBootstrap.KEY_SERVICE_DISPLAY_NAME) == "Автономный бот"
+    async with test_session_factory() as session:
+        row = await session.get(SystemState, ServiceAuthBootstrap.STATE_KEY_CREDENTIALS)
+        assert row is not None
+        assert row.state_data["display_name"] == "Автономный бот"
+
+
+@pytest.mark.asyncio
+async def test_service_auth_does_not_backfill_name_from_mismatched_user(mock_redis):
+    bootstrap = ServiceAuthBootstrap()
+    plain_token = "Ym90OnNlY3JldA=="
+    await mock_redis.set(ServiceAuthBootstrap.KEY_SERVICE_AUTH_B64, encrypt_token(plain_token))
+    await mock_redis.set(ServiceAuthBootstrap.KEY_SERVICE_USER_ID, "42")
+    await mock_redis.set(ServiceAuthBootstrap.KEY_SERVICE_LOGIN, "autopilot_bot")
+    client = AsyncMock()
+    client.get_current_user_info.return_value = {"Id": 99, "Name": "Другой пользователь"}
+
+    credentials = await bootstrap.bootstrap_auth(client=client, redis_client=mock_redis)
+
+    assert credentials.display_name == ""
+    assert await mock_redis.get(ServiceAuthBootstrap.KEY_SERVICE_DISPLAY_NAME) is None
 
 
 @pytest.mark.asyncio

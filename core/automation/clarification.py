@@ -86,7 +86,7 @@ def render_clarification(
         return "Укажите, пожалуйста, полные ФИО сотрудника, для которого необходимо создать учётную запись."
     specs_map = {f.key: f.label for f in (fact_specs or ())}
     labels = [specs_map.get(key) or FACT_LABELS.get(key, key) for key in missing]
-    return "Для создания учётной записи дополнительно укажите, пожалуйста: " + ", ".join(labels) + "."
+    return "Для продолжения решения заявки укажите, пожалуйста: " + ", ".join(labels) + "."
 
 
 _NON_NAME_TOKENS = {

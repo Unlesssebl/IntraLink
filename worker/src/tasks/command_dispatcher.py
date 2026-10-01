@@ -12,6 +12,10 @@ import redis.asyncio as aioredis
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from core.automation.autonomy import (
+    AutonomyFailureReporter,
+    AutonomyRunCoordinator,
+)
 from core.automation.capabilities import (
     CapabilityExecutionContext,
     CapabilityOutcome,
@@ -33,8 +37,11 @@ from core.automation.snapshot import TicketSnapshotFactory
 from core.database.models import (
     ActionPlanRecord,
     ActionPreflightRecord,
+    AutonomyRunEventRecord,
+    AutonomyRunRecord,
     CommandRecord,
     ExecutionFeedbackRecord,
+    ExecutionPermitRecord,
     ExecutionPolicyDecisionRecord,
     PlanFeedbackRecord,
     ServiceCatalogEntryRecord,
@@ -47,6 +54,7 @@ from core.database.models import (
 from core.database.session import get_engine, get_session_factory
 from core.intraservice.auth import ServiceAuthBootstrap
 from core.intraservice.client import IntraServiceClient
+from core.intraservice.statuses import TaskStatusResolver
 from core.redis_client import get_redis_client
 from core.redis_lock import DistributedTaskLock, DistributedTaskLockOwnershipLost
 from worker.src.broker import broker
@@ -178,20 +186,41 @@ async def _load_bound_plan(session: AsyncSession, command: CommandRecord) -> tup
         or canonical_params_hash(command.params_json or {}) != expected_params_hash
     ):
         raise ValueError("command_params_binding_mismatch")
-    if command.authorization_decision_id is None:
-        raise ValueError("command_authorization_missing")
-    auth_decision = await session.get(ExecutionPolicyDecisionRecord, command.authorization_decision_id)
-    if auth_decision is None:
-        raise ValueError("command_authorization_not_found")
-    if not auth_decision.allowed:
-        raise ValueError("command_authorization_denied")
-    if (
-        auth_decision.action_id != action.id
-        or auth_decision.action_plan_id != plan.id
-        or auth_decision.capability_key != action.capability_key
-        or auth_decision.decision_hash != command.authorization_decision_hash
-    ):
-        raise ValueError("command_authorization_binding_mismatch")
+    permit = None
+    if command.execution_permit_id is not None:
+        permit = await session.get(ExecutionPermitRecord, command.execution_permit_id)
+        if permit is None:
+            raise ValueError("execution_permit_not_found")
+        if (
+            command.autonomy_run_id is None
+            or permit.run_id != command.autonomy_run_id
+            or permit.action_plan_id != plan.id
+            or permit.action_id != action.id
+            or permit.capability_key != action.capability_key
+            or permit.snapshot_hash != plan.snapshot_hash
+            or permit.plan_hash != plan.plan_hash
+            or permit.params_hash != expected_params_hash
+            or (permit.expires_at.replace(tzinfo=UTC) if permit.expires_at.tzinfo is None else permit.expires_at)
+            <= datetime.now(UTC)
+            or permit.consumed_at is not None
+        ):
+            raise ValueError("execution_permit_binding_mismatch")
+    else:
+        # Compatibility path for commands persisted before the autonomy cutover.
+        if command.authorization_decision_id is None:
+            raise ValueError("command_authorization_missing")
+        auth_decision = await session.get(ExecutionPolicyDecisionRecord, command.authorization_decision_id)
+        if auth_decision is None:
+            raise ValueError("command_authorization_not_found")
+        if not auth_decision.allowed:
+            raise ValueError("command_authorization_denied")
+        if (
+            auth_decision.action_id != action.id
+            or auth_decision.action_plan_id != plan.id
+            or auth_decision.capability_key != action.capability_key
+            or auth_decision.decision_hash != command.authorization_decision_hash
+        ):
+            raise ValueError("command_authorization_binding_mismatch")
     preflight = await session.scalar(
         select(ActionPreflightRecord)
         .where(
@@ -209,50 +238,175 @@ async def _load_bound_plan(session: AsyncSession, command: CommandRecord) -> tup
     )
     if preflight is None:
         raise ValueError("action_preflight_not_passed")
+    if permit is not None and permit.preflight_id != preflight.id:
+        raise ValueError("execution_permit_preflight_mismatch")
     return record, plan, action
+
+
+async def _transition_autonomy_run(
+    session: AsyncSession,
+    command: CommandRecord,
+    *,
+    state: str,
+    blocker_code: str | None = None,
+    comment_phase: str | None = None,
+) -> None:
+    if command.autonomy_run_id is None:
+        return
+    run = await session.get(AutonomyRunRecord, command.autonomy_run_id)
+    if run is None:
+        return
+    run.state = state
+    run.blocker_code = blocker_code
+    run.next_attempt_at = None
+    if state in {"succeeded", "blocked", "cancelled", "unknown_outcome"}:
+        run.completed_at = datetime.now(UTC)
+    session.add(
+        AutonomyRunEventRecord(
+            run_id=run.id,
+            kind="worker_result",
+            state=state,
+            payload_json={"command_id": str(command.id), "blocker_code": blocker_code},
+        )
+    )
+    if comment_phase and blocker_code:
+        await AutonomyFailureReporter().enqueue(
+            session,
+            run=run,
+            phase=comment_phase,
+            blocker_code=blocker_code,
+        )
+
+
+async def _schedule_autonomy_retry(
+    session: AsyncSession,
+    command: CommandRecord,
+    *,
+    blocker_code: str,
+) -> bool:
+    if command.autonomy_run_id is None:
+        return False
+    run = await session.get(AutonomyRunRecord, command.autonomy_run_id)
+    if run is None:
+        return False
+    scheduled = AutonomyRunCoordinator.schedule_retry(run, blocker_code)
+    if not scheduled:
+        run.state = "blocked"
+        run.blocker_code = "retries_exhausted"
+        run.completed_at = datetime.now(UTC)
+        await AutonomyFailureReporter().enqueue(
+            session,
+            run=run,
+            phase="execution",
+            blocker_code="retries_exhausted",
+        )
+    session.add(
+        AutonomyRunEventRecord(
+            run_id=run.id,
+            kind="retry_scheduled" if scheduled else "retries_exhausted",
+            state=run.state,
+            payload_json={"command_id": str(command.id), "blocker_code": blocker_code},
+        )
+    )
+    return scheduled
 
 
 async def _execute_capability(command: CommandRecord, session: AsyncSession) -> dict[str, Any]:
     plan_record, plan, action = await _load_bound_plan(session, command)
-    terminal_feedback = await session.scalar(
-        select(PlanFeedbackRecord)
-        .where(
-            PlanFeedbackRecord.action_plan_id == plan.id,
-            PlanFeedbackRecord.verdict.in_(["rejected", "manual_takeover"]),
+    is_autonomy = command.execution_permit_id is not None
+    if not is_autonomy:
+        terminal_feedback = await session.scalar(
+            select(PlanFeedbackRecord)
+            .where(
+                PlanFeedbackRecord.action_plan_id == plan.id,
+                PlanFeedbackRecord.verdict.in_(["rejected", "manual_takeover"]),
+            )
+            .limit(1)
         )
-        .limit(1)
-    )
-    if terminal_feedback is not None:
-        return {"status": "aborted", "error": "manual_takeover"}
+        if terminal_feedback is not None:
+            return {"status": "aborted", "error": "manual_takeover"}
 
     registry = _capabilities()
     spec = registry.get(action.capability_key)
     executor = registry.get_executor(action.capability_key)
     if spec is None or executor is None:
-        raise ValueError("capability_unavailable")
+        await _transition_autonomy_run(
+            session,
+            command,
+            state="blocked",
+            blocker_code="worker_unavailable",
+            comment_phase="dispatch",
+        )
+        return {"status": "failed", "error": "worker_unavailable"}
+    if is_autonomy:
+        try:
+            await capability_health.require_available(
+                session, capability_key=action.capability_key
+            )
+        except ValueError:
+            await _schedule_autonomy_retry(
+                session, command, blocker_code="capability_circuit_broken"
+            )
+            return {"status": "skipped", "error": "capability_circuit_broken"}
 
     redis_client = _redis()
     lock = DistributedTaskLock(redis_client, f"lock:task:{plan.task_id}", ttl_seconds=60)
     if not await lock.acquire():
+        await _schedule_autonomy_retry(session, command, blocker_code="task_lease_unavailable")
         return {"status": "skipped", "error": "task_lease_unavailable"}
 
     mutation_started = False
     try:
         auth = await _service_auth().bootstrap_auth(client=_client(), redis_client=redis_client)
         task = await _client().get_task(task_id=plan.task_id, auth_b64=auth.auth_b64)
-        if task.status_id in {3, 4, 30, 28, 29}:
-            return {"status": "skipped", "error": "ticket_already_terminal"}
+        finality = await TaskStatusResolver().resolve(
+            session,
+            _client(),
+            status_id=task.status_id,
+            auth_b64=auth.auth_b64,
+        )
+        if finality is None:
+            await _schedule_autonomy_retry(session, command, blocker_code="status_unknown")
+            return {"status": "skipped", "error": "status_unknown"}
+        if finality.is_final:
+            await _transition_autonomy_run(
+                session, command, state="cancelled", blocker_code="ticket_became_final"
+            )
+            return {"status": "aborted", "error": "ticket_became_final"}
         executor_ids = task.get_executor_ids()
-        is_operator_approved = bool(plan_record.approved_by or (command.initiator and command.initiator != "autopilot"))
-        if not is_operator_approved and executor_ids and auth.bot_user_id is not None and auth.bot_user_id not in executor_ids:
-            return {"status": "skipped", "error": "assigned_to_human"}
+        if is_autonomy and (auth.bot_user_id is None or auth.bot_user_id not in executor_ids):
+            await _transition_autonomy_run(
+                session, command, state="cancelled", blocker_code="bot_unassigned"
+            )
+            return {"status": "aborted", "error": "bot_unassigned"}
         lifetime = await _client().get_task_lifetime(task_id=plan.task_id, auth_b64=auth.auth_b64)
         current_snapshot = TicketSnapshotFactory.create(task=task, comments=lifetime)
         if current_snapshot.snapshot_hash != plan.snapshot_hash:
+            await _transition_autonomy_run(
+                session, command, state="detected", blocker_code="stale_ticket_snapshot"
+            )
             return {"status": "skipped", "error": "stale_ticket_snapshot"}
 
         external_guard_reasons: list[str] = []
         exec_params = dict(action.params)
+        if is_autonomy and spec.requires_service_binding:
+            binding_record = await session.scalar(
+                select(ServiceRouteBindingRecord).where(
+                    ServiceRouteBindingRecord.key == plan.service_binding_key,
+                    ServiceRouteBindingRecord.version == plan.service_binding_version,
+                    ServiceRouteBindingRecord.catalog_hash == plan.catalog_hash,
+                    ServiceRouteBindingRecord.is_active.is_(True),
+                    ServiceRouteBindingRecord.is_validated.is_(True),
+                )
+            )
+            if (
+                binding_record is None
+                or task.service_id != plan.source_service_id
+                or task.service_id not in binding_record.service_ids_json
+                or plan.workflow_key not in binding_record.allowed_workflows_json
+                or action.capability_key not in binding_record.allowed_capabilities_json
+            ):
+                external_guard_reasons.append("service_binding_changed")
         if action.capability_key == "create_ad_user":
             ad_gate_error = await _validate_ad_service_gate(
                 session=session,
@@ -273,40 +427,58 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
                 if binding_record and binding_record.delivery_policy_json:
                     exec_params["delivery_policy"] = binding_record.delivery_policy_json
 
-        evaluator = ExecutionPolicyEvaluator()
-        decision = await evaluator.evaluate_for_action(
-            session=session,
-            redis_client=redis_client,
-            phase="execution",
-            plan=plan,
-            action=action,
-            registry=registry,
-            command=command,
-            current_snapshot_hash=current_snapshot.snapshot_hash,
-            external_guard_reasons=tuple(external_guard_reasons),
-        )
-        decision_record = ExecutionPolicyDecisionRecord(
-            id=uuid.uuid4(),
-            phase="execution",
-            capability_key=action.capability_key,
-            action_id=action.id,
-            authorization_kind=decision.authorization_kind,
-            allowed=decision.allowed,
-            policy_revision=decision.policy_revision,
-            workflow_policy_revision=decision.workflow_policy_revision,
-            engine_version=decision.engine_version,
-            context_hash=decision.context_hash,
-            context_json=decision.context_json,
-            decision_hash=decision.decision_hash,
-            reasons_json=decision.reasons,
-            ticket_id=plan.task_id,
-            action_plan_id=plan.id,
-            command_id=command.id,
-        )
-        session.add(decision_record)
-        await session.flush()
+        if is_autonomy and external_guard_reasons:
+            blocker = (
+                "service_binding_failed"
+                if any("service" in item or "binding" in item for item in external_guard_reasons)
+                else "preflight_failed"
+            )
+            await _transition_autonomy_run(
+                session,
+                command,
+                state="blocked",
+                blocker_code=blocker,
+                comment_phase="execution_check",
+            )
+            return {"status": "failed", "error": blocker}
 
-        if not decision.allowed:
+        if not is_autonomy:
+            evaluator = ExecutionPolicyEvaluator()
+            decision = await evaluator.evaluate_for_action(
+                session=session,
+                redis_client=redis_client,
+                phase="execution",
+                plan=plan,
+                action=action,
+                registry=registry,
+                command=command,
+                current_snapshot_hash=current_snapshot.snapshot_hash,
+                external_guard_reasons=tuple(external_guard_reasons),
+            )
+            decision_record = ExecutionPolicyDecisionRecord(
+                id=uuid.uuid4(),
+                phase="execution",
+                capability_key=action.capability_key,
+                action_id=action.id,
+                authorization_kind=decision.authorization_kind,
+                allowed=decision.allowed,
+                policy_revision=decision.policy_revision,
+                workflow_policy_revision=decision.workflow_policy_revision,
+                engine_version=decision.engine_version,
+                context_hash=decision.context_hash,
+                context_json=decision.context_json,
+                decision_hash=decision.decision_hash,
+                reasons_json=decision.reasons,
+                ticket_id=plan.task_id,
+                action_plan_id=plan.id,
+                command_id=command.id,
+            )
+            session.add(decision_record)
+            await session.flush()
+        else:
+            decision = None
+
+        if decision is not None and not decision.allowed:
             logger.warning(
                 "Execution gate denied capability %s for task %s (reasons: %s)",
                 action.capability_key,
@@ -333,6 +505,14 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
 
         await lock.ensure_owned()
         await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.executing)
+        if is_autonomy:
+            permit = await session.get(ExecutionPermitRecord, command.execution_permit_id)
+            if permit is None or permit.consumed_at is not None:
+                raise ValueError("execution_permit_already_consumed")
+            permit.consumed_at = datetime.now(UTC)
+            await _transition_autonomy_run(session, command, state="executing")
+            # Persist the single-use fence before entering a mutating executor.
+            await session.commit()
         mutation_started = spec.is_mutating
         execution = await executor.execute(
             exec_params,
@@ -393,17 +573,15 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
                 )
             if is_last:
                 await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.completed)
+                await _transition_autonomy_run(session, command, state="succeeded")
         else:
-            try:
-                await _client().update_task(
-                    task_id=plan.task_id,
-                    status_id=27,
-                    comment=_failure_note(action.capability_key, execution.error_code, execution.error_message, proof),
-                    is_private=True,
-                    auth_b64=auth.auth_b64,
-                )
-            except Exception as note_exc:
-                logger.warning("Failed to record failure note on task %s: %s", plan.task_id, note_exc)
+            await _transition_autonomy_run(
+                session,
+                command,
+                state="blocked",
+                blocker_code="preflight_failed",
+                comment_phase="execution",
+            )
             await _set_workflow_state(session, plan.workflow_plan_id, WorkflowPlanState.needs_review)
 
         command_status = execution.outcome.value
@@ -431,11 +609,25 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
         }
     except DistributedTaskLockOwnershipLost:
         if mutation_started:
+            await _transition_autonomy_run(
+                session,
+                command,
+                state="unknown_outcome",
+                blocker_code="unknown_outcome",
+                comment_phase="execution",
+            )
             return {"status": "unknown_outcome", "error": "execution_ownership_lost"}
         raise
     except Exception:
         if mutation_started:
             logger.exception("Capability outcome became unknown after mutation started")
+            await _transition_autonomy_run(
+                session,
+                command,
+                state="unknown_outcome",
+                blocker_code="unknown_outcome",
+                comment_phase="execution",
+            )
             return {"status": "unknown_outcome", "error": "post_mutation_failure"}
         raise
     finally:
@@ -690,6 +882,14 @@ async def dispatch_command_task(command_id: uuid.UUID | str) -> dict[str, Any]:
             command.status = "failed"
             command.error_message = sanitize_secret_text(str(exc))
             command.result_json = sanitize_secrets({"error": str(exc)})
+            if command.autonomy_run_id is not None:
+                await _transition_autonomy_run(
+                    session,
+                    command,
+                    state="blocked",
+                    blocker_code="preflight_failed",
+                    comment_phase="execution_check",
+                )
         if command.capability_key is not None:
             if command.status == "succeeded":
                 await capability_health.record_success(session, capability_key=command.capability_key)

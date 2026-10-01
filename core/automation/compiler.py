@@ -226,10 +226,6 @@ class WorkflowCompiler:
             disposition=Disposition.execute,
             clarification_round=clarification_round,
         )
-        requires_approval = not (
-            definition.auto_execution_eligible
-            and capability.auto_execution_eligible
-        )
         action_id = f"action_{capability_key}_0"
         action = ActionProposal(
             id=action_id,
@@ -239,7 +235,7 @@ class WorkflowCompiler:
                 key: facts[key] for key in (*capability.required_params, *capability.optional_params) if key in facts
             },
             risk=capability.risk.value,
-            requires_approval=requires_approval,
+            requires_approval=False,
         )
         draft = ActionPlan(
             id=uuid4(),

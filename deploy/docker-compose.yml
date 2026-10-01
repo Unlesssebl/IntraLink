@@ -81,7 +81,6 @@ services:
       - LITELLM_BASE_URL=http://litellm:4000/v1
       - LITELLM_API_KEY=${LITELLM_API_KEY:-sk-intralink-dev}
       - ENCRYPTION_KEY_FILE=/run/secrets/intralink_encryption_key
-      - MUTATING_AUTOMATION_FORCE_DISABLED=${MUTATING_AUTOMATION_FORCE_DISABLED:-false}
     secrets:
       - intralink_encryption_key
     extra_hosts:
@@ -115,7 +114,6 @@ services:
       - LITELLM_BASE_URL=http://litellm:4000/v1
       - LITELLM_API_KEY=${LITELLM_API_KEY:-sk-intralink-dev}
       - ENCRYPTION_KEY_FILE=/run/secrets/intralink_encryption_key
-      - MUTATING_AUTOMATION_FORCE_DISABLED=${MUTATING_AUTOMATION_FORCE_DISABLED:-false}
     secrets:
       - intralink_encryption_key
     extra_hosts:

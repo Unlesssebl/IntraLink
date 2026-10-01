@@ -233,23 +233,6 @@ export const WorkflowExecutionCard: React.FC<WorkflowExecutionCardProps> = ({
     );
   };
 
-  const approve = () =>
-    run(
-      "approve",
-      async () => {
-        const result = await autopilotApi.approve(ticketId, data);
-        if (result.command_id) onExecutionStarted?.(result.command_id);
-      },
-      "Выполнение плана одобрено"
-    );
-
-  const reject = () =>
-    run(
-      "reject",
-      () => autopilotApi.reject(ticketId, data, "Оператор отклонил автоматическое выполнение"),
-      "Автоматизация отклонена; статус заявки сохранён"
-    );
-
   const retryClarification = () => {
     const clarificationId = readiness?.clarification?.id;
     if (!clarificationId) return Promise.resolve();
@@ -294,11 +277,9 @@ export const WorkflowExecutionCard: React.FC<WorkflowExecutionCardProps> = ({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {data.approval?.state === "approved" && (
+          {data.autonomy_run && (
             <Badge variant="success" dot>
-              {data.approval.kind === "policy_auto"
-                ? "Авторизовано: FULL_AUTO"
-                : `Одобрено: ${data.approval.operator || "оператор"}`}
+              Автономный run: {data.autonomy_run.state}
             </Badge>
           )}
           <Badge
@@ -704,29 +685,6 @@ export const WorkflowExecutionCard: React.FC<WorkflowExecutionCardProps> = ({
             Повторить анализ
           </Button>
         )}
-        {actions.has("approve") && (
-          <Button
-            size="sm"
-            loading={busy === "approve"}
-            onClick={approve}
-            icon={<Check className="h-3.5 w-3.5" />}
-          >
-            {data.workflow_plan.workflow_key === "employee_onboarding_workflow"
-              ? "Одобрить создание в AD"
-              : "Одобрить выполнение"}
-          </Button>
-        )}
-        {actions.has("reject_automation") && (
-          <Button
-            size="sm"
-            variant="ghost"
-            loading={busy === "reject"}
-            onClick={reject}
-          >
-            Отклонить автоматизацию
-          </Button>
-        )}
-
         <button
           type="button"
           onClick={() => setCorrectionsOpen((v) => !v)}

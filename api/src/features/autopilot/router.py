@@ -18,13 +18,10 @@ from api.src.core.security import get_intraservice_auth
 from core.automation.capabilities import get_default_capability_registry
 from core.automation.case_profiles import CaseProfileRegistry
 from core.automation.workflows import get_default_workflow_registry
-from core.database.models import CommandRecord
+from core.database.models import AutonomyRunRecord, CommandRecord
 from core.redis_lock import DistributedTaskLock
 
 from .schemas import (
-    ActionPlanFeedbackRequest,
-    ApprovalResponse,
-    ApproveActionPlanRequest,
     AutomationCommandDTO,
     CatalogResponse,
     CorrectActionPlanRequest,
@@ -33,9 +30,6 @@ from .schemas import (
     CorrectOnboardingFactsRequest,
     CorrectRedirectPlanRequest,
     CorrectTargetServiceRequest,
-    FeedbackResponse,
-    RedirectPlanRequest,
-    RedirectPlanResponse,
     ResolveHumanActionRequest,
     ResumeClarificationRequest,
     RetryClarificationRequest,
@@ -54,6 +48,12 @@ def get_automation_service() -> AutomationService:
 Db = Annotated[AsyncSession, Depends(get_db_session)]
 Auth = Annotated[str | None, Depends(get_intraservice_auth)]
 Service = Annotated[AutomationService, Depends(get_automation_service)]
+
+
+def _require_worker_key(worker_key: str | None) -> None:
+    configured = settings.WORKER_API_KEY
+    if not configured or not worker_key or not hmac.compare_digest(worker_key, configured):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid_worker_key")
 
 
 @router.get("/tickets/{ticket_id}/automation", response_model=TicketAutomationDTO | None)
@@ -136,9 +136,22 @@ async def intake_ticket(
     redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
     worker_key: Annotated[str | None, Header(alias="X-Worker-Key")] = None,
 ) -> TicketAutomationDTO:
-    configured = settings.WORKER_API_KEY
-    if not configured or not worker_key or not hmac.compare_digest(worker_key, configured):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid_worker_key")
+    _require_worker_key(worker_key)
+    run = await db.scalar(
+        select(AutonomyRunRecord)
+        .where(
+            AutonomyRunRecord.task_id == ticket_id,
+            AutonomyRunRecord.state.in_(["detected", "analyzing", "awaiting_facts", "retry_wait", "ready"]),
+        )
+        .order_by(AutonomyRunRecord.assignment_epoch.desc())
+        .limit(1)
+    )
+    if isinstance(run, AutonomyRunRecord):
+        await service.advance_run(db, run_id=run.id)
+        latest = await service.get_automation(db, ticket_id, auth_b64=None)
+        if latest is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "autonomy_analysis_not_available")
+        return latest
     lock = DistributedTaskLock(redis_client, f"lock:analysis:{ticket_id}", ttl_seconds=60)
     if not await lock.acquire():
         raise HTTPException(status.HTTP_409_CONFLICT, "analysis_already_running")
@@ -146,6 +159,34 @@ async def intake_ticket(
         return await service.analyze(db, ticket_id=ticket_id, auth_b64=None, force=False)
     finally:
         await lock.release()
+
+
+@internal_router.post("/runs/{run_id}/advance")
+async def advance_autonomy_run(
+    run_id: UUID,
+    db: Db,
+    service: Service,
+    redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
+    worker_key: Annotated[str | None, Header(alias="X-Worker-Key")] = None,
+) -> dict[str, object]:
+    _require_worker_key(worker_key)
+    lock = DistributedTaskLock(redis_client, f"lock:autonomy-run:{run_id}", ttl_seconds=120)
+    if not await lock.acquire():
+        raise HTTPException(status.HTTP_409_CONFLICT, "autonomy_run_already_advancing")
+    try:
+        return await service.advance_run(db, run_id=run_id)
+    finally:
+        await lock.release()
+
+
+@internal_router.get("/metrics")
+async def get_autonomy_metrics(
+    db: Db,
+    service: Service,
+    worker_key: Annotated[str | None, Header(alias="X-Worker-Key")] = None,
+) -> dict[str, object]:
+    _require_worker_key(worker_key)
+    return await service.autonomy_metrics(db)
 
 
 
@@ -259,23 +300,6 @@ async def correct_target_service(
     )
 
 
-@router.post("/tickets/{ticket_id}/action-plans/approve", response_model=ApprovalResponse)
-async def approve_action_plan(
-    ticket_id: int,
-    request: ApproveActionPlanRequest,
-    db: Db,
-    auth: Auth,
-    service: Service,
-) -> ApprovalResponse:
-    return await service.approve(
-        db,
-        ticket_id=ticket_id,
-        request=request,
-        operator=extract_operator(auth),
-        auth_b64=auth,
-    )
-
-
 @router.post("/tickets/{ticket_id}/action-plans/correct", response_model=TicketAutomationDTO)
 async def correct_action_plan(
     ticket_id: int,
@@ -312,75 +336,12 @@ async def resolve_human_action(
     )
 
 
-@router.post("/tickets/{ticket_id}/action-plans/reject", response_model=FeedbackResponse)
-async def reject_action_plan(
-    ticket_id: int,
-    request: ActionPlanFeedbackRequest,
-    db: Db,
-    auth: Auth,
-    service: Service,
-) -> FeedbackResponse:
-    return await service.record_plan_feedback(
-        db,
-        ticket_id=ticket_id,
-        request=request,
-        operator=extract_operator(auth),
-        verdict="rejected",
-        auth_b64=auth,
-    )
-
-
-@router.post("/tickets/{ticket_id}/action-plans/manual-takeover", response_model=FeedbackResponse)
-async def manual_takeover(
-    ticket_id: int,
-    request: ActionPlanFeedbackRequest,
-    db: Db,
-    auth: Auth,
-    service: Service,
-) -> FeedbackResponse:
-    return await service.record_plan_feedback(
-        db,
-        ticket_id=ticket_id,
-        request=request,
-        operator=extract_operator(auth),
-        verdict="manual_takeover",
-        auth_b64=auth,
-    )
-
-
-@router.post("/tickets/{ticket_id}/redirect-plans/approve", response_model=RedirectPlanResponse)
-async def approve_redirect_plan(
-    ticket_id: int, request: RedirectPlanRequest, db: Db, auth: Auth, service: Service
-) -> RedirectPlanResponse:
-    return await service.approve_redirect(
-        db, ticket_id=ticket_id, request=request, operator=extract_operator(auth), auth_b64=auth
-    )
-
-
 @router.post("/tickets/{ticket_id}/redirect-plans/correct", response_model=TicketAutomationDTO)
 async def correct_redirect_plan(
     ticket_id: int, request: CorrectRedirectPlanRequest, db: Db, auth: Auth, service: Service
 ) -> TicketAutomationDTO:
     return await service.correct_redirect(
         db, ticket_id=ticket_id, request=request, operator=extract_operator(auth), auth_b64=auth
-    )
-
-
-@router.post("/tickets/{ticket_id}/redirect-plans/reject", response_model=RedirectPlanResponse)
-async def reject_redirect_plan(
-    ticket_id: int, request: RedirectPlanRequest, db: Db, auth: Auth, service: Service
-) -> RedirectPlanResponse:
-    return await service.stop_redirect(
-        db, ticket_id=ticket_id, request=request, operator=extract_operator(auth), verdict="rejected", auth_b64=auth
-    )
-
-
-@router.post("/tickets/{ticket_id}/redirect-plans/manual-takeover", response_model=RedirectPlanResponse)
-async def manual_redirect_plan(
-    ticket_id: int, request: RedirectPlanRequest, db: Db, auth: Auth, service: Service
-) -> RedirectPlanResponse:
-    return await service.stop_redirect(
-        db, ticket_id=ticket_id, request=request, operator=extract_operator(auth), verdict="manual", auth_b64=auth
     )
 
 

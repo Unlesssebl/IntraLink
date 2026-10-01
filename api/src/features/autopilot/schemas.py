@@ -123,6 +123,19 @@ class ExecutionPolicyDTO(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class AutonomyRunDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    state: str
+    assignment_epoch: int
+    attempt_count: int
+    blocker_code: str | None = None
+    awaiting_response: bool = False
+    next_attempt_at: datetime | None = None
+    private_note_state: str | None = None
+
+
 class TicketAutomationDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -143,6 +156,7 @@ class TicketAutomationDTO(BaseModel):
     execution_summary: list[str] = Field(default_factory=list)
     suggested_corrections: list[SuggestedCorrectionDTO] = Field(default_factory=list)
     execution_policy: ExecutionPolicyDTO | None = None
+    autonomy_run: AutonomyRunDTO | None = None
 
 
 

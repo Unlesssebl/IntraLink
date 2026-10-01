@@ -225,6 +225,8 @@ class TaskLifetimeEventDTO(BaseModel):
     editor: Optional[str] = Field(default=None, alias="Editor")
     editor_id: Optional[int] = Field(default=None, alias="EditorId")
     status_id: Optional[int] = Field(default=None, alias="StatusId")
+    executors: Optional[str] = Field(default=None, alias="Executors")
+    executors_group: Optional[str] = Field(default=None, alias="ExecutorsGroup")
     comment: Optional[str] = Field(default=None, alias="Comment")
     old_status_name: Optional[str] = Field(default=None, alias="OldStatusName")
     new_status_name: Optional[str] = Field(default=None, alias="NewStatusName")
@@ -265,7 +267,17 @@ class TaskLifetimeEventDTO(BaseModel):
         data["IsPrivateComment"] = is_priv
         return data
 
-    @field_validator("created", "user_name", "editor", "comment", "old_status_name", "new_status_name", mode="before")
+    @field_validator(
+        "created",
+        "user_name",
+        "editor",
+        "comment",
+        "old_status_name",
+        "new_status_name",
+        "executors",
+        "executors_group",
+        mode="before",
+    )
     @classmethod
     def coerce_lifetime_str(cls, v: Any) -> str:
         return "" if v is None else str(v)
@@ -303,7 +315,15 @@ class TaskStatusDTO(BaseModel):
 
     id: int = Field(alias="Id")
     name: str = Field(alias="Name")
-    is_closed: bool = Field(default=False, alias="IsClosed")
+    is_final: bool = Field(default=False, alias="IsFinal")
+    is_fixed: bool = Field(default=False, alias="IsFixed")
+    is_initial: bool = Field(default=False, alias="IsInitial")
+    is_comment_required: bool = Field(default=False, alias="IsCommentRequired")
+
+    @field_validator("is_final", "is_fixed", "is_initial", "is_comment_required", mode="before")
+    @classmethod
+    def coerce_nullable_flags(cls, value: Any) -> Any:
+        return False if value is None else value
 
 
 class TaskTypeDTO(BaseModel):

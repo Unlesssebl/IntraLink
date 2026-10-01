@@ -46,6 +46,8 @@ def _lifetime_event_key(task_id: int, event: Mapping[str, Any]) -> str:
         "status_id": event.get("StatusId"),
         "old_status": event.get("OldStatusName"),
         "new_status": event.get("NewStatusName"),
+        "executors": event.get("Executors"),
+        "executors_group": event.get("ExecutorsGroup"),
         "is_public": event.get("IsPublic"),
         "is_private": event.get("IsPrivateComment") or event.get("IsPrivate"),
     }
@@ -372,6 +374,18 @@ class IntraServiceClient:
             return None, None
         return None, None
 
+    async def get_current_user_info(self, auth_b64: str) -> Dict[str, Any]:
+        """Return the authenticated IntraService user, including display name."""
+        data = await self._request(
+            method="GET",
+            endpoint="user",
+            auth_b64=auth_b64,
+            params={"getcurrentuserinfo": "true"},
+        )
+        if not isinstance(data, dict) or "Id" not in data:
+            raise IntraServiceError("Current user response is invalid")
+        return data
+
     async def get_task(self, task_id: int, auth_b64: Optional[str] = None) -> TaskDTO:
         """Fetch full ticket details with custom fields, status and attachments."""
         raw = await self._request(
@@ -650,6 +664,8 @@ class IntraServiceClient:
         raw_statuses = []
         if isinstance(res, dict) and "TaskStatuses" in res:
             raw_statuses = res["TaskStatuses"]
+        elif isinstance(res, dict) and "Statuses" in res:
+            raw_statuses = res["Statuses"]
         elif isinstance(res, list):
             raw_statuses = res
 

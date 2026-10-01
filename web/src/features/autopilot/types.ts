@@ -230,6 +230,16 @@ export interface TicketAutomation {
   context_header?: WorkflowContextHeader | null;
   execution_summary?: string[];
   suggested_corrections?: SuggestedCorrection[];
+  autonomy_run?: {
+    id: string;
+    state: string;
+    assignment_epoch: number;
+    attempt_count: number;
+    blocker_code?: string | null;
+    awaiting_response: boolean;
+    next_attempt_at?: string | null;
+    private_note_state?: string | null;
+  } | null;
 }
 
 export interface SuggestedCorrection {
@@ -292,31 +302,7 @@ export interface CatalogResponse<T = Record<string, unknown>> {
   total: number;
 }
 
-export interface ApprovalResponse {
-  status: string;
-  action_plan_id: string;
-  command_id?: string | null;
-  plan_hash: string;
-}
-
 export interface CorrectedActionInput {
   capability_key: string;
   params: Record<string, unknown>;
-}
-
-export interface WorkflowExecutionModeDTO {
-  workflow_key: string;
-  name: string;
-  description: string;
-  auto_execution_eligible: boolean;
-  desired_mode: "ASSISTED" | "FULL_AUTO";
-  policy_revision: number;
-  updated_at: string;
-  updated_by: string;
-}
-
-export interface UpdateWorkflowExecutionModeRequest {
-  mode: "ASSISTED" | "FULL_AUTO";
-  expected_revision: number;
-  reason: string;
 }

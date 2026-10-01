@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from core.automation.autonomy import ExecutionPermitService
 from core.automation.capabilities import get_default_capability_registry
 from core.automation.compiler import WorkflowCompiler
 from core.automation.contracts import (
@@ -26,7 +27,12 @@ from core.automation.service_routing import (
 )
 from core.automation.workflows import get_default_workflow_registry
 from core.database.base import Base
-from core.database.models import ActionPreflightRecord, ExecutionPolicyDecisionRecord
+from core.database.models import (
+    ActionPlanRecord,
+    ActionPreflightRecord,
+    AutonomyRunRecord,
+    ExecutionPolicyDecisionRecord,
+)
 
 SNAPSHOT_HASH = "f" * 64
 
@@ -167,6 +173,64 @@ async def test_runner_publishes_one_command_at_a_time(session_factory) -> None:
     async with session_factory() as session, session.begin():
         completed = await runner.advance(session, action_plan_id=approved.id, initiator="operator")
         assert completed.state == RunnerState.completed
+
+
+async def test_runner_uses_execution_permit_without_policy_or_approval(session_factory) -> None:
+    repository = AutomationRepository()
+    frame, decision, workflow, plan = _two_action_aggregate()
+    async with session_factory() as session, session.begin():
+        await repository.save_analysis(
+            session,
+            frame=frame,
+            decision=decision,
+            workflow_plan=workflow,
+            action_plan=plan,
+        )
+        run = AutonomyRunRecord(
+            task_id=plan.task_id,
+            bot_user_id=777,
+            assignment_epoch=1,
+            assignment_event_key="assignment-1",
+            state="detected",
+        )
+        session.add(run)
+        await session.flush()
+        record = await session.get(ActionPlanRecord, plan.id)
+        assert record is not None
+        record.autonomy_run_id = run.id
+        for action in plan.actions:
+            session.add(
+                ActionPreflightRecord(
+                    action_plan_id=plan.id,
+                    task_id=plan.task_id,
+                    action_id=action.id,
+                    capability_key=action.capability_key,
+                    snapshot_hash=plan.snapshot_hash,
+                    plan_hash=plan.plan_hash,
+                    params_hash=canonical_params_hash(action.params),
+                    status="passed",
+                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                )
+            )
+        await session.flush()
+        permits = await ExecutionPermitService().issue(
+            session,
+            run=run,
+            action_plan_id=plan.id,
+        )
+        assert len(permits) == 2
+
+    async with session_factory() as session, session.begin():
+        started = await WorkflowRunner().advance(
+            session,
+            action_plan_id=plan.id,
+            initiator="autopilot",
+        )
+        assert started.state == RunnerState.command_ready
+        assert started.command is not None
+        assert started.command.autonomy_run_id == run.id
+        assert started.command.execution_permit_id is not None
+        assert started.command.authorization_decision_id is None
 
 
 @pytest.mark.parametrize("terminal_status", ["failed", "unknown_outcome", "aborted", "skipped"])

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -187,9 +186,8 @@ def compute_decision_hash(
 
 
 def is_deployment_force_disabled() -> bool:
-    """Read host-local deployment ceiling; defaults to fail-closed True."""
-    raw = os.getenv("MUTATING_AUTOMATION_FORCE_DISABLED", "true").strip().lower()
-    return raw in ("true", "1", "yes", "")
+    """Compatibility shim: manual deployment kill switches were removed."""
+    return False
 
 
 def _extract_command_fields(command: Any) -> tuple[UUID | None, int | None, int | None, str | None]:

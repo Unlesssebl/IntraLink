@@ -1,11 +1,6 @@
 // web/src/shared/api.ts
 // Pragmatic typed API client for IntraLink v2 Backend
 
-import type {
-  WorkflowExecutionModeDTO,
-  UpdateWorkflowExecutionModeRequest,
-} from "@/features/autopilot/types";
-
 const BASE_URL = "/api/v2";
 
 export class ApiError extends Error {
@@ -398,25 +393,6 @@ export interface AdAccountBindingStatus {
   requires_confirmation: boolean;
 }
 
-export interface CapabilityExecutionPolicyStatusDTO {
-  capability_key: string;
-  name: string;
-  description: string;
-  risk_level: string;
-  requires_binding: boolean;
-  desired_state: "enabled" | "disabled";
-  revision: number;
-  reason: string;
-  changed_by: string;
-  changed_at: string;
-  deployment_ceiling: boolean;
-  binding_state: "valid" | "invalid" | "not_required";
-  circuit_state: "closed" | "open";
-  worker_available: boolean;
-  effective_state: "allowed" | "blocked";
-  reason_codes: string[];
-}
-
 export const adminApi = {
   getServiceCredentialsStatus: (signal?: AbortSignal) =>
     request<ServiceCredentialsStatus>("/admin/service-credentials/status", { signal }),
@@ -451,47 +427,6 @@ export const adminApi = {
       body: JSON.stringify({ catalog_hash: catalogHash, confirmed_service_path: confirmedServicePath }),
     }),
 
-  getExecutionPolicies: (signal?: AbortSignal) =>
-    request<CapabilityExecutionPolicyStatusDTO[]>("/admin/execution-policies", { signal }),
-
-  updateExecutionPolicy: (
-    capabilityKey: string,
-    desiredState: "enabled" | "disabled",
-    expectedRevision: number,
-    reason: string
-  ) =>
-    request<CapabilityExecutionPolicyStatusDTO>(`/admin/execution-policies/${capabilityKey}`, {
-      method: "PUT",
-      body: JSON.stringify({
-        desired_state: desiredState,
-        expected_revision: expectedRevision,
-        reason,
-      }),
-    }),
-
-  getWorkflowExecutionModes: (signal?: AbortSignal) =>
-    request<WorkflowExecutionModeDTO[]>("/admin/automation/workflows", { signal }),
-
-  updateWorkflowExecutionMode: (
-    workflowKey: string,
-    mode: "ASSISTED" | "FULL_AUTO",
-    expectedRevision: number,
-    reason: string
-  ) =>
-    request<WorkflowExecutionModeDTO>(`/admin/automation/workflows/${workflowKey}/mode`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        mode,
-        expected_revision: expectedRevision,
-        reason,
-      }),
-    }),
 };
 
-export type {
-  WorkflowExecutionModeDTO,
-  UpdateWorkflowExecutionModeRequest,
-} from "@/features/autopilot/types";
-
 export { autopilotApi } from "@/features/autopilot/api";
-
