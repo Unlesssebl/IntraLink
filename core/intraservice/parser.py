@@ -617,6 +617,34 @@ def parse_custom_fields(
     it_password = raw_fields.get("1489") or ""
     directum_task_id = raw_fields.get("1181") or ""
 
+    categories = str((raw_task or {}).get("Categories") or (raw_task or {}).get("categories") or "").strip()
+    applicant_company = str(
+        (raw_task or {}).get("CreatorCompanyName")
+        or (raw_task or {}).get("CompanyName")
+        or (raw_task or {}).get("creator_company_name")
+        or (raw_task or {}).get("company_name")
+        or ""
+    ).strip()
+    applicant_login = str(
+        (raw_task or {}).get("CreatorLogin")
+        or (raw_task or {}).get("creator_login")
+        or ""
+    ).strip()
+    applicant_ad_guid = str(
+        (raw_task or {}).get("CreatorADGuid")
+        or (raw_task or {}).get("creator_ad_guid")
+        or ""
+    ).strip()
+
+    if not company:
+        # Fallback: check categories (e.g. 'АО "НТЗ "ТЭМ-ПО"') or applicant company
+        clean_categories = re.sub(r'["«»]', "", categories).strip()
+        clean_applicant_comp = re.sub(r'["«»]', "", applicant_company).strip()
+        if clean_categories:
+            company = clean_categories
+        elif clean_applicant_comp:
+            company = clean_applicant_comp
+
     if not user_name:
         parts = [last_name, first_name, middle_name]
         constructed = " ".join(p.strip() for p in parts if p.strip())
@@ -657,6 +685,10 @@ def parse_custom_fields(
         it_login=it_login,
         it_password=it_password,
         directum_task_id=directum_task_id,
+        categories=categories,
+        applicant_company=applicant_company,
+        applicant_login=applicant_login,
+        applicant_ad_guid=applicant_ad_guid,
     )
     return entities, friendly_fields
 
@@ -676,6 +708,14 @@ def enrich_task_dict(task: Dict[str, Any]) -> Dict[str, Any]:
         task["CustomFieldData"] = task["Data"]
     if not task.get("TaskTypeId") and task.get("TypeId"):
         task["TaskTypeId"] = task["TypeId"]
+    if "Categories" in task and "categories" not in task:
+        task["categories"] = task["Categories"]
+    if "CreatorCompanyName" in task and "creator_company_name" not in task:
+        task["creator_company_name"] = task["CreatorCompanyName"]
+    if "CreatorLogin" in task and "creator_login" not in task:
+        task["creator_login"] = task["CreatorLogin"]
+    if "CreatorADGuid" in task and "creator_ad_guid" not in task:
+        task["creator_ad_guid"] = task["CreatorADGuid"]
 
     entities, friendly = parse_custom_fields(xml_data, raw_task=task)
 

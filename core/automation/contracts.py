@@ -128,6 +128,9 @@ class TicketSnapshot(FrozenModel):
     custom_fields: dict[str, str] = Field(default_factory=dict)
     entities: dict[str, str] = Field(default_factory=dict)
     attachments: list[SnapshotAttachment] = Field(default_factory=list)
+    categories: str | None = None
+    applicant_company: str | None = None
+    applicant_login: str | None = None
     last_event_id: int | None = None
     snapshot_hash: str = Field(min_length=64, max_length=64)
 

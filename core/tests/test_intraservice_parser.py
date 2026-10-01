@@ -252,3 +252,47 @@ def test_enrich_task_dict_reads_data_xml_and_direct_field_keys():
     assert "Отчество" in enriched["custom_fields"]
     assert "Подразделение" in enriched["custom_fields"]
     assert "Должность" in enriched["custom_fields"]
+
+
+def test_enrich_task_dict_categories_and_creator_company_fallback():
+    """Verify that categories and creator metadata are captured and company falls back to categories."""
+    raw_task = {
+        "Id": 142536,
+        "Name": "Заявка на создание пользователя сети",
+        "Description": "",
+        "ServiceId": 53,
+        "TypeId": 2,
+        "Categories": 'АО "НТЗ "ТЭМ-ПО"',
+        "CategoryIds": "57",
+        "Creator": "Урошникова Далила",
+        "CreatorId": 10021,
+        "CreatorCompanyName": "АО НТЗ ТЭМПО",
+        "CreatorLogin": "uroshnikova.d.v",
+        "CreatorADGuid": "f7088ba9-110a-4151-a073-5909a7b1dc16",
+        "Data": (
+            "<fields>"
+            "<field id='1057'>Фаррахова</field>"
+            "<field id='1058'>Чулпан</field>"
+            "<field id='1059'>Вахитовна</field>"
+            "<field id='1064'>цеха №4</field>"
+            "<field id='1065'>Кладовщик</field>"
+            "<field id='1066'>7412</field>"
+            "<field id='1068'>1260</field>"
+            "</fields>"
+        ),
+    }
+    enriched = enrich_task_dict(raw_task)
+    assert enriched["entities"]["last_name"] == "Фаррахова"
+    assert enriched["entities"]["first_name"] == "Чулпан"
+    assert enriched["entities"]["middle_name"] == "Вахитовна"
+    assert enriched["entities"]["department"] == "цеха №4"
+    assert enriched["entities"]["title"] == "Кладовщик"
+    assert enriched["entities"]["company"] == "АО НТЗ ТЭМ-ПО"
+    assert enriched["entities"]["categories"] == 'АО "НТЗ "ТЭМ-ПО"'
+    assert enriched["entities"]["applicant_company"] == "АО НТЗ ТЭМПО"
+    assert enriched["entities"]["applicant_login"] == "uroshnikova.d.v"
+    assert enriched["entities"]["applicant_ad_guid"] == "f7088ba9-110a-4151-a073-5909a7b1dc16"
+    assert enriched["categories"] == 'АО "НТЗ "ТЭМ-ПО"'
+    assert enriched["creator_company_name"] == "АО НТЗ ТЭМПО"
+    assert enriched["creator_login"] == "uroshnikova.d.v"
+

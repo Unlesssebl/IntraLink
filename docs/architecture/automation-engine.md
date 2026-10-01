@@ -35,6 +35,8 @@ Intake никогда не выбирает `reset_print_spooler`, `disable_ad_u
 
 При нехватке фактов движок публикует детерминированный публичный вопрос из `WorkflowFactSpec`. Допустимы два clarification round. Возобновляют run только новые публичные человеческие события; private, system и bot-authored события игнорируются. LLM извлекает только grounded-факты с буквальным `text_span` и не выбирает capability, retry либо безопасность мутации.
 
+Если preflight требует ограниченного решения оператора, например выбора одного из подтверждённых OU, run переходит в `awaiting_human_action` и не считается терминально заблокированным. После выбора создаётся новый канонический ActionPlan, он перепривязывается к тому же run, повторно проходит preflight и возвращается в `ready`; poller переводит его в `dispatching`, а Core API продолжает именно исправленный план без повторного анализа и потери выбора.
+
 ## Защитные проверки исполнения
 
 Перед побочным эффектом worker заново читает заявку и проверяет наличие бота, `TaskStatus.IsFinal=false`, неизменность snapshot, точное соответствие assignment/plan/action/capability/params hashes, свежий `passed|not_applicable` preflight, service binding, single-use permit, idempotency, circuit breaker и владение распределённой lease. `IsFixed` не определяет конечность: статус 29 «Выполнена» остаётся незавершённым. Неизвестный либо каталог статусов старше 15 минут блокирует действие и переводит run в `retry_wait`.

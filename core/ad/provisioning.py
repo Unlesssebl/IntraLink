@@ -244,6 +244,10 @@ class AccountProvisioningService:
         users_root_ou: str,
         company: str,
         department: str,
+        categories: str = "",
+        applicant_company: str = "",
+        applicant_department: str = "",
+        applicant_login: str = "",
         target_ou_dn: str | None = None,
     ) -> tuple[str, dict]:
         if target_ou_dn:
@@ -274,9 +278,30 @@ class AccountProvisioningService:
                 "ou_resolution_method": "operator_confirmed",
                 "resolved_company": company.strip() or None,
                 "resolved_department": department.strip(),
+                "resolved_categories": categories.strip() or None,
                 "ou_candidates": [],
                 "target_ou": target_ou,
             }
+
+        resolved_app_dept = applicant_department.strip()
+        resolved_app_comp = applicant_company.strip()
+        if applicant_login.strip() and (not resolved_app_dept or not resolved_app_comp):
+            safe_login = escape_filter_chars(applicant_login.strip())
+            try:
+                conn.search(
+                    users_root_ou,
+                    f"(&(objectClass=user)(sAMAccountName={safe_login}))",
+                    ldap3.SUBTREE,
+                    attributes=["department", "company"],
+                )
+                if conn.entries:
+                    app_entry = conn.entries[0]
+                    if not resolved_app_dept and getattr(app_entry, "department", None):
+                        resolved_app_dept = str(app_entry.department.value or "").strip()
+                    if not resolved_app_comp and getattr(app_entry, "company", None):
+                        resolved_app_comp = str(app_entry.company.value or "").strip()
+            except Exception:
+                pass
 
         conn.search(
             users_root_ou,
@@ -296,12 +321,16 @@ class AccountProvisioningService:
             units,
             company=company,
             department=department,
+            categories=categories,
+            applicant_company=resolved_app_comp,
+            applicant_department=resolved_app_dept,
             users_root_ou=users_root_ou,
         )
         details = {
             "ou_resolution_method": resolution.method,
             "resolved_company": company.strip() or None,
             "resolved_department": department.strip(),
+            "resolved_categories": categories.strip() or None,
             "ou_candidates": [
                 {
                     "distinguished_name": item.distinguished_name,
@@ -340,6 +369,10 @@ class AccountProvisioningService:
         phone: str,
         company: str,
         password: str,
+        categories: str = "",
+        applicant_company: str = "",
+        applicant_department: str = "",
+        applicant_login: str = "",
         ad_pool: ActiveDirectoryPool | None = None,
         users_root_ou: str = AD_USERS_ROOT_OU,
         target_ou_dn: str | None = None,
@@ -357,6 +390,10 @@ class AccountProvisioningService:
                 users_root_ou=users_root_ou,
                 company=company,
                 department=department,
+                categories=categories,
+                applicant_company=applicant_company,
+                applicant_department=applicant_department,
+                applicant_login=applicant_login,
                 target_ou_dn=target_ou_dn,
             )
             user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
@@ -505,6 +542,10 @@ class AccountProvisioningService:
         middle_name: str,
         department: str,
         company: str,
+        categories: str = "",
+        applicant_company: str = "",
+        applicant_department: str = "",
+        applicant_login: str = "",
         ad_pool: ActiveDirectoryPool | None = None,
         users_root_ou: str = AD_USERS_ROOT_OU,
         target_ou_dn: str | None = None,
@@ -522,6 +563,10 @@ class AccountProvisioningService:
                 users_root_ou=users_root_ou,
                 company=company,
                 department=department,
+                categories=categories,
+                applicant_company=applicant_company,
+                applicant_department=applicant_department,
+                applicant_login=applicant_login,
                 target_ou_dn=target_ou_dn,
             )
             user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
@@ -557,6 +602,10 @@ class AccountProvisioningService:
         middle_name: str,
         department: str,
         company: str,
+        categories: str = "",
+        applicant_company: str = "",
+        applicant_department: str = "",
+        applicant_login: str = "",
         target_ou_dn: str | None = None,
     ) -> dict:
         pool, users_root_ou = await self._connection_boundary()
@@ -567,6 +616,10 @@ class AccountProvisioningService:
             middle_name=middle_name,
             department=department,
             company=company,
+            categories=categories,
+            applicant_company=applicant_company,
+            applicant_department=applicant_department,
+            applicant_login=applicant_login,
             ad_pool=pool,
             users_root_ou=users_root_ou,
             target_ou_dn=target_ou_dn,
@@ -585,6 +638,10 @@ class AccountProvisioningService:
         title: str,
         phone: str,
         company: str,
+        categories: str = "",
+        applicant_company: str = "",
+        applicant_department: str = "",
+        applicant_login: str = "",
         delivery_policy: CredentialDeliveryPolicy | None = None,
         delivery_port: CredentialDeliveryPort | None = None,
         target_ou_dn: str | None = None,
@@ -604,6 +661,10 @@ class AccountProvisioningService:
                 phone=phone,
                 company=company,
                 password=password,
+                categories=categories,
+                applicant_company=applicant_company,
+                applicant_department=applicant_department,
+                applicant_login=applicant_login,
                 ad_pool=pool,
                 users_root_ou=users_root_ou,
                 target_ou_dn=target_ou_dn,

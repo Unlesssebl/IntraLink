@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from core.crypto import set_fernet
 from core.database.base import Base
 from core.database.models import (
+    AutonomyRunRecord,
     ClarificationRequestRecord,
     WorkflowPlanRecord,
 )
@@ -421,3 +422,47 @@ async def test_repeated_poll_does_not_dispatch_second_run(test_db):
         await poller._observe_assignments(task, auth, session=session)
 
     assert http_client.post.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_ready_run_is_dispatched_after_operator_action(test_db):
+    http_client = AsyncMock()
+    http_client.post.return_value = Mock(status_code=200)
+    source_client = AsyncMock()
+    source_client.get_statuses.return_value = [TaskStatusDTO(Id=2, Name="В работе", IsFinal=False)]
+    source_client.get_task_lifetime.return_value = []
+    poller = IngestionPoller(
+        session_factory=test_db,
+        worker_api_key="worker-secret-key",
+        resume_base_url="http://api/api/v2",
+        http_client=http_client,
+        client=source_client,
+    )
+    auth = ServiceAuthCredentials(auth_b64="auth", bot_user_id=777, login="bot")
+
+    async with test_db() as session:
+        run = AutonomyRunRecord(
+            task_id=701,
+            bot_user_id=777,
+            assignment_epoch=1,
+            assignment_event_key="assignment:701:1",
+            state="ready",
+            snapshot_hash="a" * 64,
+            action_plan_id=uuid.uuid4(),
+        )
+        session.add(run)
+        await session.commit()
+        run_id = run.id
+
+        await poller._observe_assignments(
+            {701: TaskDTO(Id=701, StatusId=2, ExecutorIds="777")},
+            auth,
+            session=session,
+        )
+        await session.refresh(run)
+
+    assert run.state == "dispatching"
+    http_client.post.assert_awaited_once_with(
+        f"http://api/api/v2/internal/autopilot/runs/{run_id}/advance",
+        headers={"X-Worker-Key": "worker-secret-key"},
+    )

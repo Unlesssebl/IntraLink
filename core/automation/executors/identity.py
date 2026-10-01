@@ -49,6 +49,9 @@ class CreateAdUserExecutor:
                 error_code="missing_identity_params",
             )
         target_ou_dn = str(params.get("target_ou_dn", "")).strip() or None
+        categories = str(params.get("categories", "")).strip()
+        applicant_company = str(params.get("applicant_company", "")).strip()
+        applicant_login = str(params.get("applicant_login", "")).strip()
         try:
             preview = await self.provisioner.preflight(
                 last_name=str(params["last_name"]).strip(),
@@ -56,6 +59,9 @@ class CreateAdUserExecutor:
                 middle_name=str(params.get("middle_name", "")).strip(),
                 department=str(params["department"]).strip(),
                 company=str(params.get("company", "")).strip(),
+                categories=categories,
+                applicant_company=applicant_company,
+                applicant_login=applicant_login,
                 target_ou_dn=target_ou_dn,
             )
         except AccountProvisioningError as exc:
@@ -239,6 +245,9 @@ class CreateAdUserExecutor:
                 title=str(params["title"]).strip(),
                 phone=str(params.get("phone", "")).strip(),
                 company=str(params.get("company", "")).strip(),
+                categories=str(params.get("categories", "")).strip(),
+                applicant_company=str(params.get("applicant_company", "")).strip(),
+                applicant_login=str(params.get("applicant_login", "")).strip(),
                 delivery_policy=delivery_policy,
                 target_ou_dn=target_ou_dn,
             )

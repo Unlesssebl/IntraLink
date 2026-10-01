@@ -518,7 +518,7 @@ CaseFactCorrectionRecord = OnboardingFactCorrectionRecord
 
 
 class ActionPlanRecord(Base, TimestampMixin):
-    """Canonical, approval-bound list of capability invocations."""
+    """Canonical, hash-bound list of capability invocations."""
 
     __tablename__ = "action_plans"
 

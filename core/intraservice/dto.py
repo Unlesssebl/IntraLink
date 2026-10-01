@@ -33,6 +33,10 @@ class ExtractedEntitiesDTO(BaseModel):
     it_login: str = ""
     it_password: str = ""
     directum_task_id: str = ""
+    categories: str = ""
+    applicant_company: str = ""
+    applicant_login: str = ""
+    applicant_ad_guid: str = ""
 
     @field_validator(
         "pc_name",
@@ -57,6 +61,10 @@ class ExtractedEntitiesDTO(BaseModel):
         "it_login",
         "it_password",
         "directum_task_id",
+        "categories",
+        "applicant_company",
+        "applicant_login",
+        "applicant_ad_guid",
         mode="before",
     )
     @classmethod
@@ -188,6 +196,16 @@ class TaskDTO(BaseModel):
     applicant_id: Optional[int] = Field(default=None, alias="ApplicantId")
     applicant_name: Optional[str] = Field(default=None, alias="ApplicantName")
     executor_ids: Optional[str] = Field(default=None, alias="ExecutorIds")
+
+    categories: Optional[str] = Field(default=None, alias="Categories")
+    category_ids: Optional[str] = Field(default=None, alias="CategoryIds")
+    creator_company_id: Optional[int] = Field(default=None, alias="CreatorCompanyId")
+    creator_company_name: Optional[str] = Field(default=None, alias="CreatorCompanyName")
+    creator_login: Optional[str] = Field(default=None, alias="CreatorLogin")
+    creator_ad_guid: Optional[str] = Field(default=None, alias="CreatorADGuid")
+    creator_position: Optional[str] = Field(default=None, alias="CreatorPosition")
+    company_id: Optional[int] = Field(default=None, alias="CompanyId")
+    company_name: Optional[str] = Field(default=None, alias="CompanyName")
 
     # Raw XML and parsed custom fields
     custom_field_data: Optional[str] = Field(

@@ -68,8 +68,8 @@ const STAGE_LABELS: Record<string, string> = {
   ou: "Подразделение (OU)",
   hitl: "Уточнение параметров",
   preflight: "Проверки",
+  assignment: "Назначение",
   authorization: "Авторизация",
-  approval: "Одобрение",
   execution: "Выполнение",
   delivery: "Выдача реквизитов",
 };
@@ -77,6 +77,11 @@ const STAGE_LABELS: Record<string, string> = {
 const BLOCKER_LABELS: Record<string, string> = {
   required_facts_missing: "Не получены обязательные параметры операции",
   human_action_required: "Требуется решение оператора по параметрам выполнения",
+  bot_assignment_required: "Для запуска назначьте сервисную учётную запись исполнителем заявки",
+  diagnosis_required: "Для продолжения требуется техническая диагностика",
+  operator_review_required: "Для продолжения требуется решение инженера",
+  service_binding_failed: "Сервисная привязка заявки не подтверждена",
+  unknown_outcome: "Результат создания учётной записи нельзя подтвердить автоматически",
   clarification_publish_failed: "Вопрос заявителю не опубликован",
   preflight_failed: "Предварительные проверки перед выполнением не пройдены",
   ad_onboarding_execution_disabled: "Создание пользователей AD временно отключено администратором",
@@ -89,6 +94,21 @@ const BLOCKER_LABELS: Record<string, string> = {
   policy_auto_authorization_failed: "Автоматическая авторизация политикой отклонена",
   worker_unavailable: "Отсутствует активный воркер для выполнения операции",
   no_compatible_worker: "Нет совместимого активного воркера",
+};
+
+const RUN_STATE_LABELS: Record<string, string> = {
+  detected: "Назначение обнаружено",
+  dispatching: "Запуск workflow",
+  analyzing: "Проверка заявки",
+  awaiting_facts: "Ожидание данных заявителя",
+  awaiting_human_action: "Ожидание решения оператора",
+  retry_wait: "Безопасный повтор ожидает запуска",
+  ready: "Готово к выполнению",
+  executing: "Создание учётной записи",
+  succeeded: "Workflow завершён",
+  blocked: "Workflow остановлен",
+  cancelled: "Workflow отменён",
+  unknown_outcome: "Результат требует проверки",
 };
 
 const CHECK_LABELS: Record<string, string> = {
@@ -251,7 +271,7 @@ export const WorkflowExecutionCard: React.FC<WorkflowExecutionCardProps> = ({
     data.preflight[0]?.details?.login;
 
   const isCompleted = readiness?.state === "completed";
-  const isReady = readiness?.state === "ready_for_approval";
+  const isReady = readiness?.state === "awaiting_assignment";
   const isBlocked = readiness?.state === "blocked";
 
   return (
@@ -279,7 +299,7 @@ export const WorkflowExecutionCard: React.FC<WorkflowExecutionCardProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           {data.autonomy_run && (
             <Badge variant="success" dot>
-              Автономный run: {data.autonomy_run.state}
+              {RUN_STATE_LABELS[data.autonomy_run.state] || data.autonomy_run.state}
             </Badge>
           )}
           <Badge
@@ -289,7 +309,7 @@ export const WorkflowExecutionCard: React.FC<WorkflowExecutionCardProps> = ({
             {isCompleted
               ? "Выполнено"
               : isReady
-              ? "Готово к одобрению"
+              ? "Ожидает назначения"
               : isBlocked
               ? "Требуется действие"
               : "В процессе"}
@@ -400,7 +420,7 @@ export const WorkflowExecutionCard: React.FC<WorkflowExecutionCardProps> = ({
                       ? "Выбор подразделения (OU)"
                       : "Требуется решение оператора"}
                   </h4>
-                  <Badge variant="warning">HITL Action</Badge>
+                  <Badge variant="warning">Решение оператора</Badge>
                 </div>
                 <p className="mt-1 text-xs leading-relaxed text-amber-200/80">{action.prompt}</p>
 
@@ -512,7 +532,8 @@ export const WorkflowExecutionCard: React.FC<WorkflowExecutionCardProps> = ({
           </div>
         ) : (
           <p className="mt-2 text-xs leading-relaxed text-neutral-400">
-            После одобрения будет выполнена автоматизированная операция согласно плану выполнения.
+            После назначения сервисной учётной записи система повторно проверит заявку и выполнит
+            регламентный workflow в безопасных границах.
           </p>
         )}
         {Boolean(previewLogin) && (
@@ -534,6 +555,8 @@ export const WorkflowExecutionCard: React.FC<WorkflowExecutionCardProps> = ({
             variant={
               readiness?.preflight.state === "passed"
                 ? "success"
+                : readiness?.preflight.state === "action_required"
+                ? "warning"
                 : readiness?.preflight.state === "failed"
                 ? "danger"
                 : "neutral"
@@ -542,6 +565,8 @@ export const WorkflowExecutionCard: React.FC<WorkflowExecutionCardProps> = ({
           >
             {readiness?.preflight.state === "passed"
               ? "Все проверки пройдены"
+              : readiness?.preflight.state === "action_required"
+                ? "Нужен выбор оператора"
               : readiness?.preflight.state === "failed"
               ? "Требуется внимание"
               : "Не запущены"}

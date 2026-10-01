@@ -120,6 +120,19 @@ def _is_branch_container(item: OrganizationalUnit, users_root_ou: str) -> bool:
     return len(relative) == 1 and _normalize(item.name) in BRANCH_CONTAINER_OUS
 
 
+def _extract_workshop_number(text: str) -> str | None:
+    match = re.search(r"(?i)\b(?:цех[а-я]*|тпц)[\s\-№#]*(\d+)\b", text or "")
+    return match.group(1) if match else None
+
+
+def _ou_matches_workshop_number(ou_name: str, num: str) -> bool:
+    norm = _normalize(ou_name)
+    if "цех" not in norm and "тпц" not in norm:
+        return False
+    num_matches = re.findall(r"\b\d+\b", norm)
+    return num in num_matches
+
+
 class OrganizationalUnitResolver:
     """Resolve only a high-confidence OU from bounded live AD candidates."""
 
@@ -127,8 +140,11 @@ class OrganizationalUnitResolver:
         self,
         units: Iterable[OrganizationalUnit],
         *,
-        company: str,
-        department: str,
+        company: str = "",
+        department: str = "",
+        categories: str = "",
+        applicant_company: str = "",
+        applicant_department: str = "",
         users_root_ou: str,
     ) -> OuResolution:
         bounded = [
@@ -140,22 +156,37 @@ class OrganizationalUnitResolver:
         ]
         organizations = [item for item in bounded if _is_organization_candidate(item, users_root_ou)]
         organization: OrganizationalUnit | None = None
-        if company.strip():
-            org_exact = [item for item in organizations if _normalize(item.name) == _normalize(company)]
-            if len(org_exact) == 1:
-                organization = org_exact[0]
-            else:
-                ranked_organizations = self._rank(organizations, company, "company")
-                runner_up = ranked_organizations[1].score if len(ranked_organizations) > 1 else 0.0
-                if (
-                    ranked_organizations
-                    and ranked_organizations[0].score >= 0.93
-                    and ranked_organizations[0].score - runner_up >= 0.15
-                ):
-                    selected_dn = ranked_organizations[0].distinguished_name
+        org_source_used: str | None = None
+
+        company_candidates: list[tuple[str, str]] = []
+        for src_name, src_val in (
+            ("company", company.strip()),
+            ("categories", categories.strip()),
+            ("applicant_company", applicant_company.strip()),
+        ):
+            if src_val:
+                company_candidates.append((src_name, src_val))
+
+        last_ranked_orgs: tuple[OuCandidate, ...] = ()
+        if company_candidates:
+            for src_name, target_org in company_candidates:
+                org_exact = [item for item in organizations if _normalize(item.name) == _normalize(target_org)]
+                if len(org_exact) == 1:
+                    organization = org_exact[0]
+                    org_source_used = src_name
+                    break
+                ranked_orgs = self._rank(organizations, target_org, src_name)
+                last_ranked_orgs = ranked_orgs
+                runner_up = ranked_orgs[1].score if len(ranked_orgs) > 1 else 0.0
+                if ranked_orgs and ranked_orgs[0].score >= 0.93 and ranked_orgs[0].score - runner_up >= 0.15:
+                    selected_dn = ranked_orgs[0].distinguished_name
                     organization = next(item for item in organizations if item.distinguished_name == selected_dn)
-                else:
-                    return OuResolution(None, "organization_ambiguous", ranked_organizations)
+                    org_source_used = src_name
+                    break
+
+            if organization is None:
+                return OuResolution(None, "organization_ambiguous", last_ranked_orgs)
+
             bounded = [
                 item
                 for item in bounded
@@ -176,13 +207,39 @@ class OrganizationalUnitResolver:
             item = exact[0]
             evidence = ["department_exact"]
             if organization is not None:
-                evidence.append("organization_ancestor_match")
+                evidence.append(f"organization_ancestor_match:{org_source_used or 'company'}")
+            if applicant_department and _similarity(item.name, applicant_department) >= 0.85:
+                evidence.append("applicant_department_alignment")
             return OuResolution(
                 item.distinguished_name,
                 "exact_hierarchy_match",
                 (OuCandidate(item.distinguished_name, item.name, 1.0, tuple(evidence)),),
             )
-        ranked = self._rank(bounded, department, "department")
+
+        # Workshop number heuristic: if department references a specific workshop number (e.g. "цеха №4")
+        dept_num = _extract_workshop_number(department)
+        if dept_num:
+            matched_workshops = [item for item in bounded if _ou_matches_workshop_number(item.name, dept_num)]
+            if len(matched_workshops) == 1:
+                item = matched_workshops[0]
+                evidence = ["workshop_number_match"]
+                if organization is not None:
+                    evidence.append(f"organization_ancestor_match:{org_source_used or 'company'}")
+                if applicant_department and _similarity(item.name, applicant_department) >= 0.85:
+                    evidence.append("applicant_department_alignment")
+                return OuResolution(
+                    item.distinguished_name,
+                    "workshop_number_match",
+                    (OuCandidate(item.distinguished_name, item.name, 0.96, tuple(evidence)),),
+                )
+
+        ranked = self._rank_departments(
+            bounded,
+            department,
+            applicant_department=applicant_department,
+            organization=organization,
+            org_source_used=org_source_used,
+        )
         if ranked and ranked[0].score >= 0.92:
             runner_up = ranked[1].score if len(ranked) > 1 else 0.0
             if ranked[0].score - runner_up >= 0.12:
@@ -200,4 +257,35 @@ class OrganizationalUnitResolver:
             )
             for item in units
         ]
+        return tuple(sorted(candidates, key=lambda item: (-item.score, item.distinguished_name))[:5])
+
+    @staticmethod
+    def _rank_departments(
+        units: Iterable[OrganizationalUnit],
+        department: str,
+        *,
+        applicant_department: str = "",
+        organization: OrganizationalUnit | None = None,
+        org_source_used: str | None = None,
+    ) -> tuple[OuCandidate, ...]:
+        candidates: list[OuCandidate] = []
+        for item in units:
+            base_score = _similarity(item.name, department)
+            evidence = ["department_name_similarity"]
+            score = base_score
+            if organization is not None:
+                evidence.append(f"organization_ancestor_match:{org_source_used or 'company'}")
+            if applicant_department:
+                app_score = _similarity(item.name, applicant_department)
+                if app_score >= 0.85:
+                    score = min(1.0, score + 0.05)
+                    evidence.append("applicant_department_alignment")
+            candidates.append(
+                OuCandidate(
+                    distinguished_name=item.distinguished_name,
+                    name=item.name,
+                    score=round(score, 4),
+                    evidence=tuple(evidence),
+                )
+            )
         return tuple(sorted(candidates, key=lambda item: (-item.score, item.distinguished_name))[:5])

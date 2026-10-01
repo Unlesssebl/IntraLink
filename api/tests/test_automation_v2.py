@@ -2,8 +2,10 @@
 
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -36,6 +38,8 @@ from core.automation.case_router import CaseRouter
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.database.base import Base
 from core.database.models import (
+    ActionPlanRecord,
+    AutonomyRunEventRecord,
     AutonomyRunRecord,
     CapabilityExecutionPolicyRecord,
     ClarificationRequestRecord,
@@ -885,6 +889,7 @@ async def test_human_action_request_generation_and_resolution(session_factory) -
         ServiceName="Создание пользователя сети",
         TaskTypeId=1001,
         StatusId=1,
+        ExecutorIds="999",
     )
     client.get_task_lifetime.return_value = []
 
@@ -969,6 +974,24 @@ async def test_human_action_request_generation_and_resolution(session_factory) -
         assert len(action_req.candidates) == 1
         cand = action_req.candidates[0]
 
+        assert automation.action_plan is not None
+        run = AutonomyRunRecord(
+            task_id=63010,
+            bot_user_id=999,
+            assignment_epoch=1,
+            assignment_event_key="assignment:63010:1",
+            state="awaiting_human_action",
+            blocker_code="human_action_required",
+            snapshot_hash=automation.snapshot_hash,
+            action_plan_id=automation.action_plan.id,
+        )
+        session.add(run)
+        await session.flush()
+        original_plan = await session.get(ActionPlanRecord, automation.action_plan.id)
+        assert original_plan is not None
+        original_plan.autonomy_run_id = run.id
+        await session.commit()
+
         # Resolve human action
         resolved = await service.resolve_human_action(
             session,
@@ -983,9 +1006,57 @@ async def test_human_action_request_generation_and_resolution(session_factory) -
         )
 
         assert resolved.readiness is not None
-        assert resolved.readiness.current_stage in {"approval", "execution", "delivery"}
+        assert resolved.readiness.current_stage in {"assignment", "execution", "delivery"}
         assert any(s.key == "ou" and s.state == "completed" for s in resolved.readiness.stages)
         assert any(ha.id == action_req.id and ha.state == "resolved" for ha in resolved.human_actions)
+        assert resolved.action_plan is not None
+        await session.refresh(run)
+        assert run.state == "ready"
+        assert run.blocker_code is None
+        assert run.action_plan_id == resolved.action_plan.id
+        corrected_plan = await session.get(ActionPlanRecord, resolved.action_plan.id)
+        assert corrected_plan is not None
+        assert corrected_plan.autonomy_run_id == run.id
+        event = await session.scalar(
+            select(AutonomyRunEventRecord).where(
+                AutonomyRunEventRecord.run_id == run.id,
+                AutonomyRunEventRecord.kind == "human_action_resolved",
+            )
+        )
+        assert event is not None
+
+        # Poller marks a ready run as dispatching before calling Core API. The
+        # corrected plan must survive that hand-off; otherwise analysis would
+        # recreate the ambiguous plan and ask for the same OU again.
+        run.state = "dispatching"
+        await session.commit()
+        service.analyze = AsyncMock(side_effect=AssertionError("corrected plan must be reused"))
+        service.permit_service.issue = AsyncMock()
+        command_id = uuid4()
+        service.runner.advance = AsyncMock(
+            return_value=SimpleNamespace(command=SimpleNamespace(id=command_id))
+        )
+        with (
+            patch(
+                "api.src.features.autopilot.service.TaskStatusResolver.resolve",
+                new=AsyncMock(return_value=SimpleNamespace(is_final=False)),
+            ),
+            patch(
+                "api.src.features.autopilot.service.dispatch_command",
+                new_callable=AsyncMock,
+            ) as dispatch_mock,
+        ):
+            advanced = await service.advance_run(session, run_id=run.id)
+
+        assert advanced["state"] == "executing"
+        service.analyze.assert_not_awaited()
+        service.permit_service.issue.assert_awaited_once()
+        service.runner.advance.assert_awaited_once_with(
+            session,
+            action_plan_id=resolved.action_plan.id,
+            initiator="autopilot",
+        )
+        dispatch_mock.assert_awaited_once_with(command_id)
 
 
 async def test_printer_readiness_and_polymorphic_facts(session_factory) -> None:
@@ -1026,7 +1097,8 @@ async def test_printer_readiness_and_polymorphic_facts(session_factory) -> None:
         assert "ou" not in stage_keys, "Стадия выбора OU не должна присутствовать для принтера"
         assert "facts" in stage_keys
         assert "preflight" in stage_keys
-        assert "approval" in stage_keys
+        assert "assignment" in stage_keys
+        assert "approval" not in stage_keys
         assert "execution" in stage_keys
 
         # До ввода параметров план еще не скомпилирован (awaiting_facts)
@@ -1062,3 +1134,155 @@ async def test_printer_readiness_and_polymorphic_facts(session_factory) -> None:
         assert corrected.execution_summary is not None
         assert len(corrected.execution_summary) == 1
         assert "Установка принтера 192.168.1.150 на рабочую станцию WS-305" in corrected.execution_summary[0]
+
+
+async def test_advance_run_refreshes_expired_preflight_and_issues_permit(
+    session_factory, monkeypatch
+) -> None:
+    from datetime import timedelta
+    from uuid import UUID
+    from core.automation.contracts import ActionPlan, compute_action_plan_hash
+    from core.automation.persistence import canonical_params_hash
+    from core.database.models import ActionPreflightRecord
+
+    task_dto = TaskDTO(
+        Id=77001,
+        Name="Создать учетную запись нового сотрудника",
+        Description="Иванов Иван Иванович",
+        ServiceId=900001,
+        ServiceName="Создание пользователя сети",
+        TaskTypeId=1001,
+        StatusId=1,
+        ExecutorIds="999",
+    )
+    client = AsyncMock()
+    client.get_task.return_value = task_dto
+    client.get_task_lifetime.return_value = []
+
+    service = AutomationService(client=client, extractor=CaseFrameExtractor(), router=CaseRouter())
+    service.auth_bootstrap = AsyncMock()
+    service.auth_bootstrap.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="test-auth", bot_user_id=999, login="bot"
+    )
+
+    from core.automation.snapshot import TicketSnapshotFactory
+    snapshot = TicketSnapshotFactory.create(task_dto, comments=[])
+    snap_hash = snapshot.snapshot_hash
+
+    async with session_factory() as session:
+        action_plan_id = uuid4()
+        action_id = str(uuid4())
+        case_decision_id = uuid4()
+        plan_dict = {
+            "id": str(action_plan_id),
+            "task_id": 77001,
+            "case_decision_id": str(case_decision_id),
+            "workflow_plan_id": str(uuid4()),
+            "workflow_key": "employee_onboarding_workflow",
+            "workflow_version": "1.0.0",
+            "snapshot_hash": snap_hash,
+            "state": "ready",
+            "disposition": "execute",
+            "actions": [
+                {
+                    "id": action_id,
+                    "sequence_no": 1,
+                    "capability_key": "create_ad_user",
+                    "params": {"username": "ivanov.i"},
+                    "requires_approval": False,
+                }
+            ],
+            "plan_hash": "",
+        }
+        plan_obj = ActionPlan.model_validate(plan_dict)
+        plan_hash = compute_action_plan_hash(plan_obj)
+        plan_dict["plan_hash"] = plan_hash
+
+        plan_record = ActionPlanRecord(
+            id=action_plan_id,
+            task_id=77001,
+            workflow_plan_id=UUID(plan_dict["workflow_plan_id"]),
+            case_decision_id=case_decision_id,
+            snapshot_hash=snap_hash,
+            plan_hash=plan_hash,
+            state="ready",
+            disposition="execute",
+            workflow_key="employee_onboarding_workflow",
+            workflow_version="1.0.0",
+            plan_json=plan_dict,
+        )
+        session.add(plan_record)
+
+        expired_at = datetime.now(UTC) - timedelta(minutes=10)
+        preflight_record = ActionPreflightRecord(
+            action_plan_id=action_plan_id,
+            task_id=77001,
+            action_id=action_id,
+            capability_key="create_ad_user",
+            snapshot_hash=snap_hash,
+            plan_hash=plan_hash,
+            params_hash=canonical_params_hash({"username": "ivanov.i"}),
+            status="passed",
+            checks_json=[],
+            details_json={},
+            expires_at=expired_at,
+        )
+        session.add(preflight_record)
+
+        run_id = uuid4()
+        run = AutonomyRunRecord(
+            id=run_id,
+            task_id=77001,
+            bot_user_id=999,
+            assignment_epoch=1,
+            assignment_event_key="assignment:77001:1",
+            state="dispatching",
+            snapshot_hash=snap_hash,
+            action_plan_id=action_plan_id,
+        )
+        session.add(run)
+        plan_record.autonomy_run_id = run_id
+        await session.commit()
+
+        async def mock_run_plan(s, *, action_plan_id):
+            fresh_record = ActionPreflightRecord(
+                action_plan_id=action_plan_id,
+                task_id=77001,
+                action_id=action_id,
+                capability_key="create_ad_user",
+                snapshot_hash=snap_hash,
+                plan_hash=plan_hash,
+                params_hash=canonical_params_hash({"username": "ivanov.i"}),
+                status="passed",
+                checks_json=[],
+                details_json={},
+                expires_at=datetime.now(UTC) + timedelta(seconds=300),
+            )
+            s.add(fresh_record)
+            await s.flush()
+            return [fresh_record]
+
+        service.preflight.run_plan = AsyncMock(side_effect=mock_run_plan)
+        command_id = uuid4()
+        service.runner.advance = AsyncMock(
+            return_value=SimpleNamespace(command=SimpleNamespace(id=command_id))
+        )
+
+        with (
+            patch(
+                "api.src.features.autopilot.service.TaskStatusResolver.resolve",
+                new=AsyncMock(return_value=SimpleNamespace(is_final=False)),
+            ),
+            patch(
+                "api.src.features.autopilot.service.dispatch_command",
+                new_callable=AsyncMock,
+            ) as dispatch_mock,
+        ):
+            advanced = await service.advance_run(session, run_id=run.id)
+
+        assert advanced["state"] == "executing"
+        assert advanced.get("blocker") is None
+        service.preflight.run_plan.assert_awaited_once_with(session, action_plan_id=action_plan_id)
+        service.runner.advance.assert_awaited_once()
+        dispatch_mock.assert_awaited_once_with(command_id)
+

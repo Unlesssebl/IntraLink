@@ -57,7 +57,11 @@ from core.automation.execution_policy import ExecutionPolicyEvaluator
 from core.automation.frame_extractor import CaseFrameExtractor
 from core.automation.intake import CaseIntakeEngine
 from core.automation.llm_transport import LiteLLMVerifierTransport
-from core.automation.persistence import AutomationBundle, AutomationRepository
+from core.automation.persistence import (
+    AutomationBundle,
+    AutomationRepository,
+    canonical_params_hash,
+)
 from core.automation.preflight import ActionPreflightService
 from core.automation.resolution import (
     HumanActionConflictError,
@@ -475,6 +479,8 @@ class AutomationService:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "autonomy_run_not_found")
         if run.state in {"succeeded", "blocked", "cancelled", "unknown_outcome"}:
             return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
+        if run.state == "awaiting_human_action":
+            return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
         if run.next_attempt_at is not None and run.next_attempt_at > datetime.now(UTC):
             return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
 
@@ -510,72 +516,178 @@ class AutomationService:
             await session.commit()
             return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
 
-        run.attempt_count += 1
-        run.state = "analyzing"
-        run.next_attempt_at = None
-        self.autonomy_coordinator.add_event(session, run, "analysis_started", {"attempt": run.attempt_count})
-        await session.flush()
-        try:
-            dto = await self.analyze(
-                session,
-                ticket_id=run.task_id,
+        plan_record: ActionPlanRecord | None = None
+        if (
+            run.state in {"ready", "dispatching"}
+            and run.action_plan_id is not None
+            and run.snapshot_hash
+        ):
+            lifetime = await self.client.get_task_lifetime(
+                task_id=run.task_id,
                 auth_b64=credentials.auth_b64,
-                force=bool(run.snapshot_hash),
             )
-        except Exception as exc:
-            if not self.autonomy_coordinator.schedule_retry(run, f"analysis:{type(exc).__name__}"):
+            current_snapshot = TicketSnapshotFactory.create(task, comments=lifetime)
+            if current_snapshot.snapshot_hash == run.snapshot_hash:
+                plan_record = await session.scalar(
+                    select(ActionPlanRecord)
+                    .where(
+                        ActionPlanRecord.id == run.action_plan_id,
+                        ActionPlanRecord.task_id == run.task_id,
+                        ActionPlanRecord.autonomy_run_id == run.id,
+                        ActionPlanRecord.snapshot_hash == run.snapshot_hash,
+                        ActionPlanRecord.state == ActionPlanState.ready.value,
+                    )
+                    .with_for_update()
+                )
+
+        if plan_record is None:
+            run.attempt_count += 1
+            run.state = "analyzing"
+            run.next_attempt_at = None
+            self.autonomy_coordinator.add_event(
+                session, run, "analysis_started", {"attempt": run.attempt_count}
+            )
+            await session.flush()
+            try:
+                dto = await self.analyze(
+                    session,
+                    ticket_id=run.task_id,
+                    auth_b64=credentials.auth_b64,
+                    force=bool(run.snapshot_hash),
+                )
+            except Exception as exc:
+                if not self.autonomy_coordinator.schedule_retry(run, f"analysis:{type(exc).__name__}"):
+                    run.state = "blocked"
+                    run.blocker_code = "retries_exhausted"
+                    run.completed_at = datetime.now(UTC)
+                    await self.failure_reporter.enqueue(
+                        session, run=run, phase="analysis", blocker_code="retries_exhausted"
+                    )
+                self.autonomy_coordinator.add_event(
+                    session, run, "analysis_failed", {"error_type": type(exc).__name__}
+                )
+                await session.commit()
+                return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
+
+            run.snapshot_hash = dto.snapshot_hash
+            if dto.workflow_plan.state == WorkflowPlanState.awaiting_facts:
+                run.state = "awaiting_facts"
+                run.blocker_code = "required_facts_missing"
+                self.autonomy_coordinator.add_event(
+                    session,
+                    run,
+                    "awaiting_facts",
+                    {"round": dto.workflow_plan.clarification_round, "missing": dto.workflow_plan.missing_facts},
+                )
+                await session.commit()
+                return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
+
+            if dto.action_plan is None:
+                blocker = self._planning_blocker(dto)
                 run.state = "blocked"
-                run.blocker_code = "retries_exhausted"
+                run.blocker_code = blocker
                 run.completed_at = datetime.now(UTC)
                 await self.failure_reporter.enqueue(
-                    session, run=run, phase="analysis", blocker_code="retries_exhausted"
+                    session, run=run, phase="planning", blocker_code=blocker
                 )
-            self.autonomy_coordinator.add_event(
-                session, run, "analysis_failed", {"error_type": type(exc).__name__}
-            )
-            await session.commit()
-            return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
+                self.autonomy_coordinator.add_event(session, run, "planning_blocked", {"blocker": blocker})
+                await session.commit()
+                return {"run_id": str(run.id), "state": run.state, "blocker": blocker}
 
-        run.snapshot_hash = dto.snapshot_hash
-        if dto.workflow_plan.state == WorkflowPlanState.awaiting_facts:
-            run.state = "awaiting_facts"
-            run.blocker_code = "required_facts_missing"
-            self.autonomy_coordinator.add_event(
-                session,
-                run,
-                "awaiting_facts",
-                {"round": dto.workflow_plan.clarification_round, "missing": dto.workflow_plan.missing_facts},
+            plan_record = await session.scalar(
+                select(ActionPlanRecord)
+                .where(ActionPlanRecord.id == dto.action_plan.id)
+                .with_for_update()
             )
-            await session.commit()
-            return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
-
-        if dto.action_plan is None:
-            blocker = (
-                "ambiguous_case"
-                if dto.case_decision.state in {CaseDecisionState.ambiguous, CaseDecisionState.unknown}
-                else "clarification_exhausted"
-                if "clarification_rounds_exhausted" in dto.workflow_plan.reason_codes
-                else "unsupported_case"
-            )
-            run.state = "blocked"
-            run.blocker_code = blocker
-            run.completed_at = datetime.now(UTC)
-            await self.failure_reporter.enqueue(
-                session, run=run, phase="planning", blocker_code=blocker
-            )
-            self.autonomy_coordinator.add_event(session, run, "planning_blocked", {"blocker": blocker})
-            await session.commit()
-            return {"run_id": str(run.id), "state": run.state, "blocker": blocker}
-
-        plan_record = await session.scalar(
-            select(ActionPlanRecord)
-            .where(ActionPlanRecord.id == dto.action_plan.id)
-            .with_for_update()
-        )
         if plan_record is None:
             raise HTTPException(status.HTTP_409_CONFLICT, "action_plan_not_persisted")
         plan_record.autonomy_run_id = run.id
         run.action_plan_id = plan_record.id
+
+        # Ensure action plan has valid and fresh preflights before issuing permits
+        now = datetime.now(UTC)
+        plan = ActionPlan.model_validate(plan_record.plan_json)
+        needs_preflight = False
+        for action in plan.actions:
+            params_hash = canonical_params_hash(action.params)
+            latest_pf = await session.scalar(
+                select(ActionPreflightRecord)
+                .where(
+                    ActionPreflightRecord.action_plan_id == plan.id,
+                    ActionPreflightRecord.action_id == action.id,
+                    ActionPreflightRecord.capability_key == action.capability_key,
+                    ActionPreflightRecord.snapshot_hash == plan.snapshot_hash,
+                    ActionPreflightRecord.plan_hash == plan.plan_hash,
+                    ActionPreflightRecord.params_hash == params_hash,
+                )
+                .order_by(ActionPreflightRecord.created_at.desc())
+                .limit(1)
+            )
+            if latest_pf is None:
+                needs_preflight = True
+                break
+            pf_exp = latest_pf.expires_at
+            if pf_exp.tzinfo is None:
+                pf_exp = pf_exp.replace(tzinfo=UTC)
+            if pf_exp <= now:
+                needs_preflight = True
+                break
+
+        if needs_preflight and plan_record.state == ActionPlanState.ready.value:
+            await self.preflight.run_plan(session, action_plan_id=plan_record.id)
+
+        pending_human_action = await session.scalar(
+            select(HumanActionRequestRecord.id).where(
+                HumanActionRequestRecord.action_plan_id == plan_record.id,
+                HumanActionRequestRecord.state == "pending",
+            )
+        )
+        if pending_human_action is not None:
+            run.state = "awaiting_human_action"
+            run.blocker_code = "human_action_required"
+            run.completed_at = None
+            self.autonomy_coordinator.add_event(
+                session,
+                run,
+                "awaiting_human_action",
+                {"human_action_id": str(pending_human_action)},
+            )
+            await session.commit()
+            return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
+
+        failed_error: str | None = None
+        for action in plan.actions:
+            params_hash = canonical_params_hash(action.params)
+            latest_pf = await session.scalar(
+                select(ActionPreflightRecord)
+                .where(
+                    ActionPreflightRecord.action_plan_id == plan.id,
+                    ActionPreflightRecord.action_id == action.id,
+                    ActionPreflightRecord.capability_key == action.capability_key,
+                    ActionPreflightRecord.snapshot_hash == plan.snapshot_hash,
+                    ActionPreflightRecord.plan_hash == plan.plan_hash,
+                    ActionPreflightRecord.params_hash == params_hash,
+                )
+                .order_by(ActionPreflightRecord.created_at.desc())
+                .limit(1)
+            )
+            if latest_pf is not None and latest_pf.status == "failed":
+                failed_error = latest_pf.error_message or "preflight_failed"
+                break
+
+        if failed_error is not None:
+            run.state = "blocked"
+            run.blocker_code = "preflight_failed"
+            run.completed_at = datetime.now(UTC)
+            await self.failure_reporter.enqueue(
+                session, run=run, phase="preflight", blocker_code="preflight_failed"
+            )
+            self.autonomy_coordinator.add_event(
+                session, run, "permit_denied", {"blocker": "preflight_failed", "error": failed_error}
+            )
+            await session.commit()
+            return {"run_id": str(run.id), "state": run.state, "blocker": "preflight_failed"}
+
         try:
             await self.permit_service.issue(
                 session,
@@ -590,7 +702,9 @@ class AutomationService:
             await self.failure_reporter.enqueue(
                 session, run=run, phase="preflight", blocker_code=blocker
             )
-            self.autonomy_coordinator.add_event(session, run, "permit_denied", {"blocker": blocker})
+            self.autonomy_coordinator.add_event(
+                session, run, "permit_denied", {"blocker": blocker, "detail": str(exc)}
+            )
             await session.commit()
             return {"run_id": str(run.id), "state": run.state, "blocker": blocker}
 
@@ -617,6 +731,26 @@ class AutomationService:
         await session.commit()
         await dispatch_command(command_id)
         return {"run_id": str(run.id), "state": run.state, "command_id": str(command_id)}
+
+    @staticmethod
+    def _planning_blocker(dto: TicketAutomationDTO) -> str:
+        """Preserve the application reason instead of collapsing every no-plan outcome."""
+        if dto.case_decision.state in {
+            CaseDecisionState.ambiguous,
+            CaseDecisionState.unknown,
+            CaseDecisionState.multi_intent,
+        }:
+            return "ambiguous_case"
+        reasons = set(dto.workflow_plan.reason_codes)
+        if reasons & {"clarification_rounds_exhausted", "clarification_limit_reached"}:
+            return "clarification_exhausted"
+        if dto.workflow_plan.state == WorkflowPlanState.awaiting_diagnostics:
+            return "diagnosis_required"
+        if dto.workflow_plan.state == WorkflowPlanState.needs_review:
+            return "operator_review_required"
+        if "service_binding_not_authorized" in reasons or "ad_service_not_authorized" in reasons:
+            return "service_binding_failed"
+        return "unsupported_case"
 
     async def autonomy_metrics(self, session: AsyncSession) -> dict[str, Any]:
         state_rows = (
@@ -2284,6 +2418,7 @@ class AutomationService:
                 attempt_count=run_record.attempt_count,
                 blocker_code=run_record.blocker_code,
                 awaiting_response=run_record.state == "awaiting_facts",
+                awaiting_operator_action=run_record.state == "awaiting_human_action",
                 next_attempt_at=run_record.next_attempt_at,
                 private_note_state=note.state if note is not None else None,
             )
@@ -2365,6 +2500,12 @@ class AutomationService:
         )
         missing_facts = list(bundle.workflow_plan.missing_facts)
         pending_human_actions = [ha for ha in (human_actions or []) if ha.state == "pending"]
+        run_record = await session.scalar(
+            select(AutonomyRunRecord)
+            .where(AutonomyRunRecord.task_id == bundle.frame.task_id)
+            .order_by(AutonomyRunRecord.assignment_epoch.desc())
+            .limit(1)
+        )
 
         blockers: list[ReadinessBlockerDTO] = []
         actions: list[str] = []
@@ -2410,6 +2551,20 @@ class AutomationService:
                     detail="Одна или несколько проверок перед созданием не пройдены.",
                 )
             )
+        if (
+            run_record is None
+            and bundle.action_plan is not None
+            and preflight_passed
+            and not pending_human_actions
+        ):
+            blockers.append(
+                ReadinessBlockerDTO(
+                    code="bot_assignment_required",
+                    stage="assignment",
+                    retryable=False,
+                    detail="Для запуска назначьте сервисную учётную запись исполнителем заявки.",
+                )
+            )
         execution_blocked = bool(bundle.action_plan) and execution_policy is not None and not execution_policy.allowed
         if execution_blocked and execution_policy is not None:
             reason_map = {
@@ -2453,8 +2608,32 @@ class AutomationService:
                     )
                 )
 
+        if run_record is not None and run_record.blocker_code and run_record.state in {
+            "blocked",
+            "cancelled",
+            "retry_wait",
+            "unknown_outcome",
+        }:
+            blocker_stage = (
+                "assignment"
+                if run_record.blocker_code in {"bot_unassigned", "ticket_became_final"}
+                else "preflight"
+                if run_record.blocker_code in {"preflight_failed", "service_binding_failed"}
+                else "execution"
+            )
+            if not any(item.code == run_record.blocker_code for item in blockers):
+                blockers.append(
+                    ReadinessBlockerDTO(
+                        code=run_record.blocker_code,
+                        stage=blocker_stage,
+                        retryable=run_record.state == "retry_wait",
+                    )
+                )
+
         command_states = {str(item.get("status")) for item in execution}
-        completed = bundle.workflow_plan.state == WorkflowPlanState.completed or (
+        completed = (
+            run_record is not None and run_record.state == "succeeded"
+        ) or bundle.workflow_plan.state == WorkflowPlanState.completed or (
             bool(command_states) and command_states <= {"succeeded"}
         )
         running = bool(command_states & {"pending", "queued", "running"})
@@ -2472,7 +2651,7 @@ class AutomationService:
         stage_order: list[str] = ["facts"]
         if has_hitl:
             stage_order.append(hitl_key)
-        stage_order.extend(["preflight", "approval", "execution"])
+        stage_order.extend(["preflight", "assignment", "execution"])
         if has_delivery:
             stage_order.append("delivery")
 
@@ -2498,10 +2677,10 @@ class AutomationService:
                     stage_state = "blocked"
                 else:
                     stage_state = "active"
-            elif key == "approval":
-                if approval.get("state") == "approved":
+            elif key == "assignment":
+                if run_record is not None:
                     stage_state = "completed"
-                elif preflight_passed and approval.get("state") == "pending":
+                elif preflight_passed:
                     stage_state = "active"
                 else:
                     stage_state = "not_started"
@@ -2510,6 +2689,20 @@ class AutomationService:
                     stage_state = "completed"
                 elif running:
                     stage_state = "running"
+                elif run_record is not None and run_record.state in {
+                    "blocked",
+                    "cancelled",
+                    "unknown_outcome",
+                }:
+                    stage_state = "blocked"
+                elif run_record is not None and run_record.state in {
+                    "detected",
+                    "dispatching",
+                    "analyzing",
+                    "ready",
+                    "retry_wait",
+                }:
+                    stage_state = "active"
                 else:
                     stage_state = "not_started"
             elif key == "delivery":
@@ -2530,17 +2723,14 @@ class AutomationService:
             state, current_stage = "blocked", "facts"
         elif not preflight_passed:
             state, current_stage = "blocked", "preflight"
-        elif execution_blocked:
-            state, current_stage = "blocked", "approval"
-            if approval.get("state") == "pending":
-                actions.append("reject_automation")
-        elif approval.get("state") == "pending":
-            state, current_stage = "ready_for_approval", "approval"
-            if approval.get("kind") != "policy_auto":
-                actions.append("approve")
-            actions.append("reject_automation")
-        else:
+        elif run_record is None:
+            state, current_stage = "awaiting_assignment", "assignment"
+        elif run_record.state in {"blocked", "cancelled", "unknown_outcome"}:
             state, current_stage = "blocked", "execution"
+        elif run_record.state == "awaiting_human_action":
+            state, current_stage = "blocked", hitl_key
+        else:
+            state, current_stage = "pending", "execution"
 
         if not completed and not running and "reanalyze" not in actions:
             actions.append("reanalyze")
@@ -2549,8 +2739,10 @@ class AutomationService:
             state=(
                 "passed"
                 if preflight_passed
+                else "action_required"
+                if has_action_required
                 else "failed"
-                if (preflight_failed or has_action_required)
+                if preflight_failed
                 else "not_started"
             ),
             reason_code=("blocked_by_missing_facts" if bundle.action_plan is None and missing_facts else None),
@@ -2588,7 +2780,7 @@ class AutomationService:
     ) -> TicketAutomationDTO:
         await self._verify_current_snapshot(ticket_id, request.snapshot_hash, auth_b64)
         try:
-            await self.human_action_resolution.resolve(
+            corrected_plan = await self.human_action_resolution.resolve(
                 session,
                 ticket_id=ticket_id,
                 human_action_id=human_action_id,
@@ -2604,6 +2796,44 @@ class AutomationService:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         except HumanActionValidationError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+        human_action = await session.get(HumanActionRequestRecord, human_action_id)
+        run: AutonomyRunRecord | None = None
+        if human_action is not None:
+            run = await session.scalar(
+                select(AutonomyRunRecord)
+                .where(
+                    AutonomyRunRecord.task_id == ticket_id,
+                    AutonomyRunRecord.action_plan_id == human_action.action_plan_id,
+                    AutonomyRunRecord.state.in_(["awaiting_human_action", "ready", "blocked"]),
+                )
+                .order_by(AutonomyRunRecord.assignment_epoch.desc())
+                .with_for_update()
+                .limit(1)
+            )
+            if run is not None and run.state == "blocked" and run.blocker_code != "human_action_required":
+                run = None
+
+        if run is not None:
+            corrected_record = await session.get(ActionPlanRecord, corrected_plan.id)
+            if corrected_record is None:
+                raise HTTPException(status.HTTP_409_CONFLICT, "corrected_action_plan_not_persisted")
+            corrected_record.autonomy_run_id = run.id
+            run.action_plan_id = corrected_plan.id
+            run.snapshot_hash = corrected_plan.snapshot_hash
+            run.state = "ready"
+            run.blocker_code = None
+            run.next_attempt_at = None
+            run.completed_at = None
+            self.autonomy_coordinator.add_event(
+                session,
+                run,
+                "human_action_resolved",
+                {
+                    "human_action_id": str(human_action_id),
+                    "action_plan_id": str(corrected_plan.id),
+                },
+            )
 
         await session.commit()
         refreshed_bundle = await self.repository.latest_for_task(session, ticket_id)

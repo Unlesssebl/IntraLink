@@ -180,3 +180,8 @@ intra-web/dist/
 # Backups and database dumps
 backups/
 *.dump
+
+# Scratch scripts
+scratch/
+scratch_*.py
+

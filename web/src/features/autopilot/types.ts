@@ -237,6 +237,7 @@ export interface TicketAutomation {
     attempt_count: number;
     blocker_code?: string | null;
     awaiting_response: boolean;
+    awaiting_operator_action: boolean;
     next_attempt_at?: string | null;
     private_note_state?: string | null;
   } | null;

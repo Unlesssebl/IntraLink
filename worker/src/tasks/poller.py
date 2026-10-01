@@ -7,8 +7,8 @@ Slices:
 Backoff:
   30s -> 60s -> 120s on network/5xx server errors. Resets to 30s on success.
 Automation:
-  - Polling never analyzes or mutates tickets.
-  - Operators explicitly invoke the ADR 0006 analyze/approve flow.
+  - Assignment of the configured service account creates one durable autonomy run.
+  - Polling dispatches new, retryable and operator-unblocked runs through Core API.
 Watermark:
   - Dual persistent state: Redis system-state cache + PostgreSQL (system_state table).
 """
@@ -459,8 +459,16 @@ class IngestionPoller:
                 (
                     await db.scalars(
                         select(AutonomyRunRecord).where(
-                            AutonomyRunRecord.state == "retry_wait",
-                            AutonomyRunRecord.next_attempt_at <= datetime.now(timezone.utc),
+                            (
+                                (AutonomyRunRecord.state == "ready")
+                                | (
+                                    (AutonomyRunRecord.state == "retry_wait")
+                                    & (
+                                        AutonomyRunRecord.next_attempt_at
+                                        <= datetime.now(timezone.utc)
+                                    )
+                                )
+                            )
                         )
                     )
                 ).all()

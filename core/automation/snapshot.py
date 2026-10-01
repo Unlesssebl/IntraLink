@@ -163,6 +163,21 @@ class TicketSnapshotFactory:
             )
             for item in (task.attachments or [])
         ]
+        categories = (
+            getattr(task, "categories", None)
+            or entities.get("categories")
+            or None
+        )
+        applicant_company = (
+            getattr(task, "creator_company_name", None)
+            or entities.get("applicant_company")
+            or None
+        )
+        applicant_login = (
+            getattr(task, "creator_login", None)
+            or entities.get("applicant_login")
+            or None
+        )
         payload = {
             "task_id": task.id,
             "status_id": task.status_id,
@@ -176,6 +191,9 @@ class TicketSnapshotFactory:
             "custom_fields": custom_fields,
             "entities": entities,
             "attachments": [item.model_dump() for item in attachments],
+            "categories": categories,
+            "applicant_company": applicant_company,
+            "applicant_login": applicant_login,
             "last_event_id": event_id,
         }
         return TicketSnapshot(

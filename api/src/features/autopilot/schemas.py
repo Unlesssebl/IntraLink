@@ -132,6 +132,7 @@ class AutonomyRunDTO(BaseModel):
     attempt_count: int
     blocker_code: str | None = None
     awaiting_response: bool = False
+    awaiting_operator_action: bool = False
     next_attempt_at: datetime | None = None
     private_note_state: str | None = None
 
