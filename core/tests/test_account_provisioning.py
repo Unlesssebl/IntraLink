@@ -345,3 +345,106 @@ async def test_ou_tree_cache_redis_failure_fails_open_to_ldap():
     assert preview["target_ou"] == "OU=ИТ,OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"
 
 
+@pytest.mark.asyncio
+async def test_provisioning_assigns_hlp_service_group():
+    provisioner, conn, client = _provisioner_with_verified_ldap()
+    known_password = "Known-Secret-93!"
+
+    task_mock = MagicMock()
+    task_mock.custom_fields = {1439: "ivanov.i", 1440: known_password}
+    client.get_task.return_value = task_mock
+
+    # Mock group in LDAP
+    group_entry = MagicMock()
+    group_entry.name.value = "HLP_АО Тест ТЭМПО"
+    group_entry.sAMAccountName.value = "HLP_АО Тест ТЭМПО"
+    group_entry.distinguishedName.value = "CN=HLP_АО Тест ТЭМПО,OU=ServiceDesk,OU=CORPORATE_SERVICES,DC=corporate,DC=loc"
+
+    orig_search = conn.search.side_effect
+
+    def search_with_group(*args, **kwargs):
+        filt = kwargs.get("search_filter") or (args[1] if len(args) > 1 else "")
+        if "(sAMAccountName=HLP_*)" in str(filt):
+            conn.entries = [group_entry]
+        else:
+            orig_search(*args, **kwargs)
+
+    conn.search.side_effect = search_with_group
+
+    with patch(
+        "core.ad.provisioning.generate_secure_password",
+        return_value=SecretPassword(known_password),
+    ):
+        receipt = await provisioner.provision(
+            task_id=501,
+            last_name="Иванов",
+            first_name="Иван",
+            middle_name="",
+            department="ИТ",
+            title="Инженер",
+            phone="",
+            company="АО Тест",
+        )
+
+    assert receipt.credentials_written is True
+    assert receipt.service_group == "HLP_АО Тест ТЭМПО"
+    assert receipt.service_group_added is True
+    assert receipt.service_group_error is None
+
+    # Check modify was called to add user to group
+    group_modify_calls = [
+        c for c in conn.modify.call_args_list
+        if "CN=HLP_АО Тест ТЭМПО" in str(c)
+    ]
+    assert len(group_modify_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_provisioning_soft_fails_when_group_not_found():
+    provisioner, conn, client = _provisioner_with_verified_ldap()
+    known_password = "Known-Secret-93!"
+
+    task_mock = MagicMock()
+    task_mock.custom_fields = {1439: "ivanov.i", 1440: known_password}
+    client.get_task.return_value = task_mock
+
+    group_other = MagicMock()
+    group_other.name.value = "HLP_Другая Компания"
+    group_other.sAMAccountName.value = "HLP_Другая Компания"
+    group_other.distinguishedName.value = "CN=HLP_Другая Компания,OU=ServiceDesk,OU=CORPORATE_SERVICES,DC=corporate,DC=loc"
+
+    orig_search = conn.search.side_effect
+
+    def search_with_other_group(*args, **kwargs):
+        filt = kwargs.get("search_filter") or (args[1] if len(args) > 1 else "")
+        if "(sAMAccountName=HLP_*)" in str(filt):
+            conn.entries = [group_other]
+        else:
+            orig_search(*args, **kwargs)
+
+    conn.search.side_effect = search_with_other_group
+
+    with patch(
+        "core.ad.provisioning.generate_secure_password",
+        return_value=SecretPassword(known_password),
+    ):
+        receipt = await provisioner.provision(
+            task_id=502,
+            last_name="Иванов",
+            first_name="Иван",
+            middle_name="",
+            department="ИТ",
+            title="Инженер",
+            phone="",
+            company="АО Тест",
+        )
+
+    # User creation and credentials delivery still succeed
+    assert receipt.credentials_written is True
+    assert receipt.service_group is None
+    assert receipt.service_group_added is False
+    assert receipt.service_group_error is not None
+    assert "не найдена" in receipt.service_group_error
+
+
+

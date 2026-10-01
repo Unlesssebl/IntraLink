@@ -17,6 +17,10 @@ EXCLUDED_TOP_LEVEL_OUS = frozenset(
     }
 )
 BRANCH_CONTAINER_OUS = frozenset({"филиалы организаций"})
+PREFIX_RE = re.compile(r"^[A-ZА-Я0-9\-]{2,6}$")
+GENERIC_DEPARTMENT_WORDS = frozenset(
+    {"цех", "отдел", "служба", "управление", "бюро", "группа", "сектор", "участок"}
+)
 
 
 @dataclass(frozen=True)
@@ -232,6 +236,53 @@ class OrganizationalUnitResolver:
                     "workshop_number_match",
                     (OuCandidate(item.distinguished_name, item.name, 0.96, tuple(evidence)),),
                 )
+
+        # Compound prefix heuristic: handles production/site prefixes (e.g. "ПШМ АТХ", "СГИ АХО")
+        # when the ticket contains only the department name/acronym "АТХ" (or vice-versa).
+        norm_dept = _normalize(department)
+        if norm_dept and norm_dept not in GENERIC_DEPARTMENT_WORDS:
+            prefix_matches: list[tuple[OrganizationalUnit, str]] = []
+            for item in bounded:
+                parts = item.name.strip().split()
+                if len(parts) >= 2 and PREFIX_RE.match(parts[0]):
+                    remainder = " ".join(parts[1:])
+                    if _normalize(remainder) == norm_dept:
+                        prefix_matches.append((item, parts[0]))
+
+            if len(prefix_matches) == 1:
+                item, prefix = prefix_matches[0]
+                evidence = ["prefix_department_match", f"prefix:{prefix}"]
+                if organization is not None:
+                    evidence.append(f"organization_ancestor_match:{org_source_used or 'company'}")
+                if applicant_department and _similarity(item.name, applicant_department) >= 0.85:
+                    evidence.append("applicant_department_alignment")
+                return OuResolution(
+                    item.distinguished_name,
+                    "prefix_department_match",
+                    (OuCandidate(item.distinguished_name, item.name, 0.98, tuple(evidence)),),
+                )
+
+            # Reverse: ticket specified prefix (e.g. "ПШМ АТХ"), but OU in AD is named "АТХ"
+            dept_parts = department.strip().split()
+            if len(dept_parts) >= 2 and PREFIX_RE.match(dept_parts[0]):
+                dept_remainder = " ".join(dept_parts[1:])
+                norm_dept_rem = _normalize(dept_remainder)
+                if norm_dept_rem and norm_dept_rem not in GENERIC_DEPARTMENT_WORDS:
+                    rev_matches = [
+                        item for item in bounded if _normalize(item.name) == norm_dept_rem
+                    ]
+                    if len(rev_matches) == 1:
+                        item = rev_matches[0]
+                        evidence = ["prefix_department_match", f"dept_prefix:{dept_parts[0]}"]
+                        if organization is not None:
+                            evidence.append(f"organization_ancestor_match:{org_source_used or 'company'}")
+                        if applicant_department and _similarity(item.name, applicant_department) >= 0.85:
+                            evidence.append("applicant_department_alignment")
+                        return OuResolution(
+                            item.distinguished_name,
+                            "prefix_department_match",
+                            (OuCandidate(item.distinguished_name, item.name, 0.98, tuple(evidence)),),
+                        )
 
         ranked = self._rank_departments(
             bounded,

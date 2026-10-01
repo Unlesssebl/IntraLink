@@ -149,6 +149,14 @@ class CreateAdUserExecutor:
                 ],
                 error_code=f"identity_preflight_exception:{type(exc).__name__}",
             )
+        service_group = preview.get("preview_service_group")
+        service_group_details = {
+            "service_group": service_group,
+            "service_group_dn": preview.get("service_group_dn"),
+        }
+        if preview.get("service_group_warning"):
+            service_group_details["warning"] = preview.get("service_group_warning")
+
         checks = [
             PreflightCheck(key="required_identity_fields", status=PreflightCheckStatus.passed).model_dump(mode="json"),
             PreflightCheck(key="ad_available", status=PreflightCheckStatus.passed).model_dump(mode="json"),
@@ -156,6 +164,11 @@ class CreateAdUserExecutor:
                 key="target_ou",
                 status=PreflightCheckStatus.passed,
                 details={"target_ou": preview.get("target_ou")},
+            ).model_dump(mode="json"),
+            PreflightCheck(
+                key="service_group",
+                status=PreflightCheckStatus.passed,
+                details=service_group_details,
             ).model_dump(mode="json"),
             PreflightCheck(
                 key="distinguished_name_absent",
@@ -282,6 +295,9 @@ class CreateAdUserExecutor:
                 "user_dn": receipt.user_dn,
                 "credentials_written": receipt.credentials_written,
                 "delivery_receipt_id": receipt.delivery_receipt_id,
+                "service_group": receipt.service_group,
+                "service_group_added": receipt.service_group_added,
+                "service_group_error": receipt.service_group_error,
             },
         )
 

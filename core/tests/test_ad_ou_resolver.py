@@ -169,3 +169,74 @@ def test_applicant_department_alignment_boosts_similarity() -> None:
 
     # Target dept matches applicant department, boost should be reflected in evidence
     assert any("applicant_department_alignment" in c.evidence for c in result.candidates)
+
+
+def test_resolves_compound_prefix_department() -> None:
+    org = _ou("АО КМК ТЭМПО")
+    target_dept = _ou("ПШМ АТХ", org.distinguished_name)
+    other_dept = _ou("СГИ АХО", org.distinguished_name)
+
+    result = OrganizationalUnitResolver().resolve(
+        [org, target_dept, other_dept],
+        company="АО КМК ТЭМПО",
+        department="АТХ",
+        users_root_ou=AD_USERS_ROOT_OU,
+    )
+
+    assert result.selected_ou == target_dept.distinguished_name
+    assert result.method == "prefix_department_match"
+    assert result.candidates[0].score == 0.98
+    assert "prefix_department_match" in result.candidates[0].evidence
+    assert "prefix:ПШМ" in result.candidates[0].evidence
+
+
+def test_resolves_reverse_compound_prefix_department() -> None:
+    org = _ou("АО КМК ТЭМПО")
+    target_dept = _ou("АТХ", org.distinguished_name)
+    other_dept = _ou("АХО", org.distinguished_name)
+
+    result = OrganizationalUnitResolver().resolve(
+        [org, target_dept, other_dept],
+        company="АО КМК ТЭМПО",
+        department="ПШМ АТХ",
+        users_root_ou=AD_USERS_ROOT_OU,
+    )
+
+    assert result.selected_ou == target_dept.distinguished_name
+    assert result.method == "prefix_department_match"
+    assert result.candidates[0].score == 0.98
+    assert "dept_prefix:ПШМ" in result.candidates[0].evidence
+
+
+def test_compound_prefix_department_ambiguity_fails_closed() -> None:
+    org = _ou("АО КМК ТЭМПО")
+    pshm = _ou("ПШМ АТХ", org.distinguished_name)
+    spc = _ou("СПЦ АТХ", org.distinguished_name)
+
+    result = OrganizationalUnitResolver().resolve(
+        [org, pshm, spc],
+        company="АО КМК ТЭМПО",
+        department="АТХ",
+        users_root_ou=AD_USERS_ROOT_OU,
+    )
+
+    assert result.selected_ou is None
+    assert result.method == "department_ambiguous"
+
+
+def test_generic_department_words_do_not_match_prefix_heuristic() -> None:
+    org = _ou("АО КМК ТЭМПО")
+    crane = _ou("Крановый цех", org.distinguished_name)
+    hydraulic = _ou("Цех гидравлики", org.distinguished_name)
+
+    result = OrganizationalUnitResolver().resolve(
+        [org, crane, hydraulic],
+        company="АО КМК ТЭМПО",
+        department="Цех",
+        users_root_ou=AD_USERS_ROOT_OU,
+    )
+
+    # Generic word "Цех" must not match prefix heuristic and fails closed due to multiple candidates
+    assert result.selected_ou is None
+    assert result.method == "department_ambiguous"
+

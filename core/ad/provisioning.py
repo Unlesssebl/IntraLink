@@ -18,6 +18,13 @@ from ldap3.utils.conv import escape_filter_chars
 from ldap3.utils.dn import escape_rdn
 
 from core.ad.credentials import AD_USERS_ROOT_OU, ActiveDirectoryCredentialVault
+from core.ad.group_resolver import (
+    AD_SERVICE_DESK_GROUPS_OU,
+    GROUPS_CACHE_KEY_PREFIX,
+    GROUPS_CACHE_TTL_SECONDS,
+    ActiveDirectoryGroup,
+    ActiveDirectoryGroupResolver,
+)
 from core.ad.ou_resolver import OrganizationalUnit, OrganizationalUnitResolver, _is_descendant
 from core.ad.password import generate_secure_password
 from core.ad.pool import ActiveDirectoryPool, ADPoolConfig
@@ -179,6 +186,9 @@ class AccountProvisioningReceipt:
     full_name: str
     credentials_written: bool = True
     delivery_receipt_id: str | None = None
+    service_group: str | None = None
+    service_group_added: bool = False
+    service_group_error: str | None = None
 
 
 class AccountProvisioningError(RuntimeError):
@@ -208,6 +218,7 @@ class AccountProvisioningService:
         auth_bootstrap: ServiceAuthBootstrap | None = None,
         credential_vault: ActiveDirectoryCredentialVault | None = None,
         delivery_port: CredentialDeliveryPort | None = None,
+        group_resolver: ActiveDirectoryGroupResolver | None = None,
     ) -> None:
         self.ad_pool = ad_pool
         self.client = client or IntraServiceClient()
@@ -215,6 +226,7 @@ class AccountProvisioningService:
         self.credential_vault = credential_vault or ActiveDirectoryCredentialVault()
         self.delivery_port = delivery_port
         self.ou_resolver = OrganizationalUnitResolver()
+        self.group_resolver = group_resolver or ActiveDirectoryGroupResolver()
 
     async def _connection_boundary(self) -> tuple[ActiveDirectoryPool, str]:
         if self.ad_pool is not None:
@@ -279,6 +291,89 @@ class AccountProvisioningService:
             await redis.set(key, payload, ex=OU_CACHE_TTL_SECONDS)
         except Exception as exc:
             logger.warning("Failed to save AD OU tree to Redis cache: %s", exc)
+
+    async def _get_cached_groups(self, domain: str) -> list[ActiveDirectoryGroup] | None:
+        try:
+            from core.redis_client import get_redis_client
+
+            redis = get_redis_client()
+            key = f"{GROUPS_CACHE_KEY_PREFIX}:{domain.lower()}"
+            raw = await redis.get(key)
+            if not raw:
+                return None
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return [
+                    ActiveDirectoryGroup(
+                        name=item["name"],
+                        sam_account_name=item["sam_account_name"],
+                        distinguished_name=item["distinguished_name"],
+                    )
+                    for item in data
+                    if isinstance(item, dict)
+                    and "name" in item
+                    and "sam_account_name" in item
+                    and "distinguished_name" in item
+                ]
+        except Exception as exc:
+            logger.warning("Failed to retrieve cached AD groups from Redis: %s", exc)
+        return None
+
+    async def _set_cached_groups(self, domain: str, groups: list[ActiveDirectoryGroup]) -> None:
+        if not groups:
+            return
+        try:
+            from core.redis_client import get_redis_client
+
+            redis = get_redis_client()
+            key = f"{GROUPS_CACHE_KEY_PREFIX}:{domain.lower()}"
+            payload = json.dumps(
+                [
+                    {
+                        "name": g.name,
+                        "sam_account_name": g.sam_account_name,
+                        "distinguished_name": g.distinguished_name,
+                    }
+                    for g in groups
+                ],
+                ensure_ascii=False,
+            )
+            await redis.set(key, payload, ex=GROUPS_CACHE_TTL_SECONDS)
+        except Exception as exc:
+            logger.warning("Failed to save AD groups to Redis cache: %s", exc)
+
+    def _fetch_live_groups(self, conn: ldap3.Connection) -> list[ActiveDirectoryGroup]:
+        groups_ou = os.getenv("AD_SERVICE_GROUPS_OU") or AD_SERVICE_DESK_GROUPS_OU
+        try:
+            conn.search(
+                search_base=groups_ou,
+                search_filter="(&(objectClass=group)(sAMAccountName=HLP_*))",
+                search_scope=ldap3.SUBTREE,
+                attributes=["sAMAccountName", "name", "distinguishedName"],
+            )
+            return [
+                ActiveDirectoryGroup(
+                    name=str(entry.name.value or entry.sAMAccountName.value),
+                    sam_account_name=str(entry.sAMAccountName.value),
+                    distinguished_name=str(entry.distinguishedName.value),
+                )
+                for entry in conn.entries
+                if getattr(entry, "sAMAccountName", None) is not None
+                and getattr(entry, "distinguishedName", None) is not None
+            ]
+        except Exception as exc:
+            logger.warning("Failed to search live AD for HLP groups in '%s': %s", groups_ou, exc)
+            return []
+
+    def _load_groups_sync(
+        self,
+        conn: ldap3.Connection,
+        cached_groups: list[ActiveDirectoryGroup] | None = None,
+    ) -> tuple[list[ActiveDirectoryGroup], list[ActiveDirectoryGroup] | None]:
+        if cached_groups is not None:
+            return cached_groups, None
+        fresh = self._fetch_live_groups(conn)
+        return fresh, fresh
 
     def _resolve_target_ou_sync(
         self,
@@ -439,7 +534,8 @@ class AccountProvisioningService:
         users_root_ou: str = AD_USERS_ROOT_OU,
         target_ou_dn: str | None = None,
         cached_units: list[OrganizationalUnit] | None = None,
-    ) -> tuple[AccountProvisioningReceipt, list[OrganizationalUnit] | None]:
+        cached_groups: list[ActiveDirectoryGroup] | None = None,
+    ) -> tuple[AccountProvisioningReceipt, list[OrganizationalUnit] | None, list[ActiveDirectoryGroup] | None]:
         full_name = f"{last_name} {first_name} {middle_name}".strip()
         pool = ad_pool or self.ad_pool
         if pool is None:
@@ -590,13 +686,59 @@ class AccountProvisioningService:
                     ad_object_created=True,
                 ) from exc
 
+            # Service group assignment (HLP_*)
+            service_group_name: str | None = None
+            service_group_added: bool = False
+            service_group_error: str | None = None
+            fresh_groups: list[ActiveDirectoryGroup] | None = None
+
+            try:
+                groups, fresh_groups_live = self._load_groups_sync(conn, cached_groups)
+                if fresh_groups_live:
+                    fresh_groups = fresh_groups_live
+                group_res = self.group_resolver.resolve_service_group(
+                    groups,
+                    company=company,
+                    target_ou_dn=target_ou,
+                )
+                if group_res.group is None and cached_groups is not None:
+                    # Live AD fallback if group was created recently
+                    live_groups = self._fetch_live_groups(conn)
+                    if live_groups:
+                        fresh_groups = live_groups
+                        group_res = self.group_resolver.resolve_service_group(
+                            live_groups,
+                            company=company,
+                            target_ou_dn=target_ou,
+                        )
+
+                if group_res.group is not None:
+                    service_group_name = group_res.group.name
+                    service_group_added, service_group_error = self.group_resolver.add_user_to_group_sync(
+                        conn,
+                        user_dn=user_dn,
+                        group_dn=group_res.group.distinguished_name,
+                    )
+                else:
+                    service_group_name = None
+                    service_group_added = False
+                    service_group_error = group_res.warning or "service_group_not_found"
+            except Exception as grp_exc:
+                logger.warning("Unexpected error during service group assignment: %s", grp_exc)
+                service_group_name = None
+                service_group_added = False
+                service_group_error = str(grp_exc)
+
         return AccountProvisioningReceipt(
             sam_account_name=sam,
             upn=upn,
             user_dn=user_dn,
             full_name=full_name,
             credentials_written=False,
-        ), fresh_units
+            service_group=service_group_name,
+            service_group_added=service_group_added,
+            service_group_error=service_group_error,
+        ), fresh_units, fresh_groups
 
     def _preflight_sync(
         self,
@@ -614,6 +756,7 @@ class AccountProvisioningService:
         users_root_ou: str = AD_USERS_ROOT_OU,
         target_ou_dn: str | None = None,
         cached_units: list[OrganizationalUnit] | None = None,
+        cached_groups: list[ActiveDirectoryGroup] | None = None,
     ) -> dict:
         """Read-only AD validation and deterministic login preview."""
         full_name = f"{last_name} {first_name} {middle_name}".strip()
@@ -642,6 +785,27 @@ class AccountProvisioningService:
                     raise AccountProvisioningError("ad_object_already_exists", "AD object already exists")
             except LDAPNoSuchObjectResult:
                 pass
+
+            # Service group preview
+            groups, fresh_groups = self._load_groups_sync(conn, cached_groups)
+            group_res = self.group_resolver.resolve_service_group(
+                groups,
+                company=company,
+                target_ou_dn=target_ou,
+            )
+            if group_res.group is None and cached_groups is not None:
+                live_groups = self._fetch_live_groups(conn)
+                if live_groups:
+                    fresh_groups = live_groups
+                    group_res = self.group_resolver.resolve_service_group(
+                        live_groups,
+                        company=company,
+                        target_ou_dn=target_ou,
+                    )
+            preview_service_group = group_res.group.name if group_res.group else None
+            service_group_dn = group_res.group.distinguished_name if group_res.group else None
+            service_group_warning = group_res.warning
+
             for collision_index in range(1, 51):
                 sam = generate_sam_account_name(last_name, first_name, middle_name, collision_index)
                 conn.search(
@@ -656,7 +820,11 @@ class AccountProvisioningService:
                         "preview_sam_account_name": sam,
                         "preview_upn": f"{sam}@{domain}",
                         "preview_user_dn": user_dn,
+                        "preview_service_group": preview_service_group,
+                        "service_group_dn": service_group_dn,
+                        "service_group_warning": service_group_warning,
                         "_fresh_units": fresh_units,
+                        "_fresh_groups": fresh_groups,
                         **resolution,
                     }
         raise AccountProvisioningError("login_collision_limit", "AD login collision limit exceeded")
@@ -677,6 +845,7 @@ class AccountProvisioningService:
     ) -> dict:
         pool, users_root_ou = await self._connection_boundary()
         cached_units = await self._get_cached_ou_tree(pool.config.domain, users_root_ou)
+        cached_groups = await self._get_cached_groups(pool.config.domain)
         preview = await asyncio.to_thread(
             self._preflight_sync,
             last_name=last_name,
@@ -692,10 +861,14 @@ class AccountProvisioningService:
             users_root_ou=users_root_ou,
             target_ou_dn=target_ou_dn,
             cached_units=cached_units,
+            cached_groups=cached_groups,
         )
         fresh_units = preview.pop("_fresh_units", None)
         if fresh_units:
             await self._set_cached_ou_tree(pool.config.domain, users_root_ou, fresh_units)
+        fresh_groups = preview.pop("_fresh_groups", None)
+        if fresh_groups:
+            await self._set_cached_groups(pool.config.domain, fresh_groups)
         await self.auth_bootstrap.bootstrap_auth(client=self.client)
         return preview
 
@@ -720,11 +893,12 @@ class AccountProvisioningService:
     ) -> AccountProvisioningReceipt:
         pool, users_root_ou = await self._connection_boundary()
         cached_units = await self._get_cached_ou_tree(pool.config.domain, users_root_ou)
+        cached_groups = await self._get_cached_groups(pool.config.domain)
         secret = generate_secure_password(length=14)
         password = secret.get_secret_value()
         del secret
         try:
-            receipt, fresh_units = await asyncio.to_thread(
+            receipt, fresh_units, fresh_groups = await asyncio.to_thread(
                 self._create_and_verify_sync,
                 last_name=last_name,
                 first_name=first_name,
@@ -742,9 +916,12 @@ class AccountProvisioningService:
                 users_root_ou=users_root_ou,
                 target_ou_dn=target_ou_dn,
                 cached_units=cached_units,
+                cached_groups=cached_groups,
             )
             if fresh_units:
                 await self._set_cached_ou_tree(pool.config.domain, users_root_ou, fresh_units)
+            if fresh_groups:
+                await self._set_cached_groups(pool.config.domain, fresh_groups)
         except AccountProvisioningError:
             password = ""
             raise
@@ -798,4 +975,7 @@ class AccountProvisioningService:
             full_name=receipt.full_name,
             credentials_written=True,
             delivery_receipt_id=delivery_result.receipt_id,
+            service_group=receipt.service_group,
+            service_group_added=receipt.service_group_added,
+            service_group_error=receipt.service_group_error,
         )

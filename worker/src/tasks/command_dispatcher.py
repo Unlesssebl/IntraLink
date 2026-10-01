@@ -779,14 +779,24 @@ async def _complete_ad_onboarding(
         .limit(1)
     )
     checks = list(preflight.checks_json) if preflight else []
+    service_grp = proof.get("service_group") or "none"
+    grp_added = bool(proof.get("service_group_added", False))
+    grp_err = proof.get("service_group_error")
     audit = (
         f"[AD onboarding audit] task_id={plan.task_id}; action_plan_id={plan.id}; "
         f"command_id={command.id}; login={proof.get('sam_account_name', '')}; "
         f"upn={proof.get('upn', '')}; dn={proof.get('user_dn', '')}; "
+        f"service_group={service_grp}; group_added={grp_added}; "
         f"binding={plan.service_binding_key}:{plan.service_binding_version}; "
         f"catalog={plan.catalog_hash}; checks={','.join(str(item) for item in checks)}"
     )
     public = _success_comment("create_ad_user", proof)
+    if not grp_added:
+        reason = grp_err or "группа не найдена в каталоге"
+        public += (
+            f"\n\nВнимание: сервисную группу HLP для организации не удалось назначить автоматически "
+            f"({reason}). Пожалуйста, проверьте членство в группах вручную."
+        )
     events = await client.get_task_lifetime(task_id=plan.task_id, auth_b64=auth_b64)
     comments = {(item.comment or "").strip() for item in events if item.comment}
     if audit not in comments:
