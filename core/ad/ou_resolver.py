@@ -28,7 +28,7 @@ GENERIC_DEPARTMENT_WORDS = frozenset(
     {"цех", "отдел", "служба", "управление", "бюро", "группа", "сектор", "участок"}
 )
 MIN_OU_AUTO_SELECT_CONFIDENCE: float = 0.65
-MIN_OU_AUTO_SELECT_MARGIN: float = 0.12
+MIN_OU_AUTO_SELECT_MARGIN: float = 0.0
 BRANCH_KEYWORDS: dict[str, tuple[str, ...]] = {
     "moscow": ("москва", "московск"),
     "ekaterinburg": ("екатеринбург",),

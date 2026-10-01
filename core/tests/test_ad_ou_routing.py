@@ -494,6 +494,28 @@ def test_auto_select_confidence_threshold_65_percent(sample_routing_config, mock
     assert res.candidates[0].score >= 0.65
 
 
+def test_auto_select_highest_confidence_when_candidates_close(sample_routing_config):
+    """Verify that highest confidence candidate is selected even if runner-up is very close (< 5%)."""
+    close_ous = [
+        "OU=ДУиДМ,OU=АО НТЗ ТЭМПО,OU=Предприятия,DC=corp,DC=tempo",
+        "OU=ОУиДГП,OU=АО НТЗ ТЭМПО,OU=Предприятия,DC=corp,DC=tempo",
+        "OU=ОТиЗ,OU=АО НТЗ ТЭМПО,OU=Предприятия,DC=corp,DC=tempo",
+    ]
+    resolver = AdOuResolver(
+        users_root_ou="OU=Предприятия,DC=corp,DC=tempo",
+        routing_config=sample_routing_config,
+    )
+    # "ОУиДМ": ДУиДМ (0.80) vs ОУиДГП (0.7273)
+    res = resolver.resolve(
+        company='АО "НТЗ "ТЭМ-ПО"',
+        department="ОУиДМ",
+        cached_ous=close_ous,
+    )
+    assert res.target_ou == "OU=ДУиДМ,OU=АО НТЗ ТЭМПО,OU=Предприятия,DC=corp,DC=tempo"
+    assert res.method == "department_similarity"
+    assert res.candidates[0].name == "ДУиДМ"
+
+
 # ---------------------------------------------------------------------------
 # 10. Максимум пять безопасных кандидатов для HITL
 # ---------------------------------------------------------------------------

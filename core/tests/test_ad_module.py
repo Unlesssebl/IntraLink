@@ -26,10 +26,19 @@ def test_transliteration_gost_779():
 
 def test_generate_sam_account_name():
     """Verify standard sAMAccountName format, collision indices and length limit."""
-    # Standard format: surname.i
-    assert generate_sam_account_name("Иванов", "Иван") == "ivanov.i"
+    # Standard format with patronymic: surname.n.n
+    assert generate_sam_account_name("Иванов", "Иван", "Иванович") == "ivanov.i.i"
+    assert generate_sam_account_name("Ален", "Ален", "Ален") == "alen.a.a"
 
-    # Collision index > 1
+    # Collision index > 1 with patronymic
+    assert generate_sam_account_name("Иванов", "Иван", "Иванович", collision_index=2) == "ivanov.i.i2"
+    assert generate_sam_account_name("Иванов", "Иван", "Иванович", collision_index=10) == "ivanov.i.i10"
+
+    # Fallback format without patronymic: surname.n
+    assert generate_sam_account_name("Иванов", "Иван") == "ivanov.i"
+    assert generate_sam_account_name("Иванов", "Иван", "") == "ivanov.i"
+
+    # Collision index > 1 without patronymic
     assert generate_sam_account_name("Иванов", "Иван", collision_index=2) == "ivanov.i2"
     assert generate_sam_account_name("Иванов", "Иван", collision_index=10) == "ivanov.i10"
 
@@ -38,6 +47,11 @@ def test_generate_sam_account_name():
     sam = generate_sam_account_name(long_surname, "Иван", collision_index=3)
     assert len(sam) <= 20
     assert sam.endswith(".i3")
+
+    # Long surname with patronymic truncated to <= 20 chars
+    sam_p = generate_sam_account_name(long_surname, "Иван", "Иванович", collision_index=3)
+    assert len(sam_p) <= 20
+    assert sam_p.endswith(".i.i3")
 
 
 def test_password_zero_plaintext_policy():

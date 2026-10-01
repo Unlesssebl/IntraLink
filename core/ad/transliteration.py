@@ -60,18 +60,27 @@ def generate_sam_account_name(
     """Generate canonical Active Directory sAMAccountName with collision index support.
 
     Convention:
-      - Base: {surname_lat}.{name_initial_lat} (e.g., ivanov.i)
-      - Collision (index > 1): {surname_lat}.{name_initial_lat}{collision_index} (e.g., ivanov.i2)
+      - Base (with patronymic): {surname_lat}.{name_initial_lat}.{patronymic_initial_lat} (e.g., ivanov.i.i)
+      - Fallback (no patronymic): {surname_lat}.{name_initial_lat} (e.g., ivanov.i)
+      - Collision (index > 1): {base}{collision_index} (e.g., ivanov.i.i2, ivanov.i2)
       - Strict constraint: Active Directory sAMAccountName must not exceed 20 characters.
     """
     s_lat = re.sub(r"[^a-z0-9]", "", transliterate_to_latin(surname.strip()))
     n_lat = re.sub(r"[^a-z0-9]", "", transliterate_to_latin(name.strip()))
+    p_lat = re.sub(r"[^a-z0-9]", "", transliterate_to_latin((patronymic or "").strip()))
+
     n_init = n_lat[0] if n_lat else ""
+    p_init = p_lat[0] if p_lat else ""
 
     suffix = str(collision_index) if collision_index > 1 else ""
 
-    if n_init:
-        # Format: surname.i or surname.i2
+    if n_init and p_init:
+        # Format: surname.n.n or surname.n.n2
+        base_suffix = f".{n_init}.{p_init}{suffix}"
+        max_surname_len = max(1, 20 - len(base_suffix))
+        sam = f"{s_lat[:max_surname_len]}{base_suffix}"
+    elif n_init:
+        # Format: surname.n or surname.n2 (when patronymic is missing)
         base_suffix = f".{n_init}{suffix}"
         max_surname_len = max(1, 20 - len(base_suffix))
         sam = f"{s_lat[:max_surname_len]}{base_suffix}"

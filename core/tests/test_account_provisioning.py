@@ -172,6 +172,18 @@ async def test_preflight_succeeds_when_user_dn_raises_ldap_no_such_object():
     assert preview["preview_sam_account_name"] == "ivanov.i"
     assert preview["preview_upn"] == "ivanov.i@corporate.loc"
 
+    # Preflight with middle_name yields name.n.n
+    preview_with_middle = await provisioner.preflight(
+        last_name="Иванов",
+        first_name="Иван",
+        middle_name="Иванович",
+        department="ИТ",
+        company="",
+        target_ou_dn="OU=ИТ,OU=CORPORATE_USERS,DC=corporate,DC=loc",
+    )
+    assert preview_with_middle["preview_sam_account_name"] == "ivanov.i.i"
+    assert preview_with_middle["preview_upn"] == "ivanov.i.i@corporate.loc"
+
 
 @pytest.mark.asyncio
 async def test_preflight_raises_when_ad_object_already_exists():
