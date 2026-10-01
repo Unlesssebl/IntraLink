@@ -201,6 +201,10 @@ class TaskDTO(BaseModel):
     category_ids: Optional[str] = Field(default=None, alias="CategoryIds")
     creator_company_id: Optional[int] = Field(default=None, alias="CreatorCompanyId")
     creator_company_name: Optional[str] = Field(default=None, alias="CreatorCompanyName")
+    creator_department: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("CreatorDepartment", "creator_department", "ApplicantDepartment", "applicant_department"),
+    )
     creator_login: Optional[str] = Field(default=None, alias="CreatorLogin")
     creator_ad_guid: Optional[str] = Field(default=None, alias="CreatorADGuid")
     creator_position: Optional[str] = Field(default=None, alias="CreatorPosition")

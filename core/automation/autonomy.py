@@ -337,6 +337,7 @@ class AutonomyFailureReporter:
         run: AutonomyRunRecord,
         phase: str,
         blocker_code: str,
+        detail: str | None = None,
     ) -> AutonomyCommentOutboxRecord:
         dedup_key = f"{run.id}:{blocker_code}"
         existing = await session.scalar(
@@ -347,10 +348,22 @@ class AutonomyFailureReporter:
         if existing is not None:
             return existing
         safe_reason = self.SAFE_REASONS.get(blocker_code, "возникла безопасно остановившая выполнение ошибка")
-        text = (
-            f"[AUTO:{run.id}] Автономное решение не выполнено. "
-            f"Этап: {phase}. Причина: {safe_reason}. Статус заявки не изменён."
-        )
+        if blocker_code == "human_action_required":
+            reason_part = (detail or safe_reason).strip().rstrip(".")
+            text = (
+                f"[AUTO:{run.id}] Требуется действие оператора в Intralink. "
+                f"Этап: {phase}. Причина: {reason_part}. Статус заявки не изменён."
+            )
+        else:
+            if detail and detail.strip().lower() != safe_reason.lower():
+                base_reason = f"{safe_reason} ({detail.strip()})"
+            else:
+                base_reason = safe_reason
+            reason_str = base_reason.strip().rstrip(".")
+            text = (
+                f"[AUTO:{run.id}] Автономное решение не выполнено. "
+                f"Этап: {phase}. Причина: {reason_str}. Статус заявки не изменён."
+            )
         record = AutonomyCommentOutboxRecord(
             run_id=run.id,
             task_id=run.task_id,

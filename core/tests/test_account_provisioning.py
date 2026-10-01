@@ -1,5 +1,6 @@
 """Security and postcondition tests for account provisioning."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,6 +8,15 @@ import pytest
 from core.ad.password import SecretPassword
 from core.ad.provisioning import AccountProvisioningError, AccountProvisioningService
 from core.intraservice.auth import ServiceAuthCredentials
+
+
+@pytest.fixture(autouse=True)
+def _isolate_redis():
+    fake_redis = AsyncMock()
+    fake_redis.get.return_value = None
+    fake_redis.set.return_value = True
+    with patch("core.redis_client.get_redis_client", return_value=fake_redis):
+        yield
 
 
 def _provisioner_with_verified_ldap():
@@ -25,10 +35,17 @@ def _provisioner_with_verified_ldap():
     target_ou.ou.value = "ИТ"
     target_ou.distinguishedName.value = "OU=ИТ,OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"
 
-    searches = iter([[organization_ou, target_ou], [], [], [verified]])
-
     def search_side_effect(*args, **kwargs):
-        conn.entries = next(searches)
+        base = kwargs.get("search_base") or (args[0] if args else "")
+        filt = kwargs.get("search_filter") or (args[1] if len(args) > 1 else "")
+        if "(objectClass=organizationalUnit)" in str(filt):
+            conn.entries = [organization_ou, target_ou]
+        elif "(sAMAccountName=" in str(filt):
+            conn.entries = []
+        elif "CN=Иванов Иван" in str(base):
+            conn.entries = [verified] if conn.add.called else []
+        else:
+            conn.entries = []
 
     conn.search.side_effect = search_side_effect
     conn.result = {"result": 0, "description": "success"}
@@ -216,4 +233,115 @@ async def test_preflight_raises_when_selected_ou_not_found():
         )
 
     assert exc_info.value.code == "ad_target_ou_not_found"
+
+
+@pytest.mark.asyncio
+async def test_ou_tree_cached_in_redis_bypasses_ldap_search():
+    provisioner, conn, _client = _provisioner_with_verified_ldap()
+
+    fake_redis = AsyncMock()
+    cached_payload = json.dumps([
+        {"name": "АО Тест", "distinguished_name": "OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"},
+        {"name": "ИТ", "distinguished_name": "OU=ИТ,OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"},
+    ])
+    fake_redis.get.return_value = cached_payload
+
+    with patch("core.redis_client.get_redis_client", return_value=fake_redis):
+        preview = await provisioner.preflight(
+            last_name="Иванов",
+            first_name="Иван",
+            middle_name="",
+            department="ИТ",
+            company="АО Тест",
+        )
+
+    assert preview["target_ou"] == "OU=ИТ,OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    ou_searches = [
+        call for call in conn.search.call_args_list
+        if "(objectClass=organizationalUnit)" in str(call)
+    ]
+    assert len(ou_searches) == 0
+
+
+@pytest.mark.asyncio
+async def test_ou_tree_cache_miss_triggers_ldap_and_refreshes_redis():
+    provisioner, conn, _client = _provisioner_with_verified_ldap()
+
+    fake_redis = AsyncMock()
+    cached_payload = json.dumps([
+        {"name": "Бухгалтерия", "distinguished_name": "OU=Бухгалтерия,OU=CORPORATE_USERS,DC=corporate,DC=loc"},
+    ])
+    fake_redis.get.return_value = cached_payload
+
+    ou_org = MagicMock()
+    ou_org.ou.value = "АО Тест"
+    ou_org.distinguishedName.value = "OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    ou_target = MagicMock()
+    ou_target.ou.value = "ИТ"
+    ou_target.distinguishedName.value = "OU=ИТ,OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+
+    def custom_search(*args, **kwargs):
+        search_filter = kwargs.get("search_filter") or (args[1] if len(args) > 1 else "")
+        if "(objectClass=organizationalUnit)" in str(search_filter):
+            conn.entries = [ou_org, ou_target]
+        else:
+            conn.entries = []
+
+    conn.search.side_effect = custom_search
+
+    with patch("core.redis_client.get_redis_client", return_value=fake_redis):
+        preview = await provisioner.preflight(
+            last_name="Иванов",
+            first_name="Иван",
+            middle_name="",
+            department="ИТ",
+            company="АО Тест",
+        )
+
+    assert preview["target_ou"] == "OU=ИТ,OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    ou_searches = [
+        call for call in conn.search.call_args_list
+        if "(objectClass=organizationalUnit)" in str(call)
+    ]
+    assert len(ou_searches) >= 1
+    assert fake_redis.set.called
+    set_args = fake_redis.set.call_args
+    assert "ad:ou_tree:corporate.loc:ou=corporate_users,dc=corporate,dc=loc" in set_args.args[0]
+    assert set_args.kwargs.get("ex") == 3600
+
+
+@pytest.mark.asyncio
+async def test_ou_tree_cache_redis_failure_fails_open_to_ldap():
+    provisioner, conn, _client = _provisioner_with_verified_ldap()
+
+    fake_redis = AsyncMock()
+    fake_redis.get.side_effect = ConnectionError("Redis connection lost")
+
+    ou_org = MagicMock()
+    ou_org.ou.value = "АО Тест"
+    ou_org.distinguishedName.value = "OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    ou_target = MagicMock()
+    ou_target.ou.value = "ИТ"
+    ou_target.distinguishedName.value = "OU=ИТ,OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+
+    def custom_search(*args, **kwargs):
+        search_filter = kwargs.get("search_filter") or (args[1] if len(args) > 1 else "")
+        if "(objectClass=organizationalUnit)" in str(search_filter):
+            conn.entries = [ou_org, ou_target]
+        else:
+            conn.entries = []
+
+    conn.search.side_effect = custom_search
+
+    with patch("core.redis_client.get_redis_client", return_value=fake_redis):
+        preview = await provisioner.preflight(
+            last_name="Иванов",
+            first_name="Иван",
+            middle_name="",
+            department="ИТ",
+            company="АО Тест",
+        )
+
+    assert preview["target_ou"] == "OU=ИТ,OU=АО Тест,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+
 

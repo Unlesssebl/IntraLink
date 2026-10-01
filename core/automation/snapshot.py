@@ -178,6 +178,12 @@ class TicketSnapshotFactory:
             or entities.get("applicant_login")
             or None
         )
+        applicant_department = (
+            getattr(task, "creator_department", None)
+            or getattr(task, "applicant_department", None)
+            or entities.get("applicant_department")
+            or None
+        )
         payload = {
             "task_id": task.id,
             "status_id": task.status_id,
@@ -194,6 +200,7 @@ class TicketSnapshotFactory:
             "categories": categories,
             "applicant_company": applicant_company,
             "applicant_login": applicant_login,
+            "applicant_department": applicant_department,
             "last_event_id": event_id,
         }
         return TicketSnapshot(

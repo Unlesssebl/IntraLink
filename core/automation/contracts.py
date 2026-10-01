@@ -131,6 +131,7 @@ class TicketSnapshot(FrozenModel):
     categories: str | None = None
     applicant_company: str | None = None
     applicant_login: str | None = None
+    applicant_department: str | None = None
     last_event_id: int | None = None
     snapshot_hash: str = Field(min_length=64, max_length=64)
 

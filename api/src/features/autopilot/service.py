@@ -10,7 +10,30 @@ from time import perf_counter
 from typing import Any
 from uuid import UUID, uuid4
 
+import logging
 from fastapi import HTTPException, status
+
+logger = logging.getLogger(__name__)
+
+PREFLIGHT_ERROR_DESCRIPTIONS = {
+    "ad_object_already_exists": "учётная запись с таким именем уже существует в Active Directory",
+    "ad_target_ou_not_found": "целевое подразделение (OU) не найдено в Active Directory",
+    "ad_target_ou_ambiguous": "подразделение не удалось сопоставить однозначно в Active Directory",
+    "login_collision_limit": "исчерпан лимит подбора уникального логина (sAMAccountName)",
+    "ad_pool_unavailable": "контроллеры домена Active Directory недоступны",
+    "active_directory_auth_missing": "отсутствуют учётные данные для подключения к Active Directory",
+}
+
+FACT_NAME_RU = {
+    "last_name": "фамилия",
+    "first_name": "имя",
+    "middle_name": "отчество",
+    "department": "подразделение",
+    "company": "организация",
+    "title": "должность",
+    "phone": "телефон",
+}
+
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -143,6 +166,28 @@ from .schemas import (
     WorkflowContextHeaderDTO,
 )
 
+HR_DEPARTMENT_KEYWORDS = (
+    "кадр",
+    "персонал",
+    "hr",
+    "оуп",
+    "отдел кадров",
+    "подбор",
+    "ит",
+    "it",
+    "информационн",
+    "поддержк",
+    "helpdesk",
+)
+
+
+def is_proxy_applicant_department(dept: str | None) -> bool:
+    """Return True if department is an administrative proxy (HR or IT) rather than the employee's target unit."""
+    if not dept:
+        return False
+    d_lower = dept.strip().lower()
+    return any(kw in d_lower for kw in HR_DEPARTMENT_KEYWORDS)
+
 
 class AutomationService:
     def __init__(
@@ -223,6 +268,21 @@ class AutomationService:
             return bot_credentials.bot_user_id
         except Exception:
             return None
+
+    async def _deliver_private_note_safely(
+        self,
+        session: AsyncSession,
+        *,
+        credentials: ServiceAuthCredentials,
+    ) -> None:
+        try:
+            await self.failure_reporter.deliver_pending(
+                session,
+                client=self.client,
+                auth_b64=credentials.auth_b64,
+            )
+        except Exception as exc:
+            logger.warning("Failed to immediately deliver private comment note: %s", exc)
 
     async def _compute_suggested_corrections(
         self,
@@ -480,6 +540,45 @@ class AutomationService:
         if run.state in {"succeeded", "blocked", "cancelled", "unknown_outcome"}:
             return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
         if run.state == "awaiting_human_action":
+            pending_ha_record = await session.scalar(
+                select(HumanActionRequestRecord).where(
+                    (HumanActionRequestRecord.action_plan_id == run.action_plan_id)
+                    | (HumanActionRequestRecord.task_id == run.task_id),
+                    HumanActionRequestRecord.state == "pending",
+                ).order_by(HumanActionRequestRecord.created_at.desc())
+            )
+            if pending_ha_record is not None:
+                if run.action_plan_id != pending_ha_record.action_plan_id:
+                    run.action_plan_id = pending_ha_record.action_plan_id
+                prompt = pending_ha_record.prompt or "требуется выбор действия"
+                candidates = pending_ha_record.candidates_json or []
+                candidates_str = ""
+                if isinstance(candidates, list) and candidates:
+                    cand_labels = [
+                        c.get("label") or c.get("name") or str(c.get("server_value"))
+                        for c in candidates[:3]
+                        if isinstance(c, dict)
+                    ]
+                    if cand_labels:
+                        candidates_str = f" Предложенные варианты: {'; '.join(cand_labels)}."
+                detail = f"{prompt.rstrip('.')}.{candidates_str}".strip().rstrip('.')
+                await self.failure_reporter.enqueue(
+                    session,
+                    run=run,
+                    phase="preflight",
+                    blocker_code="human_action_required",
+                    detail=detail.strip(),
+                )
+                try:
+                    credentials = await self.auth_bootstrap.bootstrap_auth(
+                        client=self.client,
+                        redis_client=get_redis_client(),
+                        session_factory=async_session_factory,
+                    )
+                    await self._deliver_private_note_safely(session, credentials=credentials)
+                except Exception as exc:
+                    logger.warning("Failed to deliver private note on awaiting_human_action: %s", exc)
+                await session.commit()
             return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
         if run.next_attempt_at is not None and run.next_attempt_at > datetime.now(UTC):
             return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
@@ -579,6 +678,18 @@ class AutomationService:
                     "awaiting_facts",
                     {"round": dto.workflow_plan.clarification_round, "missing": dto.workflow_plan.missing_facts},
                 )
+                missing_labels = [
+                    FACT_NAME_RU.get(f, f) for f in dto.workflow_plan.missing_facts
+                ]
+                detail = f"не указаны обязательные данные: {', '.join(missing_labels)}"
+                await self.failure_reporter.enqueue(
+                    session,
+                    run=run,
+                    phase="planning",
+                    blocker_code="clarification_exhausted",
+                    detail=detail,
+                )
+                await self._deliver_private_note_safely(session, credentials=credentials)
                 await session.commit()
                 return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
 
@@ -587,9 +698,13 @@ class AutomationService:
                 run.state = "blocked"
                 run.blocker_code = blocker
                 run.completed_at = datetime.now(UTC)
+                detail = None
+                if blocker == "unsupported_case":
+                    detail = f"для услуги '{task.service_name or task.service_id}' нет поддерживаемого сценария"
                 await self.failure_reporter.enqueue(
-                    session, run=run, phase="planning", blocker_code=blocker
+                    session, run=run, phase="planning", blocker_code=blocker, detail=detail
                 )
+                await self._deliver_private_note_safely(session, credentials=credentials)
                 self.autonomy_coordinator.add_event(session, run, "planning_blocked", {"blocker": blocker})
                 await session.commit()
                 return {"run_id": str(run.id), "state": run.state, "blocker": blocker}
@@ -636,13 +751,13 @@ class AutomationService:
         if needs_preflight and plan_record.state == ActionPlanState.ready.value:
             await self.preflight.run_plan(session, action_plan_id=plan_record.id)
 
-        pending_human_action = await session.scalar(
-            select(HumanActionRequestRecord.id).where(
+        pending_ha_record = await session.scalar(
+            select(HumanActionRequestRecord).where(
                 HumanActionRequestRecord.action_plan_id == plan_record.id,
                 HumanActionRequestRecord.state == "pending",
             )
         )
-        if pending_human_action is not None:
+        if pending_ha_record is not None:
             run.state = "awaiting_human_action"
             run.blocker_code = "human_action_required"
             run.completed_at = None
@@ -650,8 +765,28 @@ class AutomationService:
                 session,
                 run,
                 "awaiting_human_action",
-                {"human_action_id": str(pending_human_action)},
+                {"human_action_id": str(pending_ha_record.id)},
             )
+            prompt = pending_ha_record.prompt or "требуется выбор действия"
+            candidates = pending_ha_record.candidates_json or []
+            candidates_str = ""
+            if isinstance(candidates, list) and candidates:
+                cand_labels = [
+                    c.get("label") or c.get("name") or str(c.get("server_value"))
+                    for c in candidates[:3]
+                    if isinstance(c, dict)
+                ]
+                if cand_labels:
+                    candidates_str = f" Предложенные варианты: {'; '.join(cand_labels)}."
+            detail = f"{prompt.rstrip('.')}.{candidates_str}".strip().rstrip('.')
+            await self.failure_reporter.enqueue(
+                session,
+                run=run,
+                phase="preflight",
+                blocker_code="human_action_required",
+                detail=detail.strip(),
+            )
+            await self._deliver_private_note_safely(session, credentials=credentials)
             await session.commit()
             return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
 
@@ -679,9 +814,11 @@ class AutomationService:
             run.state = "blocked"
             run.blocker_code = "preflight_failed"
             run.completed_at = datetime.now(UTC)
+            detail_msg = PREFLIGHT_ERROR_DESCRIPTIONS.get(failed_error, failed_error)
             await self.failure_reporter.enqueue(
-                session, run=run, phase="preflight", blocker_code="preflight_failed"
+                session, run=run, phase="preflight", blocker_code="preflight_failed", detail=detail_msg
             )
+            await self._deliver_private_note_safely(session, credentials=credentials)
             self.autonomy_coordinator.add_event(
                 session, run, "permit_denied", {"blocker": "preflight_failed", "error": failed_error}
             )
@@ -700,8 +837,9 @@ class AutomationService:
             run.blocker_code = blocker
             run.completed_at = datetime.now(UTC)
             await self.failure_reporter.enqueue(
-                session, run=run, phase="preflight", blocker_code=blocker
+                session, run=run, phase="preflight", blocker_code=blocker, detail=str(exc)
             )
+            await self._deliver_private_note_safely(session, credentials=credentials)
             self.autonomy_coordinator.add_event(
                 session, run, "permit_denied", {"blocker": blocker, "detail": str(exc)}
             )
@@ -718,8 +856,9 @@ class AutomationService:
             run.blocker_code = advanced.reason or "worker_unavailable"
             run.completed_at = datetime.now(UTC)
             await self.failure_reporter.enqueue(
-                session, run=run, phase="dispatch", blocker_code="worker_unavailable"
+                session, run=run, phase="dispatch", blocker_code="worker_unavailable", detail=advanced.reason
             )
+            await self._deliver_private_note_safely(session, credentials=credentials)
             await session.commit()
             return {"run_id": str(run.id), "state": run.state, "blocker": run.blocker_code}
         run.state = "executing"
@@ -1060,7 +1199,58 @@ class AutomationService:
                 extracted_facts[k] = v
             missing = [k for k in missing if k not in extracted_facts]
 
-        # 3. If missing facts remain, attempt bounded LLM fallback on human comments & body
+        # 3. Deterministic contextual fallback for company & department from metadata and categories
+        if missing:
+            if "company" in missing:
+                app_comp = (
+                    str(snapshot.applicant_company or "").strip()
+                    or str(snapshot.entities.get("company") or "").strip()
+                    or str(snapshot.entities.get("applicant_company") or "").strip()
+                )
+                if app_comp:
+                    extracted_facts["company"] = app_comp
+                    missing = [k for k in missing if k != "company"]
+                elif snapshot.categories and "/" in snapshot.categories:
+                    cat_parts = [p.strip() for p in snapshot.categories.split("/") if p.strip()]
+                    if len(cat_parts) > 1 and cat_parts[0]:
+                        extracted_facts["company"] = cat_parts[0]
+                        missing = [k for k in missing if k != "company"]
+
+            if "department" in missing:
+                resolved_dept = None
+                # Check categories first (e.g. "ТЭМПО-Логистик / Автотранспортный цех" or "Цех 4")
+                if snapshot.categories:
+                    cat_parts = [p.strip() for p in snapshot.categories.split("/") if p.strip()]
+                    if cat_parts:
+                        candidate_dept = cat_parts[-1]
+                        comp_val = str(extracted_facts.get("company") or snapshot.applicant_company or "").strip()
+                        if (
+                            candidate_dept
+                            and not is_proxy_applicant_department(candidate_dept)
+                            and (not comp_val or candidate_dept.lower() != comp_val.lower())
+                        ):
+                            resolved_dept = candidate_dept
+
+                # Fallback to applicant's department if not a proxy HR/IT department
+                if not resolved_dept:
+                    app_dept = (
+                        str(getattr(snapshot, "applicant_department", "") or "").strip()
+                        or str(snapshot.entities.get("applicant_department") or "").strip()
+                    )
+                    if app_dept:
+                        if not is_proxy_applicant_department(app_dept):
+                            resolved_dept = app_dept
+                        else:
+                            diag["trace"].append({
+                                "stage": "applicant_fallback",
+                                "note": f"applicant_department '{app_dept}' skipped by proxy HR filter",
+                            })
+
+                if resolved_dept:
+                    extracted_facts["department"] = resolved_dept
+                    missing = [k for k in missing if k != "department"]
+
+        # 4. If missing facts remain, attempt bounded LLM fallback on human comments & body
         if missing:
             candidates_for_llm: list[str] = []
             for comment in reversed(snapshot.public_comments):

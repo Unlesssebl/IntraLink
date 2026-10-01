@@ -712,6 +712,10 @@ def enrich_task_dict(task: Dict[str, Any]) -> Dict[str, Any]:
         task["categories"] = task["Categories"]
     if "CreatorCompanyName" in task and "creator_company_name" not in task:
         task["creator_company_name"] = task["CreatorCompanyName"]
+    if "CreatorDepartment" in task and "creator_department" not in task:
+        task["creator_department"] = task["CreatorDepartment"]
+    elif "ApplicantDepartment" in task and "creator_department" not in task:
+        task["creator_department"] = task["ApplicantDepartment"]
     if "CreatorLogin" in task and "creator_login" not in task:
         task["creator_login"] = task["CreatorLogin"]
     if "CreatorADGuid" in task and "creator_ad_guid" not in task:

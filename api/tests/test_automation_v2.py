@@ -1,7 +1,7 @@
 """ADR 0006 API service vertical slice."""
 
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -39,11 +39,14 @@ from core.automation.frame_extractor import CaseFrameExtractor
 from core.database.base import Base
 from core.database.models import (
     ActionPlanRecord,
+    ActionPreflightRecord,
+    AutonomyCommentOutboxRecord,
     AutonomyRunEventRecord,
     AutonomyRunRecord,
     CapabilityExecutionPolicyRecord,
     ClarificationRequestRecord,
     CommandRecord,
+    HumanActionRequestRecord,
     ServiceCatalogEntryRecord,
     ServiceCatalogVersionRecord,
     ServiceRouteBindingRecord,
@@ -1285,4 +1288,269 @@ async def test_advance_run_refreshes_expired_preflight_and_issues_permit(
         service.preflight.run_plan.assert_awaited_once_with(session, action_plan_id=action_plan_id)
         service.runner.advance.assert_awaited_once()
         dispatch_mock.assert_awaited_once_with(command_id)
+
+
+async def test_workflow_facts_fallback_from_applicant_and_categories(session_factory) -> None:
+    client = AsyncMock()
+    client.get_task.return_value = TaskDTO(
+        Id=65001,
+        Name="Создать учетную запись новому сотруднику",
+        Description="Прошу создать учетную запись для Иванова Ивана Ивановича, должность: Инженер",
+        ServiceId=40,
+        ServiceName="Создание учетной записи",
+        TaskTypeId=4,
+        StatusId=1,
+        CreatorCompanyName="АО НТЗ ТЭМПО",
+        Categories="ТЭМПО-Логистик / Автотранспортный цех",
+    )
+    client.get_task_lifetime.return_value = []
+
+    service = AutomationService(client=client, extractor=CaseFrameExtractor(), router=CaseRouter())
+    service.auth_bootstrap = AsyncMock()
+    service.auth_bootstrap.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="service-auth", bot_user_id=999, login="bot"
+    )
+
+    async with session_factory() as session:
+        automation = await service.analyze(session, ticket_id=65001, auth_b64="operator-auth", force=True)
+        assert automation.case_frame.entities.get("company") == "АО НТЗ ТЭМПО"
+        assert automation.case_frame.entities.get("department") == "Автотранспортный цех"
+        assert automation.case_frame.entities.get("last_name") == "Иванов"
+        assert automation.case_frame.entities.get("first_name") == "Иван"
+
+
+async def test_proxy_applicant_department_is_filtered_out(session_factory) -> None:
+    client = AsyncMock()
+    client.get_task.return_value = TaskDTO(
+        Id=65002,
+        Name="Создать учетную запись новому сотруднику",
+        Description="Прошу создать учетную запись для Петровой Марии Сергеевны, должность: Бухгалтер",
+        ServiceId=900001,
+        ServiceName="Создание пользователя сети",
+        TaskTypeId=1001,
+        StatusId=2,
+        CreatorCompanyName="АО НТЗ ТЭМПО",
+        CreatorDepartment="Отдел управления персоналом",
+        Categories=None,
+    )
+    client.get_task_lifetime.return_value = []
+
+    service = AutomationService(client=client, extractor=CaseFrameExtractor(), router=CaseRouter())
+    service.auth_bootstrap = AsyncMock()
+    service.auth_bootstrap.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="service-auth", bot_user_id=999, login="bot"
+    )
+    service.clarification_extractor = AsyncMock()
+    service.clarification_extractor.extract_with_trace.return_value = ({}, {"llm_attempted": False})
+
+    async with session_factory() as session:
+        automation = await service.analyze(session, ticket_id=65002, auth_b64="operator-auth", force=True)
+        assert automation.case_frame.entities.get("company") == "АО НТЗ ТЭМПО"
+        assert automation.case_frame.entities.get("department") is None
+        assert "department" in automation.workflow_plan.missing_facts
+
+
+async def test_advance_run_enqueues_and_delivers_detailed_private_comment_on_human_action(session_factory) -> None:
+    client = AsyncMock()
+    client.get_task.return_value = TaskDTO(
+        Id=66001,
+        Name="Создать учетную запись",
+        Description="Прошу создать учетную запись",
+        ServiceId=53,
+        StatusId=31,
+    )
+    client.get_task_lifetime.return_value = []
+    client.add_task_comment.return_value = True
+
+    service = AutomationService(client=client, extractor=CaseFrameExtractor(), router=CaseRouter())
+    service.auth_bootstrap = AsyncMock()
+    service.auth_bootstrap.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="service-auth", bot_user_id=999, login="bot"
+    )
+
+    action_plan_id = uuid4()
+    run_id = uuid4()
+
+    async with session_factory() as session:
+        run = AutonomyRunRecord(
+            id=run_id,
+            task_id=66001,
+            bot_user_id=999,
+            assignment_epoch=1,
+            assignment_event_key="assignment:66001:1",
+            state="awaiting_human_action",
+            blocker_code="human_action_required",
+            action_plan_id=action_plan_id,
+        )
+        ha_rec = HumanActionRequestRecord(
+            id=uuid4(),
+            task_id=66001,
+            workflow_plan_id=uuid4(),
+            action_plan_id=action_plan_id,
+            action_id="action_create_ad_user_0",
+            target_param="target_ou_dn",
+            snapshot_hash="s" * 64,
+            plan_hash="p" * 64,
+            prompt="Выберите подразделение (OU) в Active Directory",
+            candidates_json=[
+                {"label": "ПШМ АТХ (OU=ПШМ АТХ)", "candidate_id": "ou_0"},
+                {"label": "СГИ АХО (OU=СГИ АХО)", "candidate_id": "ou_1"},
+            ],
+            state="pending",
+            expires_at=datetime.now(UTC),
+        )
+        session.add_all([run, ha_rec])
+        await session.commit()
+
+        advanced = await service.advance_run(session, run_id=run_id)
+        assert advanced["state"] == "awaiting_human_action"
+
+        outbox_rec = await session.scalar(
+            select(AutonomyCommentOutboxRecord).where(
+                AutonomyCommentOutboxRecord.run_id == run_id,
+                AutonomyCommentOutboxRecord.blocker_code == "human_action_required",
+            )
+        )
+        assert outbox_rec is not None
+        assert "Выберите подразделение (OU) в Active Directory" in outbox_rec.comment
+        assert "ПШМ АТХ" in outbox_rec.comment
+        assert outbox_rec.state == "published"
+        assert client.add_task_comment.called
+        call_kwargs = client.add_task_comment.call_args.kwargs
+        assert call_kwargs["task_id"] == 66001
+        assert call_kwargs["is_private"] is True
+        assert "ПШМ АТХ" in call_kwargs["comment"]
+
+
+async def test_advance_run_enqueues_and_delivers_detailed_private_comment_on_preflight_failure(session_factory) -> None:
+    client = AsyncMock()
+    client.get_task.return_value = TaskDTO(
+        Id=66002,
+        Name="Создать учетную запись",
+        Description="Прошу создать учетную запись",
+        ServiceId=53,
+        StatusId=31,
+        ExecutorIds="999",
+    )
+    client.get_task_lifetime.return_value = []
+    client.add_task_comment.return_value = True
+
+    service = AutomationService(client=client, extractor=CaseFrameExtractor(), router=CaseRouter())
+    service.auth_bootstrap = AsyncMock()
+    service.auth_bootstrap.bootstrap_auth.return_value = ServiceAuthCredentials(
+        auth_b64="service-auth", bot_user_id=999, login="bot"
+    )
+
+    from core.automation.contracts import ActionPlan
+    from core.automation.compiler import compute_action_plan_hash
+    from core.automation.preflight import canonical_params_hash
+    from core.automation.snapshot import TicketSnapshotFactory
+
+    task_dto = client.get_task.return_value
+    snapshot = TicketSnapshotFactory.create(task_dto, comments=[])
+    snap_hash = snapshot.snapshot_hash
+
+    action_plan_id = uuid4()
+    run_id = uuid4()
+    plan_dict = {
+        "id": str(action_plan_id),
+        "task_id": 66002,
+        "snapshot_hash": snap_hash,
+        "case_decision_id": str(uuid4()),
+        "workflow_plan_id": str(uuid4()),
+        "workflow_key": "employee_onboarding_workflow",
+        "workflow_version": "1.0.0",
+        "source_service_id": 53,
+        "service_binding_key": "ad_account_creation",
+        "service_binding_version": "1.0.0",
+        "catalog_hash": "c" * 64,
+        "delivery_policy": None,
+        "state": "ready",
+        "disposition": "execute",
+        "actions": [
+            {
+                "id": "action_create_ad_user_0",
+                "capability_key": "create_ad_user",
+                "sequence_no": 0,
+                "params": {"first_name": "Иван", "last_name": "Иванов"},
+                "depends_on_action_ids": [],
+                "risk": "high",
+                "requires_approval": False,
+            }
+        ],
+        "plan_hash": "",
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    plan_obj = ActionPlan.model_validate(plan_dict)
+    plan_hash = compute_action_plan_hash(plan_obj)
+    plan_dict["plan_hash"] = plan_hash
+    params_h = canonical_params_hash(plan_obj.actions[0].params)
+
+    async with session_factory() as session:
+        run = AutonomyRunRecord(
+            id=run_id,
+            task_id=66002,
+            bot_user_id=999,
+            assignment_epoch=1,
+            assignment_event_key="assignment:66002:1",
+            state="ready",
+            action_plan_id=action_plan_id,
+            snapshot_hash=snap_hash,
+        )
+        plan_rec = ActionPlanRecord(
+            id=action_plan_id,
+            task_id=66002,
+            autonomy_run_id=run_id,
+            case_decision_id=uuid4(),
+            workflow_plan_id=uuid4(),
+            snapshot_hash=snap_hash,
+            plan_hash=plan_hash,
+            state="ready",
+            disposition="execute",
+            workflow_key="employee_onboarding_workflow",
+            workflow_version="1.0.0",
+            plan_json=plan_dict,
+        )
+        pf_rec = ActionPreflightRecord(
+            id=uuid4(),
+            task_id=66002,
+            action_plan_id=action_plan_id,
+            action_id="action_create_ad_user_0",
+            capability_key="create_ad_user",
+            snapshot_hash=snap_hash,
+            plan_hash=plan_hash,
+            params_hash=params_h,
+            status="failed",
+            error_message="ad_object_already_exists",
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
+        session.add_all([run, plan_rec, pf_rec])
+        await session.commit()
+
+        with patch(
+            "api.src.features.autopilot.service.TaskStatusResolver.resolve",
+            new=AsyncMock(return_value=SimpleNamespace(is_final=False)),
+        ):
+            advanced = await service.advance_run(session, run_id=run_id)
+        assert advanced["state"] == "blocked"
+        assert advanced["blocker"] == "preflight_failed"
+
+        outbox_rec = await session.scalar(
+            select(AutonomyCommentOutboxRecord).where(
+                AutonomyCommentOutboxRecord.run_id == run_id,
+                AutonomyCommentOutboxRecord.blocker_code == "preflight_failed",
+            )
+        )
+        assert outbox_rec is not None
+        assert "учётная запись с таким именем уже существует в Active Directory" in outbox_rec.comment
+        assert outbox_rec.state == "published"
+        assert client.add_task_comment.called
+        call_kwargs = client.add_task_comment.call_args.kwargs
+        assert call_kwargs["task_id"] == 66002
+        assert call_kwargs["is_private"] is True
+        assert "учётная запись с таким именем уже существует в Active Directory" in call_kwargs["comment"]
+
+
+
+
 

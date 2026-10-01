@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import re
 import uuid
@@ -27,6 +29,11 @@ from core.automation.contracts import (
 )
 from core.intraservice.auth import ServiceAuthBootstrap
 from core.intraservice.client import IntraServiceClient
+
+logger = logging.getLogger(__name__)
+
+OU_CACHE_KEY_PREFIX = "ad:ou_tree"
+OU_CACHE_TTL_SECONDS = 3600
 
 DEFAULT_AD_DELIVERY_POLICY = CredentialDeliveryPolicy(
     channel="intraservice_custom_fields",
@@ -237,6 +244,42 @@ class AccountProvisioningService:
         )
         return pool, settings.users_root_ou
 
+    async def _get_cached_ou_tree(self, domain: str, users_root_ou: str) -> list[OrganizationalUnit] | None:
+        try:
+            from core.redis_client import get_redis_client
+
+            redis = get_redis_client()
+            key = f"{OU_CACHE_KEY_PREFIX}:{domain.lower()}:{users_root_ou.strip().lower()}"
+            raw = await redis.get(key)
+            if not raw:
+                return None
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return [
+                    OrganizationalUnit(name=item["name"], distinguished_name=item["distinguished_name"])
+                    for item in data
+                    if isinstance(item, dict) and "name" in item and "distinguished_name" in item
+                ]
+        except Exception as exc:
+            logger.warning("Failed to retrieve cached AD OU tree from Redis: %s", exc)
+        return None
+
+    async def _set_cached_ou_tree(self, domain: str, users_root_ou: str, units: list[OrganizationalUnit]) -> None:
+        if not units:
+            return
+        try:
+            from core.redis_client import get_redis_client
+
+            redis = get_redis_client()
+            key = f"{OU_CACHE_KEY_PREFIX}:{domain.lower()}:{users_root_ou.strip().lower()}"
+            payload = json.dumps(
+                [{"name": u.name, "distinguished_name": u.distinguished_name} for u in units],
+                ensure_ascii=False,
+            )
+            await redis.set(key, payload, ex=OU_CACHE_TTL_SECONDS)
+        except Exception as exc:
+            logger.warning("Failed to save AD OU tree to Redis cache: %s", exc)
+
     def _resolve_target_ou_sync(
         self,
         conn: ldap3.Connection,
@@ -249,7 +292,8 @@ class AccountProvisioningService:
         applicant_department: str = "",
         applicant_login: str = "",
         target_ou_dn: str | None = None,
-    ) -> tuple[str, dict]:
+        cached_units: list[OrganizationalUnit] | None = None,
+    ) -> tuple[str, dict, list[OrganizationalUnit] | None]:
         if target_ou_dn:
             target_ou = target_ou_dn.strip()
             if not _is_descendant(target_ou, users_root_ou):
@@ -281,7 +325,7 @@ class AccountProvisioningService:
                 "resolved_categories": categories.strip() or None,
                 "ou_candidates": [],
                 "target_ou": target_ou,
-            }
+            }, None
 
         resolved_app_dept = applicant_department.strip()
         resolved_app_comp = applicant_company.strip()
@@ -303,29 +347,47 @@ class AccountProvisioningService:
             except Exception:
                 pass
 
-        conn.search(
-            users_root_ou,
-            "(objectClass=organizationalUnit)",
-            ldap3.SUBTREE,
-            attributes=["ou", "distinguishedName"],
-        )
-        units = [
-            OrganizationalUnit(
-                name=str(entry.ou.value or ""),
-                distinguished_name=str(entry.distinguishedName.value or ""),
+        fresh_units: list[OrganizationalUnit] | None = None
+        units = cached_units
+        resolution = None
+
+        if units is not None:
+            resolution = self.ou_resolver.resolve(
+                units,
+                company=company,
+                department=department,
+                categories=categories,
+                applicant_company=resolved_app_comp,
+                applicant_department=resolved_app_dept,
+                users_root_ou=users_root_ou,
             )
-            for entry in conn.entries
-            if getattr(entry, "ou", None) is not None and getattr(entry, "distinguishedName", None) is not None
-        ]
-        resolution = self.ou_resolver.resolve(
-            units,
-            company=company,
-            department=department,
-            categories=categories,
-            applicant_company=resolved_app_comp,
-            applicant_department=resolved_app_dept,
-            users_root_ou=users_root_ou,
-        )
+
+        if units is None or (resolution is not None and resolution.selected_ou is None):
+            conn.search(
+                users_root_ou,
+                "(objectClass=organizationalUnit)",
+                ldap3.SUBTREE,
+                attributes=["ou", "distinguishedName"],
+            )
+            fresh_units = [
+                OrganizationalUnit(
+                    name=str(entry.ou.value or ""),
+                    distinguished_name=str(entry.distinguishedName.value or ""),
+                )
+                for entry in conn.entries
+                if getattr(entry, "ou", None) is not None and getattr(entry, "distinguishedName", None) is not None
+            ]
+            units = fresh_units
+            resolution = self.ou_resolver.resolve(
+                units,
+                company=company,
+                department=department,
+                categories=categories,
+                applicant_company=resolved_app_comp,
+                applicant_department=resolved_app_dept,
+                users_root_ou=users_root_ou,
+            )
+
         details = {
             "ou_resolution_method": resolution.method,
             "resolved_company": company.strip() or None,
@@ -347,7 +409,7 @@ class AccountProvisioningService:
                 "Target organizational unit could not be resolved unambiguously",
                 details=details,
             )
-        return resolution.selected_ou, details
+        return resolution.selected_ou, details, fresh_units
 
     @staticmethod
     def _assert_ldap_success(conn: ldap3.Connection, step: str) -> None:
@@ -376,7 +438,8 @@ class AccountProvisioningService:
         ad_pool: ActiveDirectoryPool | None = None,
         users_root_ou: str = AD_USERS_ROOT_OU,
         target_ou_dn: str | None = None,
-    ) -> AccountProvisioningReceipt:
+        cached_units: list[OrganizationalUnit] | None = None,
+    ) -> tuple[AccountProvisioningReceipt, list[OrganizationalUnit] | None]:
         full_name = f"{last_name} {first_name} {middle_name}".strip()
         pool = ad_pool or self.ad_pool
         if pool is None:
@@ -385,7 +448,7 @@ class AccountProvisioningService:
         base_dn = ",".join(f"DC={part}" for part in domain.split(".") if part)
 
         with pool.connection_scope(auto_bind=True) as conn:
-            target_ou, _resolution = self._resolve_target_ou_sync(
+            target_ou, _resolution, fresh_units = self._resolve_target_ou_sync(
                 conn,
                 users_root_ou=users_root_ou,
                 company=company,
@@ -395,6 +458,7 @@ class AccountProvisioningService:
                 applicant_department=applicant_department,
                 applicant_login=applicant_login,
                 target_ou_dn=target_ou_dn,
+                cached_units=cached_units,
             )
             user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
             try:
@@ -532,7 +596,7 @@ class AccountProvisioningService:
             user_dn=user_dn,
             full_name=full_name,
             credentials_written=False,
-        )
+        ), fresh_units
 
     def _preflight_sync(
         self,
@@ -549,6 +613,7 @@ class AccountProvisioningService:
         ad_pool: ActiveDirectoryPool | None = None,
         users_root_ou: str = AD_USERS_ROOT_OU,
         target_ou_dn: str | None = None,
+        cached_units: list[OrganizationalUnit] | None = None,
     ) -> dict:
         """Read-only AD validation and deterministic login preview."""
         full_name = f"{last_name} {first_name} {middle_name}".strip()
@@ -558,7 +623,7 @@ class AccountProvisioningService:
         domain = pool.config.domain
         base_dn = ",".join(f"DC={part}" for part in domain.split(".") if part)
         with pool.connection_scope(auto_bind=True, read_only=True) as conn:
-            target_ou, resolution = self._resolve_target_ou_sync(
+            target_ou, resolution, fresh_units = self._resolve_target_ou_sync(
                 conn,
                 users_root_ou=users_root_ou,
                 company=company,
@@ -568,6 +633,7 @@ class AccountProvisioningService:
                 applicant_department=applicant_department,
                 applicant_login=applicant_login,
                 target_ou_dn=target_ou_dn,
+                cached_units=cached_units,
             )
             user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
             try:
@@ -590,6 +656,7 @@ class AccountProvisioningService:
                         "preview_sam_account_name": sam,
                         "preview_upn": f"{sam}@{domain}",
                         "preview_user_dn": user_dn,
+                        "_fresh_units": fresh_units,
                         **resolution,
                     }
         raise AccountProvisioningError("login_collision_limit", "AD login collision limit exceeded")
@@ -609,6 +676,7 @@ class AccountProvisioningService:
         target_ou_dn: str | None = None,
     ) -> dict:
         pool, users_root_ou = await self._connection_boundary()
+        cached_units = await self._get_cached_ou_tree(pool.config.domain, users_root_ou)
         preview = await asyncio.to_thread(
             self._preflight_sync,
             last_name=last_name,
@@ -623,7 +691,11 @@ class AccountProvisioningService:
             ad_pool=pool,
             users_root_ou=users_root_ou,
             target_ou_dn=target_ou_dn,
+            cached_units=cached_units,
         )
+        fresh_units = preview.pop("_fresh_units", None)
+        if fresh_units:
+            await self._set_cached_ou_tree(pool.config.domain, users_root_ou, fresh_units)
         await self.auth_bootstrap.bootstrap_auth(client=self.client)
         return preview
 
@@ -647,11 +719,12 @@ class AccountProvisioningService:
         target_ou_dn: str | None = None,
     ) -> AccountProvisioningReceipt:
         pool, users_root_ou = await self._connection_boundary()
+        cached_units = await self._get_cached_ou_tree(pool.config.domain, users_root_ou)
         secret = generate_secure_password(length=14)
         password = secret.get_secret_value()
         del secret
         try:
-            receipt = await asyncio.to_thread(
+            receipt, fresh_units = await asyncio.to_thread(
                 self._create_and_verify_sync,
                 last_name=last_name,
                 first_name=first_name,
@@ -668,7 +741,10 @@ class AccountProvisioningService:
                 ad_pool=pool,
                 users_root_ou=users_root_ou,
                 target_ou_dn=target_ou_dn,
+                cached_units=cached_units,
             )
+            if fresh_units:
+                await self._set_cached_ou_tree(pool.config.domain, users_root_ou, fresh_units)
         except AccountProvisioningError:
             password = ""
             raise
