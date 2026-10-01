@@ -1,0 +1,424 @@
+version: 1
+
+services:
+  53:
+    categories:
+      # Branch hints
+      44:
+        expected_names:
+          - "Филиал в г.Москва"
+          - "Москва"
+        mode: branch_hint
+        branch_key: moscow
+
+      45:
+        expected_names:
+          - "Филиал в г.Екатеринбург"
+          - "Екатеринбург"
+        mode: branch_hint
+        branch_key: ekaterinburg
+
+      46:
+        expected_names:
+          - "Филиал в г.Санкт-Петербург"
+          - "Санкт-Петербург"
+        mode: branch_hint
+        branch_key: spb
+
+      51:
+        expected_names:
+          - "Филиал в г.Полевской"
+          - "Полевской"
+        mode: branch_hint
+        branch_key: polevskoy
+
+      52:
+        expected_names:
+          - "Филиал в г.Новосибирск"
+          - "Новосибирск"
+        mode: branch_hint
+        branch_key: novosibirsk
+
+      53:
+        expected_names:
+          - "офис на Королева"
+          - "Королева"
+        mode: branch_hint
+        branch_key: koroleva
+
+      # Organizations
+      54:
+        expected_names:
+          - 'АО "КМК "ТЭМПО"'
+          - "АО КМК ТЭМПО"
+        mode: organization
+        organization_key: kmk_tempo
+
+      55:
+        expected_names:
+          - 'АО "ИТЗ"'
+          - "АО ИТЗ"
+        mode: organization
+        organization_key: itz
+
+      56:
+        expected_names:
+          - 'АО "КПК "ТЭМПО"'
+          - "АО КПК ТЭМПО"
+        mode: organization
+        organization_key: kpk_tempo
+
+      57:
+        expected_names:
+          - 'АО "НТЗ "ТЭМ-ПО"'
+          - 'АО "НТЗ "ТЭМПО"'
+          - "АО НТЗ ТЭМПО"
+        mode: organization
+        organization_key: ntz_tempo
+
+      58:
+        expected_names:
+          - 'АО "ПТФК "Технотрон"'
+          - "АО ПТФК Технотрон"
+        mode: organization
+        organization_key: ptfk_technotron
+
+      59:
+        expected_names:
+          - 'АО "ТОРГОВЫЙ ДОМ "ТЭМПО"'
+          - "АО ТОРГОВЫЙ ДОМ ТЭМПО"
+        mode: organization
+        organization_key: td_tempo
+
+      60:
+        expected_names:
+          - 'ООО "СОВРЕМЕННЫЕ ТЕХНОЛОГИИ"'
+          - "ООО СОВРЕМЕННЫЕ ТЕХНОЛОГИИ"
+        mode: organization
+        organization_key: modern_tech
+
+      61:
+        expected_names:
+          - 'ООО "Техника-Агро"'
+          - "ООО Техника Агро"
+        mode: organization
+        organization_key: technika_agro
+
+      62:
+        expected_names:
+          - 'ООО "Технотрон-Метиз"'
+          - "ООО Технотрон Метиз"
+        mode: organization
+        organization_key: technotron_metiz
+
+      63:
+        expected_names:
+          - 'ООО "ТЭМПО-Логистик"'
+          - "ООО ТЭМПО Логистик"
+        mode: organization
+        organization_key: tempo_logistic
+
+      64:
+        expected_names:
+          - 'ООО "ТЭМПО-Метиз"'
+          - "ООО ТЭМПО Метиз"
+        mode: organization
+        organization_key: tempo_metiz
+
+      65:
+        expected_names:
+          - 'ООО "ТЭМПО-Персонал"'
+          - "ООО ТЭМПО Персонал"
+        mode: organization
+        organization_key: tempo_personal
+
+      66:
+        expected_names:
+          - "ООО ДЗИЛ"
+          - 'ООО "ДЗИЛ"'
+        mode: organization
+        organization_key: dzil
+
+      67:
+        expected_names:
+          - "ООО КИЦ"
+          - 'ООО "КИЦ"'
+        mode: organization
+        organization_key: kic
+
+      68:
+        expected_names:
+          - 'АО "КЗМК "ТЭМПО"'
+          - "АО КЗМК ТЭМПО"
+        mode: organization
+        organization_key: kzmk_tempo
+
+      69:
+        expected_names:
+          - 'АО НПО "Татэлектромаш"'
+          - "АО НПО Татэлектромаш"
+        mode: organization
+        organization_key: npo_tatelectromash
+
+      70:
+        expected_names:
+          - "«ПТФК «ЗТЭО»"
+          - "ПТФК ЗТЭО"
+          - 'ПТФК "ЗТЭО"'
+        mode: review_required
+
+      71:
+        expected_names:
+          - "ТД ТЭМ"
+          - "ООО ТОРГОВЫЙ ДОМ ТЭМ"
+        mode: organization
+        organization_key: td_tem
+
+      72:
+        expected_names:
+          - "Графит Плюс"
+        mode: review_required
+
+      73:
+        expected_names:
+          - "ГК «ТЭМПО»"
+          - "ГК ТЭМПО"
+        mode: hint_only
+
+      75:
+        expected_names:
+          - "ТЭМПО-Порт"
+          - "ООО ТЭМПО ПОРТ"
+        mode: organization
+        organization_key: tempo_port
+
+      76:
+        expected_names:
+          - "ТК ТЭМПО"
+        mode: review_required
+
+      77:
+        expected_names:
+          - 'ТОО "ТЭМПО-КАЗАХСТАН"'
+          - "ТОО ТЭМПО-КАЗАХСТАН"
+        mode: branch_hint
+        branch_key: kazakhstan
+
+      78:
+        expected_names:
+          - 'ООО "Айти "ТЭМПО"'
+          - "ООО Айти ТЭМПО"
+          - "АйТи ТЭМПО"
+        mode: organization
+        organization_key: it_tempo
+
+      80:
+        expected_names:
+          - 'АО "СКС"ТЭМПО"'
+          - 'АО "СКС "ТЭМПО"'
+          - "АО СКС ТЭМПО"
+        mode: organization
+        organization_key: sks_tempo
+
+organizations:
+  ntz_tempo:
+    aliases:
+      - "АО НТЗ ТЭМПО"
+      - 'АО "НТЗ "ТЭМ-ПО"'
+      - 'АО "НТЗ "ТЭМПО"'
+      - "НТЗ ТЭМПО"
+      - "АО НТЗ"
+    scope_dn: "OU=АО НТЗ ТЭМПО,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments:
+      pipe_shop_1:
+        aliases:
+          - "Цех 1"
+          - "Цех по изготовлению труб 1"
+        target_relative_dn: "OU=Цех по изготовлению труб 1"
+      pipe_shop_2:
+        aliases:
+          - "Цех 2"
+          - "Цех по изготовлению труб 2"
+        target_relative_dn: "OU=Цех по изготовлению труб 2"
+      pipe_shop_3:
+        aliases:
+          - "Цех 3"
+          - "Цех по изготовлению труб 3"
+        target_relative_dn: "OU=Цех по изготовлению труб 3"
+      pipe_shop_4:
+        aliases:
+          - "Цех 4"
+          - "Цех по изготовлению труб 4"
+        target_relative_dn: "OU=Цех по изготовлению труб 4"
+
+  kmk_tempo:
+    aliases:
+      - "АО КМК ТЭМПО"
+      - 'АО "КМК "ТЭМПО"'
+      - "КМК ТЭМПО"
+      - "АО КМК"
+    scope_dn: "OU=АО КМК ТЭМПО,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments:
+      atx:
+        aliases:
+          - "АТХ"
+          - "ПШМ АТХ"
+        target_relative_dn: "OU=ПШМ АТХ"
+
+  itz:
+    aliases:
+      - "АО ИТЗ"
+      - 'АО "ИТЗ"'
+      - "ИТЗ"
+    scope_dn: "OU=АО ИТЗ,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  kpk_tempo:
+    aliases:
+      - "АО КПК ТЭМПО"
+      - 'АО "КПК "ТЭМПО"'
+      - "КПК ТЭМПО"
+      - "АО КПК"
+    scope_dn: "OU=АО КПК ТЭМПО,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  kzmk_tempo:
+    aliases:
+      - "АО КЗМК ТЭМПО"
+      - 'АО "КЗМК "ТЭМПО"'
+      - "КЗМК ТЭМПО"
+      - "АО КЗМК"
+    scope_dn: "OU=АО КЗМК ТЭМПО,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  ptfk_technotron:
+    aliases:
+      - "АО ПТФК Технотрон"
+      - 'АО "ПТФК "Технотрон"'
+      - "ПТФК Технотрон"
+      - "Технотрон"
+      - "АО Технотрон"
+    scope_dn: "OU=АО ПТФК Технотрон,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  td_tempo:
+    aliases:
+      - "АО ТОРГОВЫЙ ДОМ ТЭМПО"
+      - 'АО "ТОРГОВЫЙ ДОМ "ТЭМПО"'
+      - "ТОРГОВЫЙ ДОМ ТЭМПО"
+      - "ТД ТЭМПО"
+    scope_dn: "OU=АО ТОРГОВЫЙ ДОМ ТЭМПО,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  modern_tech:
+    aliases:
+      - "ООО СОВРЕМЕННЫЕ ТЕХНОЛОГИИ"
+      - 'ООО "СОВРЕМЕННЫЕ ТЕХНОЛОГИИ"'
+      - "СОВРЕМЕННЫЕ ТЕХНОЛОГИИ"
+    scope_dn: "OU=ООО СОВРЕМЕННЫЕ ТЕХНОЛОГИИ,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  technika_agro:
+    aliases:
+      - "ООО Техника Агро"
+      - 'ООО "Техника-Агро"'
+      - "Техника-Агро"
+      - "Техника Агро"
+    scope_dn: "OU=ООО Техника Агро,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  technotron_metiz:
+    aliases:
+      - "ООО Технотрон Метиз"
+      - 'ООО "Технотрон-Метиз"'
+      - "Технотрон-Метиз"
+      - "Технотрон Метиз"
+    scope_dn: "OU=ООО Технотрон Метиз,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  tempo_logistic:
+    aliases:
+      - "ООО ТЭМПО Логистик"
+      - 'ООО "ТЭМПО-Логистик"'
+      - "ТЭМПО-Логистик"
+      - "ТЭМПО Логистик"
+    scope_dn: "OU=ООО ТЭМПО Логистик,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  tempo_metiz:
+    aliases:
+      - "ООО ТЭМПО Метиз"
+      - 'ООО "ТЭМПО-Метиз"'
+      - "ТЭМПО-Метиз"
+      - "ТЭМПО Метиз"
+    scope_dn: "OU=ООО ТЭМПО Метиз,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  tempo_personal:
+    aliases:
+      - "ООО ТЭМПО Персонал"
+      - 'ООО "ТЭМПО-Персонал"'
+      - "ТЭМПО-Персонал"
+      - "ТЭМПО Персонал"
+    scope_dn: "OU=ООО ТЭМПО Персонал,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  dzil:
+    aliases:
+      - "ООО ДЗИЛ"
+      - 'ООО "ДЗИЛ"'
+      - "ДЗИЛ"
+    scope_dn: "OU=ООО ДЗИЛ,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  kic:
+    aliases:
+      - "ООО КИЦ"
+      - 'ООО "КИЦ"'
+      - "КИЦ"
+    scope_dn: "OU=ООО КИЦ,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  npo_tatelectromash:
+    aliases:
+      - "АО НПО Татэлектромаш"
+      - 'АО НПО "Татэлектромаш"'
+      - "НПО Татэлектромаш"
+      - "Татэлектромаш"
+    scope_dn: "OU=АО НПО Татэлектромаш,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  td_tem:
+    aliases:
+      - "ООО ТОРГОВЫЙ ДОМ ТЭМ"
+      - "ТД ТЭМ"
+      - "ТОРГОВЫЙ ДОМ ТЭМ"
+    scope_dn: "OU=ООО ТОРГОВЫЙ ДОМ ТЭМ,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  tempo_port:
+    aliases:
+      - "ООО ТЭМПО ПОРТ"
+      - "ТЭМПО-Порт"
+      - "ТЭМПО Порт"
+      - 'ООО "ТЭМПО-ПОРТ"'
+    scope_dn: "OU=ООО ТЭМПО ПОРТ,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  it_tempo:
+    aliases:
+      - "АйТи ТЭМПО"
+      - 'ООО "Айти "ТЭМПО"'
+      - "ООО Айти ТЭМПО"
+      - "Айти ТЭМПО"
+    scope_dn: "OU=АйТи ТЭМПО,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}
+
+  sks_tempo:
+    aliases:
+      - "АО СКС ТЭМПО"
+      - 'АО "СКС"ТЭМПО"'
+      - 'АО "СКС "ТЭМПО"'
+      - "СКС ТЭМПО"
+    scope_dn: "OU=АО СКС ТЭМПО,OU=CORPORATE_USERS,DC=corporate,DC=loc"
+    departments: {}

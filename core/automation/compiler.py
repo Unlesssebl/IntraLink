@@ -284,11 +284,22 @@ class WorkflowCompiler:
         )
 
     @staticmethod
-    def _facts(frame: CaseFrame) -> dict[str, str]:
-        facts = dict(frame.entities)
+    def _facts(frame: CaseFrame) -> dict[str, Any]:
+        facts: dict[str, Any] = dict(frame.entities)
         for assertion in frame.assertions:
             if assertion.kind == AssertionKind.entity and not assertion.is_negated:
                 facts.setdefault(assertion.key, assertion.value)
+        if frame.ou_routing_context is not None:
+            ctx = frame.ou_routing_context
+            facts.setdefault("ou_routing_context", ctx.model_dump(mode="json"))
+            if ctx.routing_policy_version is not None:
+                facts.setdefault("ou_routing_policy_version", ctx.routing_policy_version)
+            if ctx.routing_policy_hash is not None:
+                facts.setdefault("ou_routing_policy_hash", ctx.routing_policy_hash)
+            if ctx.applicant_department is not None:
+                facts.setdefault("applicant_department", ctx.applicant_department)
+            if ctx.applicant_company is not None:
+                facts.setdefault("applicant_company", ctx.applicant_company)
         return facts
 
     @staticmethod

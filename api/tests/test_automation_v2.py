@@ -1302,6 +1302,7 @@ async def test_workflow_facts_fallback_from_applicant_and_categories(session_fac
         StatusId=1,
         CreatorCompanyName="АО НТЗ ТЭМПО",
         Categories="ТЭМПО-Логистик / Автотранспортный цех",
+        entities={"last_name": "Иванов", "first_name": "Иван"},
     )
     client.get_task_lifetime.return_value = []
 
@@ -1313,10 +1314,15 @@ async def test_workflow_facts_fallback_from_applicant_and_categories(session_fac
 
     async with session_factory() as session:
         automation = await service.analyze(session, ticket_id=65001, auth_b64="operator-auth", force=True)
-        assert automation.case_frame.entities.get("company") == "АО НТЗ ТЭМПО"
-        assert automation.case_frame.entities.get("department") == "Автотранспортный цех"
+        # New safe contract: applicant metadata and category do NOT contaminate employee target facts
+        assert automation.case_frame.entities.get("company") is None
+        assert automation.case_frame.entities.get("department") is None
         assert automation.case_frame.entities.get("last_name") == "Иванов"
         assert automation.case_frame.entities.get("first_name") == "Иван"
+        # Routing context retains applicant company safely for preflight OU resolution
+        routing_ctx = automation.case_frame.ou_routing_context
+        assert routing_ctx is not None
+        assert routing_ctx.applicant_company == "АО НТЗ ТЭМПО"
 
 
 async def test_proxy_applicant_department_is_filtered_out(session_factory) -> None:
@@ -1345,9 +1351,15 @@ async def test_proxy_applicant_department_is_filtered_out(session_factory) -> No
 
     async with session_factory() as session:
         automation = await service.analyze(session, ticket_id=65002, auth_b64="operator-auth", force=True)
-        assert automation.case_frame.entities.get("company") == "АО НТЗ ТЭМПО"
+        # New safe contract: neither applicant company nor applicant department contaminate employee entities
+        assert automation.case_frame.entities.get("company") is None
         assert automation.case_frame.entities.get("department") is None
         assert "department" in automation.workflow_plan.missing_facts
+        # Routing context safely holds applicant organization and department
+        routing_ctx = automation.case_frame.ou_routing_context
+        assert routing_ctx is not None
+        assert routing_ctx.applicant_company == "АО НТЗ ТЭМПО"
+        assert routing_ctx.applicant_department == "Отдел управления персоналом"
 
 
 async def test_advance_run_enqueues_and_delivers_detailed_private_comment_on_human_action(session_factory) -> None:

@@ -1,5 +1,6 @@
 """Pydantic v2 Data Transfer Objects for IntraService domain entities."""
 
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -137,6 +138,101 @@ class TaskCommentDTO(BaseModel):
         return "" if v is None else str(v)
 
 
+class TaskCategoryDTO(BaseModel):
+    """Normalized category identity (Id, Name)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int = Field(default=0, validation_alias=AliasChoices("Id", "id"))
+    name: str = Field(default="", validation_alias=AliasChoices("Name", "name"))
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def coerce_id(cls, v: Any) -> int:
+        if v is None:
+            return 0
+        if isinstance(v, int):
+            return v
+        s = str(v).strip()
+        return int(s) if s.isdigit() else 0
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def coerce_name(cls, v: Any) -> str:
+        return "" if v is None else str(v).strip()
+
+
+def normalize_category_pairs(
+    categories: Any = None,
+    category_ids: Any = None,
+) -> List[TaskCategoryDTO]:
+    """Parse categories and category_ids supporting || and comma delimiters into {id, name} pairs."""
+    if not categories and not category_ids:
+        return []
+
+    # Parse IDs
+    raw_ids: List[int] = []
+    if isinstance(category_ids, (list, tuple)):
+        for item in category_ids:
+            if isinstance(item, int):
+                raw_ids.append(item)
+            elif str(item).strip().isdigit():
+                raw_ids.append(int(str(item).strip()))
+    elif category_ids is not None:
+        s_ids = str(category_ids).strip()
+        parts = [p.strip() for p in s_ids.split("||") if p.strip()] if "||" in s_ids else [p.strip() for p in s_ids.split(",") if p.strip()]
+        for p in parts:
+            if p.isdigit():
+                raw_ids.append(int(p))
+
+    # Parse Names
+    raw_names: List[str] = []
+    if isinstance(categories, (list, tuple)):
+        raw_names = [str(item).strip() for item in categories if str(item).strip()]
+    elif categories is not None:
+        s_names = str(categories).strip()
+        if "||" in s_names:
+            raw_names = [p.strip() for p in s_names.split("||") if p.strip()]
+        elif s_names:
+            raw_names = [s_names]
+
+    # Extract ID from "ID: Name" or "ID - Name" pattern in raw_names if ID is missing or 0
+    extracted_names: List[str] = []
+    for i, item in enumerate(raw_names):
+        match = re.match(r"^(\d+)\s*[:\-]\s*(.+)$", item)
+        if match:
+            c_id = int(match.group(1))
+            c_name = match.group(2).strip()
+            if i < len(raw_ids):
+                if raw_ids[i] == 0:
+                    raw_ids[i] = c_id
+            else:
+                raw_ids.append(c_id)
+            extracted_names.append(c_name)
+        elif item.isdigit():
+            c_id = int(item)
+            if i < len(raw_ids):
+                if raw_ids[i] == 0:
+                    raw_ids[i] = c_id
+            else:
+                raw_ids.append(c_id)
+            extracted_names.append("")
+        else:
+            extracted_names.append(item)
+
+    raw_names = extracted_names
+
+    # Pair them up
+    count = max(len(raw_ids), len(raw_names))
+    result: List[TaskCategoryDTO] = []
+    for i in range(count):
+        cid = raw_ids[i] if i < len(raw_ids) else 0
+        cname = raw_names[i] if i < len(raw_names) else ""
+        if cid or cname:
+            result.append(TaskCategoryDTO(id=cid, name=cname))
+    return result
+
+
 class TaskDTO(BaseModel):
     """Normalized IntraService task representation."""
 
@@ -201,6 +297,10 @@ class TaskDTO(BaseModel):
     category_ids: Optional[str] = Field(default=None, alias="CategoryIds")
     creator_company_id: Optional[int] = Field(default=None, alias="CreatorCompanyId")
     creator_company_name: Optional[str] = Field(default=None, alias="CreatorCompanyName")
+    creator_company_path: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("CreatorCompanyPath", "creator_company_path"),
+    )
     creator_department: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("CreatorDepartment", "creator_department", "ApplicantDepartment", "applicant_department"),
@@ -210,6 +310,17 @@ class TaskDTO(BaseModel):
     creator_position: Optional[str] = Field(default=None, alias="CreatorPosition")
     company_id: Optional[int] = Field(default=None, alias="CompanyId")
     company_name: Optional[str] = Field(default=None, alias="CompanyName")
+    normalized_categories: List[TaskCategoryDTO] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def populate_normalized_categories(self) -> "TaskDTO":
+        if not self.normalized_categories and (self.categories or self.category_ids):
+            self.normalized_categories = normalize_category_pairs(self.categories, self.category_ids)
+        return self
+
+    def get_categories(self) -> List[TaskCategoryDTO]:
+        """Return parsed category pairs."""
+        return self.normalized_categories
 
     # Raw XML and parsed custom fields
     custom_field_data: Optional[str] = Field(

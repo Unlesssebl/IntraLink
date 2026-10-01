@@ -10,7 +10,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 
 import ldap3
 from ldap3.core.exceptions import LDAPNoSuchObjectResult
@@ -25,7 +25,13 @@ from core.ad.group_resolver import (
     ActiveDirectoryGroup,
     ActiveDirectoryGroupResolver,
 )
-from core.ad.ou_resolver import OrganizationalUnit, OrganizationalUnitResolver, _is_descendant
+from core.ad.ou_resolver import (
+    OrganizationalUnit,
+    OrganizationalUnitResolver,
+    _is_descendant,
+    _relative_ou_names,
+)
+from core.ad.ou_routing import get_cached_routing_config
 from core.ad.password import generate_secure_password
 from core.ad.pool import ActiveDirectoryPool, ADPoolConfig
 from core.ad.transliteration import generate_sam_account_name
@@ -388,6 +394,7 @@ class AccountProvisioningService:
         applicant_login: str = "",
         target_ou_dn: str | None = None,
         cached_units: list[OrganizationalUnit] | None = None,
+        routing_context: Any | None = None,
     ) -> tuple[str, dict, list[OrganizationalUnit] | None]:
         if target_ou_dn:
             target_ou = target_ou_dn.strip()
@@ -413,6 +420,9 @@ class AccountProvisioningService:
                     "ad_target_ou_not_found",
                     f"Selected OU '{target_ou}' does not exist in Active Directory",
                 ) from err
+            cached_res = get_cached_routing_config()
+            rel = _relative_ou_names(target_ou, users_root_ou)
+            resolved_scope = f"OU={rel[-1]},{users_root_ou}" if rel else users_root_ou
             return target_ou, {
                 "ou_resolution_method": "operator_confirmed",
                 "resolved_company": company.strip() or None,
@@ -420,6 +430,10 @@ class AccountProvisioningService:
                 "resolved_categories": categories.strip() or None,
                 "ou_candidates": [],
                 "target_ou": target_ou,
+                "resolved_scope_dn": resolved_scope,
+                "evidence": ["operator_confirmed"],
+                "routing_policy_hash": cached_res[1] if cached_res else None,
+                "routing_policy_version": cached_res[2] if cached_res else None,
             }, None
 
         resolved_app_dept = applicant_department.strip()
@@ -455,6 +469,7 @@ class AccountProvisioningService:
                 applicant_company=resolved_app_comp,
                 applicant_department=resolved_app_dept,
                 users_root_ou=users_root_ou,
+                routing_context=routing_context,
             )
 
         if units is None or (resolution is not None and resolution.selected_ou is None):
@@ -481,13 +496,20 @@ class AccountProvisioningService:
                 applicant_company=resolved_app_comp,
                 applicant_department=resolved_app_dept,
                 users_root_ou=users_root_ou,
+                routing_context=routing_context,
             )
+
+        cached_res = get_cached_routing_config()
+        routing_policy_hash = cached_res[1] if cached_res else None
+        routing_policy_version = cached_res[2] if cached_res else None
 
         details = {
             "ou_resolution_method": resolution.method,
             "resolved_company": company.strip() or None,
             "resolved_department": department.strip(),
             "resolved_categories": categories.strip() or None,
+            "routing_policy_hash": routing_policy_hash,
+            "routing_policy_version": routing_policy_version,
             "ou_candidates": [
                 {
                     "distinguished_name": item.distinguished_name,
@@ -499,11 +521,30 @@ class AccountProvisioningService:
             ],
         }
         if resolution.selected_ou is None:
+            err_code = (
+                "target_company_category_conflict"
+                if resolution.method == "target_company_category_conflict"
+                else (
+                    "review_required_category"
+                    if resolution.method in {"review_required", "category_review_required", "review_required_category"}
+                    else "ad_target_ou_ambiguous"
+                )
+            )
             raise AccountProvisioningError(
-                "ad_target_ou_ambiguous",
-                "Target organizational unit could not be resolved unambiguously",
+                err_code,
+                f"Target organizational unit resolution halted ({resolution.method})",
                 details=details,
             )
+
+        selected_cand = next((c for c in resolution.candidates if c.distinguished_name == resolution.selected_ou), None)
+        selected_evidence = list(selected_cand.evidence) if selected_cand else []
+
+        rel = _relative_ou_names(resolution.selected_ou, users_root_ou)
+        resolved_scope = f"OU={rel[-1]},{users_root_ou}" if rel else users_root_ou
+
+        details["target_ou"] = resolution.selected_ou
+        details["resolved_scope_dn"] = resolved_scope
+        details["evidence"] = selected_evidence
         return resolution.selected_ou, details, fresh_units
 
     @staticmethod
@@ -535,6 +576,7 @@ class AccountProvisioningService:
         target_ou_dn: str | None = None,
         cached_units: list[OrganizationalUnit] | None = None,
         cached_groups: list[ActiveDirectoryGroup] | None = None,
+        routing_context: Any | None = None,
     ) -> tuple[AccountProvisioningReceipt, list[OrganizationalUnit] | None, list[ActiveDirectoryGroup] | None]:
         full_name = f"{last_name} {first_name} {middle_name}".strip()
         pool = ad_pool or self.ad_pool
@@ -555,6 +597,7 @@ class AccountProvisioningService:
                 applicant_login=applicant_login,
                 target_ou_dn=target_ou_dn,
                 cached_units=cached_units,
+                routing_context=routing_context,
             )
             user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
             try:
@@ -757,6 +800,7 @@ class AccountProvisioningService:
         target_ou_dn: str | None = None,
         cached_units: list[OrganizationalUnit] | None = None,
         cached_groups: list[ActiveDirectoryGroup] | None = None,
+        routing_context: Any | None = None,
     ) -> dict:
         """Read-only AD validation and deterministic login preview."""
         full_name = f"{last_name} {first_name} {middle_name}".strip()
@@ -777,6 +821,7 @@ class AccountProvisioningService:
                 applicant_login=applicant_login,
                 target_ou_dn=target_ou_dn,
                 cached_units=cached_units,
+                routing_context=routing_context,
             )
             user_dn = f"CN={escape_rdn(full_name)},{target_ou}"
             try:
@@ -842,6 +887,7 @@ class AccountProvisioningService:
         applicant_department: str = "",
         applicant_login: str = "",
         target_ou_dn: str | None = None,
+        routing_context: Any | None = None,
     ) -> dict:
         pool, users_root_ou = await self._connection_boundary()
         cached_units = await self._get_cached_ou_tree(pool.config.domain, users_root_ou)
@@ -862,6 +908,7 @@ class AccountProvisioningService:
             target_ou_dn=target_ou_dn,
             cached_units=cached_units,
             cached_groups=cached_groups,
+            routing_context=routing_context,
         )
         fresh_units = preview.pop("_fresh_units", None)
         if fresh_units:
@@ -890,6 +937,7 @@ class AccountProvisioningService:
         delivery_policy: CredentialDeliveryPolicy | None = None,
         delivery_port: CredentialDeliveryPort | None = None,
         target_ou_dn: str | None = None,
+        routing_context: Any | None = None,
     ) -> AccountProvisioningReceipt:
         pool, users_root_ou = await self._connection_boundary()
         cached_units = await self._get_cached_ou_tree(pool.config.domain, users_root_ou)
@@ -917,6 +965,7 @@ class AccountProvisioningService:
                 target_ou_dn=target_ou_dn,
                 cached_units=cached_units,
                 cached_groups=cached_groups,
+                routing_context=routing_context,
             )
             if fresh_units:
                 await self._set_cached_ou_tree(pool.config.domain, users_root_ou, fresh_units)

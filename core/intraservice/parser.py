@@ -636,14 +636,6 @@ def parse_custom_fields(
         or ""
     ).strip()
 
-    if not company:
-        # Fallback: check categories (e.g. 'АО "НТЗ "ТЭМ-ПО"') or applicant company
-        clean_categories = re.sub(r'["«»]', "", categories).strip()
-        clean_applicant_comp = re.sub(r'["«»]', "", applicant_company).strip()
-        if clean_categories:
-            company = clean_categories
-        elif clean_applicant_comp:
-            company = clean_applicant_comp
 
     if not user_name:
         parts = [last_name, first_name, middle_name]

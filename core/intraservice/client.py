@@ -16,6 +16,7 @@ import httpx
 from core.intraservice.catalog import ServiceCatalog
 from core.intraservice.dto import (
     ServiceDTO,
+    TaskCategoryDTO,
     TaskDTO,
     TaskLifetimeEventDTO,
     TaskStatusDTO,
@@ -256,6 +257,7 @@ class IntraServiceClient:
         self.circuit_breaker = CircuitBreaker()
         self._client: Optional[httpx.AsyncClient] = None
         self.catalog = ServiceCatalog()
+        self._company_cache: Dict[int, Tuple[float, Dict[str, Any]]] = {}
 
     async def get_http_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -392,7 +394,7 @@ class IntraServiceClient:
             method="GET",
             endpoint=f"task/{task_id}",
             auth_b64=auth_b64,
-            params={"include": "customfields,status,service,attachments"},
+            params={"include": "customfields,status,service,attachments,categories"},
         )
         task_data: Dict[str, Any] = {}
         if isinstance(raw, dict):
@@ -406,6 +408,11 @@ class IntraServiceClient:
             # Extract included attachments if top-level
             if "Attachments" in raw and "Attachments" not in task_data:
                 task_data["Attachments"] = raw["Attachments"]
+            # Extract included categories if top-level
+            if "Categories" in raw and "Categories" not in task_data:
+                task_data["Categories"] = raw["Categories"]
+            if "CategoryIds" in raw and "CategoryIds" not in task_data:
+                task_data["CategoryIds"] = raw["CategoryIds"]
             # Extract included status name if not in task_data
             status_id = task_data.get("StatusId")
             if not task_data.get("StatusName"):
@@ -456,7 +463,7 @@ class IntraServiceClient:
         """Fetch tickets matching an IntraService filter ID with pagination."""
         base_params: Dict[str, Any] = {
             "filterid": str(filter_id),
-            "include": "status,customfields,service",
+            "include": "status,customfields,service,categories",
             "pagesize": str(min(page_size, 2000)),
         }
         if service_ids:
@@ -524,7 +531,7 @@ class IntraServiceClient:
     ) -> List[TaskDTO]:
         """Fetch tickets matching custom IntraService query parameters (StatusIds, ChangedMoreThan, ServiceIds, etc.)."""
         params: Dict[str, Any] = {
-            "include": "status,customfields,service",
+            "include": "status,customfields,service,categories",
             "pagesize": str(min(page_size, 2000)),
             "page": str(page),
         }
@@ -684,6 +691,82 @@ class IntraServiceClient:
         )
         res["ServiceId"] = service_id
         return TaskTypeDTO.model_validate(res)
+
+    async def get_company(
+        self,
+        company_id: int,
+        auth_b64: Optional[str] = None,
+        cache_ttl_seconds: float = 3600.0,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch company details by company ID with bounded in-memory TTL caching."""
+        now = time.monotonic()
+        if company_id in self._company_cache:
+            ts, data = self._company_cache[company_id]
+            if now - ts < cache_ttl_seconds:
+                return data
+
+        try:
+            res = await self._request(
+                method="GET",
+                endpoint=f"company/{company_id}",
+                auth_b64=auth_b64,
+            )
+            if isinstance(res, dict) and (res.get("Id") or res.get("Name")):
+                if len(self._company_cache) > 1024:
+                    self._company_cache.clear()
+                self._company_cache[company_id] = (now, res)
+                return res
+        except Exception as exc:
+            logger.warning("Failed to fetch company ID %s: %s", company_id, exc)
+        return None
+
+    async def get_company_hierarchy(
+        self,
+        company_path: str,
+        auth_b64: Optional[str] = None,
+        max_depth: int = 5,
+    ) -> List[str]:
+        """Restore ordered applicant organization hierarchy names from pipe-separated CreatorCompanyPath."""
+        if not company_path:
+            return []
+        ids = [int(p) for p in str(company_path).split("|") if p.strip().isdigit()][:max_depth]
+        if not ids:
+            return []
+        companies = await asyncio.gather(
+            *[self.get_company(cid, auth_b64=auth_b64) for cid in ids],
+            return_exceptions=True,
+        )
+        hierarchy: List[str] = []
+        for comp in companies:
+            if isinstance(comp, dict) and comp.get("Name"):
+                hierarchy.append(str(comp["Name"]).strip())
+        return hierarchy
+
+    async def get_categories(
+        self,
+        service_id: Optional[int] = None,
+        auth_b64: Optional[str] = None,
+    ) -> List[TaskCategoryDTO]:
+        """Fetch categories from IntraService API, optionally filtered by serviceid."""
+        params: Dict[str, Any] = {"pagesize": "1000"}
+        if service_id is not None:
+            params["serviceid"] = str(service_id)
+        res = await self._request(
+            method="GET",
+            endpoint="category",
+            params=params,
+            auth_b64=auth_b64,
+        )
+        raw_cats = []
+        if isinstance(res, dict):
+            raw_cats = res.get("Categories") or res.get("CategoryList") or []
+        elif isinstance(res, list):
+            raw_cats = res
+        return [
+            TaskCategoryDTO(id=int(c["Id"]), name=str(c.get("Name", "")).strip())
+            for c in raw_cats
+            if isinstance(c, dict) and c.get("Id") is not None
+        ]
 
     async def update_task(
         self,

@@ -287,7 +287,7 @@ def test_enrich_task_dict_categories_and_creator_company_fallback():
     assert enriched["entities"]["middle_name"] == "Вахитовна"
     assert enriched["entities"]["department"] == "цеха №4"
     assert enriched["entities"]["title"] == "Кладовщик"
-    assert enriched["entities"]["company"] == "АО НТЗ ТЭМ-ПО"
+    assert enriched["entities"]["company"] == ""
     assert enriched["entities"]["categories"] == 'АО "НТЗ "ТЭМ-ПО"'
     assert enriched["entities"]["applicant_company"] == "АО НТЗ ТЭМПО"
     assert enriched["entities"]["applicant_login"] == "uroshnikova.d.v"

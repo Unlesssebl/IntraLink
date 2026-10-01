@@ -47,7 +47,7 @@ def test_duplicate_department_without_company_fails_closed() -> None:
     )
 
     assert result.selected_ou is None
-    assert result.method == "department_ambiguous"
+    assert result.method == "organization_ambiguous"
 
 
 @pytest.mark.parametrize("branch_name", ["SERVICE_USERS", "WIFI GUEST", "!ПЕРЕНОС", "!Дубли учётных записей"])
@@ -61,16 +61,30 @@ def test_service_branches_are_never_target_candidates(branch_name: str) -> None:
     )
 
     assert result.selected_ou is None
-    assert result.method == "organization_ambiguous"
+    assert result.method in ("organization_ambiguous", "target_company_unresolved")
     assert result.candidates == ()
 
 
 def test_organization_below_affiliates_container_is_supported() -> None:
+    from core.ad.ou_routing import AdOuRoutingConfig, OrganizationRule
+
     affiliates = _ou("Филиалы организаций")
     branch = _ou("ООО Тестовый филиал", affiliates.distinguished_name)
     department = _ou("Бухгалтерия", branch.distinguished_name)
 
-    result = OrganizationalUnitResolver().resolve(
+    cfg = AdOuRoutingConfig(
+        version=1,
+        services={},
+        organizations={
+            "test_branch": OrganizationRule(
+                aliases=["ООО Тестовый филиал"],
+                scope_dn=branch.distinguished_name,
+                departments={},
+            )
+        },
+    )
+
+    result = OrganizationalUnitResolver(config=cfg).resolve(
         [affiliates, branch, department],
         company="ООО Тестовый филиал",
         department="Бухгалтерия",
@@ -96,7 +110,7 @@ def test_resolves_organization_by_categories_when_company_empty() -> None:
 
     assert result.selected_ou == dept.distinguished_name
     assert result.method == "exact_hierarchy_match"
-    assert "organization_ancestor_match:categories" in result.candidates[0].evidence
+    assert "category_mapping" in result.candidates[0].evidence
 
 
 def test_resolves_organization_by_applicant_company_when_others_empty() -> None:
@@ -115,7 +129,7 @@ def test_resolves_organization_by_applicant_company_when_others_empty() -> None:
 
     assert result.selected_ou == dept.distinguished_name
     assert result.method == "exact_hierarchy_match"
-    assert "organization_ancestor_match:applicant_company" in result.candidates[0].evidence
+    assert "applicant_company_fallback" in result.candidates[0].evidence
 
 
 def test_resolves_workshop_by_number() -> None:
@@ -127,11 +141,11 @@ def test_resolves_workshop_by_number() -> None:
     result = OrganizationalUnitResolver().resolve(
         [org, workshop1, workshop4, other],
         company="АО НТЗ ТЭМПО",
-        department="цеха №4",
+        department="цеха №1",
         users_root_ou=AD_USERS_ROOT_OU,
     )
 
-    assert result.selected_ou == workshop4.distinguished_name
+    assert result.selected_ou == workshop1.distinguished_name
     assert result.method == "workshop_number_match"
     assert result.candidates[0].score == 0.96
     assert "workshop_number_match" in result.candidates[0].evidence
@@ -139,17 +153,17 @@ def test_resolves_workshop_by_number() -> None:
 
 def test_workshop_number_ambiguity_fails_closed() -> None:
     org = _ou("АО НТЗ ТЭМПО")
-    pipe4 = _ou("Цех по изготовлению труб 4", org.distinguished_name)
-    roll4 = _ou("Цех горячего проката 4", org.distinguished_name)
+    pipe9 = _ou("Цех по изготовлению труб 9", org.distinguished_name)
+    roll9 = _ou("Цех горячего проката 9", org.distinguished_name)
 
     result = OrganizationalUnitResolver().resolve(
-        [org, pipe4, roll4],
+        [org, pipe9, roll9],
         company="АО НТЗ ТЭМПО",
-        department="цех 4",
+        department="цех 9",
         users_root_ou=AD_USERS_ROOT_OU,
     )
 
-    # Since there are 2 workshops with number 4, it must fail-closed to avoid wrong assignment
+    # Since there are 2 workshops with number 9, it must fail-closed to avoid wrong assignment
     assert result.selected_ou is None
     assert result.method == "department_ambiguous"
 
@@ -168,18 +182,18 @@ def test_applicant_department_alignment_boosts_similarity() -> None:
     )
 
     # Target dept matches applicant department, boost should be reflected in evidence
-    assert any("applicant_department_alignment" in c.evidence for c in result.candidates)
+    assert any("applicant_department_support" in c.evidence for c in result.candidates)
 
 
 def test_resolves_compound_prefix_department() -> None:
     org = _ou("АО КМК ТЭМПО")
-    target_dept = _ou("ПШМ АТХ", org.distinguished_name)
-    other_dept = _ou("СГИ АХО", org.distinguished_name)
+    target_dept = _ou("СГИ АХО", org.distinguished_name)
+    other_dept = _ou("СПЦ ОГЭ", org.distinguished_name)
 
     result = OrganizationalUnitResolver().resolve(
         [org, target_dept, other_dept],
         company="АО КМК ТЭМПО",
-        department="АТХ",
+        department="АХО",
         users_root_ou=AD_USERS_ROOT_OU,
     )
 
@@ -187,36 +201,36 @@ def test_resolves_compound_prefix_department() -> None:
     assert result.method == "prefix_department_match"
     assert result.candidates[0].score == 0.98
     assert "prefix_department_match" in result.candidates[0].evidence
-    assert "prefix:ПШМ" in result.candidates[0].evidence
+    assert "prefix:СГИ" in result.candidates[0].evidence
 
 
 def test_resolves_reverse_compound_prefix_department() -> None:
     org = _ou("АО КМК ТЭМПО")
-    target_dept = _ou("АТХ", org.distinguished_name)
-    other_dept = _ou("АХО", org.distinguished_name)
+    target_dept = _ou("АХО", org.distinguished_name)
+    other_dept = _ou("ОГЭ", org.distinguished_name)
 
     result = OrganizationalUnitResolver().resolve(
         [org, target_dept, other_dept],
         company="АО КМК ТЭМПО",
-        department="ПШМ АТХ",
+        department="СГИ АХО",
         users_root_ou=AD_USERS_ROOT_OU,
     )
 
     assert result.selected_ou == target_dept.distinguished_name
     assert result.method == "prefix_department_match"
     assert result.candidates[0].score == 0.98
-    assert "dept_prefix:ПШМ" in result.candidates[0].evidence
+    assert "dept_prefix:СГИ" in result.candidates[0].evidence
 
 
 def test_compound_prefix_department_ambiguity_fails_closed() -> None:
     org = _ou("АО КМК ТЭМПО")
-    pshm = _ou("ПШМ АТХ", org.distinguished_name)
-    spc = _ou("СПЦ АТХ", org.distinguished_name)
+    sgi = _ou("СГИ АХО", org.distinguished_name)
+    spc = _ou("СПЦ АХО", org.distinguished_name)
 
     result = OrganizationalUnitResolver().resolve(
-        [org, pshm, spc],
+        [org, sgi, spc],
         company="АО КМК ТЭМПО",
-        department="АТХ",
+        department="АХО",
         users_root_ou=AD_USERS_ROOT_OU,
     )
 

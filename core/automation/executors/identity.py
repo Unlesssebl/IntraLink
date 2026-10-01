@@ -51,7 +51,9 @@ class CreateAdUserExecutor:
         target_ou_dn = str(params.get("target_ou_dn", "")).strip() or None
         categories = str(params.get("categories", "")).strip()
         applicant_company = str(params.get("applicant_company", "")).strip()
+        applicant_department = str(params.get("applicant_department", "")).strip()
         applicant_login = str(params.get("applicant_login", "")).strip()
+        routing_context = params.get("ou_routing_context")
         try:
             preview = await self.provisioner.preflight(
                 last_name=str(params["last_name"]).strip(),
@@ -61,11 +63,13 @@ class CreateAdUserExecutor:
                 company=str(params.get("company", "")).strip(),
                 categories=categories,
                 applicant_company=applicant_company,
+                applicant_department=applicant_department,
                 applicant_login=applicant_login,
                 target_ou_dn=target_ou_dn,
+                routing_context=routing_context,
             )
         except AccountProvisioningError as exc:
-            if exc.code == "ad_target_ou_ambiguous":
+            if exc.code in {"ad_target_ou_ambiguous", "target_company_category_conflict", "review_required_category"}:
                 ou_candidates = exc.details.get("ou_candidates") or []
                 candidates = tuple(
                     HumanActionCandidate(
@@ -77,35 +81,68 @@ class CreateAdUserExecutor:
                     )
                     for idx, item in enumerate(ou_candidates)
                 )
-                human_action = HumanActionProposal(
-                    action_type="single_choice",
-                    target_param="target_ou_dn",
-                    prompt="Выберите подразделение (OU) в Active Directory для размещения нового сотрудника",
-                    check_key="target_ou",
-                    candidates=candidates,
-                )
-                return CapabilityPreflight(
-                    status=PreflightStatus.action_required,
-                    checks=[
-                        PreflightCheck(
-                            key="required_identity_fields",
-                            status=PreflightCheckStatus.passed,
-                        ).model_dump(mode="json"),
-                        PreflightCheck(
-                            key="ad_available",
-                            status=PreflightCheckStatus.passed,
-                        ).model_dump(mode="json"),
-                        PreflightCheck(
-                            key="target_ou",
-                            status=PreflightCheckStatus.action_required,
-                            reason_code="ad_target_ou_ambiguous",
-                            details=exc.details,
-                        ).model_dump(mode="json"),
-                    ],
-                    details=exc.details,
-                    error_code=exc.code,
-                    human_action=human_action,
-                )
+                if candidates:
+                    prompt = (
+                        "Обнаружен конфликт организации и категории заявки. Выберите подразделение (OU) вручную"
+                        if exc.code == "target_company_category_conflict"
+                        else (
+                            "Категория требует обязательного согласования оператором. Выберите подразделение (OU)"
+                            if exc.code == "review_required_category"
+                            else "Выберите подразделение (OU) в Active Directory для размещения нового сотрудника"
+                        )
+                    )
+                    human_action = HumanActionProposal(
+                        action_type="single_choice",
+                        target_param="target_ou_dn",
+                        prompt=prompt,
+                        check_key="target_ou",
+                        candidates=candidates,
+                    )
+                    return CapabilityPreflight(
+                        status=PreflightStatus.action_required,
+                        checks=[
+                            PreflightCheck(
+                                key="required_identity_fields",
+                                status=PreflightCheckStatus.passed,
+                            ).model_dump(mode="json"),
+                            PreflightCheck(
+                                key="ad_available",
+                                status=PreflightCheckStatus.passed,
+                            ).model_dump(mode="json"),
+                            PreflightCheck(
+                                key="target_ou",
+                                status=PreflightCheckStatus.action_required,
+                                reason_code=exc.code,
+                                details=exc.details,
+                            ).model_dump(mode="json"),
+                        ],
+                        details=exc.details,
+                        error_code=exc.code,
+                        human_action=human_action,
+                    )
+                else:
+                    return CapabilityPreflight(
+                        status=PreflightStatus.failed,
+                        checks=[
+                            PreflightCheck(
+                                key="required_identity_fields",
+                                status=PreflightCheckStatus.passed,
+                            ).model_dump(mode="json"),
+                            PreflightCheck(
+                                key="ad_available",
+                                status=PreflightCheckStatus.passed,
+                            ).model_dump(mode="json"),
+                            PreflightCheck(
+                                key="target_ou",
+                                status=PreflightCheckStatus.failed,
+                                reason_code=exc.code,
+                                details=exc.details,
+                            ).model_dump(mode="json"),
+                        ],
+                        details=exc.details,
+                        error_code=exc.code,
+                        human_action=None,
+                    )
             failed_check_key = (
                 "distinguished_name_absent"
                 if exc.code == "ad_object_already_exists"
@@ -260,9 +297,11 @@ class CreateAdUserExecutor:
                 company=str(params.get("company", "")).strip(),
                 categories=str(params.get("categories", "")).strip(),
                 applicant_company=str(params.get("applicant_company", "")).strip(),
+                applicant_department=str(params.get("applicant_department", "")).strip(),
                 applicant_login=str(params.get("applicant_login", "")).strip(),
                 delivery_policy=delivery_policy,
                 target_ou_dn=target_ou_dn,
+                routing_context=params.get("ou_routing_context"),
             )
         except AccountProvisioningError as exc:
             outcome = (

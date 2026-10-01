@@ -8,7 +8,13 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from core.automation.contracts import SnapshotAttachment, SnapshotComment, TicketSnapshot
+from core.automation.contracts import (
+    OuRoutingCategoryItem,
+    OuRoutingContext,
+    SnapshotAttachment,
+    SnapshotComment,
+    TicketSnapshot,
+)
 from core.intraservice.dto import ExtractedEntitiesDTO, TaskDTO
 
 SECRET_KEYWORDS = ("password", "passwd", "пароль", "secret", "token")
@@ -88,6 +94,8 @@ class TicketSnapshotFactory:
         task: TaskDTO,
         comments: Sequence[Any] | None = None,
         last_event_id: int | None = None,
+        applicant_company_hierarchy: Sequence[str] | None = None,
+        ou_routing_context: OuRoutingContext | None = None,
     ) -> TicketSnapshot:
         if isinstance(task.entities, ExtractedEntitiesDTO):
             raw_entities = task.entities.model_dump()
@@ -184,6 +192,11 @@ class TicketSnapshotFactory:
             or entities.get("applicant_department")
             or None
         )
+        if ou_routing_context is None:
+            ou_routing_context = _build_default_ou_routing_context(
+                task, applicant_company_hierarchy=applicant_company_hierarchy
+            )
+
         payload = {
             "task_id": task.id,
             "status_id": task.status_id,
@@ -202,11 +215,100 @@ class TicketSnapshotFactory:
             "applicant_login": applicant_login,
             "applicant_department": applicant_department,
             "last_event_id": event_id,
+            "ou_routing_context": ou_routing_context.model_dump(),
         }
         return TicketSnapshot(
             **payload,
             snapshot_hash=compute_canonical_snapshot_hash(payload),
         )
+
+
+def build_ou_routing_context(
+    task: TaskDTO,
+    *,
+    routing_config: Any | None = None,
+    applicant_company_hierarchy: Sequence[str] | None = None,
+    policy_hash: str | None = None,
+    policy_version: int | None = None,
+) -> OuRoutingContext:
+    from core.intraservice.dto import normalize_category_pairs
+
+    norm_cats = getattr(task, "normalized_categories", None)
+    if not norm_cats and (getattr(task, "category_ids", None) or getattr(task, "categories", None)):
+        norm_cats = normalize_category_pairs(
+            category_ids=getattr(task, "category_ids", None),
+            categories=getattr(task, "categories", None),
+        )
+
+    cfg = routing_config
+    if cfg is None:
+        try:
+            from core.ad.ou_routing import get_cached_routing_config
+            res = get_cached_routing_config()
+            if res:
+                cfg = res[0]
+                if policy_hash is None:
+                    policy_hash = res[1]
+                if policy_version is None:
+                    policy_version = res[2]
+        except Exception:
+            pass
+
+    diagnostics: list[str] = []
+    cat_items: list[OuRoutingCategoryItem] = []
+
+    service_rule = None
+    if cfg is not None and getattr(cfg, "services", None):
+        svc_id = getattr(task, "service_id", 53) or 53
+        service_rule = cfg.services.get(svc_id)
+
+    for cat in (norm_cats or []):
+        mismatch = False
+        if service_rule and cat.id in service_rule.categories:
+            rule = service_rule.categories[cat.id]
+            if rule.expected_names and cat.name:
+                import unicodedata
+                norm_cname = unicodedata.normalize("NFKC", cat.name).casefold().strip()
+                match = any(
+                    unicodedata.normalize("NFKC", exp).casefold().strip() == norm_cname
+                    for exp in rule.expected_names
+                )
+                if not match:
+                    mismatch = True
+                    diagnostics.append(f"category_name_mismatch:{cat.id}")
+
+        cat_items.append(OuRoutingCategoryItem(id=cat.id, name=cat.name, name_mismatch=mismatch))
+
+    app_comp = getattr(task, "creator_company_name", None)
+    app_dept = getattr(task, "creator_department", None) or getattr(task, "applicant_department", None)
+    app_path = getattr(task, "creator_company_path", None)
+    hierarchy = list(applicant_company_hierarchy or [])
+
+    if not cat_items and (getattr(task, "categories", None) or getattr(task, "category_ids", None)):
+        diagnostics.append("unparsed_categories")
+    if not app_comp and not app_path:
+        diagnostics.append("missing_applicant_company")
+
+    return OuRoutingContext(
+        categories=cat_items,
+        applicant_company=app_comp,
+        applicant_department=app_dept,
+        applicant_company_hierarchy=hierarchy,
+        applicant_company_path=app_path,
+        routing_policy_version=policy_version,
+        routing_policy_hash=policy_hash,
+        diagnostics=diagnostics,
+    )
+
+
+def _build_default_ou_routing_context(
+    task: TaskDTO,
+    applicant_company_hierarchy: Sequence[str] | None = None,
+) -> OuRoutingContext:
+    return build_ou_routing_context(
+        task,
+        applicant_company_hierarchy=applicant_company_hierarchy,
+    )
 
 
 build_ticket_snapshot = TicketSnapshotFactory.create

@@ -380,7 +380,14 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
             )
             return {"status": "aborted", "error": "bot_unassigned"}
         lifetime = await _client().get_task_lifetime(task_id=plan.task_id, auth_b64=auth.auth_b64)
-        current_snapshot = TicketSnapshotFactory.create(task=task, comments=lifetime)
+        hierarchy: list[str] = []
+        if task.creator_company_path:
+            hierarchy = await _client().get_company_hierarchy(task.creator_company_path, auth_b64=auth.auth_b64)
+        current_snapshot = TicketSnapshotFactory.create(
+            task=task,
+            comments=lifetime,
+            applicant_company_hierarchy=hierarchy,
+        )
         if current_snapshot.snapshot_hash != plan.snapshot_hash:
             await _transition_autonomy_run(
                 session, command, state="detected", blocker_code="stale_ticket_snapshot"
@@ -427,11 +434,32 @@ async def _execute_capability(command: CommandRecord, session: AsyncSession) -> 
                 if binding_record and binding_record.delivery_policy_json:
                     exec_params["delivery_policy"] = binding_record.delivery_policy_json
 
+        if spec.is_mutating:
+            preflight_error, bound_target_ou = await _validate_mutation_preflight(
+                session=session,
+                plan=plan,
+                action=action,
+                command=command,
+                current_snapshot=current_snapshot,
+            )
+            if preflight_error:
+                external_guard_reasons.append(preflight_error)
+            elif bound_target_ou:
+                exec_params["target_ou_dn"] = bound_target_ou
+
         if is_autonomy and external_guard_reasons:
             blocker = (
                 "service_binding_failed"
                 if any("service" in item or "binding" in item for item in external_guard_reasons)
-                else "preflight_failed"
+                else (
+                    "routing_policy_changed"
+                    if any("routing_policy" in item for item in external_guard_reasons)
+                    else (
+                        "preflight_hash_mismatch"
+                        if any("hash_mismatch" in item for item in external_guard_reasons)
+                        else "preflight_failed"
+                    )
+                )
             )
             await _transition_autonomy_run(
                 session,
@@ -728,6 +756,93 @@ async def _validate_ad_service_gate(
     if unsafe_prior_feedback or prior_command is not None:
         return "ad_previous_creation_not_safe_to_repeat"
     return None
+
+
+async def _validate_mutation_preflight(
+    *,
+    session: AsyncSession,
+    plan: ActionPlan,
+    action: Any,
+    command: CommandRecord,
+    current_snapshot: Any,
+) -> tuple[str | None, str | None]:
+    """
+    Load permit-bound ActionPreflightRecord and verify:
+    - snapshot/plan/params hashes
+    - preflight status and expiration
+    - routing policy hash freshness
+    - OU existence and containment within authorized root
+
+    Returns (error_code, target_ou_dn).
+    """
+    preflight: ActionPreflightRecord | None = None
+    if command.execution_permit_id is not None:
+        permit = await session.get(ExecutionPermitRecord, command.execution_permit_id)
+        if permit is None:
+            return "execution_permit_not_found", None
+        preflight = await session.get(ActionPreflightRecord, permit.preflight_id)
+    else:
+        preflight = await session.scalar(
+            select(ActionPreflightRecord)
+            .where(
+                ActionPreflightRecord.action_plan_id == plan.id,
+                ActionPreflightRecord.action_id == action.id,
+                ActionPreflightRecord.status == "passed",
+            )
+            .order_by(ActionPreflightRecord.created_at.desc())
+            .limit(1)
+        )
+
+    if preflight is None:
+        return "preflight_record_not_found", None
+
+    if preflight.status != "passed":
+        return "preflight_not_passed", None
+
+    expires_at = preflight.expires_at
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    now = datetime.now(UTC)
+    if expires_at is not None and expires_at <= now:
+        return "preflight_expired", None
+
+    # Verify hashes
+    expected_params_hash = canonical_params_hash(action.params)
+    if preflight.snapshot_hash != current_snapshot.snapshot_hash or preflight.snapshot_hash != plan.snapshot_hash:
+        return "preflight_snapshot_hash_mismatch", None
+    if preflight.plan_hash != plan.plan_hash:
+        return "preflight_plan_hash_mismatch", None
+    if preflight.params_hash != expected_params_hash:
+        return "preflight_params_hash_mismatch", None
+
+    target_ou: str | None = None
+    if action.capability_key == "create_ad_user":
+        # Check routing policy freshness (fail-closed)
+        from core.ad.ou_routing import get_cached_routing_config
+        cached_res = get_cached_routing_config()
+        current_policy_hash = cached_res[1] if cached_res else None
+        preflight_policy_hash = (preflight.details_json or {}).get("routing_policy_hash")
+        action_policy_hash = (action.params or {}).get("ou_routing_policy_hash")
+        if not current_policy_hash or not preflight_policy_hash or not action_policy_hash:
+            return "routing_policy_hash_mismatch", None
+        if current_policy_hash != preflight_policy_hash or preflight_policy_hash != action_policy_hash:
+            return "routing_policy_hash_mismatch", None
+
+        # Extract target_ou
+        raw_ou = (preflight.details_json or {}).get("target_ou")
+        if not raw_ou or not str(raw_ou).strip():
+            return "preflight_target_ou_missing", None
+        target_ou = str(raw_ou).strip()
+
+        # Check containment within users_root_ou
+        import os
+        from core.ad.credentials import AD_USERS_ROOT_OU
+        from core.ad.ou_resolver import _is_descendant
+        users_root_ou = os.getenv("AD_USERS_OU") or AD_USERS_ROOT_OU
+        if not _is_descendant(target_ou, users_root_ou):
+            return "target_ou_outside_root", None
+
+    return None, target_ou
 
 
 async def _set_workflow_state(

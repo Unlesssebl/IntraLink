@@ -80,6 +80,7 @@ class CaseFrameExtractor:
             entities={key: value for key, value in snapshot.entities.items() if not self._is_secret_key(key)},
             degraded_components=degraded,
             llm_attempted=include_llm and self.transport is not None,
+            ou_routing_context=snapshot.ou_routing_context,
         )
 
     def _deterministic_assertions(self, snapshot: TicketSnapshot) -> list[CaseAssertion]:

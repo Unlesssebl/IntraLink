@@ -112,6 +112,23 @@ class SnapshotAttachment(FrozenModel):
     size: int
 
 
+class OuRoutingCategoryItem(FrozenModel):
+    id: int
+    name: str
+    name_mismatch: bool = False
+
+
+class OuRoutingContext(FrozenModel):
+    categories: list[OuRoutingCategoryItem] = Field(default_factory=list)
+    applicant_company: str | None = None
+    applicant_department: str | None = None
+    applicant_company_hierarchy: list[str] = Field(default_factory=list)
+    applicant_company_path: str | None = None
+    routing_policy_version: int | str | None = None
+    routing_policy_hash: str | None = None
+    diagnostics: list[str] = Field(default_factory=list)
+
+
 class TicketSnapshot(FrozenModel):
     """Canonical sanitized point-in-time view used by every automation stage."""
 
@@ -133,6 +150,7 @@ class TicketSnapshot(FrozenModel):
     applicant_login: str | None = None
     applicant_department: str | None = None
     last_event_id: int | None = None
+    ou_routing_context: OuRoutingContext | None = None
     snapshot_hash: str = Field(min_length=64, max_length=64)
 
 
@@ -234,6 +252,7 @@ class CaseFrame(FrozenModel):
     conflicting_facts: list[str] = Field(default_factory=list)
     degraded_components: dict[str, str] = Field(default_factory=dict)
     llm_attempted: bool = False
+    ou_routing_context: OuRoutingContext | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="after")

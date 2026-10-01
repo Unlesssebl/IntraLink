@@ -332,6 +332,24 @@ class AutomationService:
                 pass
         return await self._dto(session, bundle)
 
+    async def _create_ticket_snapshot(
+        self,
+        task: TaskDTO,
+        lifetime: list[TaskLifetimeDTO] | None = None,
+        auth_b64: str | None = None,
+    ) -> TicketSnapshot:
+        hierarchy: list[str] = []
+        if task.creator_company_path:
+            hierarchy = await self.client.get_company_hierarchy(
+                company_path=task.creator_company_path,
+                auth_b64=auth_b64,
+            )
+        return TicketSnapshotFactory.create(
+            task,
+            comments=lifetime,
+            applicant_company_hierarchy=hierarchy,
+        )
+
     async def analyze(
         self,
         session: AsyncSession,
@@ -348,7 +366,7 @@ class AutomationService:
             self.client.get_task_lifetime(task_id=ticket_id, auth_b64=token),
         )
         timings = {"source_fetch": round((perf_counter() - fetch_started) * 1000)}
-        snapshot = TicketSnapshotFactory.create(task, comments=lifetime)
+        snapshot = await self._create_ticket_snapshot(task, lifetime=lifetime, auth_b64=token)
         latest = await self.repository.latest_for_task(session, ticket_id)
         if not force and latest is not None and latest.frame.snapshot_hash == snapshot.snapshot_hash:
             bot_user_id = await self._safe_bot_user_id()
@@ -625,7 +643,11 @@ class AutomationService:
                 task_id=run.task_id,
                 auth_b64=credentials.auth_b64,
             )
-            current_snapshot = TicketSnapshotFactory.create(task, comments=lifetime)
+            current_snapshot = await self._create_ticket_snapshot(
+                task,
+                lifetime=lifetime,
+                auth_b64=credentials.auth_b64,
+            )
             if current_snapshot.snapshot_hash == run.snapshot_hash:
                 plan_record = await session.scalar(
                     select(ActionPlanRecord)
@@ -1199,56 +1221,7 @@ class AutomationService:
                 extracted_facts[k] = v
             missing = [k for k in missing if k not in extracted_facts]
 
-        # 3. Deterministic contextual fallback for company & department from metadata and categories
-        if missing:
-            if "company" in missing:
-                app_comp = (
-                    str(snapshot.applicant_company or "").strip()
-                    or str(snapshot.entities.get("company") or "").strip()
-                    or str(snapshot.entities.get("applicant_company") or "").strip()
-                )
-                if app_comp:
-                    extracted_facts["company"] = app_comp
-                    missing = [k for k in missing if k != "company"]
-                elif snapshot.categories and "/" in snapshot.categories:
-                    cat_parts = [p.strip() for p in snapshot.categories.split("/") if p.strip()]
-                    if len(cat_parts) > 1 and cat_parts[0]:
-                        extracted_facts["company"] = cat_parts[0]
-                        missing = [k for k in missing if k != "company"]
 
-            if "department" in missing:
-                resolved_dept = None
-                # Check categories first (e.g. "ТЭМПО-Логистик / Автотранспортный цех" or "Цех 4")
-                if snapshot.categories:
-                    cat_parts = [p.strip() for p in snapshot.categories.split("/") if p.strip()]
-                    if cat_parts:
-                        candidate_dept = cat_parts[-1]
-                        comp_val = str(extracted_facts.get("company") or snapshot.applicant_company or "").strip()
-                        if (
-                            candidate_dept
-                            and not is_proxy_applicant_department(candidate_dept)
-                            and (not comp_val or candidate_dept.lower() != comp_val.lower())
-                        ):
-                            resolved_dept = candidate_dept
-
-                # Fallback to applicant's department if not a proxy HR/IT department
-                if not resolved_dept:
-                    app_dept = (
-                        str(getattr(snapshot, "applicant_department", "") or "").strip()
-                        or str(snapshot.entities.get("applicant_department") or "").strip()
-                    )
-                    if app_dept:
-                        if not is_proxy_applicant_department(app_dept):
-                            resolved_dept = app_dept
-                        else:
-                            diag["trace"].append({
-                                "stage": "applicant_fallback",
-                                "note": f"applicant_department '{app_dept}' skipped by proxy HR filter",
-                            })
-
-                if resolved_dept:
-                    extracted_facts["department"] = resolved_dept
-                    missing = [k for k in missing if k != "department"]
 
         # 4. If missing facts remain, attempt bounded LLM fallback on human comments & body
         if missing:
@@ -1901,7 +1874,7 @@ class AutomationService:
             self.client.get_task(task_id=ticket_id, auth_b64=token),
             self.client.get_task_lifetime(task_id=ticket_id, auth_b64=token),
         )
-        snapshot = TicketSnapshotFactory.create(task, comments=lifetime)
+        snapshot = await self._create_ticket_snapshot(task, lifetime=lifetime, auth_b64=token)
         if snapshot.snapshot_hash != request.snapshot_hash:
             raise HTTPException(status.HTTP_409_CONFLICT, "stale_ticket_snapshot")
 
@@ -2007,7 +1980,7 @@ class AutomationService:
         token = await self._auth_token(auth_b64)
         task = await self.client.get_task(task_id=ticket_id, auth_b64=token)
         lifetime = await self.client.get_task_lifetime(task_id=ticket_id, auth_b64=token)
-        current = TicketSnapshotFactory.create(task, comments=lifetime)
+        current = await self._create_ticket_snapshot(task, lifetime=lifetime, auth_b64=token)
         record, plan = await self._locked_redirect(session, ticket_id, request)
         if current.snapshot_hash != plan.snapshot_hash:
             raise HTTPException(status.HTTP_409_CONFLICT, "stale_ticket_snapshot")
@@ -2364,7 +2337,7 @@ class AutomationService:
         token = await self._auth_token(auth_b64)
         task = await self.client.get_task(task_id=ticket_id, auth_b64=token)
         lifetime = await self.client.get_task_lifetime(task_id=ticket_id, auth_b64=token)
-        current = TicketSnapshotFactory.create(task, comments=lifetime)
+        current = await self._create_ticket_snapshot(task, lifetime=lifetime, auth_b64=token)
         if current.snapshot_hash != expected_hash:
             raise HTTPException(status.HTTP_409_CONFLICT, "stale_ticket_snapshot")
 
