@@ -2333,7 +2333,9 @@ class AutomationService:
         ]
         return frame.model_copy(update={"assertions": assertions})
 
-    async def _verify_current_snapshot(self, ticket_id: int, expected_hash: str, auth_b64: str | None) -> None:
+    async def _verify_current_snapshot(self, ticket_id: int, expected_hash: str | None, auth_b64: str | None) -> None:
+        if not expected_hash:
+            return
         token = await self._auth_token(auth_b64)
         task = await self.client.get_task(task_id=ticket_id, auth_b64=token)
         lifetime = await self.client.get_task_lifetime(task_id=ticket_id, auth_b64=token)

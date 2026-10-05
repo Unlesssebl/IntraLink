@@ -37,6 +37,25 @@ def compute_canonical_snapshot_hash(payload: Any) -> str:
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
+def _value(item: Any, *names: str, default: Any = None) -> Any:
+    if isinstance(item, dict):
+        for name in names:
+            value = item.get(name)
+            if value is not None:
+                return value
+        return default
+    for name in names:
+        value = getattr(item, name, None)
+        if value is not None:
+            return value
+    return default
+
+
+def _is_autopilot_comment(comment: Any) -> bool:
+    text = str(_value(comment, "comment", "Comment", "text", "Text", default="")).strip()
+    return text.startswith("[AUTO:")
+
+
 def _is_comment_private(comment: Any) -> bool:
     if isinstance(comment, dict):
         if comment.get("is_private") or comment.get("IsPrivate") or comment.get("IsPrivateComment"):
@@ -69,20 +88,6 @@ def _is_comment_private(comment: Any) -> bool:
     if isinstance(security, str):
         return bool([item.strip() for item in security.split(",") if item.strip()])
     return isinstance(security, (list, tuple, set)) and bool(security)
-
-
-def _value(item: Any, *names: str, default: Any = None) -> Any:
-    if isinstance(item, dict):
-        for name in names:
-            value = item.get(name)
-            if value is not None:
-                return value
-        return default
-    for name in names:
-        value = getattr(item, name, None)
-        if value is not None:
-            return value
-    return default
 
 
 class TicketSnapshotFactory:
@@ -120,6 +125,8 @@ class TicketSnapshotFactory:
         public_comments: list[SnapshotComment] = []
         all_event_ids: list[int] = []
         for comment in comments or []:
+            if _is_comment_private(comment) or _is_autopilot_comment(comment):
+                continue
             raw_id = _value(comment, "id", "Id")
             comment_id: int | None = None
             if raw_id is not None:
@@ -128,8 +135,6 @@ class TicketSnapshotFactory:
                     all_event_ids.append(comment_id)
                 except (TypeError, ValueError):
                     pass
-            if _is_comment_private(comment):
-                continue
             text = str(_value(comment, "comment", "Comment", "text", "Text", default="")).strip()
             if not text:
                 continue
