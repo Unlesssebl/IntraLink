@@ -56,7 +56,7 @@ def test_generate_sam_account_name():
 
 def test_password_zero_plaintext_policy():
     """Verify passwords are redacted by default and comply with complexity requirements."""
-    pwd = generate_secure_password(14)
+    pwd = generate_secure_password()
     assert isinstance(pwd, SecretPassword)
 
     # String representation must be redacted
@@ -66,13 +66,16 @@ def test_password_zero_plaintext_policy():
 
     # Raw value retrieval only via get_secret_value()
     raw = pwd.get_secret_value()
-    assert len(raw) == 14
+    assert len(raw) == 8
 
-    # Complexity checks
+    # Complexity checks (uppercase, lowercase, digits)
     assert any(c.isupper() for c in raw), "Password must contain uppercase letters"
     assert any(c.islower() for c in raw), "Password must contain lowercase letters"
     assert any(c.isdigit() for c in raw), "Password must contain digits"
-    assert any(c in "!@#$%^&*()_+=-" for c in raw), "Password must contain special characters"
+
+    # Only letters and digits (no special characters)
+    assert raw.isalnum(), "Password must be alphanumeric only"
+    assert not any(c in "!@#$%^&*()_+=-" for c in raw), "Password must not contain special characters"
 
     # Zero ambiguous characters
     assert not any(c in AMBIGUOUS_CHARS for c in raw), "Ambiguous characters must not be present"

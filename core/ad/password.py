@@ -9,12 +9,12 @@ from pydantic import SecretStr
 # Characters excluded due to visual ambiguity (e.g. 0, O, o, 1, l, I)
 AMBIGUOUS_CHARS: Set[str] = {"0", "O", "o", "1", "l", "I", "i"}
 
-# Clean character pools
+# Clean character pools (letters and digits only)
 UPPERCASE_POOL = "".join(c for c in string.ascii_uppercase if c not in AMBIGUOUS_CHARS)
 LOWERCASE_POOL = "".join(c for c in string.ascii_lowercase if c not in AMBIGUOUS_CHARS)
 DIGITS_POOL = "".join(c for c in string.digits if c not in AMBIGUOUS_CHARS)
 SPECIALS_POOL = "!@#$%^&*()_+=-"
-FULL_POOL = UPPERCASE_POOL + LOWERCASE_POOL + DIGITS_POOL + SPECIALS_POOL
+FULL_POOL = UPPERCASE_POOL + LOWERCASE_POOL + DIGITS_POOL
 
 
 class SecretPassword(SecretStr):
@@ -36,29 +36,28 @@ def mask_password(raw_value: str) -> str:
     return "***REDACTED***"
 
 
-def generate_secure_password(length: int = 14) -> SecretPassword:
+def generate_secure_password(length: int = 8) -> SecretPassword:
     """Generate cryptographically strong password conforming to AD complexity requirements.
 
     Constraints:
-      - Length >= 12
+      - Default length: 8 characters (min: 8)
       - Zero visually ambiguous characters (0, O, 1, l, I)
+      - Alphanumeric only (letters and digits, no special symbols)
       - At least one uppercase letter
       - At least one lowercase letter
       - At least one digit
-      - At least one special symbol
       - Returns SecretPassword (protected against log leaks)
     """
-    target_len = max(12, length)
+    target_len = max(8, length)
 
-    # Ensure required AD complexity categories
+    # Ensure required AD complexity categories: uppercase, lowercase, digit
     chars = [
         secrets.choice(UPPERCASE_POOL),
         secrets.choice(LOWERCASE_POOL),
         secrets.choice(DIGITS_POOL),
-        secrets.choice(SPECIALS_POOL),
     ]
 
-    # Fill remaining characters from full unambiguous pool
+    # Fill remaining characters from alphanumeric pool (letters and digits only)
     remaining_len = target_len - len(chars)
     for _ in range(remaining_len):
         chars.append(secrets.choice(FULL_POOL))

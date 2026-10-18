@@ -942,7 +942,7 @@ class AccountProvisioningService:
         pool, users_root_ou = await self._connection_boundary()
         cached_units = await self._get_cached_ou_tree(pool.config.domain, users_root_ou)
         cached_groups = await self._get_cached_groups(pool.config.domain)
-        secret = generate_secure_password(length=14)
+        secret = generate_secure_password(length=8)
         password = secret.get_secret_value()
         del secret
         try:
